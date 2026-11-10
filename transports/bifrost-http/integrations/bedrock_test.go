@@ -27,10 +27,11 @@ import (
 
 // mockHandlerStore implements lib.HandlerStore for testing
 type mockHandlerStore struct {
-	headerMatcher              *lib.HeaderMatcher
-	availableProviders         []schemas.ModelProvider
-	mcpHeaderCombinedAllowlist schemas.WhiteList
-	modelCatalog               *modelcatalog.ModelCatalog
+	headerMatcher               *lib.HeaderMatcher
+	availableProviders          []schemas.ModelProvider
+	mcpHeaderCombinedAllowlist  schemas.WhiteList
+	modelCatalog                *modelcatalog.ModelCatalog
+	disablePassthroughHeartbeat bool // client.disable_passthrough_sse_heartbeat (fork, TXE-6519)
 }
 
 func (m *mockHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
@@ -71,6 +72,10 @@ func (m *mockHandlerStore) ShouldAllowDirectKeys() bool {
 
 func (m *mockHandlerStore) ShouldSendExtraFieldsInHeaders() bool {
 	return false
+}
+
+func (m *mockHandlerStore) ShouldSendPassthroughSSEHeartbeat() bool {
+	return !m.disablePassthroughHeartbeat
 }
 
 func (m *mockHandlerStore) IsProviderConfigured(provider schemas.ModelProvider) bool {

@@ -4802,6 +4802,35 @@ func TestMigrationAddClientConfigEnforceVKObjectOwnershipColumn(t *testing.T) {
 	require.NoError(t, migrationAddClientConfigEnforceVKObjectOwnershipColumn(ctx, db, testMigrationLogger))
 }
 
+// The fork's two deployment switches (TXE-6519) read back as off on an upgrade: the sweepers
+// keep running and the passthrough heartbeat stays on until a deployment sets them.
+func TestMigrationAddClientConfigForkDeploymentSwitchColumns(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, db.Create(&tables.TableClientConfig{}).Error)
+	mg := db.Migrator()
+	columns := []string{"disable_provider_job_accounting", "disable_passthrough_sse_heartbeat"}
+	for _, column := range columns {
+		require.NoError(t, mg.DropColumn(&tables.TableClientConfig{}, column))
+		require.False(t, mg.HasColumn(&tables.TableClientConfig{}, column), column)
+	}
+
+	require.NoError(t, migrationAddClientConfigForkDeploymentSwitchColumns(ctx, db, testMigrationLogger))
+	for _, column := range columns {
+		assert.True(t, mg.HasColumn(&tables.TableClientConfig{}, column), column)
+	}
+
+	var cfg tables.TableClientConfig
+	require.NoError(t, db.First(&cfg).Error)
+	assert.False(t, cfg.DisableProviderJobAccounting, "an upgrade keeps provider job accounting on")
+	assert.False(t, cfg.DisablePassthroughSSEHeartbeat, "an upgrade keeps the passthrough heartbeat on")
+
+	// Idempotent: a re-run with the columns already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_fork_deployment_switch_columns").Error)
+	require.NoError(t, migrationAddClientConfigForkDeploymentSwitchColumns(ctx, db, testMigrationLogger))
+}
+
 func TestMigrationAddVirtualKeyDeleteAfterExpireColumn(t *testing.T) {
 	db := setupVKTestDBWithoutRotationColumns(t)
 	ctx := context.Background()

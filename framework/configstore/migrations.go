@@ -571,6 +571,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_rss_feeds_table"}, run: migrationAddRSSFeedsTable},
 	{IDs: []string{"add_rss_feeds_icon_url_column"}, run: migrationAddRSSFeedsIconURLColumn},
 	{IDs: []string{"add_agent_push_delivery_registration_hash_column"}, run: migrationAddAgentPushDeliveryRegistrationHashColumn},
+	{IDs: []string{"add_client_config_fork_deployment_switch_columns"}, run: migrationAddClientConfigForkDeploymentSwitchColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -12223,6 +12224,43 @@ func migrationAddClientConfigExtraFieldsPlacementColumn(ctx context.Context, db 
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "extra_fields_placement")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddClientConfigForkDeploymentSwitchColumns adds disable_provider_job_accounting and
+// disable_passthrough_sse_heartbeat to config_client (fork, TXE-6519). Both default to false, so
+// an upgrade keeps the accounting sweepers running and the passthrough heartbeat on, as before
+// the switches existed.
+func migrationAddClientConfigForkDeploymentSwitchColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_fork_deployment_switch_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "disable_provider_job_accounting"); err != nil {
+				return err
+			}
+			if err := tx.Exec("UPDATE config_client SET disable_provider_job_accounting = ? WHERE disable_provider_job_accounting IS NULL", false).Error; err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "disable_passthrough_sse_heartbeat"); err != nil {
+				return err
+			}
+			return tx.Exec("UPDATE config_client SET disable_passthrough_sse_heartbeat = ? WHERE disable_passthrough_sse_heartbeat IS NULL", false).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "disable_passthrough_sse_heartbeat"); err != nil {
+				return err
+			}
+			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "disable_provider_job_accounting")
 		},
 	}})
 	if err := m.Migrate(); err != nil {

@@ -585,6 +585,58 @@ func TestUpdateConfig_EnforceVKObjectOwnershipPresence(t *testing.T) {
 	}
 }
 
+// The fork's two deployment switches (TXE-6519) are copied only when sent, so a partial save
+// keeps the stored values, and each reads back through GET /api/config as the configuration
+// item a deployment sets.
+func TestUpdateConfig_ForkDeploymentSwitchesPresence(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	assertSwitches := func(accounting, heartbeat bool) {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		assert.Equal(t, accounting, persisted.DisableProviderJobAccounting, "stored disable_provider_job_accounting")
+		assert.Equal(t, heartbeat, persisted.DisablePassthroughSSEHeartbeat, "stored disable_passthrough_sse_heartbeat")
+		assert.Equal(t, accounting, cfg.ClientConfig.DisableProviderJobAccounting, "live disable_provider_job_accounting")
+		assert.Equal(t, heartbeat, cfg.ClientConfig.DisablePassthroughSSEHeartbeat, "live disable_passthrough_sse_heartbeat")
+	}
+
+	assertSwitches(false, false)
+
+	on := putConfigCtx(`{"client_config":{"log_retention_days":8,"disable_provider_job_accounting":true,"disable_passthrough_sse_heartbeat":true}}`)
+	h.updateConfig(on)
+	require.Equal(t, fasthttp.StatusOK, on.Response.StatusCode(), string(on.Response.Body()))
+	assertSwitches(true, true)
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":8}}`)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	assertSwitches(true, true)
+
+	var readReq fasthttp.Request
+	readReq.Header.SetMethod("GET")
+	read := initCtx(&readReq)
+	h.getConfig(read)
+	require.Equal(t, fasthttp.StatusOK, read.Response.StatusCode(), string(read.Response.Body()))
+	var shown struct {
+		ClientConfig struct {
+			DisableProviderJobAccounting   bool `json:"disable_provider_job_accounting"`
+			DisablePassthroughSSEHeartbeat bool `json:"disable_passthrough_sse_heartbeat"`
+		} `json:"client_config"`
+	}
+	require.NoError(t, json.Unmarshal(read.Response.Body(), &shown), string(read.Response.Body()))
+	assert.True(t, shown.ClientConfig.DisableProviderJobAccounting, "GET /api/config shows the accounting switch")
+	assert.True(t, shown.ClientConfig.DisablePassthroughSSEHeartbeat, "GET /api/config shows the heartbeat switch")
+
+	off := putConfigCtx(`{"client_config":{"log_retention_days":8,"disable_provider_job_accounting":false,"disable_passthrough_sse_heartbeat":false}}`)
+	h.updateConfig(off)
+	require.Equal(t, fasthttp.StatusOK, off.Response.StatusCode(), string(off.Response.Body()))
+	assertSwitches(false, false)
+}
+
 // extra_fields_placement is copied only when sent, so a partial save keeps the stored value,
 // and anything other than body/headers is refused before any live mutation.
 func TestUpdateConfig_ExtraFieldsPlacement(t *testing.T) {

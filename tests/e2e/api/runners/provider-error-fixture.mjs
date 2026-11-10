@@ -81,6 +81,10 @@ const textCompletionAnswer = (stream) => {
 // upstream-cut starts answering as upstream-ok does and drops the connection partway: a stream gets its first
 // content chunk and then a closed socket, a non-streamed request a closed socket.
 behaviours["upstream-cut"] = () => ({ ...behaviours["upstream-ok"](), cut: true });
+// upstream-idle-stream answers a streamed request in two writes with a pause between them longer than the
+// gateway's SSE heartbeat interval, so a passthrough case can tell the vendor's bytes from a heartbeat the
+// gateway added; the bytes it sent are kept under /__sent (folder 329, TXE-6519).
+behaviours["upstream-idle-stream"] = () => ({ ...behaviours["upstream-ok"](), idleMs: 2500 });
 
 // A streamed chat request (stream: true) that a behaviour answers with a completion gets the same
 // answer as server-sent chunks: the role, the content, the finish reason, the usage when
@@ -540,6 +544,37 @@ const probeStreamGaps = (spec, reply) => {
 
 // Hit counters are keyed by the request body's model, so they must not inherit Object.prototype names.
 const hits = Object.create(null);
+// The exact bytes the last streamed answer for a model wrote, keyed by the request's model; GET /__sent?model=
+// returns them and POST /__reset clears them (folder 329, TXE-6519).
+const sentBodies = Object.create(null);
+
+// OpenAI-shaped video, file and batch objects for folder 329 (TXE-6519): what the gateway's accounting
+// sweeper would poll on its own after a video task or a batch is created. The video is complete as soon as it
+// is asked for and the batch stays in progress, so a sweeper that is running has something to poll, and every
+// call is counted under a fixed key (video.create, video.retrieve, video.content, video.delete, file.upload,
+// file.content, batch.create, batch.retrieve), so a case can prove that nothing but its own requests arrived.
+const FIXTURE_VIDEO_ID = "video_fixture_1";
+const FIXTURE_BATCH_ID = "batch_fixture_1";
+const FIXTURE_FILE_ID = "file-fixture-batch-input";
+// Leading control byte: the collection's generic content check treats a body that is not JSON and starts with a
+// control character as binary, which is how a real video's header reads too.
+const FIXTURE_MP4 = Buffer.concat([Buffer.from([0x1a]), Buffer.from("FIXTURE-MP4 bytes served by provider-error-fixture")]);
+const fixtureVideo = (status, progress) => ({
+	id: FIXTURE_VIDEO_ID, object: "video", model: "sora-fixture", status, progress, created_at: 1,
+	completed_at: status === "completed" ? 2 : null, expires_at: null, seconds: "4", size: "720x1280",
+	remixed_from_video_id: null, error: null,
+});
+const fixtureBatch = (status) => ({
+	id: FIXTURE_BATCH_ID, object: "batch", endpoint: "/v1/chat/completions", input_file_id: FIXTURE_FILE_ID,
+	completion_window: "24h", status, created_at: 1, request_counts: { total: 1, completed: 0, failed: 0 },
+});
+const countHit = (key) => { hits[key] = (hits[key] || 0) + 1; };
+// Reads and discards a request body (JSON or multipart) before answering, so the gateway's upload completes.
+const drain = (req, then) => {
+	req.on("data", () => {});
+	req.on("end", then);
+};
+
 
 const server = http.createServer((req, res) => {
 	const path = new URL(req.url, "http://localhost").pathname;
@@ -564,6 +599,7 @@ const server = http.createServer((req, res) => {
 		for (const k of Object.keys(hits)) delete hits[k];
 		openAPICalls.length = 0;
 		wireCalls.length = 0;
+		for (const k of Object.keys(sentBodies)) delete sentBodies[k];
 		return send(200, {}, JSON.stringify({ data: [{ reset: true }] }));
 	}
 	if (req.method === "GET" && path === "/openapi-fixture/docs/no-servers.json") {
@@ -615,8 +651,54 @@ const server = http.createServer((req, res) => {
 	if (req.method === "GET" && path === "/__hits") {
 		return send(200, {}, JSON.stringify({ data: [{ hits: { ...hits } }] }));
 	}
+	if (req.method === "GET" && path === "/__sent") {
+		const model = new URL(req.url, "http://localhost").searchParams.get("model") || "";
+		return send(200, {}, JSON.stringify({ data: [{ model, body: Object.hasOwn(sentBodies, model) ? sentBodies[model] : null }] }));
+	}
 	if (req.method === "GET" && path === "/mcp") {
 		return send(405, {}, errorBody("no server stream", "invalid_request_error", "method_not_allowed"));
+	}
+	// Video, file and batch endpoints in OpenAI shape (folder 329, TXE-6519); see fixtureVideo above.
+	const videoMatch = path.match(/^\/v1\/videos\/([^/]+)(\/content)?$/);
+	if (req.method === "POST" && path === "/v1/videos") {
+		return drain(req, () => {
+			countHit("video.create");
+			send(200, {}, JSON.stringify(fixtureVideo("queued", 0)));
+		});
+	}
+	if (req.method === "GET" && videoMatch && videoMatch[2]) {
+		countHit("video.content");
+		res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": FIXTURE_MP4.length });
+		return res.end(FIXTURE_MP4);
+	}
+	if (req.method === "GET" && videoMatch) {
+		countHit("video.retrieve");
+		return send(200, {}, JSON.stringify(fixtureVideo("completed", 100)));
+	}
+	if (req.method === "DELETE" && videoMatch) {
+		countHit("video.delete");
+		return send(200, {}, JSON.stringify({ id: videoMatch[1], object: "video.deleted", deleted: true }));
+	}
+	if (req.method === "POST" && path === "/v1/files") {
+		return drain(req, () => {
+			countHit("file.upload");
+			send(200, {}, JSON.stringify({ id: FIXTURE_FILE_ID, object: "file", bytes: 64, created_at: 1, filename: "batch_requests.jsonl", purpose: "batch", status: "processed" }));
+		});
+	}
+	if (req.method === "GET" && /^\/v1\/files\/[^/]+\/content$/.test(path)) {
+		countHit("file.content");
+		res.writeHead(200, { "Content-Type": "application/jsonl" });
+		return res.end("");
+	}
+	if (req.method === "POST" && path === "/v1/batches") {
+		return drain(req, () => {
+			countHit("batch.create");
+			send(200, {}, JSON.stringify(fixtureBatch("validating")));
+		});
+	}
+	if (req.method === "GET" && /^\/v1\/batches\/[^/]+$/.test(path)) {
+		countHit("batch.retrieve");
+		return send(200, {}, JSON.stringify(fixtureBatch("in_progress")));
 	}
 	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions" && path !== "/mcp" && path !== "/v1/decisions" && path !== "/alpha/decisions" && path !== "/v1/audio/speech" && path !== "/v1/completions")) {
 		return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));
@@ -799,6 +881,17 @@ const server = http.createServer((req, res) => {
 				res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
 				res.write(first);
 				return setTimeout(() => req.socket.destroy(), 100);
+			}
+			if (r.idleMs && parsed.stream === true) {
+				// Two writes with a pause between them longer than the gateway's heartbeat interval; the
+				// whole body is kept under /__sent so a passthrough case can compare it byte for byte.
+				const events = streamChunks(JSON.parse(r.body), false).split("\n\n").filter(Boolean).map((e) => e + "\n\n");
+				const head = events[0];
+				const tail = events.slice(1).join("");
+				sentBodies[model] = head + tail;
+				res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+				res.write(head);
+				return setTimeout(() => res.end(tail), r.idleMs);
 			}
 			if (parsed.stream === true && r.status === 200 && path !== "/v1/responses") {
 				const completion = JSON.parse(r.body);

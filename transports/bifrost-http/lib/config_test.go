@@ -27719,3 +27719,32 @@ func TestA2APrivateAllowlist(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, absent, empty)
 }
+
+// The fork's two deployment switches (TXE-6519) read under Mu like the other client switches,
+// and an unset client config means both stay on, as before the switches existed.
+func TestForkDeploymentSwitchesDefaultOn(t *testing.T) {
+	var none Config
+	require.True(t, none.ShouldRunProviderJobAccounting())
+	require.True(t, none.ShouldSendPassthroughSSEHeartbeat())
+
+	cfg := &Config{ClientConfig: &configstore.ClientConfig{}}
+	require.True(t, cfg.ShouldRunProviderJobAccounting())
+	require.True(t, cfg.ShouldSendPassthroughSSEHeartbeat())
+
+	cfg.ClientConfig.DisableProviderJobAccounting = true
+	cfg.ClientConfig.DisablePassthroughSSEHeartbeat = true
+	require.False(t, cfg.ShouldRunProviderJobAccounting())
+	require.False(t, cfg.ShouldSendPassthroughSSEHeartbeat())
+}
+
+// BenchmarkShouldSendPassthroughSSEHeartbeat is the switch read a passthrough stream makes once at
+// its start, under the config's read lock (fork, TXE-6519).
+func BenchmarkShouldSendPassthroughSSEHeartbeat(b *testing.B) {
+	cfg := &Config{ClientConfig: &configstore.ClientConfig{}}
+	b.ReportAllocs()
+	for b.Loop() {
+		if !cfg.ShouldSendPassthroughSSEHeartbeat() {
+			b.Fatal("the heartbeat is on by default")
+		}
+	}
+}

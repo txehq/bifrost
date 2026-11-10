@@ -876,6 +876,11 @@ export interface CoreConfig {
 	enforce_vk_object_ownership: boolean;
 	// Request types excluded from Logs and Dashboard reads. Logs are still stored.
 	hidden_request_types: string[];
+	// Fork (TXE-6519): no video or batch accounting sweeper and no provider job rows; the
+	// caller prices its own jobs. Optional: the dashboard sends it only when the API did.
+	disable_provider_job_accounting?: boolean;
+	// Fork (TXE-6519): no SSE comment heartbeat on an idle passthrough stream.
+	disable_passthrough_sse_heartbeat?: boolean;
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
 	mcp_external_client_url?: SecretVar;

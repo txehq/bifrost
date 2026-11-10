@@ -67,6 +67,8 @@ type TableClientConfig struct {
 	HideDeletedVirtualKeysInFilters       bool                           `gorm:"default:false" json:"hide_deleted_virtual_keys_in_filters"`     // Hide deleted virtual keys in logs filter dropdowns
 	DeleteExpiredVirtualKeys              bool                           `gorm:"default:false" json:"delete_expired_virtual_keys"`              // Default for virtual keys without an explicit delete_after_expire: delete them once expired
 	EnforceVKObjectOwnership              bool                           `gorm:"default:true" json:"enforce_vk_object_ownership"`               // Restrict provider objects to the virtual key that created them
+	DisableProviderJobAccounting          bool                           `gorm:"default:false" json:"disable_provider_job_accounting"`          // Fork (TXE-6519): no accounting sweepers and no provider job rows
+	DisablePassthroughSSEHeartbeat        bool                           `gorm:"default:false" json:"disable_passthrough_sse_heartbeat"`        // Fork (TXE-6519): no SSE comment heartbeat on passthrough streams
 	HiddenRequestTypesJSON                string                         `gorm:"type:text" json:"-"`                                            // JSON serialized []string of request types hidden from log reads
 	RoutingChainMaxDepth                  int                            `gorm:"default:10" json:"routing_chain_max_depth"`                     // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  string                         `gorm:"type:varchar(512)" json:"mcp_external_client_url,omitempty"`    // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers

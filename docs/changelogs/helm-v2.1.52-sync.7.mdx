@@ -1,0 +1,14 @@
+---
+title: "v2.1.52-sync.7"
+description: "Helm v2.1.52-sync.7 prerelease changelog - 2026-11-10"
+---
+
+<Update label="Bifrost Helm" description="v2.1.52-sync.7 (prerelease)">
+
+## Changelog
+
+Prerelease of the txehq fork for transport v2.4.0-sync.7; the stable chart stays 2.1.51 until a stable version supersedes it. Install this one with `helm install --devel` or `--version 2.1.52-sync.7`.
+
+- `appVersion` is now `2.4.0-sync.7`, so an empty `image.tag` selects `v2.4.0-sync.7`. That transport adds two deployment switches to the client config (TXE-6519): `disable_provider_job_accounting`, which stops the batch and video accounting sweepers and the provider job rows they settle so Bifrost makes no vendor call outside a caller's request, and `disable_passthrough_sse_heartbeat`, which keeps an idle SSE passthrough stream byte for byte the vendor's. Both default to off, so a chart that does not set them is unchanged. No values, templates or schema change.
+
+</Update>

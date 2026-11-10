@@ -94,13 +94,29 @@ func modelPtr(model string) *string {
 	return &model
 }
 
+// WireBatchAccountingSweeper starts the batch and video accounting sweepers against the live
+// logging and governance plugins, or, when client.disable_provider_job_accounting is set
+// (fork, TXE-6519), stops them and tells the logging plugin to record no provider job. It runs
+// at bootstrap, on a logging or governance plugin reload, and when a client-config save flips
+// the switch; every run is safe to repeat.
 func (s *BifrostHTTPServer) WireBatchAccountingSweeper() {
-	if s == nil || s.Client == nil || s.Config == nil {
+	if s == nil || s.Config == nil {
 		return
 	}
 	loggerPlugin, err := lib.FindPluginAs[*logging.LoggerPlugin](s.Config, logging.PluginName)
 	if err != nil || loggerPlugin == nil {
 		logger.Warn("batch accounting sweeper not wired: logging plugin not found (err=%v)", err)
+		return
+	}
+	// Applied before anything starts and before the client check below, so a disabled
+	// deployment stops a running sweeper and writes no job row whether or not the client
+	// exists yet. Disabled, the plugin also refuses the two starts further down.
+	accounting := s.Config.ShouldRunProviderJobAccounting()
+	loggerPlugin.SetProviderJobAccountingEnabled(accounting)
+	if !accounting {
+		logger.Info("provider job accounting is off (client.disable_provider_job_accounting): no batch or video accounting sweeper, no provider job rows")
+	}
+	if s.Client == nil {
 		return
 	}
 	// The reporter must be cleared, not just left alone, when governance is gone:
@@ -117,10 +133,33 @@ func (s *BifrostHTTPServer) WireBatchAccountingSweeper() {
 	// Re-wire the settlement tracer on reload. No-op at first bootstrap (tracer not
 	// built yet); Bootstrap calls it again once the tracer exists.
 	s.setSettlementTracer()
+	if !accounting {
+		return
+	}
 	loggerPlugin.StartBatchAccountingSweeper(&bifrostBatchResultFetcher{client: s.Client}, time.Minute, s.Config.KVStore)
 	// Video jobs finish in minutes, not hours, so their sweeper runs on a much
 	// tighter tick than the batch one.
 	loggerPlugin.StartVideoAccountingSweeper(&bifrostVideoRetriever{client: s.Client, config: s.Config}, 30*time.Second, s.Config.KVStore)
+}
+
+// ReconcileProviderJobAccounting re-wires the sweepers when the logging plugin's runtime state
+// disagrees with client.disable_provider_job_accounting (fork, TXE-6519). It is what a
+// client-config reload calls: a save through PUT /api/config publishes the new value into the
+// live config before it asks for the reload (handlers/config.go), so the reload cannot tell a
+// change from the config alone, and a cluster peer's reload sees only the stored value. The
+// plugin's own flag is the state that must follow the config, so that is what is compared.
+func (s *BifrostHTTPServer) ReconcileProviderJobAccounting() {
+	if s == nil || s.Config == nil {
+		return
+	}
+	loggerPlugin, err := lib.FindPluginAs[*logging.LoggerPlugin](s.Config, logging.PluginName)
+	if err != nil || loggerPlugin == nil {
+		return
+	}
+	if loggerPlugin.ProviderJobAccountingEnabled() == s.Config.ShouldRunProviderJobAccounting() {
+		return
+	}
+	s.WireBatchAccountingSweeper()
 }
 
 // setSettlementTracer gives the logging plugin the tracer for emitSettlementSpan.

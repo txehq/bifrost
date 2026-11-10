@@ -4,9 +4,15 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/txehq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.51 (prereleases 2.1.52-sync.6, 2.1.52-sync.5, 2.1.52-sync.4, 2.1.52-sync.3, 2.1.52-sync.2 and 2.1.52-sync.1 carry the changes below; install them with `--devel`)
+**Latest Version:** 2.1.51 (prereleases 2.1.52-sync.7, 2.1.52-sync.6, 2.1.52-sync.5, 2.1.52-sync.4, 2.1.52-sync.3, 2.1.52-sync.2 and 2.1.52-sync.1 carry the changes below; install them with `--devel`)
 
 ## Changelog
+
+### 2.1.52-sync.7 (prerelease)
+
+The prerelease chart for transport v2.4.0-sync.7; no values, templates or schema change:
+
+- `appVersion` is now `2.4.0-sync.7`, so an empty `image.tag` selects `v2.4.0-sync.7`. That transport adds two deployment switches to the client config (TXE-6519): `disable_provider_job_accounting`, which stops the batch and video accounting sweepers and the provider job rows they settle, and `disable_passthrough_sse_heartbeat`, which keeps an idle SSE passthrough stream byte for byte the vendor's. Both default to off.
 
 ### 2.1.52-sync.6 (prerelease)
 
