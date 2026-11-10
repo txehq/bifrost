@@ -217,19 +217,10 @@ func OpenResultStream(
 		return &ResultStream{Reader: bytes.NewReader(nil), Latency: latency}, nil
 	}
 
-	reader, releaseGzip := DecompressStreamBody(resp)
-	if statusCode != fasthttp.StatusOK && statusCode != fasthttp.StatusPartialContent {
-		errorBody, _ := io.ReadAll(io.LimitReader(reader, resultStreamErrorBodyLimit))
-		releaseGzip()
-		_ = resp.CloseBodyStream()
-		resp.SetBody(errorBody)
-		bifrostErr := SetErrorLatency(parseError(resp), latency)
-		fasthttp.ReleaseResponse(resp)
-		return nil, bifrostErr
-	}
-
 	// The transport stops watching the request context once the headers are in, so the
-	// body is closed here when the context ends or the upstream stops sending.
+	// body is closed here when the context ends or the upstream stops sending. The watch
+	// is in place before the first body byte is read, error bodies included.
+	reader, releaseGzip := DecompressStreamBody(resp)
 	bodyStream := resp.BodyStream()
 	closeBody := func(cause error) {
 		if closer, ok := bodyStream.(streamCloserWithError); ok {
@@ -250,7 +241,7 @@ func OpenResultStream(
 	}()
 	var releaseOnce sync.Once
 	stream := &ResultStream{
-		Reader:  &idleResetReader{reader: reader, timer: idleTimer, timeout: idleTimeout},
+		Reader:  &resultBodyReader{ctx: ctx, reader: reader, timer: idleTimer, timeout: idleTimeout},
 		Latency: latency,
 		release: func() {
 			releaseOnce.Do(func() {
@@ -261,6 +252,17 @@ func OpenResultStream(
 				releaseResponse()
 			})
 		},
+	}
+
+	if statusCode != fasthttp.StatusOK && statusCode != fasthttp.StatusPartialContent {
+		// Read the vendor's error for parsing, bounded in size and by the same watch.
+		errorBody, _ := io.ReadAll(io.LimitReader(stream.Reader, resultStreamErrorBodyLimit))
+		errorResp := fasthttp.AcquireResponse()
+		defer fasthttp.ReleaseResponse(errorResp)
+		resp.Header.CopyTo(&errorResp.Header)
+		errorResp.SetBody(errorBody)
+		stream.Close()
+		return nil, SetErrorLatency(parseError(errorResp), latency)
 	}
 
 	if statusCode == fasthttp.StatusOK && offset > 0 {
@@ -276,16 +278,21 @@ func OpenResultStream(
 	return stream, nil
 }
 
-// idleResetReader restarts the idle timer on every read, so a download is ended only when
-// the upstream stops sending, not because the file is large.
-type idleResetReader struct {
+// resultBodyReader reads a result download's body. It restarts the idle timer on every
+// read, so a download is ended only when the upstream stops sending, not because the file
+// is large, and it counts the time blocked on the socket as upstream latency: the request
+// helper measures only up to the response headers.
+type resultBodyReader struct {
+	ctx     *schemas.BifrostContext
 	reader  io.Reader
 	timer   *time.Timer
 	timeout time.Duration
 }
 
-func (r *idleResetReader) Read(p []byte) (int, error) {
+func (r *resultBodyReader) Read(p []byte) (int, error) {
+	start := time.Now()
 	n, err := r.reader.Read(p)
+	schemas.AddUpstreamLatency(r.ctx, time.Since(start))
 	if n > 0 {
 		r.timer.Reset(r.timeout)
 	}

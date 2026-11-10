@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -391,5 +392,94 @@ func TestOpenResultStreamStopsOnContextCancel(t *testing.T) {
 	}()
 	if err := <-done; err == nil {
 		t.Fatalf("read returned no error after the context was cancelled (lines=%d)", lines)
+	}
+}
+
+// A vendor that answers with an error status and then stalls its body cannot hold the
+// request: the watch that ends a download on cancellation covers the error body too.
+func TestOpenResultStreamErrorBodyStallEndsOnContextCancel(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000")
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"error":{"message":"partial`)
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+
+	parent, cancel := context.WithCancel(context.Background())
+	ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+	type outcome struct {
+		stream *ResultStream
+		err    *schemas.BifrostError
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		stream, bifrostErr := OpenResultStream(ctx, BuildStreamingClient(&fasthttp.Client{}), 0, func(req *fasthttp.Request) {
+			req.SetRequestURI(server.URL)
+			req.Header.SetMethod(http.MethodGet)
+		}, func(resp *fasthttp.Response) *schemas.BifrostError {
+			return NewProviderAPIError("vendor error: "+string(resp.Body()), nil, resp.StatusCode(), nil, nil)
+		})
+		done <- outcome{stream, bifrostErr}
+	}()
+
+	select {
+	case got := <-done:
+		t.Fatalf("returned before the context was cancelled, with the body still stalled: %+v", got.err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case got := <-done:
+		if got.err == nil || got.err.StatusCode == nil || *got.err.StatusCode != http.StatusInternalServerError {
+			t.Fatalf("error = %+v, want the vendor's 500", got.err)
+		}
+		if !strings.Contains(got.err.Error.Message, "partial") {
+			t.Fatalf("error message %q lost the part of the body that did arrive", got.err.Error.Message)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("OpenResultStream did not return after the context was cancelled")
+	}
+}
+
+// Time spent waiting for a result file's body is upstream latency, like the wait for its
+// headers: the body is where a large download spends its time.
+func TestOpenResultStreamCountsBodyReadsAsUpstreamLatency(t *testing.T) {
+	const bodyDelay = 150 * time.Millisecond
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "23")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		time.Sleep(bodyDelay)
+		fmt.Fprint(w, "{\"custom_id\":\"line-0\"}\n")
+	}))
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.ResetUpstreamLatency()
+	stream, bifrostErr := OpenResultStream(ctx, BuildStreamingClient(&fasthttp.Client{}), 0, func(req *fasthttp.Request) {
+		req.SetRequestURI(server.URL)
+		req.Header.SetMethod(http.MethodGet)
+	}, func(resp *fasthttp.Response) *schemas.BifrostError {
+		return NewProviderAPIError("unexpected", nil, resp.StatusCode(), nil, nil)
+	})
+	if bifrostErr != nil {
+		t.Fatalf("OpenResultStream: %v", bifrostErr.Error.Message)
+	}
+	afterHeaders, _ := schemas.GetUpstreamLatency(ctx)
+	lines := 0
+	if _, _, err := ReadJSONLPage(stream.Reader, 0, func([]byte) { lines++ }); err != nil || lines != 1 {
+		t.Fatalf("read %d lines, err %v", lines, err)
+	}
+	stream.Close()
+	total, ok := schemas.GetUpstreamLatency(ctx)
+	if waited := total - afterHeaders; !ok || waited < bodyDelay/2 {
+		t.Fatalf("upstream latency grew by %v while the body took %v to arrive", waited, bodyDelay)
 	}
 }
