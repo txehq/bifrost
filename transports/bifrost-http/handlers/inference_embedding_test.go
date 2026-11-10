@@ -1,10 +1,22 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/bytedance/sonic"
+	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/framework/configstore"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
@@ -209,5 +221,98 @@ func BenchmarkEmbeddingRequestInputUnmarshal(b *testing.B) {
 		if err := input.UnmarshalJSON(data); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// TestEmbeddingsForwardsExtraTopLevelFields pins contract C4 on /v1/embeddings: a
+// top-level field outside the unified schema reaches the vendor's request body
+// unchanged, through the real handler and OpenAI provider, as the image routes
+// already do. Before the route forced the passthrough flag, a caller without
+// x-bf-passthrough-extra-params had the field parsed into ExtraParams and then
+// silently dropped before the provider marshalled its body.
+func TestEmbeddingsForwardsExtraTopLevelFields(t *testing.T) {
+	SetLogger(&mockLogger{})
+	var mu sync.Mutex
+	var gotPath string
+	var gotBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		gotPath = r.URL.Path
+		gotBody = nil
+		_ = json.Unmarshal(raw, &gotBody)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","model":"text-embedding-3-small","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":3,"total_tokens":3}}`))
+	}))
+	defer upstream.Close()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: legacySessionAccount{baseURL: upstream.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	h := &CompletionHandler{client: client, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+
+	for _, tc := range []struct {
+		name    string
+		headers map[string]string
+	}{
+		{name: "no passthrough header", headers: nil},
+		{name: "x-bf-passthrough-extra-params true (Tokun)", headers: map[string]string{"x-bf-passthrough-extra-params": "true"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.Header.SetContentType("application/json")
+			for k, v := range tc.headers {
+				ctx.Request.Header.Set(k, v)
+			}
+			ctx.Request.SetBodyString(`{"model":"openai/text-embedding-3-small","input":"hello world","dimensions":256,` +
+				`"user":"tokun-user-1","provider":{"only":["vendor-a"]},"input_type":"query","instructions":"typed, not extra"}`)
+
+			h.embeddings(ctx)
+
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			mu.Lock()
+			path, body := gotPath, gotBody
+			mu.Unlock()
+			require.Equal(t, "/v1/embeddings", path)
+			require.Equal(t, "text-embedding-3-small", body["model"])
+			require.Equal(t, "hello world", body["input"])
+			require.EqualValues(t, 256, body["dimensions"], "a unified field still reaches the vendor")
+			require.Equal(t, "tokun-user-1", body["user"], "extra field user must reach the vendor")
+			require.Equal(t, "query", body["input_type"], "extra field input_type must reach the vendor")
+			require.Equal(t, map[string]any{"only": []any{"vendor-a"}}, body["provider"], "a nested extra field must reach the vendor unchanged")
+			_, leaked := body["extra_params"]
+			require.False(t, leaked, "extra fields are merged at the top level, not wrapped")
+			_, leaked = body["instructions"]
+			require.False(t, leaked, "a modelled field the OpenAI body does not carry must not ride the extra-field channel")
+
+			var out map[string]any
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &out))
+			usage, _ := out["usage"].(map[string]any)
+			require.EqualValues(t, 3, usage["prompt_tokens"])
+		})
+	}
+}
+
+// TestEmbeddingParamsKnownFieldsCoverModelledFields: /v1/embeddings merges every field
+// missing from embeddingParamsKnownFields into the vendor body (contract C4), so a field
+// modelled on EmbeddingParameters but absent from the map would reach every vendor twice
+// over, including vendors that do not accept it. Adding a field to EmbeddingParameters
+// without listing it here fails this test.
+func TestEmbeddingParamsKnownFieldsCoverModelledFields(t *testing.T) {
+	typ := reflect.TypeOf(schemas.EmbeddingParameters{})
+	for i := 0; i < typ.NumField(); i++ {
+		name := strings.Split(typ.Field(i).Tag.Get("json"), ",")[0]
+		if name == "" || name == "-" {
+			continue
+		}
+		require.True(t, embeddingParamsKnownFields[name], "EmbeddingParameters field %q is missing from embeddingParamsKnownFields", name)
+	}
+	for _, name := range []string{"model", "input", "fallbacks"} {
+		require.True(t, embeddingParamsKnownFields[name], "%q is missing from embeddingParamsKnownFields", name)
 	}
 }

@@ -296985,6 +296985,143 @@
           }
         }
       ]
+    },
+    {
+      "name": "320. Embeddings extra fields reach the vendor (embeddings extra-fields)",
+      "description": "Contract C4 on /v1/embeddings: a top-level field outside the unified embeddings schema is merged into the vendor request body. The route forces the passthrough flag, as the image routes do, so the field reaches the vendor with or without x-bf-passthrough-extra-params: true (Tokun sends the header). Cases 1 and 2 send an argument OpenAI does not accept: OpenAI rejecting it by name is the proof it reached the wire; a 200 means Bifrost dropped it. Case 3 is the control: a field OpenAI accepts rides the same channel and the response still reports usage.prompt_tokens.",
+      "item": [
+        {
+          "name": "320.1 [EXPECT-400] /v1/embeddings - extra top-level field reaches OpenAI without the passthrough header - openai/text-embedding-3-small",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an extra field reaches OpenAI with no header, and OpenAI rejects it', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400 from OpenAI, so the extra field reached it: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text(), 'the rejection must name the extra field').to.include('bf_extra_field_probe');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/text-embedding-3-small\",\n  \"input\": \"Hello world\",\n  \"bf_extra_field_probe\": \"reaches-the-vendor\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "320.2 [EXPECT-400] /v1/embeddings - extra top-level field reaches OpenAI with x-bf-passthrough-extra-params - openai/text-embedding-3-small",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an extra field reaches OpenAI under the passthrough header, and OpenAI rejects it', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400 from OpenAI, so the extra field reached it: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text(), 'the rejection must name the extra field').to.include('bf_extra_field_probe');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/text-embedding-3-small\",\n  \"input\": \"Hello world\",\n  \"bf_extra_field_probe\": \"reaches-the-vendor\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "320.3 /v1/embeddings - accepted extra field user keeps usage.prompt_tokens - openai/text-embedding-3-small",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an accepted extra field leaves the embedding and its usage intact', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect((j.data || []).length, 'no embedding returned: ' + pm.response.text().slice(0, 300)).to.be.above(0);",
+                  "  pm.expect(j.usage, 'usage missing: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(j.usage.prompt_tokens, 'usage.prompt_tokens').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/text-embedding-3-small\",\n  \"input\": \"Hello world\",\n  \"user\": \"harness-embeddings-extra-fields\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
