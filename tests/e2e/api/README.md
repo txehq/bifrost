@@ -360,6 +360,37 @@ newman run tests/e2e/api/collections/provider-harness.json \
   --env-var providerErrorFixtureUrl=http://127.0.0.1:8791
 ```
 
+## Deepgram
+
+Folder 403 pins the `deepgram` provider against the same local fixture, with no live provider calls in
+rows 403.1 to 403.8: with `x-bf-api-key` one request is exactly one call to the vendor under the named
+key, for a transcript and for a vendor error; the options sent as form fields arrive as query parameters
+under their own names; a file arrives as the request body and a `url` with no `file` as the JSON body
+`{"url": ...}`; `usage.seconds` is `metadata.duration` times `metadata.channels`; a vendor 402 keeps its
+status and code; a 200 without results is `provider_empty_result`; and the `caller_unsupported_parameter`
+refusals make no upstream call. The fixture serves Deepgram's pre-recorded API on `/v1/listen`. The
+`model` query parameter picks the behaviour: `nova-3` answers the reference response (two channels when
+`multichannel=true`), `deepgram-402` the out-of-credits error body, and `deepgram-no-results` a 200 with a
+request id and no results. It accepts `test-key-a` and `test-key-b` in the `Token` scheme, the two keys the
+config's `deepgram` provider carries, and refuses any other with 401. Each call is kept in `GET /__wire`
+with its query, its `Content-Type` and which key it carried; an audio body is kept as its size.
+
+Start the fixture and the isolated gateway as in the provider error fixture section above, then run:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "403. Deepgram provider: Nova-3 transcription by file or URL, options as query parameters, duration usage (deepgram provider) [SERIAL]" \
+  --working-dir . \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1 \
+  --env-var providerErrorFixtureUrl=http://127.0.0.1:8791
+```
+
+Rows 403.1 to 403.8 are skipped unless `providerErrorFixture=1`. Row 403.9 is the live row: one Nova-3
+transcription of Deepgram's public sample by URL. In the live run it needs `DEEPGRAM_API_KEY`; while that
+variable is unset the row is skipped by the keyless-provider rule, which reads the `model` field of a
+multipart form as it reads the `model` of a JSON body. Against the fixture the row passes too.
+
 ## Fork deployment switches: provider job accounting off and passthrough heartbeat off
 
 Folder 329 (TXE-6519) uses the same fixture and the same isolated gateway as folder 154. The

@@ -81,6 +81,24 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "deepgram": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Deepgram API Key",
+          "value": "env.DEEPGRAM_API_KEY",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
+        }
+      ],
+      "network_config": {
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "elevenlabs": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,

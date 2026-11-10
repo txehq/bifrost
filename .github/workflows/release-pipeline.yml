@@ -363,6 +363,7 @@ jobs:
             api.cohere.ai:443
             api.deepinfra.com:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.fireworks.ai:443
             api.github.com:443
@@ -611,6 +612,7 @@ jobs:
             api.cloudflare.com:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.fireworks.ai:443
             api.github.com:443
@@ -1121,6 +1123,7 @@ jobs:
             api.cerebras.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
@@ -1374,6 +1377,7 @@ jobs:
             api.cerebras.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
@@ -1518,6 +1522,7 @@ jobs:
             api.cerebras.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.groq.com:443
             api.mistral.ai:443
@@ -1664,6 +1669,7 @@ jobs:
             api.cerebras.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.groq.com:443
             api.mistral.ai:443
@@ -1833,6 +1839,7 @@ jobs:
             api.cerebras.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
@@ -2023,6 +2030,7 @@ jobs:
             api.cerebras.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.githubcopilot.com:443
@@ -2220,6 +2228,7 @@ jobs:
             api.cerebras.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
@@ -2318,6 +2327,7 @@ jobs:
             api.cerebras.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
@@ -2423,6 +2433,7 @@ jobs:
             api.cerebras.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.githubcopilot.com:443
@@ -2587,6 +2598,7 @@ jobs:
             api.cerebras.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.githubcopilot.com:443

@@ -981,6 +981,49 @@ const azureSpeechAnswer = (req, res, path, raw) => {
 	return res.end(JSON.stringify(azureSpeechTranscription));
 };
 
+// Deepgram, TXE-6434: the pre-recorded transcription API the deepgram provider calls, POST /v1/listen. The options
+// are query parameters and the audio is the body: the bytes of a file, or {"url": ...} as application/json. The model
+// query parameter selects the behaviour: nova-3 answers the reference response (two channels when multichannel=true),
+// deepgram-402 the out-of-credits error body, deepgram-no-results a 200 that carries a request id and no results. Every
+// call is kept in /__wire with its query and the headers a case asserts on; an audio body is kept as its size, a JSON
+// body as its text. The keys are "test-key-a" and "test-key-b" in the Token scheme; any other is refused with 401.
+const DEEPGRAM_LISTEN_PATH = "/v1/listen";
+const deepgramMetadata = (duration, channels) => ({
+	transaction_key: "deprecated", request_id: "a847f427-4ad5-4d67-9b95-db801e58251c",
+	sha256: "154e291ecfa8be6ab8343560bcc109008fa7853eb5372533e8efdefc9b504c33", created: "2024-05-12T18:57:13.426Z",
+	duration, channels, models: ["30089e05-99d1-4376-b32e-c263170674af"],
+	model_info: { "30089e05-99d1-4376-b32e-c263170674af": { name: "2-general-nova", version: "2024-01-09.29447", arch: "nova-3" } },
+});
+const deepgramChannel = (transcript) => ({
+	alternatives: [{ transcript, confidence: 0.99902344, words: [{ word: "yeah", start: 0.08, end: 0.32, confidence: 0.9975586, punctuated_word: "Yeah." }] }],
+});
+const deepgramAnswer = (req, res, raw) => {
+	const url = new URL(req.url, "http://localhost");
+	const contentType = req.headers["content-type"] || "";
+	const isJSON = contentType.startsWith("application/json");
+	const authorization = req.headers.authorization || "";
+	const key = { "Token test-key-a": "test-key-a", "Token test-key-b": "test-key-b" }[authorization] || "other";
+	wireCalls.push({
+		path: DEEPGRAM_LISTEN_PATH, query: url.search, body: isJSON ? raw.toString("utf8") : "",
+		headers: { content_type: contentType, key }, audio_bytes: isJSON ? -1 : raw.length,
+	});
+	const answer = (status, body) => {
+		res.writeHead(status, { "Content-Type": "application/json", "dg-request-id": "a847f427-4ad5-4d67-9b95-db801e58251c" });
+		return res.end(JSON.stringify(body));
+	};
+	if (key === "other") return answer(401, { err_code: "INVALID_AUTH", err_msg: "Invalid credentials.", request_id: "a847f427-4ad5-4d67-9b95-db801e58251c" });
+	const model = url.searchParams.get("model") || "";
+	if (model === "deepgram-402") {
+		return answer(402, { err_code: "ASR_PAYMENT_REQUIRED", err_msg: "Project does not have enough credits for an ASR request and does not have an overage agreement.", request_id: "a847f427-4ad5-4d67-9b95-db801e58251c" });
+	}
+	if (model === "deepgram-no-results") return answer(200, { request_id: "a847f427-4ad5-4d67-9b95-db801e58251c" });
+	if (model !== "nova-3") return answer(400, { err_code: "Bad Request", err_msg: `unknown fixture model ${model}`, request_id: "a847f427-4ad5-4d67-9b95-db801e58251c" });
+	if (url.searchParams.get("multichannel") === "true") {
+		return answer(200, { metadata: deepgramMetadata(30.5, 2), results: { channels: [deepgramChannel("thank you for calling"), deepgramChannel("hello i'd like to order")] } });
+	}
+	return answer(200, { metadata: deepgramMetadata(25.933313, 1), results: { channels: [deepgramChannel("Yeah. As as much as, it's worth celebrating, the first, spacewalk.")] } });
+};
+
 // Hit counters are keyed by the request body's model, so they must not inherit Object.prototype names.
 const hits = Object.create(null);
 // The exact bytes the last streamed answer for a model wrote, keyed by the request's model; GET /__sent?model=
@@ -1242,6 +1285,12 @@ const server = http.createServer((req, res) => {
 			const answer = bigmodelAnswer(req.method, path, parsed);
 			send(answer.status, answer.contentType ? { "Content-Type": answer.contentType } : {}, answer.body);
 		});
+		return undefined;
+	}
+	if (req.method === "POST" && path === DEEPGRAM_LISTEN_PATH) {
+		const body = [];
+		req.on("data", (c) => body.push(c));
+		req.on("end", () => deepgramAnswer(req, res, Buffer.concat(body)));
 		return undefined;
 	}
 	// MiniMax video query is a GET; the task id "base-resp-<code>" selects the base_resp code (TXE-6588).

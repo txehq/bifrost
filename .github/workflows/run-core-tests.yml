@@ -135,6 +135,7 @@ jobs:
             api.cohere.ai:443
             api.deepinfra.com:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.fireworks.ai:443
             api.github.com:443

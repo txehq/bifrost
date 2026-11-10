@@ -160,6 +160,7 @@ NOT_DIALLED_HOSTS = {
     "example.com": "MCP server_url and web_fetch targets - dereferenced by the provider",
     "mcp.deepwiki.com": "Anthropic mcp_servers url (12.B17 beta-header row) - Anthropic's MCP connector dials it",
     "www.youtube.com": "Gemini video input - Google fetches the URL server-side",
+    "dpgr.am": "Deepgram's public sample audio in the url field of the 403 live row; Deepgram fetches it, Bifrost never downloads a transcription url",
     "www.wikipedia.org": "Gemini urlContext target in a prompt - Google fetches it server-side",
     "does-not-exist-h146.search.windows.net": "Azure On Your Data azure_search endpoint in a request body; Azure dereferences it",
     "replace-me.search.windows.net": "Azure AI Search placeholder collection variable; never resolved",
