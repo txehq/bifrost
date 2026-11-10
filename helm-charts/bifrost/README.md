@@ -12,7 +12,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/txehq/bifrost) -
 
 The prerelease chart for transport v2.4.0-sync.6; no values, templates or schema change:
 
-- `appVersion` is now `2.4.0-sync.6`, so an empty `image.tag` selects `v2.4.0-sync.6`. That transport adds the unified media request fields (video `aspect_ratio`, `resolution`, `last_frame`, `reference_images`; image `resolution`), vendor-reported usage fields with `vendor_cost` on image, video task and speech usage, `content_filter` on image responses, and extra form fields on multipart image edits sent with `x-bf-passthrough-extra-params: true`.
+- `appVersion` is now `2.4.0-sync.6`, so an empty `image.tag` selects `v2.4.0-sync.6`. That transport adds the unified media request fields (video `aspect_ratio`, `resolution`, `last_frame`, `reference_images`; image `resolution`), vendor-reported usage fields with `vendor_cost` on image, video task and speech usage, `content_filter` on image responses, and extra form fields on multipart image edits to OpenAI-shaped providers.
 
 ### 2.1.52-sync.5 (prerelease)
 

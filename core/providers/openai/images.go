@@ -128,9 +128,10 @@ func ToOpenAIImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Open
 }
 
 // parseImageEditFormDataBodyFromRequest writes an image edit as a multipart form. When
-// passthroughExtraParams is set (x-bf-passthrough-extra-params: true), every extra param is also
-// written as a form field, as the JSON paths merge them into the body (fork, TXE-6518, contract C4
-// BF5); see writeImageEditExtraParamFields.
+// passthroughExtraParams is set (BifrostContextKeyPassthroughExtraParams: the
+// x-bf-passthrough-extra-params header, and every /v1/images/edits request, whose handler turns it
+// on), every extra param is also written as a form field, as the JSON paths merge them into the
+// body (fork, TXE-6518, contract C4 BF5); see writeImageEditExtraParamFields.
 func parseImageEditFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *OpenAIImageEditRequest, providerName schemas.ModelProvider, passthroughExtraParams bool) *schemas.BifrostError {
 	// Add model field (required)
 	if err := writer.WriteField("model", openaiReq.Model); err != nil {

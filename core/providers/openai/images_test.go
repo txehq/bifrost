@@ -68,9 +68,10 @@ func imageEditWithExtras() *schemas.BifrostImageEditRequest {
 	}
 }
 
-// TXE-6518 (contract C4 BF5): with x-bf-passthrough-extra-params: true, the multipart image edit
-// sent upstream carries every extra param as a form field, keys sorted, before the file parts.
-// Without the header it carries none, as before.
+// TXE-6518 (contract C4 BF5): with passthrough on (the x-bf-passthrough-extra-params header, or
+// the /v1/images/edits handler, which turns it on for every request), the multipart image edit sent
+// upstream carries every extra param as a form field, keys sorted, before the file parts. With
+// passthrough off it carries none, as before.
 func TestImageEditMultipartPassthroughExtraParams(t *testing.T) {
 	for _, tc := range []struct {
 		name        string

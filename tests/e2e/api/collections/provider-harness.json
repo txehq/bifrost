@@ -294324,8 +294324,8 @@
       ]
     },
     {
-      "name": "289. Multipart image edit forwards extra form fields with the passthrough header (image edit passthrough)",
-      "description": "Pins contract C4 BF5 (TXE-6518): on a multipart /v1/images/edits request, a field outside the unified structure is written into the multipart form sent to the vendor when the request carries x-bf-passthrough-extra-params: true, the way the JSON routes merge extra params into the body. Before the change the OpenAI-shaped multipart writer (core/providers/openai/images.go, shared by openai and azure) dropped every extra field. The probe field bf_harness_probe is one OpenAI does not accept, so its arrival is observable: with the header OpenAI rejects the request naming the field (red before the change, when the field was dropped and the edit succeeded); without the header the field is not forwarded and the edit succeeds.",
+      "name": "289. Multipart image edit forwards extra form fields (image edit passthrough)",
+      "description": "Pins contract C4 BF5 (TXE-6518): on a multipart /v1/images/edits request, a field outside the unified structure is written into the multipart form sent to the vendor, the way the JSON routes merge extra params into the body. Before the change the OpenAI-shaped multipart writer (core/providers/openai/images.go, shared by openai and azure) dropped every extra field. The writer forwards extra fields when passthrough is on; the /v1/images/edits handler turns passthrough on for every request (upstream #3572, as /v1/images/generations does), so the field is forwarded with or without x-bf-passthrough-extra-params, and both rows pin that. The probe field bf_harness_probe is one OpenAI does not accept, so its arrival is observable: OpenAI rejects the request naming the field. Red before the change, when the field was dropped and each edit returned 200. The writer's own gate (no extra fields when passthrough is off) is pinned offline by TestImageEditMultipartPassthroughExtraParams, since no HTTP route reaches the writer with passthrough off and extra params set.",
       "item": [
         {
           "name": "[EXPECT-400] openai/gpt-image-1 multipart image edit with x-bf-passthrough-extra-params: true forwards an extra form field (image edit passthrough)",
@@ -294391,17 +294391,17 @@
           }
         },
         {
-          "name": "openai/gpt-image-1 multipart image edit without the passthrough header does not forward the extra form field (image edit passthrough)",
+          "name": "[EXPECT-400] openai/gpt-image-1 multipart image edit without the header still forwards an extra form field, the route forces passthrough (image edit passthrough)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('the extra form field stays at the gateway and the edit succeeds', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.equal(200);",
-                  "  var j = pm.response.json();",
-                  "  pm.expect(j.data && j.data[0] && (j.data[0].b64_json || j.data[0].url), pm.response.text().slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "pm.test('the route forwards the extra form field without the header, and OpenAI rejects it by name', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'expected OpenAI to reject the forwarded probe field; got: ' + t.slice(0, 400)).to.equal(400);",
+                  "  pm.expect(t, 'the 400 does not name the probe field, so it may not be the forwarded field: ' + t.slice(0, 400)).to.include('bf_harness_probe');",
                   "});"
                 ]
               }
