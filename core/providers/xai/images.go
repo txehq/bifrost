@@ -264,6 +264,13 @@ func (provider *XAIProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.
 	if request == nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: nil", nil)
 	}
+	// Large-payload mode streams the caller's multipart body upstream unparsed, but xAI's edit
+	// takes only JSON with each source image inlined, which means holding the whole upload in
+	// memory: the cost the mode exists to avoid. Refuse it plainly instead of failing on the
+	// unparsed (empty) input.
+	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
+		return nil, providerUtils.NewBifrostBadRequestError("large payload passthrough is not supported for xai image edit: xAI's edit takes JSON with the source image inlined, not a streamed multipart body; send a smaller upload or the image as a URL")
+	}
 	if params := request.Params; params != nil {
 		if bifrostErr := checkXAIImageRequest(request.Model, params.Quality, params.ExtraParams); bifrostErr != nil {
 			return nil, bifrostErr

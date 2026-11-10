@@ -590,3 +590,24 @@ func BenchmarkXAIImageEdit(b *testing.B) {
 		}
 	}
 }
+
+// Large-payload mode streams the caller's multipart body unparsed, which xAI's JSON edit cannot
+// take: the edit is refused with a 400 before any upstream call, not failed on the empty input.
+func TestXAIImageEditRefusesLargePayloadPassthrough(t *testing.T) {
+	t.Parallel()
+	recorder := &xaiImageRecorder{response: xaiRecordedImageResponse}
+	provider := newXAIImageProvider(t, recorder.serve(t).URL)
+	ctx := xaiImageCtx()
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, io.Reader(strings.NewReader("--boundary\r\n")))
+
+	// The large-payload hook fills only routing metadata, so the input is empty.
+	_, bifrostErr := provider.ImageEdit(ctx, xaiImageKey, &schemas.BifrostImageEditRequest{
+		Provider: schemas.XAI,
+		Model:    "grok-imagine-image-2.0",
+	})
+	require.NotNil(t, bifrostErr)
+	require.Equal(t, schemas.Ptr(http.StatusBadRequest), bifrostErr.StatusCode)
+	require.Contains(t, bifrostErr.Error.Message, "large payload passthrough is not supported for xai image edit")
+	require.Zero(t, recorder.calls())
+}
