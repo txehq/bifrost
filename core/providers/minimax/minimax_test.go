@@ -2357,23 +2357,37 @@ func TestMiniMaxPassthroughRefusesOtherPaths(t *testing.T) {
 // that output as the next turn's input must keep the reasoning item, on both transports, or
 // multi-turn and tool-call continuations lose the provider's reasoning.
 func TestMiniMaxResponsesReplaysReasoningContent(t *testing.T) {
+	t.Run("minimax", func(t *testing.T) { testMiniMaxResponsesReplaysReasoningContent(t, schemas.MiniMax, nil) })
+	// A custom provider built on minimax reports its own key; Bifrost records the base type
+	// on the context (core/bifrost.go), and the replay default must follow it.
+	t.Run("custom provider on minimax", func(t *testing.T) {
+		testMiniMaxResponsesReplaysReasoningContent(t, schemas.ModelProvider("my-minimax"), func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.MiniMax)
+		})
+	})
+}
+
+func testMiniMaxResponsesReplaysReasoningContent(t *testing.T, providerKey schemas.ModelProvider, setCtx func(*schemas.BifrostContext)) {
 	const first = `{"id":"resp_1","object":"response","created_at":1,"model":"MiniMax-M3","status":"completed","output":[{"id":"rs_1","type":"reasoning","summary":[],"content":[{"type":"reasoning_text","text":"compare 9.90 and 9.11"}]},{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"9.9","annotations":[]}]}],"usage":{"input_tokens":5,"output_tokens":3,"total_tokens":8}}`
 	provider, captured := newMockMiniMax(t, map[string]func(w http.ResponseWriter){
 		"POST /v1/responses": jsonResponse(http.StatusOK, first),
 	})
 	ctx := testContext(t)
+	if setCtx != nil {
+		setCtx(ctx)
+	}
 	user := schemas.ResponsesMessage{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Which is bigger, 9.11 or 9.9?")}}
-	resp, bifrostErr := provider.Responses(ctx, testKey(), &schemas.BifrostResponsesRequest{Provider: schemas.MiniMax, Model: "MiniMax-M3", Input: []schemas.ResponsesMessage{user}})
+	resp, bifrostErr := provider.Responses(ctx, testKey(), &schemas.BifrostResponsesRequest{Provider: providerKey, Model: "MiniMax-M3", Input: []schemas.ResponsesMessage{user}})
 	if bifrostErr != nil {
 		t.Fatalf("Responses: %+v", bifrostErr)
 	}
 
 	followUp := schemas.ResponsesMessage{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Why?")}}
 	history := append(append([]schemas.ResponsesMessage{user}, resp.Output...), followUp)
-	if _, bifrostErr := provider.Responses(ctx, testKey(), &schemas.BifrostResponsesRequest{Provider: schemas.MiniMax, Model: "MiniMax-M3", Input: history}); bifrostErr != nil {
+	if _, bifrostErr := provider.Responses(ctx, testKey(), &schemas.BifrostResponsesRequest{Provider: providerKey, Model: "MiniMax-M3", Input: history}); bifrostErr != nil {
 		t.Fatalf("Responses (replay): %+v", bifrostErr)
 	}
-	stream, bifrostErr := provider.ResponsesStream(ctx, passthroughPostHook, nil, testKey(), &schemas.BifrostResponsesRequest{Provider: schemas.MiniMax, Model: "MiniMax-M3", Input: history})
+	stream, bifrostErr := provider.ResponsesStream(ctx, passthroughPostHook, nil, testKey(), &schemas.BifrostResponsesRequest{Provider: providerKey, Model: "MiniMax-M3", Input: history})
 	if bifrostErr != nil {
 		t.Fatalf("ResponsesStream (replay): %+v", bifrostErr)
 	}

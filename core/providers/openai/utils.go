@@ -25,7 +25,9 @@ func defaultSupportsReasoningContentBlocks(model string) bool {
 // providerUsesReasoningContentBlocks names providers whose native Responses API returns reasoning
 // as reasoning_text content blocks with an empty summary, whatever the model, so replayed history
 // must keep those blocks. MiniMax: platform.minimax.io/docs/api-reference/responses-create
-// (TXE-6595). A catalog row's supports_reasoning_content_blocks still overrides this.
+// (TXE-6595). Callers pass the base provider (schemas.ResolveBaseProvider), so a custom provider
+// built on minimax gets the same default. A catalog row's supports_reasoning_content_blocks still
+// overrides this.
 func providerUsesReasoningContentBlocks(provider schemas.ModelProvider) bool {
 	return provider == schemas.MiniMax
 }
