@@ -216,6 +216,14 @@ func checkSpeechParams(model string, params *schemas.SpeechParameters) *schemas.
 	if params.VoiceConfig != nil && len(params.VoiceConfig.MultiVoiceConfig) > 0 {
 		return schemas.NewUnsupportedParameterError("voice", "voice must be one voice name: a multi-speaker voice list is not supported by google-cloud-tts")
 	}
+	// audioConfig is the one object extra params may add to, but not its audioEncoding: the
+	// response's Content-Type and file name follow response_format, and headerless PCM
+	// returned under an mp3 request cannot be told from its bytes.
+	if audioConfig, ok := params.ExtraParams["audioConfig"].(map[string]interface{}); ok {
+		if _, ok := audioConfig["audioEncoding"]; ok {
+			return schemas.NewUnsupportedParameterError("response_format", "audioConfig.audioEncoding cannot be set as a vendor-specific field on google-cloud-tts: the audio encoding is chosen with response_format, which also labels the response")
+		}
+	}
 	if _, ok := audioEncodingFor(params.ResponseFormat); !ok {
 		return schemas.NewUnsupportedParameterError("response_format", fmt.Sprintf("response_format %q is not supported by google-cloud-tts: use mp3, opus, wav, pcm, mulaw, alaw or m4a", params.ResponseFormat))
 	}

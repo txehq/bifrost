@@ -520,6 +520,22 @@ func TestSpeechRefusesProtectedFieldsAsExtraParams(t *testing.T) {
 	}
 }
 
+// response_format chooses the encoding and labels the response; an audioEncoding slipped in
+// through extra params would return audio the Content-Type does not describe.
+func TestSpeechRefusesAudioEncodingAsExtraParam(t *testing.T) {
+	provider, captured := newMockCloudTTS(t, jsonResponse(http.StatusOK, sampleResponseBody))
+	ctx := testContext(t)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	_, bifrostErr := provider.Speech(ctx, testKey(), speechRequest("hi", &schemas.SpeechParameters{
+		VoiceConfig: voice("en-US-Wavenet-D"),
+		ExtraParams: map[string]any{"audioConfig": map[string]any{"audioEncoding": "PCM", "pitch": -2.0}},
+	}))
+	assertUnsupportedParameter(t, bifrostErr, "response_format")
+	if n := len(captured()); n != 0 {
+		t.Errorf("made %d upstream calls for a refused request, want 0", n)
+	}
+}
+
 // The body is built from the unified request even when the caller asks for its own body to be
 // sent as it is: a body the checks did not see could name any voice.
 func TestSpeechNeverSendsTheCallersRawBody(t *testing.T) {
