@@ -1229,6 +1229,11 @@ func dialHTTPConnect(ctx context.Context, dialer *net.Dialer, proxyURL *url.URL,
 // proxyTunnelConn is a tunnel through an https:// proxy, exposing only net.Conn.
 type proxyTunnelConn struct{ net.Conn }
 
+// UnderlyingConn returns the connection to the proxy, for a caller that needs the
+// socket itself (a liveness check on a pooled connection). It is deliberately not
+// named NetConn, the method that marks a TLS connection.
+func (c proxyTunnelConn) UnderlyingConn() net.Conn { return c.Conn }
+
 // bufferedConn serves bytes the CONNECT response reader already buffered before
 // reading from the socket.
 type bufferedConn struct {
@@ -1237,3 +1242,13 @@ type bufferedConn struct {
 }
 
 func (c *bufferedConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
+
+// UnderlyingConn returns the socket once the buffered bytes have been read, and
+// nil while some are still held here: the socket alone then says nothing about
+// what the next read returns.
+func (c *bufferedConn) UnderlyingConn() net.Conn {
+	if c.reader.Buffered() > 0 {
+		return nil
+	}
+	return c.Conn
+}
