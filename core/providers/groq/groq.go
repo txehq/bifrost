@@ -236,6 +236,12 @@ func (provider *GroqProvider) SpeechStream(ctx *schemas.BifrostContext, postHook
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
 }
 
+// AcceptsTranscriptionURLInput reports that Groq's transcription takes an audio URL in the
+// "url" form field in place of the file, which Bifrost forwards unchanged (contract C4).
+func (provider *GroqProvider) AcceptsTranscriptionURLInput() bool {
+	return true
+}
+
 // Transcription handles non-streaming transcription requests.
 // It creates a multipart form, adds fields, makes the API call, and returns the response.
 // Returns the response and any error that occurred.

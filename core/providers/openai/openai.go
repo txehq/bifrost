@@ -3194,6 +3194,7 @@ func HandleOpenAITranscriptionRequest(
 			} else if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
 				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
 			}
+			fillTranscriptionDurationUsage(response)
 			response.ExtraFields = schemas.BifrostResponseExtraFields{Latency: lpResult.Latency}
 			return response, nil
 		}
@@ -3228,6 +3229,9 @@ func HandleOpenAITranscriptionRequest(
 	// Time the request conversion as the convertor phase.
 	ct, ch := providerUtils.StartPhaseSpan(ctx, "convertor")
 	reqBody := ToOpenAITranscriptionRequest(request)
+	if reqBody == nil {
+		reqBody = ToOpenAITranscriptionURLRequest(request)
+	}
 	if ct != nil {
 		if reqBody == nil {
 			ct.EndSpan(ch, schemas.SpanStatusError, "transcription input is not provided")
@@ -3387,6 +3391,7 @@ func HandleOpenAITranscriptionRequest(
 	if bifrostErr != nil {
 		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
 	}
+	fillTranscriptionDurationUsage(response)
 
 	response.ExtraFields = schemas.BifrostResponseExtraFields{
 		Latency:                 latency.Milliseconds(),
@@ -3398,6 +3403,19 @@ func HandleOpenAITranscriptionRequest(
 	}
 
 	return response, nil
+}
+
+// fillTranscriptionDurationUsage reports a vendor-reported audio length as duration usage
+// when the response carries no usage of its own (contract C5). Groq's verbose_json has
+// "duration" and documents no usage; OpenAI's whisper-1 already sends
+// usage{type: "duration", seconds}, which is kept as sent. The seconds are the vendor's
+// number unchanged: a billing minimum (Groq bills at least 10 s) is the caller's rule.
+func fillTranscriptionDurationUsage(response *schemas.BifrostTranscriptionResponse) {
+	if response == nil || response.Usage != nil || response.Duration == nil {
+		return
+	}
+	seconds := *response.Duration
+	response.Usage = &schemas.TranscriptionUsage{Type: "duration", Seconds: &seconds}
 }
 
 // TranscriptionStream performs a streaming transcription request to the OpenAI API.
@@ -3455,6 +3473,9 @@ func HandleOpenAITranscriptionStreamRequest(
 	// Time the request conversion as the convertor phase.
 	ct, ch := providerUtils.StartPhaseSpan(ctx, "convertor")
 	reqBody := ToOpenAITranscriptionRequest(request)
+	if reqBody == nil {
+		reqBody = ToOpenAITranscriptionURLRequest(request)
+	}
 	if ct != nil {
 		if reqBody == nil {
 			ct.EndSpan(ch, schemas.SpanStatusError, "transcription input is not provided")

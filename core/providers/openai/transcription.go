@@ -25,9 +25,12 @@ func (request *OpenAITranscriptionRequest) ToBifrostTranscriptionRequest(ctx *sc
 	}
 }
 
-// ToOpenAITranscriptionRequest converts a Bifrost transcription request to OpenAI format
+// ToOpenAITranscriptionRequest converts a Bifrost transcription request to OpenAI format.
+// It returns nil when the request has no file; a URL-only request is converted by
+// ToOpenAITranscriptionURLRequest instead. The two stay separate so this one remains
+// inlinable and a file request's OpenAITranscriptionRequest stays on the caller's stack.
 func ToOpenAITranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionRequest) *OpenAITranscriptionRequest {
-	if bifrostReq == nil || bifrostReq.Input.File == nil {
+	if bifrostReq == nil || bifrostReq.Input == nil || bifrostReq.Input.File == nil {
 		return nil
 	}
 
@@ -45,6 +48,22 @@ func ToOpenAITranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 		openaiReq.ExtraParams = params.ExtraParams
 	}
 
+	return openaiReq
+}
+
+// ToOpenAITranscriptionURLRequest converts a URL-only transcription request (an audio URL
+// in the extra params and no file). It carries no file: the URL goes out as its own form
+// field from the extra params, and ParseTranscriptionFormDataBodyFromRequest omits the file
+// part. Nil for any other request.
+func ToOpenAITranscriptionURLRequest(bifrostReq *schemas.BifrostTranscriptionRequest) *OpenAITranscriptionRequest {
+	if !bifrostReq.IsURLOnly() {
+		return nil
+	}
+	openaiReq := &OpenAITranscriptionRequest{Model: bifrostReq.Model}
+	if params := bifrostReq.Params; params != nil {
+		openaiReq.TranscriptionParameters = *params
+		openaiReq.ExtraParams = params.ExtraParams
+	}
 	return openaiReq
 }
 
@@ -136,16 +155,20 @@ func ParseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiR
 	}
 
 	// Add file field last so large multipart uploads don't block model discovery upstream.
-	filename := openaiReq.Filename
-	if filename == "" {
-		filename = utils.AudioFilenameFromBytes(openaiReq.File)
-	}
-	fileWriter, err := writer.CreateFormFile("file", filename)
-	if err != nil {
-		return utils.NewBifrostOperationError("failed to create form file", err)
-	}
-	if _, err := fileWriter.Write(openaiReq.File); err != nil {
-		return utils.NewBifrostOperationError("failed to write file data", err)
+	// A URL-only request (the audio URL already written above from the extra params) has no
+	// file part.
+	if openaiReq.File != nil {
+		filename := openaiReq.Filename
+		if filename == "" {
+			filename = utils.AudioFilenameFromBytes(openaiReq.File)
+		}
+		fileWriter, err := writer.CreateFormFile("file", filename)
+		if err != nil {
+			return utils.NewBifrostOperationError("failed to create form file", err)
+		}
+		if _, err := fileWriter.Write(openaiReq.File); err != nil {
+			return utils.NewBifrostOperationError("failed to write file data", err)
+		}
 	}
 
 	// Close the multipart writer

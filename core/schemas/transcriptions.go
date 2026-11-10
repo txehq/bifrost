@@ -151,6 +151,51 @@ type TranscriptionInput struct {
 	Filename string `json:"filename,omitempty"` // Original filename, used to preserve file format extension
 }
 
+// TranscriptionURLParam is the extra param that carries an audio URL in place of the file.
+// It is a vendor field, not a unified one: Groq takes it as the "url" form field.
+const TranscriptionURLParam = "url"
+
+// AudioURL returns the audio URL the request carries in its extra params, if any.
+func (r *BifrostTranscriptionRequest) AudioURL() (string, bool) {
+	if r == nil || r.Params == nil {
+		return "", false
+	}
+	url, ok := r.Params.ExtraParams[TranscriptionURLParam].(string)
+	return url, ok && url != ""
+}
+
+// IsURLOnly reports whether the request carries an audio URL and no file. Such a request
+// reaches a provider only when the provider takes a URL (TranscriptionURLInputProvider).
+func (r *BifrostTranscriptionRequest) IsURLOnly() bool {
+	if r == nil || (r.Input != nil && r.Input.File != nil) {
+		return false
+	}
+	_, ok := r.AudioURL()
+	return ok
+}
+
+// TranscriptionURLInputProvider is implemented by a provider whose transcription endpoint
+// takes an audio URL in place of the file. Contract C4, agreement four: the URL reaches the
+// vendor unchanged; Bifrost does not download it. A URL-only request routed to any other
+// provider is refused before a key is chosen (NewTranscriptionURLUnsupportedError).
+type TranscriptionURLInputProvider interface {
+	AcceptsTranscriptionURLInput() bool
+}
+
+// AcceptsTranscriptionURLInput reports whether provider declared that its transcription
+// takes an audio URL in place of the file.
+func AcceptsTranscriptionURLInput(provider any) bool {
+	p, ok := provider.(TranscriptionURLInputProvider)
+	return ok && p.AcceptsTranscriptionURLInput()
+}
+
+// NewTranscriptionURLUnsupportedError is the 400 for a URL-only transcription routed to a
+// provider that takes only a file: error_type caller_unsupported_parameter, error.param "url"
+// (contract C4, agreement three). No upstream call is made.
+func NewTranscriptionURLUnsupportedError() *BifrostError {
+	return NewUnsupportedParameterError(TranscriptionURLParam, "this provider does not take an audio url for transcription; send the audio as file")
+}
+
 type TranscriptionParameters struct {
 	Language               *string  `json:"language,omitempty"`
 	Prompt                 *string  `json:"prompt,omitempty"`
