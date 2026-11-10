@@ -871,25 +871,10 @@ func HandleOpenAITextCompletionStreaming(
 				// Here in some cases usage comes before final message
 				// So we need to check if the response.Usage is nil and then if usage != nil
 				// then add up all tokens
-				if response.Usage.PromptTokens > usage.PromptTokens {
-					usage.PromptTokens = response.Usage.PromptTokens
-				}
-				if response.Usage.CompletionTokens > usage.CompletionTokens {
-					usage.CompletionTokens = response.Usage.CompletionTokens
-				}
-				if response.Usage.TotalTokens > usage.TotalTokens {
-					usage.TotalTokens = response.Usage.TotalTokens
-				}
-				calculatedTotal := usage.PromptTokens + usage.CompletionTokens
-				if calculatedTotal > usage.TotalTokens {
-					usage.TotalTokens = calculatedTotal
-				}
-				if response.Usage.CompletionTokensDetails != nil {
-					usage.CompletionTokensDetails = response.Usage.CompletionTokensDetails
-				}
-				if response.Usage.PromptTokensDetails != nil {
-					usage.PromptTokensDetails = response.Usage.PromptTokensDetails
-				}
+				// One merge for every usage field, so the final frame's usage equals the
+				// non-streamed usage (TXE-6522, contract C10 BF21): tool_usage and
+				// cost_in_usd_ticks used to be dropped here.
+				usage.MergeStreamFrame(response.Usage)
 				if finishReason != nil || finishInThisFrame {
 					trailingUsageSeen = true
 				}
@@ -1669,27 +1654,10 @@ func HandleOpenAIChatCompletionStreaming(
 				// Accumulate usage across chunks; attached to final event below.
 				if response.Usage != nil {
 					usageSeen = true
-					if response.Usage.PromptTokens > usage.PromptTokens {
-						usage.PromptTokens = response.Usage.PromptTokens
-					}
-					if response.Usage.CompletionTokens > usage.CompletionTokens {
-						usage.CompletionTokens = response.Usage.CompletionTokens
-					}
-					if response.Usage.TotalTokens > usage.TotalTokens {
-						usage.TotalTokens = response.Usage.TotalTokens
-					}
-					if calculatedTotal := usage.PromptTokens + usage.CompletionTokens; calculatedTotal > usage.TotalTokens {
-						usage.TotalTokens = calculatedTotal
-					}
-					if response.Usage.PromptTokensDetails != nil {
-						usage.PromptTokensDetails = response.Usage.PromptTokensDetails
-					}
-					if response.Usage.CompletionTokensDetails != nil {
-						usage.CompletionTokensDetails = response.Usage.CompletionTokensDetails
-					}
-					if response.Usage.Cost != nil {
-						usage.Cost = response.Usage.Cost
-					}
+					// One merge for every usage field, so the final frame's usage equals the
+					// non-streamed usage (TXE-6522, contract C10 BF21): tool_usage and
+					// cost_in_usd_ticks used to be dropped here.
+					usage.MergeStreamFrame(response.Usage)
 				}
 
 				// Per-event mapping (chat->responses) -> "convertor" (Convertor) stream phase.
@@ -1788,28 +1756,10 @@ func HandleOpenAIChatCompletionStreaming(
 					// Here in some cases usage comes before final message
 					// So we need to check if the response.Usage is nil and then if usage != nil
 					// then add up all tokens
-					if response.Usage.PromptTokens > usage.PromptTokens {
-						usage.PromptTokens = response.Usage.PromptTokens
-					}
-					if response.Usage.CompletionTokens > usage.CompletionTokens {
-						usage.CompletionTokens = response.Usage.CompletionTokens
-					}
-					if response.Usage.TotalTokens > usage.TotalTokens {
-						usage.TotalTokens = response.Usage.TotalTokens
-					}
-					calculatedTotal := usage.PromptTokens + usage.CompletionTokens
-					if calculatedTotal > usage.TotalTokens {
-						usage.TotalTokens = calculatedTotal
-					}
-					if response.Usage.PromptTokensDetails != nil {
-						usage.PromptTokensDetails = response.Usage.PromptTokensDetails
-					}
-					if response.Usage.CompletionTokensDetails != nil {
-						usage.CompletionTokensDetails = response.Usage.CompletionTokensDetails
-					}
-					if response.Usage.Cost != nil {
-						usage.Cost = response.Usage.Cost
-					}
+					// One merge for every usage field, so the final frame's usage equals the
+					// non-streamed usage (TXE-6522, contract C10 BF21): tool_usage and
+					// cost_in_usd_ticks used to be dropped here.
+					usage.MergeStreamFrame(response.Usage)
 					// usageSeen is deliberately not set here: it belongs to the Responses
 					// fallback branch above, which is the only reader (the Mantle exit and the
 					// terminal-event usage attach). This branch gates on trailingUsageSeen.

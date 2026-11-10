@@ -294697,6 +294697,923 @@
           }
         }
       ]
+    },
+    {
+      "name": "308. Streamed frames: the final frame carries the non-streamed usage, a vendor error before the first frame, frames forwarded on arrival (streamed frames timing)",
+      "description": "Contract C10 BF22 (TXE-6522), local fixture regression with no live provider calls. Start provider-error-fixture.mjs and an isolated gateway using provider-error-fixture.config.json; enable providerErrorFixture=1 (README: Streamed frames timing). Error cases: the fixture answers upstream-503 and upstream-429 with that status before any frame, on chat with stream: true and on speech with stream_format: \"sse\"; the gateway must answer with the vendor's status and a JSON error, never 200 followed by an error frame. Gap cases: upstream-gapped writes three marker frames 600ms apart; the fixture's /__probe/stream-gaps sends the request to the gateway and times each SSE event on the clock the fixture wrote the frames with, so each marker must reach the client before the vendor writes the next one, and the gaps must survive. The usage-bearing final frame (chat's last data frame, speech.audio.done) is asserted too. Usage rows (BF21): upstream-usage-extended reports web search calls, cost and cost_in_usd_ticks; the non-streamed chat response, the final frame of a chat stream (both routes) and of a text-completion stream, and response.completed of a Responses stream served by the chat fallback (parasail) must all carry them. Each case runs on the native route and the OpenAI-compatible route.",
+      "item": [
+        {
+          "name": "[EXPECT-503] 308.1 openai /v1/chat/completions openai/upstream-503 vendor 503 before the first frame returns 503, no 200 and no error frame (streamed frames timing)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('the vendor\\'s 503 before the first frame is the gateway\\'s status', function () {",
+                  "  pm.expect(pm.response.code, 'expected the vendor status 503, got ' + pm.response.code + ': ' + raw).to.equal(503);",
+                  "});",
+                  "pm.test('no stream was started: a JSON error body, not SSE with an error frame', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'content-type ' + ct + ': ' + raw).to.include('application/json');",
+                  "  pm.expect(ct, 'an SSE stream was opened: ' + raw).to.not.include('event-stream');",
+                  "  pm.expect(raw, 'an SSE frame was sent: ' + raw).to.not.match(/^data:/m);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.error, 'no error object: ' + raw).to.be.an('object');",
+                  "  pm.expect(j.is_bifrost_error, 'a vendor error was reported as Bifrost\\'s own: ' + raw).to.not.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-503\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-429] 308.2 openai /openai/v1/chat/completions openai/upstream-429 vendor 429 before the first frame returns 429, no 200 and no error frame (streamed frames timing)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('the vendor\\'s 429 before the first frame is the gateway\\'s status', function () {",
+                  "  pm.expect(pm.response.code, 'expected the vendor status 429, got ' + pm.response.code + ': ' + raw).to.equal(429);",
+                  "});",
+                  "pm.test('no stream was started: a JSON error body, not SSE with an error frame', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'content-type ' + ct + ': ' + raw).to.include('application/json');",
+                  "  pm.expect(ct, 'an SSE stream was opened: ' + raw).to.not.include('event-stream');",
+                  "  pm.expect(raw, 'an SSE frame was sent: ' + raw).to.not.match(/^data:/m);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.error, 'no error object: ' + raw).to.be.an('object');",
+                  "  pm.expect(j.is_bifrost_error, 'a vendor error was reported as Bifrost\\'s own: ' + raw).to.not.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-429\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-503] 308.3 openai /v1/audio/speech openai/upstream-503 vendor 503 before the first frame returns 503, no 200 and no error frame (streamed frames timing)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('the vendor\\'s 503 before the first frame is the gateway\\'s status', function () {",
+                  "  pm.expect(pm.response.code, 'expected the vendor status 503, got ' + pm.response.code + ': ' + raw).to.equal(503);",
+                  "});",
+                  "pm.test('no stream was started: a JSON error body, not SSE with an error frame', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'content-type ' + ct + ': ' + raw).to.include('application/json');",
+                  "  pm.expect(ct, 'an SSE stream was opened: ' + raw).to.not.include('event-stream');",
+                  "  pm.expect(raw, 'an SSE frame was sent: ' + raw).to.not.match(/^data:/m);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.error, 'no error object: ' + raw).to.be.an('object');",
+                  "  pm.expect(j.is_bifrost_error, 'a vendor error was reported as Bifrost\\'s own: ' + raw).to.not.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-503\",\n  \"input\": \"hi\",\n  \"voice\": \"alloy\",\n  \"stream_format\": \"sse\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-429] 308.4 openai /openai/v1/audio/speech openai/upstream-429 vendor 429 before the first frame returns 429, no 200 and no error frame (streamed frames timing)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('the vendor\\'s 429 before the first frame is the gateway\\'s status', function () {",
+                  "  pm.expect(pm.response.code, 'expected the vendor status 429, got ' + pm.response.code + ': ' + raw).to.equal(429);",
+                  "});",
+                  "pm.test('no stream was started: a JSON error body, not SSE with an error frame', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'content-type ' + ct + ': ' + raw).to.include('application/json');",
+                  "  pm.expect(ct, 'an SSE stream was opened: ' + raw).to.not.include('event-stream');",
+                  "  pm.expect(raw, 'an SSE frame was sent: ' + raw).to.not.match(/^data:/m);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.error, 'no error object: ' + raw).to.be.an('object');",
+                  "  pm.expect(j.is_bifrost_error, 'a vendor error was reported as Bifrost\\'s own: ' + raw).to.not.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-429\",\n  \"input\": \"hi\",\n  \"voice\": \"alloy\",\n  \"stream_format\": \"sse\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "308.5 openai /v1/chat/completions openai/upstream-gapped vendor frames arriving with gaps are forwarded on arrival, keeping the gaps (streamed frames timing)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
+                  "// The probe calls the gateway itself, so it carries the gateway credential the harness would have sent.",
+                  "var auth = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header');",
+                  "pm.variables.set('gapProbeHeaders', JSON.stringify(auth ? { Authorization: auth } : {}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'probe failed: ' + pm.response.text()).to.equal(200);",
+                  "var r = pm.response.json().data[0];",
+                  "var markers = ['gap-0', 'gap-1', 'gap-2'];",
+                  "pm.test('the gateway answered 200 with an SSE stream', function () {",
+                  "  pm.expect(r.status, JSON.stringify(r)).to.equal(200);",
+                  "  pm.expect(r.content_type, JSON.stringify(r)).to.include('text/event-stream');",
+                  "  pm.expect(r.sends.length, 'the fixture wrote ' + r.sends.length + ' marker frames: ' + JSON.stringify(r)).to.equal(markers.length);",
+                  "});",
+                  "var arrivals = markers.map(function (m) {",
+                  "  var e = r.events.find(function (ev) { return ev.text.indexOf(m) !== -1; });",
+                  "  return e ? e.at : null;",
+                  "});",
+                  "pm.test('each vendor frame reaches the client before the vendor sends the next one', function () {",
+                  "  arrivals.forEach(function (at, i) {",
+                  "    pm.expect(at, 'marker ' + markers[i] + ' never arrived: ' + JSON.stringify(r)).to.be.a('number');",
+                  "    if (i + 1 < r.sends.length) {",
+                  "      pm.expect(at, 'frame ' + i + ' arrived at ' + at + 'ms, after the vendor wrote frame ' + (i + 1) + ' at ' + r.sends[i + 1] + 'ms: ' + JSON.stringify({ sends: r.sends, arrivals: arrivals })).to.be.below(r.sends[i + 1]);",
+                  "    }",
+                  "  });",
+                  "});",
+                  "pm.test('the gaps between frames are kept', function () {",
+                  "  for (var i = 1; i < arrivals.length; i++) {",
+                  "    pm.expect(arrivals[i] - arrivals[i - 1], 'gap ' + i + ': ' + JSON.stringify({ gap_ms: r.gap_ms, sends: r.sends, arrivals: arrivals })).to.be.at.least(r.gap_ms / 2);",
+                  "  }",
+                  "});",
+                  "pm.test('the final frame carries the usage (contract C10)', function () {",
+                  "  var frames = r.events.map(function (e) { return e.text; }).filter(function (t) { return /^data: \\{/m.test(t); });",
+                  "  var last = frames[frames.length - 1] || '';",
+                  "  pm.expect(last, 'last data frame: ' + last).to.include('\"usage\"');",
+                  "  pm.expect(last, 'last data frame: ' + last).to.include('\"total_tokens\":8');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"base_url\": \"{{baseUrl}}\",\n  \"path\": \"/v1/chat/completions\",\n  \"headers\": {{gapProbeHeaders}},\n  \"body\": {\n    \"model\": \"openai/upstream-gapped\",\n    \"messages\": [\n      {\n        \"role\": \"user\",\n        \"content\": \"hi\"\n      }\n    ],\n    \"max_tokens\": 8,\n    \"stream\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{providerErrorFixtureUrl}}/__probe/stream-gaps",
+              "host": [
+                "{{providerErrorFixtureUrl}}"
+              ],
+              "path": [
+                "__probe",
+                "stream-gaps"
+              ]
+            }
+          }
+        },
+        {
+          "name": "308.6 openai /openai/v1/chat/completions openai/upstream-gapped vendor frames arriving with gaps are forwarded on arrival, keeping the gaps (streamed frames timing)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
+                  "// The probe calls the gateway itself, so it carries the gateway credential the harness would have sent.",
+                  "var auth = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header');",
+                  "pm.variables.set('gapProbeHeaders', JSON.stringify(auth ? { Authorization: auth } : {}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'probe failed: ' + pm.response.text()).to.equal(200);",
+                  "var r = pm.response.json().data[0];",
+                  "var markers = ['gap-0', 'gap-1', 'gap-2'];",
+                  "pm.test('the gateway answered 200 with an SSE stream', function () {",
+                  "  pm.expect(r.status, JSON.stringify(r)).to.equal(200);",
+                  "  pm.expect(r.content_type, JSON.stringify(r)).to.include('text/event-stream');",
+                  "  pm.expect(r.sends.length, 'the fixture wrote ' + r.sends.length + ' marker frames: ' + JSON.stringify(r)).to.equal(markers.length);",
+                  "});",
+                  "var arrivals = markers.map(function (m) {",
+                  "  var e = r.events.find(function (ev) { return ev.text.indexOf(m) !== -1; });",
+                  "  return e ? e.at : null;",
+                  "});",
+                  "pm.test('each vendor frame reaches the client before the vendor sends the next one', function () {",
+                  "  arrivals.forEach(function (at, i) {",
+                  "    pm.expect(at, 'marker ' + markers[i] + ' never arrived: ' + JSON.stringify(r)).to.be.a('number');",
+                  "    if (i + 1 < r.sends.length) {",
+                  "      pm.expect(at, 'frame ' + i + ' arrived at ' + at + 'ms, after the vendor wrote frame ' + (i + 1) + ' at ' + r.sends[i + 1] + 'ms: ' + JSON.stringify({ sends: r.sends, arrivals: arrivals })).to.be.below(r.sends[i + 1]);",
+                  "    }",
+                  "  });",
+                  "});",
+                  "pm.test('the gaps between frames are kept', function () {",
+                  "  for (var i = 1; i < arrivals.length; i++) {",
+                  "    pm.expect(arrivals[i] - arrivals[i - 1], 'gap ' + i + ': ' + JSON.stringify({ gap_ms: r.gap_ms, sends: r.sends, arrivals: arrivals })).to.be.at.least(r.gap_ms / 2);",
+                  "  }",
+                  "});",
+                  "pm.test('the final frame carries the usage (contract C10)', function () {",
+                  "  var frames = r.events.map(function (e) { return e.text; }).filter(function (t) { return /^data: \\{/m.test(t); });",
+                  "  var last = frames[frames.length - 1] || '';",
+                  "  pm.expect(last, 'last data frame: ' + last).to.include('\"usage\"');",
+                  "  pm.expect(last, 'last data frame: ' + last).to.include('\"total_tokens\":8');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"base_url\": \"{{baseUrl}}\",\n  \"path\": \"/openai/v1/chat/completions\",\n  \"headers\": {{gapProbeHeaders}},\n  \"body\": {\n    \"model\": \"openai/upstream-gapped\",\n    \"messages\": [\n      {\n        \"role\": \"user\",\n        \"content\": \"hi\"\n      }\n    ],\n    \"max_tokens\": 8,\n    \"stream\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{providerErrorFixtureUrl}}/__probe/stream-gaps",
+              "host": [
+                "{{providerErrorFixtureUrl}}"
+              ],
+              "path": [
+                "__probe",
+                "stream-gaps"
+              ]
+            }
+          }
+        },
+        {
+          "name": "308.7 openai /v1/audio/speech openai/upstream-gapped vendor frames (speech.audio.delta) arriving with gaps are forwarded on arrival, keeping the gaps (streamed frames timing)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
+                  "// The probe calls the gateway itself, so it carries the gateway credential the harness would have sent.",
+                  "var auth = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header');",
+                  "pm.variables.set('gapProbeHeaders', JSON.stringify(auth ? { Authorization: auth } : {}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'probe failed: ' + pm.response.text()).to.equal(200);",
+                  "var r = pm.response.json().data[0];",
+                  "var markers = ['gap-0', 'gap-1', 'gap-2'].map(function (m) { return btoa(m); });",
+                  "pm.test('the gateway answered 200 with an SSE stream', function () {",
+                  "  pm.expect(r.status, JSON.stringify(r)).to.equal(200);",
+                  "  pm.expect(r.content_type, JSON.stringify(r)).to.include('text/event-stream');",
+                  "  pm.expect(r.sends.length, 'the fixture wrote ' + r.sends.length + ' marker frames: ' + JSON.stringify(r)).to.equal(markers.length);",
+                  "});",
+                  "var arrivals = markers.map(function (m) {",
+                  "  var e = r.events.find(function (ev) { return ev.text.indexOf(m) !== -1; });",
+                  "  return e ? e.at : null;",
+                  "});",
+                  "pm.test('each vendor frame reaches the client before the vendor sends the next one', function () {",
+                  "  arrivals.forEach(function (at, i) {",
+                  "    pm.expect(at, 'marker ' + markers[i] + ' never arrived: ' + JSON.stringify(r)).to.be.a('number');",
+                  "    if (i + 1 < r.sends.length) {",
+                  "      pm.expect(at, 'frame ' + i + ' arrived at ' + at + 'ms, after the vendor wrote frame ' + (i + 1) + ' at ' + r.sends[i + 1] + 'ms: ' + JSON.stringify({ sends: r.sends, arrivals: arrivals })).to.be.below(r.sends[i + 1]);",
+                  "    }",
+                  "  });",
+                  "});",
+                  "pm.test('the gaps between frames are kept', function () {",
+                  "  for (var i = 1; i < arrivals.length; i++) {",
+                  "    pm.expect(arrivals[i] - arrivals[i - 1], 'gap ' + i + ': ' + JSON.stringify({ gap_ms: r.gap_ms, sends: r.sends, arrivals: arrivals })).to.be.at.least(r.gap_ms / 2);",
+                  "  }",
+                  "});",
+                  "pm.test('speech.audio.done is the final frame and carries the usage (contract C10)', function () {",
+                  "  var frames = r.events.map(function (e) { return e.text; }).filter(function (t) { return /^data: \\{/m.test(t); });",
+                  "  var last = frames[frames.length - 1] || '';",
+                  "  pm.expect(last, 'last data frame: ' + last).to.include('speech.audio.done');",
+                  "  pm.expect(last, 'last data frame: ' + last).to.include('\"output_tokens\":30');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"base_url\": \"{{baseUrl}}\",\n  \"path\": \"/v1/audio/speech\",\n  \"headers\": {{gapProbeHeaders}},\n  \"body\": {\n    \"model\": \"openai/upstream-gapped\",\n    \"input\": \"hi\",\n    \"voice\": \"alloy\",\n    \"stream_format\": \"sse\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{providerErrorFixtureUrl}}/__probe/stream-gaps",
+              "host": [
+                "{{providerErrorFixtureUrl}}"
+              ],
+              "path": [
+                "__probe",
+                "stream-gaps"
+              ]
+            }
+          }
+        },
+        {
+          "name": "308.8 openai /openai/v1/audio/speech openai/upstream-gapped vendor frames (speech.audio.delta) arriving with gaps are forwarded on arrival, keeping the gaps (streamed frames timing)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
+                  "// The probe calls the gateway itself, so it carries the gateway credential the harness would have sent.",
+                  "var auth = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header');",
+                  "pm.variables.set('gapProbeHeaders', JSON.stringify(auth ? { Authorization: auth } : {}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'probe failed: ' + pm.response.text()).to.equal(200);",
+                  "var r = pm.response.json().data[0];",
+                  "var markers = ['gap-0', 'gap-1', 'gap-2'].map(function (m) { return btoa(m); });",
+                  "pm.test('the gateway answered 200 with an SSE stream', function () {",
+                  "  pm.expect(r.status, JSON.stringify(r)).to.equal(200);",
+                  "  pm.expect(r.content_type, JSON.stringify(r)).to.include('text/event-stream');",
+                  "  pm.expect(r.sends.length, 'the fixture wrote ' + r.sends.length + ' marker frames: ' + JSON.stringify(r)).to.equal(markers.length);",
+                  "});",
+                  "var arrivals = markers.map(function (m) {",
+                  "  var e = r.events.find(function (ev) { return ev.text.indexOf(m) !== -1; });",
+                  "  return e ? e.at : null;",
+                  "});",
+                  "pm.test('each vendor frame reaches the client before the vendor sends the next one', function () {",
+                  "  arrivals.forEach(function (at, i) {",
+                  "    pm.expect(at, 'marker ' + markers[i] + ' never arrived: ' + JSON.stringify(r)).to.be.a('number');",
+                  "    if (i + 1 < r.sends.length) {",
+                  "      pm.expect(at, 'frame ' + i + ' arrived at ' + at + 'ms, after the vendor wrote frame ' + (i + 1) + ' at ' + r.sends[i + 1] + 'ms: ' + JSON.stringify({ sends: r.sends, arrivals: arrivals })).to.be.below(r.sends[i + 1]);",
+                  "    }",
+                  "  });",
+                  "});",
+                  "pm.test('the gaps between frames are kept', function () {",
+                  "  for (var i = 1; i < arrivals.length; i++) {",
+                  "    pm.expect(arrivals[i] - arrivals[i - 1], 'gap ' + i + ': ' + JSON.stringify({ gap_ms: r.gap_ms, sends: r.sends, arrivals: arrivals })).to.be.at.least(r.gap_ms / 2);",
+                  "  }",
+                  "});",
+                  "pm.test('speech.audio.done is the final frame and carries the usage (contract C10)', function () {",
+                  "  var frames = r.events.map(function (e) { return e.text; }).filter(function (t) { return /^data: \\{/m.test(t); });",
+                  "  var last = frames[frames.length - 1] || '';",
+                  "  pm.expect(last, 'last data frame: ' + last).to.include('speech.audio.done');",
+                  "  pm.expect(last, 'last data frame: ' + last).to.include('\"output_tokens\":30');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"base_url\": \"{{baseUrl}}\",\n  \"path\": \"/openai/v1/audio/speech\",\n  \"headers\": {{gapProbeHeaders}},\n  \"body\": {\n    \"model\": \"openai/upstream-gapped\",\n    \"input\": \"hi\",\n    \"voice\": \"alloy\",\n    \"stream_format\": \"sse\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{providerErrorFixtureUrl}}/__probe/stream-gaps",
+              "host": [
+                "{{providerErrorFixtureUrl}}"
+              ],
+              "path": [
+                "__probe",
+                "stream-gaps"
+              ]
+            }
+          }
+        },
+        {
+          "name": "308.9 openai /v1/chat/completions non-streamed openai/upstream-usage-extended usage carries tool_usage, cost and cost_in_usd_ticks (streamed frames timing)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "var usage = pm.response.json().usage;",
+                  "var toolUsage = usage && usage.tool_usage;",
+                  "var tokens = usage && { prompt: usage.prompt_tokens, completion: usage.completion_tokens, total: usage.total_tokens, reasoning: usage.completion_tokens_details && usage.completion_tokens_details.reasoning_tokens, searches: usage.completion_tokens_details && usage.completion_tokens_details.num_search_queries };",
+                  "pm.test('the token counts are the vendor\\'s', function () {",
+                  "  pm.expect(tokens, 'usage: ' + JSON.stringify(usage)).to.eql({ prompt: 120, completion: 48, total: 168, reasoning: 12, searches: 2 });",
+                  "});",
+                  "pm.test('tool_usage carries the vendor\\'s web search count', function () {",
+                  "  pm.expect(toolUsage, 'usage: ' + JSON.stringify(usage)).to.eql({ web_search: { num_requests: 2 } });",
+                  "});",
+                  "pm.test('the vendor\\'s cost and cost_in_usd_ticks are kept', function () {",
+                  "  // The OpenAI-compatible routes send cost as a bare number, the native routes as {total_cost}.",
+                  "  var cost = usage && usage.cost;",
+                  "  pm.expect(typeof cost === 'number' ? cost : cost && cost.total_cost, 'usage: ' + JSON.stringify(usage)).to.equal(0.0123);",
+                  "  pm.expect(usage && usage.cost_in_usd_ticks, 'usage: ' + JSON.stringify(usage)).to.equal(123000000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-usage-extended\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "308.10 openai /v1/chat/completions openai/upstream-usage-extended usage carries tool_usage, cost and cost_in_usd_ticks on the final frame (streamed frames timing)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "var frames = raw.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "var last = frames.filter(function (f) { return f.usage; }).pop();",
+                  "pm.test('a frame carries the usage', function () { pm.expect(last, raw).to.be.an('object'); });",
+                  "var usage = last && last.usage;",
+                  "var toolUsage = usage && usage.tool_usage;",
+                  "var tokens = usage && { prompt: usage.prompt_tokens, completion: usage.completion_tokens, total: usage.total_tokens, reasoning: usage.completion_tokens_details && usage.completion_tokens_details.reasoning_tokens, searches: usage.completion_tokens_details && usage.completion_tokens_details.num_search_queries };",
+                  "pm.test('the token counts are the vendor\\'s', function () {",
+                  "  pm.expect(tokens, 'usage: ' + JSON.stringify(usage)).to.eql({ prompt: 120, completion: 48, total: 168, reasoning: 12, searches: 2 });",
+                  "});",
+                  "pm.test('tool_usage carries the vendor\\'s web search count', function () {",
+                  "  pm.expect(toolUsage, 'usage: ' + JSON.stringify(usage)).to.eql({ web_search: { num_requests: 2 } });",
+                  "});",
+                  "pm.test('the vendor\\'s cost and cost_in_usd_ticks are kept', function () {",
+                  "  // The OpenAI-compatible routes send cost as a bare number, the native routes as {total_cost}.",
+                  "  var cost = usage && usage.cost;",
+                  "  pm.expect(typeof cost === 'number' ? cost : cost && cost.total_cost, 'usage: ' + JSON.stringify(usage)).to.equal(0.0123);",
+                  "  pm.expect(usage && usage.cost_in_usd_ticks, 'usage: ' + JSON.stringify(usage)).to.equal(123000000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-usage-extended\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "308.11 openai /openai/v1/chat/completions openai/upstream-usage-extended usage carries tool_usage, cost and cost_in_usd_ticks on the final frame (streamed frames timing)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "var frames = raw.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "var last = frames.filter(function (f) { return f.usage; }).pop();",
+                  "pm.test('a frame carries the usage', function () { pm.expect(last, raw).to.be.an('object'); });",
+                  "var usage = last && last.usage;",
+                  "var toolUsage = usage && usage.tool_usage;",
+                  "var tokens = usage && { prompt: usage.prompt_tokens, completion: usage.completion_tokens, total: usage.total_tokens, reasoning: usage.completion_tokens_details && usage.completion_tokens_details.reasoning_tokens, searches: usage.completion_tokens_details && usage.completion_tokens_details.num_search_queries };",
+                  "pm.test('the token counts are the vendor\\'s', function () {",
+                  "  pm.expect(tokens, 'usage: ' + JSON.stringify(usage)).to.eql({ prompt: 120, completion: 48, total: 168, reasoning: 12, searches: 2 });",
+                  "});",
+                  "pm.test('tool_usage carries the vendor\\'s web search count', function () {",
+                  "  pm.expect(toolUsage, 'usage: ' + JSON.stringify(usage)).to.eql({ web_search: { num_requests: 2 } });",
+                  "});",
+                  "pm.test('the vendor\\'s cost and cost_in_usd_ticks are kept', function () {",
+                  "  // The OpenAI-compatible routes send cost as a bare number, the native routes as {total_cost}.",
+                  "  var cost = usage && usage.cost;",
+                  "  pm.expect(typeof cost === 'number' ? cost : cost && cost.total_cost, 'usage: ' + JSON.stringify(usage)).to.equal(0.0123);",
+                  "  pm.expect(usage && usage.cost_in_usd_ticks, 'usage: ' + JSON.stringify(usage)).to.equal(123000000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-usage-extended\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "308.12 openai /v1/completions openai/upstream-usage-extended usage carries tool_usage, cost and cost_in_usd_ticks on the final frame (streamed frames timing)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "var frames = raw.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "var last = frames.filter(function (f) { return f.usage; }).pop();",
+                  "pm.test('a frame carries the usage', function () { pm.expect(last, raw).to.be.an('object'); });",
+                  "var usage = last && last.usage;",
+                  "var toolUsage = usage && usage.tool_usage;",
+                  "var tokens = usage && { prompt: usage.prompt_tokens, completion: usage.completion_tokens, total: usage.total_tokens, reasoning: usage.completion_tokens_details && usage.completion_tokens_details.reasoning_tokens, searches: usage.completion_tokens_details && usage.completion_tokens_details.num_search_queries };",
+                  "pm.test('the token counts are the vendor\\'s', function () {",
+                  "  pm.expect(tokens, 'usage: ' + JSON.stringify(usage)).to.eql({ prompt: 120, completion: 48, total: 168, reasoning: 12, searches: 2 });",
+                  "});",
+                  "pm.test('tool_usage carries the vendor\\'s web search count', function () {",
+                  "  pm.expect(toolUsage, 'usage: ' + JSON.stringify(usage)).to.eql({ web_search: { num_requests: 2 } });",
+                  "});",
+                  "pm.test('the vendor\\'s cost and cost_in_usd_ticks are kept', function () {",
+                  "  // The OpenAI-compatible routes send cost as a bare number, the native routes as {total_cost}.",
+                  "  var cost = usage && usage.cost;",
+                  "  pm.expect(typeof cost === 'number' ? cost : cost && cost.total_cost, 'usage: ' + JSON.stringify(usage)).to.equal(0.0123);",
+                  "  pm.expect(usage && usage.cost_in_usd_ticks, 'usage: ' + JSON.stringify(usage)).to.equal(123000000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-usage-extended\",\n  \"prompt\": \"hi\",\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "308.13 openai /v1/responses (chat fallback) parasail/upstream-usage-extended usage carries tool_usage, cost and cost_in_usd_ticks on the final frame (streamed frames timing)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "var events = raw.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "var done = events.filter(function (e) { return e.type === 'response.completed'; }).pop();",
+                  "pm.test('response.completed arrived', function () { pm.expect(done, raw).to.be.an('object'); });",
+                  "var usage = done && done.response && done.response.usage;",
+                  "// The Responses API carries tool_usage beside usage, not inside it, streamed or not.",
+                  "var toolUsage = done && done.response && done.response.tool_usage;",
+                  "var tokens = usage && { prompt: usage.input_tokens, completion: usage.output_tokens, total: usage.total_tokens, reasoning: usage.output_tokens_details && usage.output_tokens_details.reasoning_tokens, searches: usage.output_tokens_details && usage.output_tokens_details.num_search_queries };",
+                  "pm.test('the token counts are the vendor\\'s', function () {",
+                  "  pm.expect(tokens, 'usage: ' + JSON.stringify(usage)).to.eql({ prompt: 120, completion: 48, total: 168, reasoning: 12, searches: 2 });",
+                  "});",
+                  "pm.test('tool_usage carries the vendor\\'s web search count', function () {",
+                  "  pm.expect(toolUsage, 'usage: ' + JSON.stringify(usage)).to.eql({ web_search: { num_requests: 2 } });",
+                  "});",
+                  "pm.test('the vendor\\'s cost and cost_in_usd_ticks are kept', function () {",
+                  "  // The OpenAI-compatible routes send cost as a bare number, the native routes as {total_cost}.",
+                  "  var cost = usage && usage.cost;",
+                  "  pm.expect(typeof cost === 'number' ? cost : cost && cost.total_cost, 'usage: ' + JSON.stringify(usage)).to.equal(0.0123);",
+                  "  pm.expect(usage && usage.cost_in_usd_ticks, 'usage: ' + JSON.stringify(usage)).to.equal(123000000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"parasail/upstream-usage-extended\",\n  \"input\": \"hi\",\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

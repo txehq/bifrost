@@ -122,6 +122,34 @@ make run-provider-harness-test PROVIDER=openai FEATURE="content-length truncatio
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
 
+## Streamed frames timing
+
+Folder 308 pins contract C10 BF22 (TXE-6522) on chat (`stream: true`) and speech (`stream_format: "sse"`),
+each on `/v1/...` and `/openai/v1/...`. The error rows send `upstream-503` and `upstream-429`, which the
+fixture answers with that status before any frame; the gateway must answer with the same status and a JSON
+error, never a 200 stream carrying an error frame. The gap rows send `upstream-gapped`, which writes three
+marker frames 600ms apart. A timing check needs a client that sees each frame arrive, and newman only sees
+the finished body, so those rows call the fixture's `POST /__probe/stream-gaps`: the fixture sends the
+request to the gateway itself and reports when each SSE event arrived, measured on the same clock it used to
+write the frames. Each marker must reach the client before the fixture writes the next one, and the gaps
+must survive. A gateway that buffers fails with the send and arrival times in the message.
+
+Rows 9-13 pin BF21: `upstream-usage-extended` reports web search calls (`tool_usage`), a `cost` and xAI's
+`cost_in_usd_ticks`, and the non-streamed chat response, the final frame of a chat stream (both routes), of a
+text-completion stream (`/v1/completions`) and `response.completed` of a Responses stream served by the chat
+fallback (the config's `parasail` entry points at the fixture) must all carry them. Against the accumulator
+before TXE-6522 the four streamed rows fail and the non-streamed one passes.
+
+Start the fixture and the isolated gateway as for content-length truncation above (ports 8790, 8791 and
+8799), then:
+
+```bash
+make run-provider-harness-test PROVIDER=openai FEATURE="streamed frames timing" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
+```
+
+Set `providerErrorFixtureUrl` when the fixture is not on `http://127.0.0.1:8791`. The probe passes the
+harness's `admin_auth_header` to the gateway when one is set.
+
 ## Provider 5xx failover and 429 retry-hint propagation
 
 These deterministic cases use a local HTTP fixture and an isolated gateway. They make no live

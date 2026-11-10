@@ -54,6 +54,30 @@ const behaviours = {
 };
 // upstream-slow answers as upstream-ok does, after SLOW_MS.
 behaviours["upstream-slow"] = () => ({ ...behaviours["upstream-ok"](), delayMs: SLOW_MS });
+// upstream-ok with every usage field a vendor reports beyond tokens, TXE-6522 (contract C10 BF21): web search calls,
+// a reported cost and xAI's cost_in_usd_ticks. Streamed, they arrive once, on the trailing usage frame, and must reach
+// the gateway's final frame as they reach its non-streamed response.
+const extendedUsage = {
+	prompt_tokens: 120, completion_tokens: 48, total_tokens: 168,
+	completion_tokens_details: { reasoning_tokens: 12, num_search_queries: 2 },
+	tool_usage: { web_search: { num_requests: 2 } },
+	cost: { total_cost: 0.0123 },
+	cost_in_usd_ticks: 123000000,
+};
+behaviours["upstream-usage-extended"] = () => {
+	const r = behaviours["upstream-ok"]();
+	const completion = JSON.parse(r.body);
+	return { ...r, body: JSON.stringify({ ...completion, id: "chatcmpl-upstream-usage-extended", model: "upstream-usage-extended", usage: extendedUsage }) };
+};
+// Text completions for upstream-usage-extended: one text frame with the finish reason, then the usage frame.
+const textCompletionAnswer = (stream) => {
+	const base = { id: "cmpl-upstream-usage-extended", object: "text_completion", created: 1, model: "upstream-usage-extended" };
+	if (!stream) return { ...base, choices: [{ index: 0, text: "hello", finish_reason: "stop" }], usage: extendedUsage };
+	return [
+		{ ...base, choices: [{ index: 0, text: "hello", finish_reason: "stop" }] },
+		{ ...base, choices: [], usage: extendedUsage },
+	].map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n";
+};
 // upstream-cut starts answering as upstream-ok does and drops the connection partway: a stream gets its first
 // content chunk and then a closed socket, a non-streamed request a closed socket.
 behaviours["upstream-cut"] = () => ({ ...behaviours["upstream-ok"](), cut: true });
@@ -427,6 +451,83 @@ const wireAnswer = (path, body) => {
 	return { status: 500, body: errorBody("the fixture has no answer here", "server_error", "internal_error") };
 };
 
+// Streamed frames with gaps, TXE-6522 (contract C10 BF22). upstream-gapped streams GAPPED_FRAMES marker frames
+// GAP_MS apart, on chat and on speech with stream_format "sse"; the fixture keeps the moment it wrote each marker.
+// POST /__probe/stream-gaps is the client: it sends the request it is given to the gateway, whose upstream is this
+// fixture, and reports when each SSE event arrived, on the same clock as those writes. A gateway that forwards each
+// frame on arrival delivers marker i before the fixture writes marker i+1; one that buffers does not.
+const GAP_MS = 600;
+const GAPPED_FRAMES = 3;
+const gapMarker = (i) => `gap-${i}`;
+// The writes of the latest upstream-gapped stream per route, as performance.now() values.
+const gappedSends = { chat: [], speech: [] };
+const writeGapped = (res, route, frames, tail) => {
+	res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+	gappedSends[route] = [];
+	let i = 0;
+	const next = () => {
+		if (res.destroyed) return;
+		if (i === frames.length) return res.end(tail);
+		gappedSends[route].push(performance.now());
+		res.write(frames[i++]);
+		setTimeout(next, GAP_MS);
+	};
+	next();
+};
+const gappedChat = (res, includeUsage) => {
+	const base = { id: "chatcmpl-upstream-gapped", object: "chat.completion.chunk", created: 1, model: "upstream-gapped" };
+	const frame = (choices, extra) => `data: ${JSON.stringify({ ...base, choices, ...extra })}\n\n`;
+	const frames = [];
+	for (let i = 0; i < GAPPED_FRAMES; i++) {
+		frames.push(frame([{ index: 0, delta: i === 0 ? { role: "assistant", content: gapMarker(i) } : { content: gapMarker(i) }, finish_reason: null }]));
+	}
+	let tail = frame([{ index: 0, delta: {}, finish_reason: "stop" }]);
+	if (includeUsage) tail += frame([], { usage: { prompt_tokens: 5, completion_tokens: GAPPED_FRAMES, total_tokens: 5 + GAPPED_FRAMES } });
+	writeGapped(res, "chat", frames, tail + "data: [DONE]\n\n");
+};
+// Speech deltas carry base64 audio; each marker's base64 is what a client finds in the forwarded delta.
+const gappedSpeech = (res) => {
+	const frames = [];
+	for (let i = 0; i < GAPPED_FRAMES; i++) {
+		frames.push(`data: ${JSON.stringify({ type: "speech.audio.delta", audio: Buffer.from(gapMarker(i)).toString("base64") })}\n\n`);
+	}
+	const done = `data: ${JSON.stringify({ type: "speech.audio.done", usage: { input_tokens: 5, output_tokens: 30, total_tokens: 35 } })}\n\n`;
+	writeGapped(res, "speech", frames, done);
+};
+// The probe: {base_url, path, body, headers?}. Answers {data: [{status, content_type, events, sends, gap_ms}]}, where
+// events are the SSE events (or the whole non-SSE body) with the ms each arrived, and sends are the ms the fixture
+// wrote each marker of the route's latest upstream-gapped stream, both measured from the moment the probe sent.
+const probeStreamGaps = (spec, reply) => {
+	const route = String(spec.path || "").includes("/audio/speech") ? "speech" : "chat";
+	const payload = JSON.stringify(spec.body || {});
+	const t0 = performance.now();
+	const ms = (t) => Math.round((t - t0) * 10) / 10;
+	const target = new URL(String(spec.path || ""), String(spec.base_url || ""));
+	const upstream = http.request(target, {
+		method: "POST",
+		headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload), ...(spec.headers || {}) },
+	}, (gw) => {
+		const events = [];
+		let pending = "";
+		gw.setEncoding("utf8");
+		gw.on("data", (c) => {
+			const at = ms(performance.now());
+			pending += c;
+			let cut;
+			while ((cut = pending.indexOf("\n\n")) !== -1) {
+				events.push({ at, text: pending.slice(0, cut) });
+				pending = pending.slice(cut + 2);
+			}
+		});
+		gw.on("end", () => {
+			if (pending !== "") events.push({ at: ms(performance.now()), text: pending });
+			reply(200, { data: [{ status: gw.statusCode, content_type: gw.headers["content-type"] || "", events, sends: gappedSends[route].map(ms), gap_ms: GAP_MS }] });
+		});
+	});
+	upstream.on("error", (err) => reply(502, { error: { message: `probe could not reach the gateway: ${err.message}`, type: "probe_error" } }));
+	upstream.end(payload);
+};
+
 // Hit counters are keyed by the request body's model, so they must not inherit Object.prototype names.
 const hits = Object.create(null);
 
@@ -490,13 +591,24 @@ const server = http.createServer((req, res) => {
 		});
 		return undefined;
 	}
+	if (req.method === "POST" && path === "/__probe/stream-gaps") {
+		const body = [];
+		req.on("data", (c) => body.push(c));
+		req.on("end", () => {
+			let spec;
+			try { spec = JSON.parse(Buffer.concat(body).toString("utf8")); }
+			catch { return send(400, {}, errorBody("invalid JSON", "invalid_request_error", "invalid_json")); }
+			probeStreamGaps(spec, (status, answer) => send(status, {}, JSON.stringify(answer)));
+		});
+		return undefined;
+	}
 	if (req.method === "GET" && path === "/__hits") {
 		return send(200, {}, JSON.stringify({ data: [{ hits: { ...hits } }] }));
 	}
 	if (req.method === "GET" && path === "/mcp") {
 		return send(405, {}, errorBody("no server stream", "invalid_request_error", "method_not_allowed"));
 	}
-	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions" && path !== "/mcp" && path !== "/v1/decisions" && path !== "/alpha/decisions")) {
+	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions" && path !== "/mcp" && path !== "/v1/decisions" && path !== "/alpha/decisions" && path !== "/v1/audio/speech" && path !== "/v1/completions")) {
 		return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));
 	}
 	const chunks = [];
@@ -557,6 +669,37 @@ const server = http.createServer((req, res) => {
 		const auth = req.headers.authorization;
 		if (auth !== undefined && auth !== "Bearer test-key") {
 			return send(401, {}, errorBody("Incorrect API key provided", "invalid_request_error", "invalid_api_key"));
+		}
+		// Speech, TXE-6522: an error behaviour answers with its status before any frame; upstream-gapped streams its
+		// deltas GAP_MS apart when stream_format is "sse" and otherwise answers with audio bytes.
+		if (path === "/v1/audio/speech") {
+			const speechName = model.split("~")[0];
+			if (Object.hasOwn(behaviours, speechName) && behaviours[speechName]().status !== 200) {
+				const failing = behaviours[speechName]();
+				return send(failing.status, failing.headers, failing.body);
+			}
+			if (speechName !== "upstream-gapped") {
+				return send(404, {}, errorBody(`unknown fixture model ${model}`, "invalid_request_error", "model_not_found"));
+			}
+			if (parsed.stream_format === "sse") return gappedSpeech(res);
+			res.writeHead(200, { "Content-Type": "audio/mpeg" });
+			return res.end(Buffer.from("fixture-audio"));
+		}
+		if (model.split("~")[0] === "upstream-gapped" && path !== "/v1/responses") {
+			if (parsed.stream === true) return gappedChat(res, !!(parsed.stream_options && parsed.stream_options.include_usage));
+			return send(200, {}, JSON.stringify({
+				id: "chatcmpl-upstream-gapped", object: "chat.completion", created: 1, model: "upstream-gapped",
+				choices: [{ index: 0, message: { role: "assistant", content: Array.from({ length: GAPPED_FRAMES }, (_, i) => gapMarker(i)).join("") }, finish_reason: "stop" }],
+				usage: { prompt_tokens: 5, completion_tokens: GAPPED_FRAMES, total_tokens: 5 + GAPPED_FRAMES },
+			}));
+		}
+		if (path === "/v1/completions") {
+			if (model !== "upstream-usage-extended") {
+				return send(404, {}, errorBody(`unknown fixture model ${model}`, "invalid_request_error", "model_not_found"));
+			}
+			if (parsed.stream !== true) return send(200, {}, JSON.stringify(textCompletionAnswer(false)));
+			res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+			return res.end(textCompletionAnswer(true));
 		}
 		if (model === "upstream-fixed-length-short" || model === "upstream-fixed-length-ok") {
 			// finish_reason makes this semantically complete even without [DONE].
