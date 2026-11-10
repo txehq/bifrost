@@ -793,3 +793,40 @@ func TestSupportsResponsesNamespaceToolsDatasheetRow(t *testing.T) {
 		t.Error("a Converse-routed attempt must answer false regardless of rows")
 	}
 }
+
+// BenchmarkConverseOutputCap measures the Converse chat and Responses conversions for an
+// OpenAI-family model with a small output cap, the case the removed floor applied to.
+func BenchmarkConverseOutputCap(b *testing.B) {
+	ctx := surfaceTestCtx()
+	chat := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "openai.gpt-5.6-luna",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}}},
+		Params:   &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(5)},
+	}
+	responses := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "openai.gpt-5.6-luna",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(5)},
+	}
+	b.Run("chat", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := ToBedrockChatCompletionRequest(ctx, chat); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("responses", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := ToBedrockResponsesRequest(ctx, responses); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}

@@ -574,3 +574,26 @@ func BenchmarkResponsesServiceTierError(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkToOpenAIResponsesRequestTierAndCap measures the Responses conversion for a
+// request that carries a service tier and a small output cap, the two fields the
+// conversion no longer drops or raises.
+func BenchmarkToOpenAIResponsesRequestTierAndCap(b *testing.B) {
+	stubChatTierCatalog(b)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "tiered-model",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ResponsesParameters{ServiceTier: schemas.Ptr(schemas.BifrostServiceTierPriority), MaxOutputTokens: schemas.Ptr(5)},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if ToOpenAIResponsesRequest(ctx, req) == nil {
+			b.Fatal("conversion returned nil")
+		}
+	}
+}
