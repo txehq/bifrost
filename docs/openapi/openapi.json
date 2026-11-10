@@ -2546,7 +2546,7 @@
         },
         "responses": {
           "200": {
-            "description": "Successful response. Without `stream_format` the body is the audio itself, and its\n`Content-Type` names the format actually returned (for example `audio/wav`,\n`audio/flac`, or Gemini's `audio/L16;codec=pcm;rate=24000`), not always `audio/mpeg`.\nThe unified usage of that response is in the `x-bifrost-usage` header.\n",
+            "description": "Successful response. Without `stream_format` the body is the audio itself, and its\n`Content-Type` names the format actually returned (for example `audio/wav`,\n`audio/flac`, or Gemini's `audio/L16;codec=pcm;rate=24000`), not always `audio/mpeg`.\nThe unified usage of that response is in the `x-bifrost-usage` header. A provider\nthat answers with a link to the audio instead of the bytes (DashScope Qwen3-TTS) gets\nan `application/json` body carrying the provider's `url`, its `expires_at` and `usage`;\nBifrost does not download the link.\n",
             "headers": {
               "x-bifrost-usage": {
                 "description": "The unified speech usage of a non-streaming audio response, as compact JSON\n(the `SpeechUsage` object). Quantities come from what the provider reported;\nabsent when the response has no usage.\n",
@@ -122508,6 +122508,15 @@
           },
           "audio_base64": {
             "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "description": "The provider's own link to the audio, for a provider that answers with a link instead of the bytes (DashScope Qwen3-TTS). Bifrost does not download it; `audio` is then empty."
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When `url` stops working, in Unix seconds, as the provider reported it."
           },
           "extra_fields": {
             "$ref": "#/components/schemas/BifrostResponseExtraFields"

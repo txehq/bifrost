@@ -1,6 +1,6 @@
 ---
 title: "Alibaba DashScope"
-description: "Alibaba Cloud Model Studio's native DashScope API: Wan video tasks, Qwen-Image and Z-Image generation and edit, Singapore and workspace base addresses, auth and error mapping"
+description: "Alibaba Cloud Model Studio's native DashScope API: Wan video tasks, Qwen-Image and Z-Image generation and edit, Qwen3-TTS speech, Qwen3-ASR transcription, Singapore and workspace base addresses, auth and error mapping"
 icon: "d"
 ---
 
@@ -9,7 +9,7 @@ icon: "d"
 The `dashscope` provider is Alibaba Cloud Model Studio's native DashScope API, which serves Wan video, Qwen-Image and Z-Image images, Qwen3-TTS speech and Qwen3-ASR transcription. Qwen chat stays on the [`qwen`](/providers/supported-providers/qwen) provider, which speaks DashScope's OpenAI-compatible mode.
 
 <Note>
-Wan video is implemented: create, query, list, cancel and download. Image generation and edit with Qwen-Image and Z-Image are served. Every other operation returns `UnsupportedOperationError` (HTTP 400, `error.code` `unsupported_operation`) without calling DashScope. Wan images, speech and transcription are added operation by operation in later releases.
+Wan video is implemented: create, query, list, cancel and download. Image generation and edit with Qwen-Image and Z-Image are served, and so are speech (Qwen3-TTS) and transcription (Qwen3-ASR), non-streamed. Every other operation returns `UnsupportedOperationError` (HTTP 400, `error.code` `unsupported_operation`) without calling DashScope. Wan images and streamed speech are added in later releases.
 </Note>
 
 ### Supported Operations
@@ -21,8 +21,8 @@ Wan video is implemented: create, query, list, cancel and download. Image genera
 | Image generation (Qwen-Image, Z-Image) | ✅ | ❌ | `base_url` |
 | Image edit (Qwen-Image) | ✅ | ❌ | `base_url` |
 | Wan images (task-based) | ❌ (planned, on the image task routes) | - | `base_url` |
-| Speech (Qwen3-TTS) | ❌ (planned) | ❌ (planned) | `base_url` |
-| Transcription (Qwen3-ASR) | ❌ (planned) | ❌ | `base_url` |
+| Speech (Qwen3-TTS) | ✅ | ❌ | `base_url` |
+| Transcription (Qwen3-ASR) | ✅ | ❌ | `workspace_base_url` |
 | Chat, Responses, Text Completions | ❌ (use `qwen`) | ❌ | - |
 | Embeddings, Files, Batch, List Models, everything else | ❌ | ❌ | - |
 
@@ -31,7 +31,7 @@ Wan video is implemented: create, query, list, cancel and download. Image genera
 The provider has two bases:
 
 - `network_config.base_url` is the regional DashScope site. It defaults to the Singapore (international) site, `https://dashscope-intl.aliyuncs.com`.
-- `network_config.workspace_base_url` is your Model Studio workspace address, `https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com`. Video operations use it. When it is unset they use `base_url`.
+- `network_config.workspace_base_url` is your Model Studio workspace address, `https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com`. Video and transcription use it. When it is unset they use `base_url`.
 
 Both are checked the same way when written through the management API: no credentials, query or fragment in the URL, an authenticated admin session when dashboard auth is bypassed, and no private-network destination unless `allow_private_network` is set.
 
@@ -47,7 +47,7 @@ curl -X POST http://localhost:8080/api/providers \
       {
         "name": "dashscope-key-1",
         "value": "env.DASHSCOPE_API_KEY",
-        "models": ["wan3.0-video", "wan2.7-t2v", "wan2.6-t2v"],
+        "models": ["wan3.0-video", "wan2.7-t2v", "wan2.6-t2v", "qwen-image-plus", "qwen3-tts-flash", "qwen3-asr-flash"],
         "weight": 1.0
       }
     ],
@@ -69,7 +69,7 @@ curl -X POST http://localhost:8080/api/providers \
         {
           "name": "dashscope-key-1",
           "value": "env.DASHSCOPE_API_KEY",
-          "models": ["wan2.6-t2v", "qwen-image-plus", "qwen3-tts-flash"],
+          "models": ["wan2.6-t2v", "qwen-image-plus", "qwen3-tts-flash", "qwen3-asr-flash"],
           "weight": 1.0
         }
       ],
@@ -216,6 +216,51 @@ A Wan image model (`wan*`) is task-based and is refused on these two routes with
 
 Each link in `output.choices[].message.content[].image` becomes one `data[]` item with `url`. DashScope keeps a result link for 24 hours; the response does not carry an expiry field yet. `usage.output_images` is DashScope's `usage.image_count`, and `size` is its reported `width` and `height`. Z-Image also reports `input_tokens`, `output_tokens`, `total_tokens` and `output_tokens_details.reasoning_tokens` when `prompt_extend` rewrote the prompt, and the rewritten prompt is returned as `revised_prompt`. A 200 with no image is an error: `provider_empty_result` (HTTP 502), or DashScope's own code when the body carries one.
 
+## Speech (Qwen3-TTS)
+
+`POST /v1/audio/speech` sends one non-streamed request to `{base_url}/api/v1/services/aigc/multimodal-generation/generation`.
+
+| Unified field | DashScope field |
+|---------------|-----------------|
+| `input` | `input.text` |
+| `voice` (one voice name) | `input.voice` |
+| `language_code` | `input.language_type`, as given (for example `English`, `Chinese`); omitted when not sent, which leaves DashScope's `Auto` |
+
+`response_format`, `speed`, `instructions`, `with_timestamps` and the other ElevenLabs fields have no Qwen3-TTS field: a request that sets one gets 400 with `extra_fields.error_type` `caller_unsupported_parameter` and the field in `error.param`, before any call to DashScope. A multi-speaker `voice` list is refused the same way.
+
+Qwen3-TTS answers with a link to the audio, not the bytes. Bifrost does not download it: the response is JSON with DashScope's link and its expiry.
+
+```json
+{
+  "url": "https://dashscope-result-....aliyuncs.com/....wav?Expires=1766113409&...",
+  "expires_at": 1766113409,
+  "usage": { "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "billed_characters": 195 },
+  "extra_fields": { "provider": "dashscope", "...": "..." }
+}
+```
+
+`usage.billed_characters` is DashScope's `usage.characters` (reported by Qwen3-TTS-Flash). The same usage is in the `x-bifrost-usage` response header. The OpenAI drop-in route `/openai/v1/audio/speech` answers the same JSON. Streamed speech (`stream_format: "sse"`) is not supported yet.
+
+## Transcription (Qwen3-ASR)
+
+`POST /v1/audio/transcriptions` sends one synchronous request to `{workspace_base_url}/api/v1/services/aigc/multimodal-generation/generation`. The audio is the user message's `{"audio": ...}` item:
+
+- A `url` form field (in place of `file`) is sent unchanged. Bifrost does not download it. A data URL (`data:audio/wav;base64,...`) is sent unchanged too.
+- An uploaded `file` is sent as a base64 data URL, with the media type taken from the file name or its header. DashScope limits the encoded audio to 10 MB.
+- Sending both `file` and `url` is refused with `caller_unsupported_parameter` naming `url`.
+
+| Unified field | DashScope field |
+|---------------|-----------------|
+| `language` | `parameters.asr_options.language` |
+| `prompt` | a system message whose text is the context |
+| `response_format` | only `json`; any other value is refused |
+
+`timestamp_granularities` and the other transcription fields are refused with `caller_unsupported_parameter`. The response carries the text, the `language` DashScope detected, and DashScope's usage: `usage.seconds` (type `duration`) and the token details it reports.
+
+## Open questions
+
+- Which Singapore host serves Qwen3-TTS and Qwen3-ASR is not settled. DashScope's Qwen3-TTS reference names `dashscope-intl.aliyuncs.com`, and its Qwen3-ASR reference names the workspace host `{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com`. Both bases are configurable.
+
 ## Authentication
 
 The API key is sent as `Authorization: Bearer <key>`. An `extra_headers` entry named `Authorization` does not replace it.
@@ -237,4 +282,4 @@ DashScope returns `{"request_id": "...", "code": "...", "message": "..."}` with 
 | `ServiceUnavailable` | 503 | `provider_overloaded` |
 | `DataInspectionFailed`, `data_inspection_failed`, `IPInfringementSuspect` (content moderation) | 400 | `caller_content_filtered` |
 
-Any other code is classified from its status.
+Any other code is classified from its status. A `200` that carries a `code` is turned into an error the same way: `DataInspectionFailed` is 400 `caller_content_filtered`, any other code 502 `provider_server_error`. A `200` with no audio link (speech) or no choice (transcription) is 502 `provider_empty_result`.

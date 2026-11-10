@@ -98,6 +98,13 @@ SpeechResponse:
       description: Media type of the audio as the provider reported or converted it (for example audio/L16;codec=pcm;rate=24000). Omitted when unknown.
     audio_base64:
       type: string
+    url:
+      type: string
+      description: The provider's own link to the audio, for a provider that answers with a link instead of the bytes (DashScope Qwen3-TTS). Bifrost does not download it; `audio` is then empty.
+    expires_at:
+      type: integer
+      format: int64
+      description: When `url` stops working, in Unix seconds, as the provider reported it.
     extra_fields:
       $ref: './common.yaml#/BifrostResponseExtraFields'
 
