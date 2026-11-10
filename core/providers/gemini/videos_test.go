@@ -680,3 +680,75 @@ func TestGeminiVideoDeliversTheUnifiedResolution(t *testing.T) {
 		assert.Equal(t, schemas.Ptr("4k"), got.Parameters.Resolution, "extra params %v", extra)
 	}
 }
+
+// BenchmarkVeoVideoGenerationRequest is the conversion every Veo create runs on the request path:
+// a request with no extra params, the same with the four extra params a caller typically adds,
+// and a Vertex request using every unified field.
+func BenchmarkVeoVideoGenerationRequest(b *testing.B) {
+	base := func() *schemas.BifrostVideoGenerationRequest {
+		return &schemas.BifrostVideoGenerationRequest{
+			Model:  "veo-3.1-generate-001",
+			Input:  &schemas.VideoGenerationInput{Prompt: "a fox running through snow", InputReference: schemas.Ptr(veoTestDataURL)},
+			Params: &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("8"), Size: "1280x720", Audio: schemas.Ptr(true)},
+		}
+	}
+	withExtras := base()
+	withExtras.Params.ExtraParams = map[string]any{"sampleCount": float64(2), "personGeneration": "allow_adult", "enhancePrompt": true, "compressionQuality": "optimized"}
+	unified := base()
+	unified.Input.InputReference = schemas.Ptr("gs://frames/first.png")
+	unified.Params.Size = ""
+	unified.Params.AspectRatio = "9:16"
+	unified.Params.Resolution = "1080p"
+	unified.Params.LastFrame = "gs://frames/last.png"
+	unified.Params.ReferenceImages = schemas.VideoReferenceImages{"gs://frames/ref.png"}
+	unified.Params.OutputStorageURI = schemas.Ptr("gs://out/task_1/")
+	unified.Params.ExtraParams = map[string]any{"aspect_ratio": "9:16", "resolution": "1080p", "last_frame": "gs://frames/last.png", "reference_images": []any{"gs://frames/ref.png"}, "fps": float64(24)}
+
+	for _, tc := range []struct {
+		name    string
+		req     *schemas.BifrostVideoGenerationRequest
+		convert func(*schemas.BifrostVideoGenerationRequest) (*gemini.GeminiVideoGenerationRequest, error)
+	}{
+		{"no_extra_params", base(), gemini.ToGeminiVideoGenerationRequest},
+		{"four_extra_params", withExtras, gemini.ToGeminiVideoGenerationRequest},
+		{"vertex_unified_fields", unified, gemini.ToVertexVideoGenerationRequest},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := tc.convert(tc.req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkVeoOperationResponse is the conversion every Veo query runs: a finished Vertex
+// operation with one inline video, and one with a bucket video and a filtered one.
+func BenchmarkVeoOperationResponse(b *testing.B) {
+	inline := "dmlkZW8="
+	gcs := "gs://out/task_1/sample_0.mp4"
+	mime := "video/mp4"
+	for _, tc := range []struct {
+		name string
+		resp *gemini.GenerateVideosOperationResponse
+	}{
+		{"one_inline_video", &gemini.GenerateVideosOperationResponse{Videos: []gemini.VideoGenerationResponse{{BytesBase64Encoded: &inline, MIMEType: &mime}}}},
+		{"bucket_video_one_filtered", &gemini.GenerateVideosOperationResponse{
+			Videos:                  []gemini.VideoGenerationResponse{{GCSURI: &gcs, MIMEType: &mime}},
+			RAIMediaFilteredCount:   1,
+			RAIMediaFilteredReasons: []string{"blocked"},
+		}},
+	} {
+		operation := &gemini.GenerateVideosOperation{Name: veoOperationName, Done: true, Response: tc.resp}
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if resp, bifrostErr := gemini.ToBifrostVideoGenerationResponse(operation, ""); bifrostErr != nil || len(resp.Videos) != 1 {
+					b.Fatal("conversion failed")
+				}
+			}
+		})
+	}
+}
