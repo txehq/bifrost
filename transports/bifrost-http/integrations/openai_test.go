@@ -508,6 +508,117 @@ func jsonEqual(a, b any) bool {
 	return bytes.Equal(left, right)
 }
 
+// deepgramTranscriptionTestAccount configures the Deepgram provider at a local upstream, so
+// the OpenAI drop-in transcription route runs end to end without a live key.
+type deepgramTranscriptionTestAccount struct {
+	baseURL string
+}
+
+func (a deepgramTranscriptionTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.Deepgram}, nil
+}
+
+func (a deepgramTranscriptionTestAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	if p != schemas.Deepgram {
+		return nil, nil
+	}
+	return []schemas.Key{{ID: "deepgram-test-key", Name: "deepgram-test-key", Value: *schemas.NewSecretVar("dg-test"), Models: schemas.WhiteList{"*"}, Weight: 1.0}}, nil
+}
+
+func (a deepgramTranscriptionTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	if p != schemas.Deepgram {
+		return nil, fmt.Errorf("unsupported provider %s", p)
+	}
+	nc := schemas.DefaultNetworkConfig
+	nc.BaseURL = a.baseURL
+	return &schemas.ProviderConfig{NetworkConfig: nc, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// The OpenAI drop-in route /openai/v1/audio/transcriptions reaches Deepgram too, by the
+// deepgram/ model prefix: a file upload is one POST /v1/listen with the audio as the body and
+// the non-OpenAI form fields as query parameters, and the answer carries Deepgram's billable
+// duration as usage (contract C4, C5). A unified field Deepgram does not take (temperature on
+// this route) is 400 caller_unsupported_parameter with no upstream call. The route requires a
+// file; a URL-only request is not taken there.
+func TestOpenAITranscriptionRouteReachesDeepgram(t *testing.T) {
+	type upstreamCall struct {
+		path, query, contentType, auth, body string
+	}
+	var mu sync.Mutex
+	var calls []upstreamCall
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		calls = append(calls, upstreamCall{path: r.URL.Path, query: r.URL.RawQuery, contentType: r.Header.Get("Content-Type"), auth: r.Header.Get("Authorization"), body: string(body)})
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"metadata":{"request_id":"a847f427-4ad5-4d67-9b95-db801e58251c","duration":25.933313,"channels":1},"results":{"channels":[{"alternatives":[{"transcript":"Yeah. As as much as, it's worth celebrating."}]}]}}`)
+	}))
+	defer upstream.Close()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: deepgramTranscriptionTestAccount{baseURL: upstream.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewOpenAIRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	post := func(fields [][2]string) *fasthttp.RequestCtx {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		for _, f := range fields {
+			require.NoError(t, writer.WriteField(f[0], f[1]))
+		}
+		part, err := writer.CreateFormFile("file", "sample.wav")
+		require.NoError(t, err)
+		_, err = part.Write([]byte("RIFF\x24\x00\x00\x00WAVEfmt fake-wav"))
+		require.NoError(t, err)
+		require.NoError(t, writer.Close())
+
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+		ctx.Request.SetRequestURI("/openai/v1/audio/transcriptions")
+		ctx.Request.Header.SetContentType(writer.FormDataContentType())
+		ctx.Request.SetBody(body.Bytes())
+		r.Handler(ctx)
+		return ctx
+	}
+
+	ctx := post([][2]string{
+		{"model", "deepgram/nova-3"},
+		{"language", "en"},
+		{"smart_format", "true"},
+		{"keyterm", "Bifrost gateway"},
+		{"keyterm", "Tokun"},
+	})
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+	require.Equal(t, "Yeah. As as much as, it's worth celebrating.", gjson.GetBytes(ctx.Response.Body(), "text").String())
+	usage := gjson.GetBytes(ctx.Response.Body(), "usage")
+	require.Equal(t, "duration", usage.Get("type").String(), "body: %s", ctx.Response.Body())
+	require.Equal(t, 25.933313, usage.Get("seconds").Float(), "body: %s", ctx.Response.Body())
+	mu.Lock()
+	require.Len(t, calls, 1)
+	call := calls[0]
+	mu.Unlock()
+	require.Equal(t, "/v1/listen", call.path)
+	require.Equal(t, "Token dg-test", call.auth)
+	require.Equal(t, "audio/wav", call.contentType)
+	require.Equal(t, "RIFF\x24\x00\x00\x00WAVEfmt fake-wav", call.body)
+	require.Equal(t, "keyterm=Bifrost+gateway&keyterm=Tokun&language=en&model=nova-3&smart_format=true", call.query)
+
+	ctx = post([][2]string{{"model", "deepgram/nova-3"}, {"temperature", "0.2"}})
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+	require.Equal(t, "caller_unsupported_parameter", gjson.GetBytes(ctx.Response.Body(), "extra_fields.error_type").String(), "body: %s", ctx.Response.Body())
+	require.Equal(t, "temperature", gjson.GetBytes(ctx.Response.Body(), "error.param").String(), "body: %s", ctx.Response.Body())
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, calls, 1, "a refused request must make no upstream call")
+}
+
 // speechTestAccount configures OpenAI and Azure providers whose endpoints point at a local
 // upstream, so speech routes run end to end without a live key. The Azure-style deployments
 // route always resolves to Azure, the plain speech route to the provider in the model prefix.
