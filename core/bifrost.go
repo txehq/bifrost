@@ -2679,6 +2679,115 @@ func (bifrost *Bifrost) VideoCancelRequest(ctx *schemas.BifrostContext, req *sch
 	return response.VideoGenerationResponse, nil
 }
 
+// imageTaskRequestError is the error the image task entry points return for a request they
+// refuse before it reaches a provider.
+func imageTaskRequestError(requestType schemas.RequestType, provider schemas.ModelProvider, model, message string) *schemas.BifrostError {
+	return &schemas.BifrostError{
+		IsBifrostError: false,
+		Error:          &schemas.ErrorField{Message: message},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            requestType,
+			Provider:               provider,
+			OriginalModelRequested: model,
+			ResolvedModelUsed:      model,
+		},
+	}
+}
+
+// imageTaskResponse returns the task object of a finished image task request, or the error for
+// a provider that returned none.
+func imageTaskResponse(response *schemas.BifrostResponse, requestType schemas.RequestType, provider schemas.ModelProvider, model string) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
+	if response == nil || response.ImageTaskResponse == nil {
+		return nil, imageTaskRequestError(requestType, provider, model, "received nil response from provider")
+	}
+	return response.ImageTaskResponse, nil
+}
+
+// ImageGenerationTaskRequest submits an image generation task (fork, TXE-6431, contract C7
+// BF16): POST /v1/images/generations/tasks. The body is the sync route's; the task control
+// fields travel in req.TaskControl. The response is the task object, usually queued.
+func (bifrost *Bifrost) ImageGenerationTaskRequest(ctx *schemas.BifrostContext, req *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
+	const requestType = schemas.ImageGenerationTaskRequest
+	if req == nil {
+		return nil, imageTaskRequestError(requestType, "", "", "image generation task request is nil")
+	}
+	if (req.Input == nil || req.Input.Prompt == "") && !isLargePayloadPassthrough(ctx) {
+		return nil, imageTaskRequestError(requestType, req.Provider, req.Model, "prompt not provided for image generation task request")
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = requestType
+	bifrostReq.ImageGenerationRequest = req
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return imageTaskResponse(response, requestType, req.Provider, req.Model)
+}
+
+// ImageEditTaskRequest submits an image edit task (fork, TXE-6431): POST /v1/images/edits/tasks.
+// It validates the input as ImageEditRequest does.
+func (bifrost *Bifrost) ImageEditTaskRequest(ctx *schemas.BifrostContext, req *schemas.BifrostImageEditRequest) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
+	const requestType = schemas.ImageEditTaskRequest
+	if req == nil {
+		return nil, imageTaskRequestError(requestType, "", "", "image edit task request is nil")
+	}
+	if (req.Input == nil || len(req.Input.Images) == 0) && !isLargePayloadPassthrough(ctx) {
+		return nil, imageTaskRequestError(requestType, req.Provider, req.Model, "images not provided for image edit task request")
+	}
+	var editType *string
+	if req.Params != nil {
+		editType = req.Params.Type
+	}
+	if !isPromptOptionalImageEditType(editType) && (req.Input == nil || req.Input.Prompt == "") && !isLargePayloadPassthrough(ctx) {
+		return nil, imageTaskRequestError(requestType, req.Provider, req.Model, "prompt not provided for image edit task request")
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = requestType
+	bifrostReq.ImageEditRequest = req
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return imageTaskResponse(response, requestType, req.Provider, req.Model)
+}
+
+// ImageTaskRetrieveRequest queries an image task once (fork, TXE-6431): GET /v1/images/tasks/{id}.
+func (bifrost *Bifrost) ImageTaskRetrieveRequest(ctx *schemas.BifrostContext, req *schemas.BifrostImageTaskRetrieveRequest) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
+	return bifrost.imageTaskReferenceRequest(ctx, schemas.ImageTaskRetrieveRequest, req)
+}
+
+// ImageTaskCancelRequest cancels an image task through the vendor's cancel API (fork, TXE-6431):
+// POST /v1/images/tasks/{id}/cancel. A provider with no cancel API is answered 400
+// provider_cancel_unsupported with no upstream call.
+func (bifrost *Bifrost) ImageTaskCancelRequest(ctx *schemas.BifrostContext, req *schemas.BifrostImageTaskCancelRequest) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
+	return bifrost.imageTaskReferenceRequest(ctx, schemas.ImageTaskCancelRequest, req)
+}
+
+// imageTaskReferenceRequest runs a query or cancel of the image task req names.
+func (bifrost *Bifrost) imageTaskReferenceRequest(ctx *schemas.BifrostContext, requestType schemas.RequestType, req *schemas.BifrostImageTaskReferenceRequest) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, imageTaskRequestError(requestType, "", "", "image task request is nil")
+	}
+	if req.Provider == "" {
+		return nil, imageTaskRequestError(requestType, "", "", "provider is required for image task request")
+	}
+	if req.ID == "" {
+		return nil, imageTaskRequestError(requestType, req.Provider, "", "task id is required for image task request")
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = requestType
+	if requestType == schemas.ImageTaskCancelRequest {
+		bifrostReq.ImageTaskCancelRequest = req
+	} else {
+		bifrostReq.ImageTaskRetrieveRequest = req
+	}
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return imageTaskResponse(response, requestType, req.Provider, "")
+}
+
 // BatchCreateRequest creates a new batch job for asynchronous processing.
 func (bifrost *Bifrost) BatchCreateRequest(ctx *schemas.BifrostContext, req *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
 	if req == nil {
@@ -8232,6 +8341,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		if taskErr == nil {
 			taskErr = schemas.CheckVideoCancelSupported(provider, &req.BifrostRequest)
 		}
+		if taskErr == nil {
+			taskErr = schemas.CheckImageTaskCancelSupported(provider, &req.BifrostRequest)
+		}
 		if taskErr != nil {
 			taskErr.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), model, model)
 			bifrost.sendWorkerError(req, *taskErr)
@@ -9516,6 +9628,38 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 			return nil, bifrostError
 		}
 		response.VideoGenerationResponse = videoCancelResponse
+	case schemas.ImageGenerationTaskRequest, schemas.ImageEditTaskRequest, schemas.ImageTaskRetrieveRequest:
+		// Fork (TXE-6431): image tasks are an optional provider interface. A provider without it
+		// answers unsupported_operation here, before any upstream call.
+		taskProvider, ok := provider.(schemas.ImageTaskProvider)
+		if !ok {
+			return nil, providerUtils.NewUnsupportedOperationError(req.RequestType, provider.GetProviderKey())
+		}
+		var imageTaskResponse *schemas.BifrostImageTaskResponse
+		var bifrostError *schemas.BifrostError
+		switch req.RequestType {
+		case schemas.ImageGenerationTaskRequest:
+			imageTaskResponse, bifrostError = taskProvider.ImageGenerationTask(req.Context, key, req.BifrostRequest.ImageGenerationRequest)
+		case schemas.ImageEditTaskRequest:
+			imageTaskResponse, bifrostError = taskProvider.ImageEditTask(req.Context, key, req.BifrostRequest.ImageEditRequest)
+		default:
+			imageTaskResponse, bifrostError = taskProvider.ImageTaskRetrieve(req.Context, key, req.BifrostRequest.ImageTaskRetrieveRequest)
+		}
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.ImageTaskResponse = imageTaskResponse
+	case schemas.ImageTaskCancelRequest:
+		// The worker already refused a provider with no cancel API (CheckImageTaskCancelSupported).
+		canceller, ok := provider.(schemas.ImageTaskCanceller)
+		if !ok {
+			return nil, schemas.NewImageTaskCancelUnsupportedError("")
+		}
+		imageTaskCancelResponse, bifrostError := canceller.ImageTaskCancel(req.Context, key, req.BifrostRequest.ImageTaskCancelRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.ImageTaskResponse = imageTaskCancelResponse
 	case schemas.FileUploadRequest:
 		fileUploadResponse, bifrostError := provider.FileUpload(req.Context, key, req.BifrostRequest.FileUploadRequest)
 		if bifrostError != nil {
@@ -10806,6 +10950,8 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.VideoRemixRequest = nil
 	req.VideoDeleteRequest = nil
 	req.VideoCancelRequest = nil
+	req.ImageTaskRetrieveRequest = nil
+	req.ImageTaskCancelRequest = nil
 	req.FileUploadRequest = nil
 	req.FileListRequest = nil
 	req.FileRetrieveRequest = nil
@@ -11101,7 +11247,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 
 	// Skip model check conditions
 	// We can improve these conditions in the future
-	skipModelCheck := (model == "" && (isFileRequestType(requestType) || isBatchRequestType(requestType) || isContainerRequestType(requestType) || isCachedContentRequestType(requestType) || isModellessVideoRequestType(requestType) || isPassthroughRequestType(requestType) || requestType == schemas.LiveRequest || requestType == schemas.LiveContentRequest)) || requestType == schemas.ListModelsRequest || isResponsesLifecycleRequestType(requestType)
+	skipModelCheck := (model == "" && (isFileRequestType(requestType) || isBatchRequestType(requestType) || isContainerRequestType(requestType) || isCachedContentRequestType(requestType) || isModellessVideoRequestType(requestType) || isModellessImageTaskRequestType(requestType) || isPassthroughRequestType(requestType) || requestType == schemas.LiveRequest || requestType == schemas.LiveContentRequest)) || requestType == schemas.ListModelsRequest || isResponsesLifecycleRequestType(requestType)
 	if skipModelCheck {
 		// When skipping model check: just verify keys are enabled and have values
 		for _, key := range keys {

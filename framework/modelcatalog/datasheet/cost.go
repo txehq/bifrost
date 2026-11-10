@@ -569,7 +569,9 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	// succeeded) would otherwise be billed again on every poll, inflating logs, traces and
 	// governance budgets.
 	// A cancel returns the same task object and is no generation either (fork, TXE-6521).
-	if requestType == schemas.VideoRetrieveRequest || requestType == schemas.VideoCancelRequest {
+	// The image task query and cancel return the task object too (fork, TXE-6431).
+	if requestType == schemas.VideoRetrieveRequest || requestType == schemas.VideoCancelRequest ||
+		requestType == schemas.ImageTaskRetrieveRequest || requestType == schemas.ImageTaskCancelRequest {
 		return nil
 	}
 

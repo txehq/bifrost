@@ -551,6 +551,14 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.VideoDownload
 	case VideoDeleteRequest:
 		return ar.VideoDelete
+	case ImageGenerationTaskRequest:
+		// Fork (TXE-6431): an image task is the vendor's image generation, served as a task.
+		return ar.ImageGeneration
+	case ImageEditTaskRequest:
+		return ar.ImageEdit
+	case ImageTaskRetrieveRequest, ImageTaskCancelRequest:
+		// A query or cancel of a task the caller could create through either operation.
+		return ar.ImageGeneration || ar.ImageEdit
 	case VideoCancelRequest:
 		// Fork (TXE-6521): cancel has no flag of its own. On the vendors that have it, it is the
 		// delete API restricted to queued tasks, so it follows the delete permission.

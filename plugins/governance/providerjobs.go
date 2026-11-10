@@ -66,6 +66,8 @@ func providerObjectLabel(kind string) string {
 		return "cached content"
 	case configstoreTables.ProviderObjectKindContainerFile:
 		return "container file"
+	case configstoreTables.ProviderObjectKindImageTask:
+		return "image task"
 	}
 	return "object"
 }
@@ -128,7 +130,8 @@ func providerObjectIDForms(kind string, provider schemas.ModelProvider, id strin
 	if id == "" {
 		return nil
 	}
-	if kind == configstoreTables.ProviderObjectKindVideo {
+	// An image task id has the video id's shape, "{URL-encoded vendor id}:{provider}".
+	if kind == configstoreTables.ProviderObjectKindVideo || kind == configstoreTables.ProviderObjectKindImageTask {
 		return videoIDForms(provider, id)
 	}
 	forms := []string{id}
@@ -198,6 +201,10 @@ func providerObjectReference(req *schemas.BifrostRequest) (providerObjectRef, bo
 		return objectRef(video, req.VideoDeleteRequest.Provider, req.VideoDeleteRequest.ID)
 	case req.VideoCancelRequest != nil:
 		return objectRef(video, req.VideoCancelRequest.Provider, req.VideoCancelRequest.ID)
+	case req.ImageTaskRetrieveRequest != nil:
+		return objectRef(configstoreTables.ProviderObjectKindImageTask, req.ImageTaskRetrieveRequest.Provider, req.ImageTaskRetrieveRequest.ID)
+	case req.ImageTaskCancelRequest != nil:
+		return objectRef(configstoreTables.ProviderObjectKindImageTask, req.ImageTaskCancelRequest.Provider, req.ImageTaskCancelRequest.ID)
 	case req.VideoRemixRequest != nil:
 		return objectRef(video, req.VideoRemixRequest.Provider, req.VideoRemixRequest.ID)
 	case req.VideoListRequest != nil:
@@ -1480,6 +1487,8 @@ func (p *GovernancePlugin) recordProviderObjectLifecycle(ctx *schemas.BifrostCon
 		createdKind, createdID = configstoreTables.ProviderObjectKindFile, result.FileUploadResponse.ID
 	case result.VideoGenerationResponse != nil && (requestType == schemas.VideoGenerationRequest || requestType == schemas.VideoEditRequest || requestType == schemas.VideoRemixRequest):
 		createdKind, createdID = configstoreTables.ProviderObjectKindVideo, result.VideoGenerationResponse.ID
+	case result.ImageTaskResponse != nil && (requestType == schemas.ImageGenerationTaskRequest || requestType == schemas.ImageEditTaskRequest):
+		createdKind, createdID = configstoreTables.ProviderObjectKindImageTask, result.ImageTaskResponse.ID
 	case result.ContainerCreateResponse != nil:
 		createdKind, createdID = configstoreTables.ProviderObjectKindContainer, result.ContainerCreateResponse.ID
 	case result.ContainerFileCreateResponse != nil:

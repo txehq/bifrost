@@ -423,10 +423,14 @@ var modelAddressingByRequestType = map[string]bool{
 	"ImageEditStreamRequest":       false,
 	"ImageVariationRequest":        false,
 	"VideoGenerationRequest":       false,
-	"RerankRequest":                true,
-	"DecisionRequest":              true,
-	"OCRRequest":                   false,
-	"CountTokensRequest":           true,
+	// An image task create addresses the model as the sync route does; a 404 on BFL's
+	// /v1/{model} can only mean the model.
+	"ImageGenerationTaskRequest": true,
+	"ImageEditTaskRequest":       false,
+	"RerankRequest":              true,
+	"DecisionRequest":            true,
+	"OCRRequest":                 false,
+	"CountTokensRequest":         true,
 
 	// Addresses a resource id too, so a 404 is ambiguous.
 	"ResponsesRetrieveRequest":       false,
@@ -439,6 +443,8 @@ var modelAddressingByRequestType = map[string]bool{
 	"VideoDownloadRequest":           false,
 	"VideoDeleteRequest":             false,
 	"VideoCancelRequest":             false,
+	"ImageTaskRetrieveRequest":       false,
+	"ImageTaskCancelRequest":         false,
 	"VideoListRequest":               false,
 	"VideoRemixRequest":              false,
 	"BatchCreateRequest":             false,

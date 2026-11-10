@@ -936,6 +936,17 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.POST("/v1/videos/{video_id}/remix", lib.ChainMiddlewares(h.videoRemix, videoRemixMW...))
 	r.POST("/v1/videos/{video_id}/cancel", lib.ChainMiddlewares(h.videoCancel, videoCancelMW...))
 
+	// Image task endpoints (fork, TXE-6431, contract C7 BF16): for vendors whose image API is
+	// itself task-based. Every route carries its request type explicitly.
+	imageGenerationTaskMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ImageGenerationTaskRequest)}, middlewares...)
+	imageEditTaskMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ImageEditTaskRequest)}, middlewares...)
+	imageTaskRetrieveMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ImageTaskRetrieveRequest)}, middlewares...)
+	imageTaskCancelMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ImageTaskCancelRequest)}, middlewares...)
+	r.POST("/v1/images/generations/tasks", lib.ChainMiddlewares(h.imageGenerationTask, imageGenerationTaskMW...))
+	r.POST("/v1/images/edits/tasks", lib.ChainMiddlewares(h.imageEditTask, imageEditTaskMW...))
+	r.GET("/v1/images/tasks/{task_id}", lib.ChainMiddlewares(h.imageTaskRetrieve, imageTaskRetrieveMW...))
+	r.POST("/v1/images/tasks/{task_id}/cancel", lib.ChainMiddlewares(h.imageTaskCancel, imageTaskCancelMW...))
+
 	// Batch API endpoints (parameterized routes need explicit request type middleware)
 	batchCreateMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchCreateRequest)}, middlewares...)
 	batchListMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchListRequest)}, middlewares...)

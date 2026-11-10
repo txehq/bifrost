@@ -219,6 +219,14 @@ func (br *BifrostRequest) TaskControl() *TaskControlParameters {
 	if br.VideoGenerationRequest != nil && br.VideoGenerationRequest.Params != nil {
 		return &br.VideoGenerationRequest.Params.TaskControlParameters
 	}
+	// Fork (TXE-6431): an image task create carries its control fields beside the image request,
+	// set only by the image task routes, so the sync image routes are never checked.
+	switch {
+	case br.RequestType == ImageGenerationTaskRequest && br.ImageGenerationRequest != nil:
+		return br.ImageGenerationRequest.TaskControl
+	case br.RequestType == ImageEditTaskRequest && br.ImageEditRequest != nil:
+		return br.ImageEditRequest.TaskControl
+	}
 	return nil
 }
 

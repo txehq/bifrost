@@ -432,3 +432,30 @@ func BenchmarkCheckVideoCancelSupported(b *testing.B) {
 		})
 	}
 }
+
+// TXE-6431: the image task creates carry their control fields beside the image request, and only
+// on the task request types; a sync image request is never checked, whatever it carries.
+func TestTaskControlOfImageTasks(t *testing.T) {
+	control := &TaskControlParameters{CallbackURL: Ptr("https://hooks.tokun.sh/v/t1")}
+	gen := &BifrostRequest{RequestType: ImageGenerationTaskRequest, ImageGenerationRequest: &BifrostImageGenerationRequest{TaskControl: control}}
+	if gen.TaskControl() != control {
+		t.Fatal("image generation task: control fields not found")
+	}
+	edit := &BifrostRequest{RequestType: ImageEditTaskRequest, ImageEditRequest: &BifrostImageEditRequest{TaskControl: control}}
+	if edit.TaskControl() != control {
+		t.Fatal("image edit task: control fields not found")
+	}
+	sync := &BifrostRequest{RequestType: ImageGenerationRequest, ImageGenerationRequest: &BifrostImageGenerationRequest{TaskControl: control}}
+	if sync.TaskControl() != nil {
+		t.Fatal("a sync image request must carry no task control fields")
+	}
+	if err := CheckTaskControlFields(struct{}{}, sync); err != nil {
+		t.Fatalf("sync image request refused: %+v", err)
+	}
+	if err := CheckTaskControlFields(struct{}{}, gen); err == nil || err.Error.Param != TaskControlFieldCallbackURL {
+		t.Fatalf("undeclared callback_url on an image task: got %+v, want caller_unsupported_parameter", err)
+	}
+	if err := CheckImageTaskCancelSupported(struct{}{}, &BifrostRequest{RequestType: ImageTaskCancelRequest}); err == nil || err.ExtraFields.ErrorType != ErrorTypeProviderCancelUnsupported || err.ExtraFields.RequestType != ImageTaskCancelRequest {
+		t.Fatalf("image task cancel without a cancel API: got %+v", err)
+	}
+}
