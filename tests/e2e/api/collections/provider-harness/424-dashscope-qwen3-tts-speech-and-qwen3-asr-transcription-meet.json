@@ -647,8 +647,11 @@
               "  pm.expect(body.error && body.error.param, text).to.eql('response_format');",
               "  pm.expect(body.extra_fields && body.extra_fields.error_type, text).to.eql('caller_unsupported_parameter');",
               "});",
-              "pm.test('refused before a key is chosen: no upstream call', function () {",
-              "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), 'a key was chosen').to.not.be.ok;",
+              "// response_format is a field Qwen3-ASR takes (json), so the field gate passes it and the converter refuses",
+              "// the value after a key is chosen; the request is never sent, so no vendor answer comes back.",
+              "pm.test('refused in the request conversion: no vendor answer', function () {",
+              "  var body = pm.response.json();",
+              "  pm.expect(body.extra_fields && body.extra_fields.raw_response, 'a vendor answered').to.not.be.ok;",
               "});"
             ]
           }
