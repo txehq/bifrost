@@ -8,6 +8,7 @@ import (
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
+	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/capsohq/bifrost/framework/modelcatalog"
 	"github.com/capsohq/bifrost/framework/modelcatalog/datasheet"
 )
@@ -409,5 +410,54 @@ func TestPluginNeverDropsPriceAffectingChatParams(t *testing.T) {
 	}
 	if got := resp.ChatResponse.ExtraFields.DroppedCompatPluginParams; !slices.Equal(got, []string{"seed"}) {
 		t.Fatalf("dropped_compat_plugin_params = %v, want [seed]", got)
+	}
+}
+
+// BenchmarkPreLLMHook measures the plugin's request-path hook with the parameter drop
+// and should_convert_params on, for a model with a catalog record and an output limit
+// below the cap the request sends. Each request carries the price-affecting fields the
+// hook must leave alone and one field it drops.
+func BenchmarkPreLLMHook(b *testing.B) {
+	ds := datasheet.NewTestStore(nil)
+	ds.SetSupportedParamsForTest(map[string][]string{"gemini-test-flash": {"temperature", "tools"}})
+	ds.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
+		{Model: "gemini-test-flash", Provider: string(schemas.Gemini), Mode: "chat", MaxOutputTokens: new(65536)},
+	})
+	p, err := Init(Config{ShouldDropParams: true, ShouldConvertParams: true}, bifrost.NewNoOpLogger(), modelcatalog.NewTestCatalogWithDatasheet(ds))
+	if err != nil {
+		b.Fatalf("Init: %v", err)
+	}
+	requests := map[string]*schemas.BifrostRequest{
+		"chat": {
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.Gemini, Model: "gemini-test-flash", Params: &schemas.ChatParameters{
+				MaxCompletionTokens: new(1000000),
+				ServiceTier:         schemas.Ptr(schemas.BifrostServiceTierFlex),
+				PromptCacheKey:      schemas.Ptr("tenant-42"),
+				Reasoning:           &schemas.ChatReasoning{Effort: new("high"), MaxTokens: new(100000)},
+				Temperature:         schemas.Ptr(0.5),
+				Seed:                schemas.Ptr(7),
+			}},
+		},
+		"responses": newResponsesRequest(schemas.Gemini, "gemini-test-flash", &schemas.ResponsesParameters{
+			MaxOutputTokens: new(1000000),
+			ServiceTier:     schemas.Ptr(schemas.BifrostServiceTierFlex),
+			PromptCacheKey:  schemas.Ptr("tenant-42"),
+			Reasoning:       &schemas.ResponsesParametersReasoning{Effort: new("high"), MaxTokens: new(100000)},
+			Temperature:     schemas.Ptr(0.5),
+			TopP:            schemas.Ptr(0.5),
+		}),
+	}
+	for _, shape := range []string{"chat", "responses"} {
+		req := requests[shape]
+		b.Run(shape, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := newTestContext()
+				if _, _, err := p.PreLLMHook(ctx, req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
