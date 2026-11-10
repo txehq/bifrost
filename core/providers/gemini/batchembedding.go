@@ -88,7 +88,7 @@ func ToGeminiEmbeddingBatchLineRequests(item schemas.BatchRequestItem, provider 
 		return [][]byte{encoded}, nil
 	}
 	if endpoint := item.Endpoint(schemas.BatchEndpointEmbeddings); endpoint != schemas.BatchEndpointEmbeddings {
-		return nil, &schemas.BatchLineError{CustomID: item.CustomID, Param: "url", Message: fmt.Sprintf("url %s differs from the batch's other lines (%s): a batch runs one url", endpoint, schemas.BatchEndpointEmbeddings)}
+		return nil, &schemas.BatchLineError{CustomID: item.CustomID, Param: "url", Unsupported: true, Message: fmt.Sprintf("url %s differs from the batch's other lines (%s): a batch runs one url", endpoint, schemas.BatchEndpointEmbeddings)}
 	}
 	embeddingRequest, err := item.ToBifrostEmbeddingRequest(provider, model)
 	if err != nil {

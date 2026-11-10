@@ -648,6 +648,53 @@ const geminiFileUpload = () => {
 	return { status: 200, body: JSON.stringify({ file: { name, displayName: "sample.png", mimeType: "image/png", sizeBytes: "70", createTime: "2026-11-10T00:00:00Z", state: "ACTIVE", uri: `https://generativelanguage.googleapis.com/v1beta/${name}` } }) };
 };
 
+// Gemini embedding batches, TXE-6637 (folder 406; contract C3, C8). POST /pp/gemini/models/<model>:asyncBatchEmbedContent
+// answers the pending EmbedContentBatch Operation a create returns, POST /pp/gemini/batches/<id>:cancel answers {},
+// and GET /pp/gemini/batches/<id> answers by id: emb-fixture-done is a finished inline batch of four lines (one
+// input; three inputs sent as three requests; a line the vendor failed; two inputs, one of which failed), any other
+// id is Gemini's NOT_FOUND. A GET bearing a key other than test-key is Gemini's "API key not valid" 400, which is how
+// a row tells which of a provider's keys was called. No asyncBatchEmbedContent response has been recorded for these
+// rows: the shapes are the API reference's (BATCH_STATE_*, response.inlinedResponses), which the fork's types decode.
+const geminiEmbedBatchJob = (id, state, extra) => ({
+	name: `batches/${id}`,
+	metadata: { "@type": "type.googleapis.com/google.ai.generativelanguage.v1beta.EmbedContentBatch", name: `batches/${id}`, displayName: "fixture-embedding-batch", model: "models/pp-embedding", state, createTime: "2026-11-10T08:00:00Z", updateTime: "2026-11-10T08:00:00Z", ...extra },
+});
+const geminiEmbedLine = (key, values, tokens, position) => ({
+	metadata: { key, bifrost_endpoint: "/v1/embeddings", ...(position ? { bifrost_input_index: String(position[0]), bifrost_input_count: String(position[1]) } : {}) },
+	response: { embedding: { values }, usageMetadata: { promptTokenCount: tokens, promptTokenDetails: [{ modality: "TEXT", tokenCount: tokens }] } },
+});
+const geminiEmbedBatchDone = {
+	...geminiEmbedBatchJob("emb-fixture-done", "BATCH_STATE_SUCCEEDED", { endTime: "2026-11-10T09:30:00Z", batchStats: { requestCount: "7", successfulRequestCount: "5", failedRequestCount: "2" } }),
+	done: true,
+	response: {
+		"@type": "type.googleapis.com/google.ai.generativelanguage.v1beta.EmbedContentBatchOutput",
+		inlinedResponses: {
+			inlinedResponses: [
+				geminiEmbedLine("emb-1", [0.1, 0.2, 0.3], 7),
+				geminiEmbedLine("emb-2", [1, 1.5], 5, [0, 3]),
+				geminiEmbedLine("emb-2", [2, 2.5], 6, [1, 3]),
+				geminiEmbedLine("emb-2", [3, 3.5], 4, [2, 3]),
+				{ metadata: { key: "emb-3", bifrost_endpoint: "/v1/embeddings" }, error: { code: 400, message: "Request contains an invalid argument.", status: "INVALID_ARGUMENT" } },
+				geminiEmbedLine("emb-4", [9, 9.5], 3, [0, 2]),
+				{ metadata: { key: "emb-4", bifrost_endpoint: "/v1/embeddings", bifrost_input_index: "1", bifrost_input_count: "2" }, error: { code: 429, message: "Resource has been exhausted.", status: "RESOURCE_EXHAUSTED" } },
+			],
+		},
+	},
+};
+const geminiEmbedBatchCreate = (path, body) => {
+	if (/^\/pp\/gemini\/batches\/[^/:]+:cancel$/.test(path)) return { status: 200, body: "{}" };
+	if (!/^\/pp\/gemini\/models\/[^/:]+:asyncBatchEmbedContent$/.test(path)) return undefined;
+	const sent = body?.batch?.inputConfig?.requests?.requests?.length || 0;
+	return { status: 200, body: JSON.stringify(geminiEmbedBatchJob("emb-fixture-created", "BATCH_STATE_PENDING", { displayName: body?.batch?.displayName, batchStats: { requestCount: String(sent), pendingRequestCount: String(sent) } })) };
+};
+const geminiEmbedBatchGet = (id, key) => {
+	if (key !== "test-key") {
+		return { status: 400, body: JSON.stringify({ error: { code: 400, message: "API key not valid. Please pass a valid API key.", status: "INVALID_ARGUMENT" } }) };
+	}
+	if (id === "emb-fixture-done") return { status: 200, body: JSON.stringify(geminiEmbedBatchDone) };
+	return { status: 404, body: JSON.stringify({ error: { code: 404, message: `Batch batches/${id} was not found.`, status: "NOT_FOUND" } }) };
+};
+
 // MiniMax speech usage, TXE-6629. A recorded /v1/t2a_v2 extra_info: usage_characters is what MiniMax bills and
 // audio_length is milliseconds. A non-streamed answer carries hex audio; a streamed one sends status-1 audio chunks and
 // a status-2 chunk with extra_info and, under exclude_aggregated_audio, no audio.
@@ -835,6 +882,8 @@ const wireAnswer = (path, body, bytes) => {
 	if (path === "/pp/gemini/files") return geminiFileUpload();
 	const vendorChat = /^\/pp\/(tencent|stepfun|stepfun-cn|xiaomi)\/v1\/chat\/completions$/.exec(path);
 	if (vendorChat) return vendorChatAnswer(vendorChat[1], body);
+	const geminiEmbedBatch = geminiEmbedBatchCreate(path, body);
+	if (geminiEmbedBatch) return geminiEmbedBatch;
 	if (path === "/pp/bounds/v1/chat/completions") {
 		return { status: 200, body: JSON.stringify({ id: "chatcmpl_bounds", object: "chat.completion", created: 1, model: body.model, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) };
 	}
@@ -1523,6 +1572,13 @@ const handleRequest = (req, res) => {
 	const storageBatch = /^\/pp\/storage\/v1\/batches\/([^/]+)$/.exec(path);
 	if (req.method === "GET" && storageBatch) {
 		const answer = storageBatchRetrieve(decodeURIComponent(storageBatch[1]));
+		return send(answer.status, {}, answer.body);
+	}
+	// A Gemini batch job read (retrieve and results); the key that asked is recorded with the call.
+	if (req.method === "GET" && /^\/pp\/gemini\/batches\/[^/:]+$/.test(path)) {
+		const key = req.headers["x-goog-api-key"] || "";
+		wireCalls.push({ path, query: new URL(req.url, "http://localhost").search, body: "", key });
+		const answer = geminiEmbedBatchGet(decodeURIComponent(path.slice("/pp/gemini/batches/".length)), key);
 		return send(answer.status, {}, answer.body);
 	}
 	if (req.method === "GET" && path.startsWith("/pp/minimax/v2/query/video_generation/")) {

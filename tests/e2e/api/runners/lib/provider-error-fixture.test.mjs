@@ -690,3 +690,31 @@ test("seedance task routes answer by task id and count queries and deletes", asy
   const wire = (await (await fetch(`${base}/__wire`)).json()).data[0].calls;
   assert.deepEqual(wire.map((c) => c.path), ["/pp/byteplus/api/v3/contents/generations/tasks"]);
 });
+
+// TXE-6637: the Gemini embedding batch answers folder 406 reads through the gateway.
+test("Gemini embedding batch: create, cancel, a finished job by id, and the invalid-key answer", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}/pp/gemini`;
+  const created = await post({ batch: { displayName: "d", inputConfig: { requests: { requests: [{ request: {} }, { request: {} }] } } } }, "/pp/gemini/models/pp-embedding:asyncBatchEmbedContent");
+  assert.equal(created.status, 200);
+  const job = await created.json();
+  assert.equal(job.name, "batches/emb-fixture-created");
+  assert.equal(job.metadata.state, "BATCH_STATE_PENDING");
+  assert.equal(job.metadata.batchStats.requestCount, "2");
+  assert.equal((await post({}, "/pp/gemini/batches/emb-fixture-created:cancel")).status, 200);
+
+  const get = (id, key) => fetch(`${base}/batches/${id}`, { headers: { "x-goog-api-key": key } });
+  const done = await get("emb-fixture-done", "test-key");
+  assert.equal(done.status, 200);
+  const doneJob = await done.json();
+  assert.equal(doneJob.metadata.state, "BATCH_STATE_SUCCEEDED");
+  assert.equal(doneJob.response.inlinedResponses.inlinedResponses.length, 7);
+  assert.equal((await get("no-such-batch", "test-key")).status, 404);
+  const refused = await get("emb-fixture-done", "dead-key");
+  assert.equal(refused.status, 400);
+  assert.match((await refused.json()).error.message, /API key not valid/);
+
+  const wire = await (await fetch(`http://127.0.0.1:${post.port}/__wire`)).json();
+  const reads = wire.data[0].calls.filter((c) => c.path.startsWith("/pp/gemini/batches/") && c.key !== undefined);
+  assert.deepEqual(reads.map((c) => c.key), ["test-key", "test-key", "dead-key"]);
+});
