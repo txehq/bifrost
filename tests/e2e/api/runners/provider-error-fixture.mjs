@@ -713,7 +713,8 @@ const wireAnswer = (path, body, bytes) => {
 	if (path === "/pp/vercel/v1/images/generations") return { status: 200, body: JSON.stringify(vercelImageAnswer(body)) };
 	if (path === "/pp/cp/v1/responses") return cpResponsesAnswerFor(body);
 	if (path === "/pp/cloudflare/accounts/acct-1/ai/v1/chat/completions") return cpCloudflareChat(body);
-	if (path === "/pp/xai/v1/messages" || path === "/pp/anthropic/v1/messages") {
+	// DeepSeek's Anthropic-compatible endpoint is {base}/anthropic/v1/messages (TXE-6548), under the same /pp/oc base its chat uses.
+	if (path === "/pp/xai/v1/messages" || path === "/pp/anthropic/v1/messages" || path === "/pp/oc/anthropic/v1/messages") {
 		if (body.model === "pp-fail") return { status: 400, body: JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "fixture refused" } }) };
 		if (body.stream === true) return { status: 200, stream: anthropicMessageStream(body.model) };
 		return { status: 200, body: JSON.stringify(anthropicMessage(body.model)) };
@@ -948,6 +949,9 @@ const server = http.createServer((req, res) => {
 			"hy-tiered": { provider: "tencent_tokenhub", mode: "chat", service_tiers: ["default", "priority"] },
 			"step-tiered": { provider: "stepfun", mode: "chat", service_tiers: ["default", "priority"] },
 			"mimo-tiered": { provider: "xiaomi", mode: "chat", service_tiers: ["default", "priority"] },
+			// TXE-6548: a DeepSeek model served under another id, as DeepSeek serves deepseek-v4-flash as deepseek-flash, so the
+			// native Messages rows can read the served model the gateway stamps from server_side_model.
+			"fx-deepseek-flash": { provider: "deepseek", mode: "chat", server_side_model: "fx-deepseek-served" },
 		}));
 	}
 	if (req.method === "POST" && path === "/__reset") {

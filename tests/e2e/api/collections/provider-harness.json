@@ -315262,11 +315262,23 @@
     },
     {
       "name": "311. DeepSeek native Messages passes through to the Anthropic-compatible endpoint (TXE-6548) (deepseek-native-messages)",
-      "description": "Fork contract (TXE-6548, Bifrost-Tokun contract C2, C5, C11): DeepSeek implements AnthropicMessagesEndpoint ({base}/anthropic), so POST /anthropic/v1/messages with a deepseek/ model takes the byte-preserving native passthrough to https://api.deepseek.com/anthropic/v1/messages instead of the Responses bridge, which dropped every Anthropic field the Responses structure has no slot for. Only the model value changes (the provider prefix comes off, and a key alias becomes its model id); DeepSeek's status, headers and body come back unchanged, including its Anthropic-shape usage. The routed-identity header x-bifrost-request-type names the path (passthrough, passthrough_stream). Because the body is no longer rewritten, a named tool_choice now reaches DeepSeek with thinking at its default (on), and DeepSeek answers 400 (api-docs.deepseek.com/guides/anthropic_api); the fourth case pins that the 400 is DeepSeek's own. The third case goes through the harness profile's deepseek-v4-flash-anthropic key alias: core resolves aliases per key, and the shared Messages client now swaps the alias name in the body for its model id. The unary, stream and alias cases also pin x-bifrost-routing-info-server-side-fallback-model: DeepSeek serves deepseek-v4-flash as deepseek-flash and echoes the requested id, so the datasheet's server_side_model is stamped for pricing on this path as on the bridge. Byte-exactness is pinned offline by TestAnthropicMessagesRouteDeepSeekForwardsBodyByteExact in transports/bifrost-http/integrations. Run with FEATURE=deepseek-native-messages.",
+      "description": "Fork contract (TXE-6548, Bifrost-Tokun contract C2, C5, C11): DeepSeek implements AnthropicMessagesEndpoint ({base}/anthropic), so POST /anthropic/v1/messages with a deepseek/ model takes the byte-preserving native passthrough to https://api.deepseek.com/anthropic/v1/messages instead of the Responses bridge, which dropped every Anthropic field the Responses structure has no slot for. Only the model value changes (the provider prefix comes off, and a key alias becomes its model id); DeepSeek's status, headers and body come back unchanged, including its Anthropic-shape usage. The routed-identity header x-bifrost-request-type names the path (passthrough, passthrough_stream). Because the body is no longer rewritten, a named tool_choice now reaches DeepSeek with thinking at its default (on), and DeepSeek answers 400 (api-docs.deepseek.com/guides/anthropic_api); the fourth case pins that the 400 is DeepSeek's own. The third case goes through the harness profile's deepseek-v4-flash-anthropic key alias: core resolves aliases per key, and the shared Messages client now swaps the alias name in the body for its model id. The unary, stream and alias cases also pin x-bifrost-routing-info-server-side-fallback-model: DeepSeek serves deepseek-v4-flash as deepseek-flash and echoes the requested id, so the datasheet's server_side_model is stamped for pricing on this path as on the bridge. Byte-exactness is pinned offline by TestAnthropicMessagesRouteDeepSeekForwardsBodyByteExact in transports/bifrost-http/integrations. Run with FEATURE=deepseek-native-messages. Cases 1-4 need the live DeepSeek API (thinking-mode refusal, real answers) and skip when providerErrorFixture=1. Cases 5-8 run offline against tests/e2e/api/runners/provider-error-fixture.mjs with the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json (providerErrorFixture=1): the fixture plays DeepSeek's Anthropic endpoint under /pp/oc/anthropic, records the bytes it receives (GET /__wire), and its datasheet serves fx-deepseek-flash as fx-deepseek-served; each row finds its own request by a metadata.user_id marker, so no fixture reset is needed.",
       "item": [
         {
           "name": "deepseek/deepseek-v4-flash /anthropic/v1/messages takes the native passthrough and returns DeepSeek's usage - TXE-6548",
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Needs the live DeepSeek API: the fixture rows below pin the same wire behaviour offline.",
+                  "if (pm.variables.get('providerErrorFixture') === '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
             {
               "listen": "test",
               "script": {
@@ -315334,6 +315346,18 @@
           "name": "deepseek/deepseek-v4-flash /anthropic/v1/messages (stream) relays DeepSeek's SSE through the native passthrough - TXE-6548",
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Needs the live DeepSeek API: the fixture rows below pin the same wire behaviour offline.",
+                  "if (pm.variables.get('providerErrorFixture') === '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
@@ -315394,6 +315418,18 @@
           "name": "deepseek/deepseek-v4-flash-anthropic (key alias) /anthropic/v1/messages reaches DeepSeek as the alias's model id - TXE-6548",
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Needs the live DeepSeek API: the fixture rows below pin the same wire behaviour offline.",
+                  "if (pm.variables.get('providerErrorFixture') === '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
@@ -315452,8 +315488,20 @@
           }
         },
         {
-          "name": "deepseek/deepseek-v4-flash /anthropic/v1/messages returns DeepSeek's 400 as is for a named tool_choice in thinking mode - TXE-6548",
+          "name": "deepseek/deepseek-v4-flash /anthropic/v1/messages returns DeepSeek's 400 as is for a named tool_choice in thinking mode - TXE-6548 [EXPECT-400]",
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Needs the live DeepSeek API: the fixture rows below pin the same wire behaviour offline.",
+                  "if (pm.variables.get('providerErrorFixture') === '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
             {
               "listen": "test",
               "script": {
@@ -315502,6 +315550,313 @@
               ]
             }
           }
+        },
+        {
+          "name": "fixture: deepseek/fx-deepseek-flash /anthropic/v1/messages reaches DeepSeek's Anthropic endpoint byte for byte but for the model prefix - TXE-6548",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var sent = pm.request.body.raw;",
+                  "var marker = JSON.parse(sent).metadata.user_id;",
+                  "// wire: the last request that reached the fixture's DeepSeek Anthropic endpoint carrying this row's marker, bytes as they",
+                  "// arrived. The marker keeps the row correct without a fixture reset, whatever ran before it.",
+                  "function wire(cb) {",
+                  "  pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+                  "    pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "    var calls = ((res && res.json().data[0].calls) || []).filter(function (c) { return c.body.indexOf(marker) !== -1; });",
+                  "    cb(calls);",
+                  "  });",
+                  "}",
+                  "pm.test('fixture: the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('fixture: routed through the native passthrough to DeepSeek (TXE-6548)', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-type'), 'took the Responses bridge, not the native passthrough: ' + pm.response.text().slice(0, 300)).to.eql('passthrough');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'answered by another provider').to.eql('deepseek');",
+                  "});",
+                  "pm.test('fixture: the client gets DeepSeek\\'s Anthropic message and usage unchanged (C2, C5)', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.type).to.eql('message');",
+                  "  pm.expect(j.model, 'the fixture echoes the model it received').to.eql('fx-deepseek-flash');",
+                  "  pm.expect(j, 'Bifrost wrapped the vendor body').to.not.have.property('extra_fields');",
+                  "  pm.expect(j.usage).to.eql({ input_tokens: 12, output_tokens: 3 });",
+                  "});",
+                  "pm.test('fixture: the served model from the datasheet is stamped for pricing (TXE-6548)', function () {",
+                  "  // The fixture's model-parameters datasheet gives fx-deepseek-flash server_side_model fx-deepseek-served, as DeepSeek serves",
+                  "  // deepseek-v4-flash as deepseek-flash; the vendor body is left alone, so only the routing header carries it.",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-server-side-fallback-model'), 'served model not stamped on the native path').to.eql('fx-deepseek-served');",
+                  "});",
+                  "wire(function (calls) {",
+                  "  pm.test('fixture: the body reached DeepSeek byte for byte but for the model prefix', function () {",
+                  "    pm.expect(calls.length, 'requests with this row\\'s marker that reached the fixture').to.be.above(0);",
+                  "    var call = calls[calls.length - 1];",
+                  "    pm.expect(call.path, 'the request did not reach DeepSeek\\'s Anthropic endpoint').to.equal('/pp/oc/anthropic/v1/messages');",
+                  "    pm.expect(call.body).to.equal(sent.replace('\"deepseek/fx-deepseek-flash\"', '\"fx-deepseek-flash\"'));",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"deepseek/fx-deepseek-flash\",\"max_tokens\":64,\"metadata\":{\"user_id\":\"txe-6548-fx-unary\"},\n  \"system\":[{\"type\":\"text\",\"text\":\"Be brief.\",\"cache_control\":{\"type\":\"ephemeral\"}}],\n  \"messages\":[{\"role\":\"user\",\"content\":\"Caf\\u00e9?\"}], \"zz_vendor_field\": {\"kept\": true}}"
+            },
+            "url": "{{baseUrl}}/anthropic/v1/messages"
+          },
+          "response": []
+        },
+        {
+          "name": "fixture: deepseek/fx-deepseek-flash /anthropic/v1/messages (stream) relays DeepSeek's SSE through the native passthrough - TXE-6548",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var sent = pm.request.body.raw;",
+                  "var marker = JSON.parse(sent).metadata.user_id;",
+                  "// wire: the last request that reached the fixture's DeepSeek Anthropic endpoint carrying this row's marker, bytes as they",
+                  "// arrived. The marker keeps the row correct without a fixture reset, whatever ran before it.",
+                  "function wire(cb) {",
+                  "  pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+                  "    pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "    var calls = ((res && res.json().data[0].calls) || []).filter(function (c) { return c.body.indexOf(marker) !== -1; });",
+                  "    cb(calls);",
+                  "  });",
+                  "}",
+                  "var out = pm.response.text();",
+                  "pm.test('fixture: the client gets 200', function () { pm.expect(pm.response.code, out.slice(0, 400)).to.equal(200); });",
+                  "pm.test('fixture: routed through the native passthrough to DeepSeek (TXE-6548)', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-type'), 'took the Responses bridge, not the native passthrough: ' + pm.response.text().slice(0, 300)).to.eql('passthrough_stream');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'answered by another provider').to.eql('deepseek');",
+                  "});",
+                  "pm.test('fixture: the SSE frames come back as DeepSeek sent them', function () {",
+                  "  pm.expect(out, 'no message_start').to.include('event: message_start');",
+                  "  pm.expect(out, 'no text delta').to.include('\"text_delta\",\"text\":\"hello\"');",
+                  "  pm.expect(out, 'no message_stop').to.include('event: message_stop');",
+                  "  pm.expect(out, 'Bifrost converted the stream').to.not.include('chat.completion');",
+                  "});",
+                  "pm.test('fixture: the served model from the datasheet is stamped for pricing (TXE-6548)', function () {",
+                  "  // The fixture's model-parameters datasheet gives fx-deepseek-flash server_side_model fx-deepseek-served, as DeepSeek serves",
+                  "  // deepseek-v4-flash as deepseek-flash; the vendor body is left alone, so only the routing header carries it.",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-server-side-fallback-model'), 'served model not stamped on the native path').to.eql('fx-deepseek-served');",
+                  "});",
+                  "wire(function (calls) {",
+                  "  pm.test('fixture: the streamed request reached DeepSeek byte for byte but for the model prefix', function () {",
+                  "    pm.expect(calls.length, 'requests with this row\\'s marker that reached the fixture').to.be.above(0);",
+                  "    var call = calls[calls.length - 1];",
+                  "    pm.expect(call.path, 'the request did not reach DeepSeek\\'s Anthropic endpoint').to.equal('/pp/oc/anthropic/v1/messages');",
+                  "    pm.expect(call.body).to.equal(sent.replace('\"deepseek/fx-deepseek-flash\"', '\"fx-deepseek-flash\"'));",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"deepseek/fx-deepseek-flash\",\"max_tokens\":64,\"stream\":true,\"metadata\":{\"user_id\":\"txe-6548-fx-stream\"},\n  \"messages\":[{\"role\":\"user\",\"content\":\"hi\"}], \"zz_vendor_field\": {\"kept\": true}}"
+            },
+            "url": "{{baseUrl}}/anthropic/v1/messages"
+          },
+          "response": []
+        },
+        {
+          "name": "fixture: deepseek/fx-deepseek-flash-anthropic (key alias) /anthropic/v1/messages reaches DeepSeek as the alias's model id - TXE-6548",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var sent = pm.request.body.raw;",
+                  "var marker = JSON.parse(sent).metadata.user_id;",
+                  "// wire: the last request that reached the fixture's DeepSeek Anthropic endpoint carrying this row's marker, bytes as they",
+                  "// arrived. The marker keeps the row correct without a fixture reset, whatever ran before it.",
+                  "function wire(cb) {",
+                  "  pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+                  "    pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "    var calls = ((res && res.json().data[0].calls) || []).filter(function (c) { return c.body.indexOf(marker) !== -1; });",
+                  "    cb(calls);",
+                  "  });",
+                  "}",
+                  "pm.test('fixture: the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('fixture: routed through the native passthrough to DeepSeek (TXE-6548)', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-type'), 'took the Responses bridge, not the native passthrough: ' + pm.response.text().slice(0, 300)).to.eql('passthrough');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'answered by another provider').to.eql('deepseek');",
+                  "});",
+                  "pm.test('fixture: DeepSeek answered for the alias\\'s model id', function () {",
+                  "  pm.expect(pm.response.json().model, 'the alias name reached the vendor').to.eql('fx-deepseek-flash');",
+                  "});",
+                  "pm.test('fixture: the served model from the datasheet is stamped for pricing (TXE-6548)', function () {",
+                  "  // The fixture's model-parameters datasheet gives fx-deepseek-flash server_side_model fx-deepseek-served, as DeepSeek serves",
+                  "  // deepseek-v4-flash as deepseek-flash; the vendor body is left alone, so only the routing header carries it.",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-server-side-fallback-model'), 'served model not stamped on the native path').to.eql('fx-deepseek-served');",
+                  "});",
+                  "wire(function (calls) {",
+                  "  pm.test('fixture: the alias reached DeepSeek as its model id and nothing else changed', function () {",
+                  "    pm.expect(calls.length, 'requests with this row\\'s marker that reached the fixture').to.be.above(0);",
+                  "    var call = calls[calls.length - 1];",
+                  "    pm.expect(call.path, 'the request did not reach DeepSeek\\'s Anthropic endpoint').to.equal('/pp/oc/anthropic/v1/messages');",
+                  "    pm.expect(call.body).to.equal(sent.replace('\"deepseek/fx-deepseek-flash-anthropic\"', '\"fx-deepseek-flash\"'));",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"deepseek/fx-deepseek-flash-anthropic\",\"max_tokens\":64,\"metadata\":{\"user_id\":\"txe-6548-fx-alias\"},\n  \"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
+            },
+            "url": "{{baseUrl}}/anthropic/v1/messages"
+          },
+          "response": []
+        },
+        {
+          "name": "fixture: deepseek/pp-fail /anthropic/v1/messages returns DeepSeek's 400 status and body as is - TXE-6548 [EXPECT-400]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var sent = pm.request.body.raw;",
+                  "var marker = JSON.parse(sent).metadata.user_id;",
+                  "// wire: the last request that reached the fixture's DeepSeek Anthropic endpoint carrying this row's marker, bytes as they",
+                  "// arrived. The marker keeps the row correct without a fixture reset, whatever ran before it.",
+                  "function wire(cb) {",
+                  "  pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+                  "    pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "    var calls = ((res && res.json().data[0].calls) || []).filter(function (c) { return c.body.indexOf(marker) !== -1; });",
+                  "    cb(calls);",
+                  "  });",
+                  "}",
+                  "pm.test('fixture: the vendor status comes back unchanged (C11)', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.equal(400); });",
+                  "pm.test('fixture: routed through the native passthrough to DeepSeek (TXE-6548)', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-type'), 'took the Responses bridge, not the native passthrough: ' + pm.response.text().slice(0, 300)).to.eql('passthrough');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'answered by another provider').to.eql('deepseek');",
+                  "});",
+                  "pm.test('fixture: the vendor error body comes back byte for byte (C11)', function () {",
+                  "  pm.expect(pm.response.text()).to.equal('{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"fixture refused\"}}');",
+                  "});",
+                  "wire(function (calls) {",
+                  "  pm.test('fixture: the refused request reached the DeepSeek Anthropic endpoint', function () {",
+                  "    pm.expect(calls.length, 'requests with this row\\'s marker that reached the fixture').to.be.above(0);",
+                  "    var call = calls[calls.length - 1];",
+                  "    pm.expect(call.path, 'the request did not reach DeepSeek\\'s Anthropic endpoint').to.equal('/pp/oc/anthropic/v1/messages');",
+                  "    pm.expect(call.body).to.equal(sent.replace('\"deepseek/pp-fail\"', '\"pp-fail\"'));",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"deepseek/pp-fail\",\"max_tokens\":64,\"metadata\":{\"user_id\":\"txe-6548-fx-error\"},\n  \"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
+            },
+            "url": "{{baseUrl}}/anthropic/v1/messages"
+          },
+          "response": []
         }
       ]
     }
