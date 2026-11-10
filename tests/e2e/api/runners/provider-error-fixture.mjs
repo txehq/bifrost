@@ -979,7 +979,8 @@ const wireAnswer = (path, body, bytes) => {
 	// OpenAI-compatible chat as the vendor sees it, TXE-6527 (contract C4): moonshot posts to /v1/chat/completions and
 	// deepseek to /chat/completions under the same base. The recorded body is the assertion; the answer is a plain
 	// completion that echoes the tier it was asked for.
-	if (path === "/pp/oc/v1/chat/completions" || path === "/pp/oc/chat/completions") {
+	// TXE-6994: /pp/hf is the huggingface provider's base; its chat body has no service_tier field.
+	if (path === "/pp/oc/v1/chat/completions" || path === "/pp/oc/chat/completions" || path === "/pp/hf/v1/chat/completions") {
 		return { status: 200, body: JSON.stringify({ id: "chatcmpl_oc", object: "chat.completion", created: 1, model: body.model, service_tier: body.service_tier, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) };
 	}
 	if (path === "/pp/cp/v1/chat/completions") return cpChatAnswerFor(body);
