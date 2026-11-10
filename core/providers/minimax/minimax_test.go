@@ -717,6 +717,24 @@ func TestMiniMaxVideoV1QueryStatuses(t *testing.T) {
 	}
 }
 
+// A Hailuo create without seconds reports MiniMax's v1 default (6), so the task can be priced; no
+// duration is sent, so MiniMax applies that default itself.
+func TestMiniMaxVideoV1DefaultSeconds(t *testing.T) {
+	provider, captured := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+		"POST /v1/video_generation": jsonResponse(http.StatusOK, `{"task_id":"106916112212032","base_resp":{"status_code":0,"status_msg":"success"}}`),
+	})
+	created, bifrostErr := provider.VideoGeneration(testContext(t), testKey(), videoReq("MiniMax-Hailuo-2.3", nil))
+	if bifrostErr != nil {
+		t.Fatalf("VideoGeneration: %+v", bifrostErr.Error)
+	}
+	if created.Seconds == nil || *created.Seconds != "6" {
+		t.Errorf("seconds = %v, want 6", created.Seconds)
+	}
+	if reqs := captured(); len(reqs) != 1 || gjson.GetBytes(reqs[0].body, "duration").Exists() {
+		t.Errorf("v1 body should carry no duration: %+v", reqs)
+	}
+}
+
 // A v1 create answered with a 200 carrying base_resp 1026 is an error: 400 with the vendor's code.
 func TestMiniMaxVideoV1CreateContentBlock(t *testing.T) {
 	provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
@@ -1759,6 +1777,56 @@ func BenchmarkMiniMaxChatBaseRespError(b *testing.B) {
 		}
 		ctx.Cancel()
 	}
+}
+
+// benchMiniMaxVideo runs one provider call per iteration against a local server answering every path
+// with body, so the benchmark measures conversion, validation and decoding on the video request path.
+func benchMiniMaxVideo(b *testing.B, body string, call func(*minimax.MiniMaxProvider, *schemas.BifrostContext) *schemas.BifrostError) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		jsonResponse(http.StatusOK, body)(w)
+	}))
+	b.Cleanup(server.Close)
+	provider, err := minimax.NewMiniMaxProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		b.Fatalf("NewMiniMaxProvider: %v", err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if bifrostErr := call(provider, ctx); bifrostErr != nil {
+			b.Fatalf("call: %+v", bifrostErr.Error)
+		}
+		ctx.Cancel()
+	}
+}
+
+// BenchmarkMiniMaxVideoGenerationV2 is an H3 create with seconds, size and an image reference.
+func BenchmarkMiniMaxVideoGenerationV2(b *testing.B) {
+	req := &schemas.BifrostVideoGenerationRequest{Provider: schemas.MiniMax, Model: "MiniMax-H3", Input: &schemas.VideoGenerationInput{Prompt: "a dog", InputReference: schemas.Ptr("https://example.com/a.png")}, Params: &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("6"), Size: "1365x768"}}
+	benchMiniMaxVideo(b, `{"task_id":"424010985738629"}`, func(p *minimax.MiniMaxProvider, ctx *schemas.BifrostContext) *schemas.BifrostError {
+		_, e := p.VideoGeneration(ctx, testKey(), req)
+		return e
+	})
+}
+
+// BenchmarkMiniMaxVideoGenerationV1 is a Hailuo create (new in TXE-6428; no before figure).
+func BenchmarkMiniMaxVideoGenerationV1(b *testing.B) {
+	req := &schemas.BifrostVideoGenerationRequest{Provider: schemas.MiniMax, Model: "MiniMax-Hailuo-2.3", Input: &schemas.VideoGenerationInput{Prompt: "a dog", InputReference: schemas.Ptr("https://example.com/a.png")}, Params: &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("6"), Resolution: "768P"}}
+	benchMiniMaxVideo(b, `{"task_id":"106916112212032","base_resp":{"status_code":0,"status_msg":"success"}}`, func(p *minimax.MiniMaxProvider, ctx *schemas.BifrostContext) *schemas.BifrostError {
+		_, e := p.VideoGeneration(ctx, testKey(), req)
+		return e
+	})
+}
+
+// BenchmarkMiniMaxVideoRetrieveV2 is a query of a succeeded H3 task.
+func BenchmarkMiniMaxVideoRetrieveV2(b *testing.B) {
+	benchMiniMaxVideo(b, `{"task":{"id":"424010985738629","model":"MiniMax-H3","status":"succeeded","created_at":100,"updated_at":200,"content":{"url":"https://cdn.example/v.mp4"},"resolution":"768P","duration":6,"ratio":"16:9","usage":{"total_seconds":6,"output_seconds":6,"input_image_count":1,"completion_tokens":100}}}`, func(p *minimax.MiniMaxProvider, ctx *schemas.BifrostContext) *schemas.BifrostError {
+		_, e := p.VideoRetrieve(ctx, testKey(), &schemas.BifrostVideoRetrieveRequest{Provider: schemas.MiniMax, ID: "424010985738629:minimax"})
+		return e
+	})
 }
 
 // BenchmarkMiniMaxTextCompletion is the fork's text completion round trip against a local server.

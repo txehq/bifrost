@@ -27,6 +27,9 @@ const (
 	miniMaxVideoMaxDuration     = 15
 	miniMaxDefaultVideoTier     = "768P"
 
+	// miniMaxV1DefaultVideoDuration is the duration /v1/video_generation runs when none is sent.
+	miniMaxV1DefaultVideoDuration = 6
+
 	// miniMaxV1TaskIDPrefix marks a v1 (Hailuo) task in the id Bifrost returns:
 	// "v1-<MiniMax task id>:minimax". v1 and v2 task ids are both numeric strings, so without the
 	// mark a query could not tell which API to ask.
@@ -290,16 +293,24 @@ func miniMaxVideoTierForSize(size string) (string, string, bool) {
 	if err != nil {
 		return "", "", false
 	}
-	want := strconv.Itoa(w) + "x" + strconv.Itoa(h)
+	exact, ok := miniMaxV2SizeTiers[[2]int{w, h}]
+	return exact.tier, exact.ratio, ok
+}
+
+// miniMaxV2SizeTiers maps every exact v2 size (each tier at each ratio, as miniMaxVideoSize writes it) to
+// its tier and ratio, built once so a request's size check is one map load.
+var miniMaxV2SizeTiers = func() map[[2]int]struct{ tier, ratio string } {
+	sizes := make(map[[2]int]struct{ tier, ratio string }, len(miniMaxV2VideoTiers)*len(miniMaxVideoRatios))
 	for _, tier := range miniMaxV2VideoTiers {
 		for _, r := range miniMaxVideoRatios {
-			if miniMaxVideoSize(tier, r.name) == want {
-				return tier, r.name, true
+			w, h, err := parseImageSize(miniMaxVideoSize(tier, r.name))
+			if err == nil {
+				sizes[[2]int{w, h}] = struct{ tier, ratio string }{tier, r.name}
 			}
 		}
 	}
-	return "", "", false
-}
+	return sizes
+}()
 
 // MiniMaxV1VideoGenerationRequest is the body for POST /v1/video_generation (the Hailuo models).
 // prompt_optimizer, fast_pretreatment and other vendor switches arrive through the extra-field
@@ -630,6 +641,10 @@ func (provider *MiniMaxProvider) VideoGeneration(ctx *schemas.BifrostContext, ke
 	}
 	if duration := providerUtils.GetJSONField(jsonData, "duration").Int(); duration > 0 {
 		bifrostResp.Seconds = schemas.Ptr(strconv.FormatInt(duration, 10))
+	} else if isV1 {
+		// A v1 create without duration runs MiniMax's documented default, and a v1 query reports no
+		// duration, so the task's seconds are stated here; usage stays the vendor's own (empty for v1).
+		bifrostResp.Seconds = schemas.Ptr(strconv.Itoa(miniMaxV1DefaultVideoDuration))
 	}
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
 	if sendBackRawRequest {
