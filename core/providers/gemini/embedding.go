@@ -256,7 +256,7 @@ func ToGeminiEmbedContentResponse(bifrostResp *schemas.BifrostEmbeddingResponse)
 	embedding := GeminiEmbedding{
 		Values: append([]float64(nil), values...),
 	}
-	if bifrostResp.Usage != nil {
+	if bifrostResp.Usage != nil && bifrostResp.Usage.PromptTokens > 0 {
 		embedding.Statistics = &ContentEmbeddingStatistics{
 			TokenCount: int32(bifrostResp.Usage.PromptTokens),
 		}
@@ -276,7 +276,7 @@ func ToGeminiEmbeddingResponse(bifrostResp *schemas.BifrostEmbeddingResponse) *G
 
 	for i, embedding := range bifrostResp.Data {
 		geminiEmbedding := GeminiEmbedding{Values: append([]float64(nil), embedding.Embedding.EmbeddingArray...)}
-		if bifrostResp.Usage != nil && len(bifrostResp.Data) == 1 {
+		if bifrostResp.Usage != nil && bifrostResp.Usage.PromptTokens > 0 && len(bifrostResp.Data) == 1 {
 			geminiEmbedding.Statistics = &ContentEmbeddingStatistics{
 				TokenCount: int32(bifrostResp.Usage.PromptTokens),
 			}
@@ -287,9 +287,12 @@ func ToGeminiEmbeddingResponse(bifrostResp *schemas.BifrostEmbeddingResponse) *G
 	if len(geminiResp.Embeddings) == 1 {
 		geminiResp.Embedding = &geminiResp.Embeddings[0]
 	}
-	if bifrostResp.Usage != nil {
+	// The native response repeats only what the vendor reported (contract C5): token counts
+	// go in statistics.tokenCount, and metadata.billableCharacterCount is the billed character
+	// count, never a token count standing in for one.
+	if bifrostResp.Usage != nil && bifrostResp.Usage.BilledCharacters != nil {
 		geminiResp.Metadata = &EmbedContentMetadata{
-			BillableCharacterCount: int32(bifrostResp.Usage.PromptTokens),
+			BillableCharacterCount: int32(*bifrostResp.Usage.BilledCharacters),
 		}
 	}
 	return geminiResp

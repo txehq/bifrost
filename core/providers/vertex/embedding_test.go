@@ -290,3 +290,35 @@ func TestVertexEmbeddingRequestBodyRefusesNonFloatEncodingFormat(t *testing.T) {
 		})
 	}
 }
+
+// Request path cost of the Vertex text embedding conversion (TXE-6636).
+func BenchmarkToVertexEmbeddingRequest(b *testing.B) {
+	req := &schemas.BifrostEmbeddingRequest{
+		Provider: schemas.Vertex,
+		Model:    "text-embedding-005",
+		Input: []schemas.EmbeddingInputItem{
+			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("alpha kestrel harbor")}}},
+		},
+		Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("RETRIEVAL_QUERY")},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := ToVertexEmbeddingRequest(req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// Response path cost of reading Vertex usage, billable characters included (TXE-6636).
+func BenchmarkVertexEmbeddingResponseToBifrost(b *testing.B) {
+	var resp VertexEmbeddingResponse
+	if err := schemas.Unmarshal([]byte(`{"predictions":[{"embeddings":{"values":[0.1,0.2,0.3],"statistics":{"token_count":5,"truncated":false}}}],"metadata":{"billableCharacterCount":18}}`), &resp); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if out := resp.ToBifrostEmbeddingResponse(); out == nil {
+			b.Fatal("nil response")
+		}
+	}
+}

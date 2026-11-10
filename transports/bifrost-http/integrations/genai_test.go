@@ -722,3 +722,50 @@ func TestGenAIFlashLiteMinimalThinkingAfterRouting(t *testing.T) {
 		}
 	}
 }
+
+func genAIEmbeddingRoute(t *testing.T) *RouteConfig {
+	t.Helper()
+	routes := CreateGenAIRouteConfigs("/genai")
+	for i := range routes {
+		if routes[i].Path == "/genai/v1beta/models/{model:*}" && routes[i].EmbeddingResponseConverter != nil {
+			return &routes[i]
+		}
+	}
+	t.Fatal("no /genai/v1beta/models embedding route")
+	return nil
+}
+
+// /genai :batchEmbedContents and :embedContent answer in Gemini's shape rebuilt from unified
+// usage (TXE-6636, contract C5). The native response repeats only what the vendor reported:
+// metadata.billableCharacterCount is the billed character count (Vertex text models), never
+// the token count standing in for one, and nothing is written when nothing was reported.
+func TestGenAIEmbeddingRouteResponseRepeatsOnlyReportedUsage(t *testing.T) {
+	route := genAIEmbeddingRoute(t)
+	data := []schemas.EmbeddingData{{Index: 0, Object: "embedding", Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.1}}}}
+	convert := func(ctx *schemas.BifrostContext, usage *schemas.BifrostLLMUsage) []byte {
+		out, err := route.EmbeddingResponseConverter(ctx, &schemas.BifrostEmbeddingResponse{Data: data, Usage: usage})
+		require.NoError(t, err)
+		body, err := sonic.Marshal(out)
+		require.NoError(t, err)
+		return body
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	body := convert(ctx, &schemas.BifrostLLMUsage{PromptTokens: 7, TotalTokens: 7, BilledCharacters: schemas.Ptr(20)})
+	assert.Equal(t, int64(20), gjson.GetBytes(body, "metadata.billableCharacterCount").Int(), "%s", body)
+	assert.Equal(t, int64(7), gjson.GetBytes(body, "embeddings.0.statistics.tokenCount").Int(), "%s", body)
+
+	body = convert(ctx, &schemas.BifrostLLMUsage{PromptTokens: 7, TotalTokens: 7})
+	assert.False(t, gjson.GetBytes(body, "metadata").Exists(), "tokens are not billable characters: %s", body)
+
+	body = convert(ctx, &schemas.BifrostLLMUsage{})
+	assert.False(t, gjson.GetBytes(body, "metadata").Exists(), "%s", body)
+	assert.False(t, gjson.GetBytes(body, "embeddings.0.statistics").Exists(), "no count was reported: %s", body)
+
+	embedCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	embedCtx.SetValue(isGeminiEmbedContentRequestContextKey, true)
+	body = convert(embedCtx, &schemas.BifrostLLMUsage{})
+	assert.False(t, gjson.GetBytes(body, "embedding.statistics").Exists(), "no count was reported: %s", body)
+	body = convert(embedCtx, &schemas.BifrostLLMUsage{PromptTokens: 5, TotalTokens: 5})
+	assert.Equal(t, int64(5), gjson.GetBytes(body, "embedding.statistics.tokenCount").Int(), "%s", body)
+}

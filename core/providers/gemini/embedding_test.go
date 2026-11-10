@@ -222,3 +222,67 @@ func TestGeminiBatchEmbeddingRequestReadsEmbedContentConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, gjson.GetBytes(body, "requests.0.embedContentConfig.documentOcr").Bool(), string(body))
 }
+
+func benchGeminiEmbeddingRequest() *schemas.BifrostEmbeddingRequest {
+	return &schemas.BifrostEmbeddingRequest{
+		Provider: schemas.Gemini,
+		Model:    "gemini-embedding-001",
+		Input: []schemas.EmbeddingInputItem{
+			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("alpha kestrel harbor")}}},
+		},
+		Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("RETRIEVAL_QUERY")},
+	}
+}
+
+// Request path cost of the Gemini embedding conversion (TXE-6636).
+func BenchmarkToGeminiEmbeddingRequest(b *testing.B) {
+	req := benchGeminiEmbeddingRequest()
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := ToGeminiEmbeddingRequest(req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// Response path cost of reading usage from what Google reports (TXE-6636): Vertex
+// :embedContent's shape, with per-embedding statistics and a billable character count.
+func BenchmarkGeminiEmbeddingResponseToBifrost(b *testing.B) {
+	var resp GeminiEmbeddingResponse
+	if err := schemas.Unmarshal([]byte(`{"embeddings":[{"values":[0.1,0.2,0.3],"statistics":{"tokenCount":5}}],"metadata":{"billableCharacterCount":18}}`), &resp); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if out := ToBifrostEmbeddingResponse(&resp, "gemini-embedding-001"); out == nil {
+			b.Fatal("nil response")
+		}
+	}
+}
+
+// Native /genai response cost: Gemini's shape rebuilt from unified usage (TXE-6636).
+func BenchmarkToGeminiEmbeddingResponse(b *testing.B) {
+	chars := 18
+	resp := &schemas.BifrostEmbeddingResponse{
+		Data:  []schemas.EmbeddingData{{Index: 0, Object: "embedding", Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.1, 0.2, 0.3}}}},
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 5, TotalTokens: 5, BilledCharacters: &chars},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if out := ToGeminiEmbeddingResponse(resp); out == nil {
+			b.Fatal("nil response")
+		}
+	}
+}
+
+// Request path cost of the encoding_format check (TXE-6636), run before every Gemini and
+// Vertex embedding conversion; there is no "before", the check is new.
+func BenchmarkRejectNonFloatEncodingFormat(b *testing.B) {
+	req := benchGeminiEmbeddingRequest()
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := RejectNonFloatEncodingFormat(req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
