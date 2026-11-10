@@ -2584,6 +2584,22 @@
                         "output_tokens": {
                           "type": "integer"
                         },
+                        "output_token_details": {
+                          "type": "object",
+                          "description": "The provider's breakdown of the output tokens. Absent when the provider reported none. Reasoning tokens are reported beside output_tokens, never added into it",
+                          "properties": {
+                            "text_tokens": {
+                              "type": "integer"
+                            },
+                            "audio_tokens": {
+                              "type": "integer"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Thought tokens the provider reported (Gemini thoughtsTokenCount)"
+                            }
+                          }
+                        },
                         "total_tokens": {
                           "type": "integer"
                         },
@@ -19629,6 +19645,22 @@
                         "output_tokens": {
                           "type": "integer"
                         },
+                        "output_token_details": {
+                          "type": "object",
+                          "description": "The provider's breakdown of the output tokens. Absent when the provider reported none. Reasoning tokens are reported beside output_tokens, never added into it",
+                          "properties": {
+                            "text_tokens": {
+                              "type": "integer"
+                            },
+                            "audio_tokens": {
+                              "type": "integer"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Thought tokens the provider reported (Gemini thoughtsTokenCount)"
+                            }
+                          }
+                        },
                         "total_tokens": {
                           "type": "integer"
                         },
@@ -19791,6 +19823,22 @@
                         },
                         "output_tokens": {
                           "type": "integer"
+                        },
+                        "output_token_details": {
+                          "type": "object",
+                          "description": "The provider's breakdown of the output tokens. Absent when the provider reported none. Reasoning tokens are reported beside output_tokens, never added into it",
+                          "properties": {
+                            "text_tokens": {
+                              "type": "integer"
+                            },
+                            "audio_tokens": {
+                              "type": "integer"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Thought tokens the provider reported (Gemini thoughtsTokenCount)"
+                            }
+                          }
                         },
                         "total_tokens": {
                           "type": "integer"
@@ -33623,6 +33671,22 @@
                         "output_tokens": {
                           "type": "integer"
                         },
+                        "output_token_details": {
+                          "type": "object",
+                          "description": "The provider's breakdown of the output tokens. Absent when the provider reported none. Reasoning tokens are reported beside output_tokens, never added into it",
+                          "properties": {
+                            "text_tokens": {
+                              "type": "integer"
+                            },
+                            "audio_tokens": {
+                              "type": "integer"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Thought tokens the provider reported (Gemini thoughtsTokenCount)"
+                            }
+                          }
+                        },
                         "total_tokens": {
                           "type": "integer"
                         },
@@ -36802,6 +36866,22 @@
                         },
                         "output_tokens": {
                           "type": "integer"
+                        },
+                        "output_token_details": {
+                          "type": "object",
+                          "description": "The provider's breakdown of the output tokens. Absent when the provider reported none. Reasoning tokens are reported beside output_tokens, never added into it",
+                          "properties": {
+                            "text_tokens": {
+                              "type": "integer"
+                            },
+                            "audio_tokens": {
+                              "type": "integer"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Thought tokens the provider reported (Gemini thoughtsTokenCount)"
+                            }
+                          }
                         },
                         "total_tokens": {
                           "type": "integer"
@@ -40093,6 +40173,22 @@
                         },
                         "output_tokens": {
                           "type": "integer"
+                        },
+                        "output_token_details": {
+                          "type": "object",
+                          "description": "The provider's breakdown of the output tokens. Absent when the provider reported none. Reasoning tokens are reported beside output_tokens, never added into it",
+                          "properties": {
+                            "text_tokens": {
+                              "type": "integer"
+                            },
+                            "audio_tokens": {
+                              "type": "integer"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Thought tokens the provider reported (Gemini thoughtsTokenCount)"
+                            }
+                          }
                         },
                         "total_tokens": {
                           "type": "integer"
@@ -120275,6 +120371,11 @@
           },
           "with_timestamps": {
             "type": "boolean"
+          },
+          "max_output_tokens": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Upper bound on the output tokens the provider may generate for this speech. Gemini sends it as generationConfig.maxOutputTokens (its TTS models bill audio output by the token). Sent as given, never clamped; a provider that cannot take it answers 400 caller_unsupported_parameter"
           }
         }
       },
@@ -120294,6 +120395,22 @@
               },
               "output_tokens": {
                 "type": "integer"
+              },
+              "output_token_details": {
+                "type": "object",
+                "description": "The provider's breakdown of the output tokens. Absent when the provider reported none. Reasoning tokens are reported beside output_tokens, never added into it",
+                "properties": {
+                  "text_tokens": {
+                    "type": "integer"
+                  },
+                  "audio_tokens": {
+                    "type": "integer"
+                  },
+                  "reasoning_tokens": {
+                    "type": "integer",
+                    "description": "Thought tokens the provider reported (Gemini thoughtsTokenCount)"
+                  }
+                }
               },
               "total_tokens": {
                 "type": "integer"

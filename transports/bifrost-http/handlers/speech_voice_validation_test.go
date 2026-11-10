@@ -3,6 +3,8 @@ package handlers
 import (
 	"testing"
 
+	"github.com/capsohq/bifrost/core/providers/gemini"
+	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
 
@@ -58,6 +60,57 @@ func TestPrepareSpeechRequestVoiceValidation(t *testing.T) {
 			}
 			if tt.wantError && err != nil && err.Error() != "voice is required for speech completion" {
 				t.Fatalf("error = %q, want %q", err.Error(), "voice is required for speech completion")
+			}
+		})
+	}
+}
+
+// TXE-6539, the /v1/audio/speech route into the Gemini speech conversion: max_output_tokens
+// is parsed as the unified field and reaches Gemini as generationConfig.maxOutputTokens, and a
+// field Gemini cannot take (speed, instructions, language_code) is one core's unified-field
+// check refuses by name against what the Gemini provider declares.
+func TestPrepareSpeechRequestGeminiUnifiedFields(t *testing.T) {
+	prepare := func(t *testing.T, body string) *schemas.BifrostSpeechRequest {
+		t.Helper()
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetBodyString(body)
+		_, bifrostReq, err := prepareSpeechRequest(ctx, nil)
+		if err != nil {
+			t.Fatalf("prepareSpeechRequest: %v", err)
+		}
+		return bifrostReq
+	}
+
+	t.Run("max_output_tokens reaches generationConfig.maxOutputTokens", func(t *testing.T) {
+		bifrostReq := prepare(t, `{"model":"gemini/gemini-3.8-flash-tts","input":"hello","voice":"Kore","max_output_tokens":2048,"stream_format":"sse"}`)
+		if bifrostReq.Params == nil || bifrostReq.Params.MaxOutputTokens == nil || *bifrostReq.Params.MaxOutputTokens != 2048 {
+			t.Fatalf("max_output_tokens not parsed into the unified field: %+v", bifrostReq.Params)
+		}
+		if fieldErr := schemas.CheckUnifiedFields(&schemas.BifrostRequest{SpeechRequest: bifrostReq}, gemini.SpeechUnifiedFields); fieldErr != nil {
+			t.Fatalf("a deliverable request was refused: %+v", fieldErr.Error)
+		}
+		upstream, err := gemini.ToGeminiSpeechRequest(bifrostReq)
+		if err != nil {
+			t.Fatalf("ToGeminiSpeechRequest: %v", err)
+		}
+		if upstream.GenerationConfig.MaxOutputTokens != 2048 {
+			t.Errorf("generationConfig.maxOutputTokens = %d, want 2048", upstream.GenerationConfig.MaxOutputTokens)
+		}
+		if _, leaked := upstream.ExtraParams["max_output_tokens"]; leaked {
+			t.Error("max_output_tokens must not also be merged into the Gemini body under its unified name")
+		}
+	})
+
+	for field, value := range map[string]string{"speed": "1.5", "instructions": `"Speak slowly."`, "language_code": `"en-US"`} {
+		t.Run(field+" is refused by name", func(t *testing.T) {
+			bifrostReq := prepare(t, `{"model":"gemini/gemini-3.8-flash-tts","input":"hello","voice":"Kore","`+field+`":`+value+`}`)
+			fieldErr := schemas.CheckUnifiedFields(&schemas.BifrostRequest{SpeechRequest: bifrostReq}, gemini.SpeechUnifiedFields)
+			if fieldErr == nil {
+				t.Fatalf("%s was not refused", field)
+			}
+			if fieldErr.Error.Param != field || fieldErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || *fieldErr.StatusCode != 400 {
+				t.Errorf("got status %d error_type %q param %q, want 400 caller_unsupported_parameter %q",
+					*fieldErr.StatusCode, fieldErr.ExtraFields.ErrorType, fieldErr.Error.Param, field)
 			}
 		})
 	}

@@ -208,6 +208,67 @@ func TestGenAICamelCaseSpeechVoiceSurvivesConversion(t *testing.T) {
 	assert.Equal(t, "alloy", *converted.SpeechRequest.Params.VoiceConfig.Voice)
 }
 
+// TXE-6539: on the native route the speech output-token bound is the request's own
+// generationConfig.maxOutputTokens. It becomes the unified max_output_tokens and is sent back
+// to Gemini as generationConfig.maxOutputTokens; it used to be dropped on the way in.
+func TestGenAISpeechMaxOutputTokensSurvivesConversion(t *testing.T) {
+	rawBody := []byte(`{
+		"contents":[{"role":"user","parts":[{"text":"hello"}]}],
+		"generationConfig":{
+			"responseModalities":["AUDIO"],
+			"maxOutputTokens":2048,
+			"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Kore"}}}
+		}
+	}`)
+	requestCtx := &fasthttp.RequestCtx{}
+	requestCtx.SetUserValue("model", "gemini-3.8-flash-tts:generateContent")
+	requestCtx.Request.Header.Set("x-model-provider", "gemini")
+	requestCtx.Request.SetBody(rawBody)
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	geminiReq := &gemini.GeminiGenerationRequest{}
+	require.NoError(t, sonic.Unmarshal(rawBody, geminiReq))
+	require.NoError(t, extractAndSetModelAndRequestType(requestCtx, bifrostCtx, geminiReq))
+
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	converted, err := route.RequestConverter(bifrostCtx, geminiReq)
+	require.NoError(t, err)
+	require.NotNil(t, converted.SpeechRequest)
+	require.NotNil(t, converted.SpeechRequest.Params)
+	require.NotNil(t, converted.SpeechRequest.Params.MaxOutputTokens)
+	assert.Equal(t, 2048, *converted.SpeechRequest.Params.MaxOutputTokens)
+
+	// The native request sets only fields the Gemini speech conversion delivers.
+	assert.Subset(t, gemini.SpeechUnifiedFields, (&schemas.BifrostRequest{SpeechRequest: converted.SpeechRequest}).UnifiedFieldsPresent())
+
+	upstream, err := gemini.ToGeminiSpeechRequest(converted.SpeechRequest)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2048, upstream.GenerationConfig.MaxOutputTokens)
+}
+
+// TXE-6539: the native route's done chunk carries the speech usage's output token details back
+// as candidatesTokensDetails and thoughtsTokenCount.
+func TestGenAISpeechStreamDoneResponseIncludesOutputTokenDetails(t *testing.T) {
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	_, converted, err := route.StreamConfig.SpeechStreamResponseConverter(nil, &schemas.BifrostSpeechStreamResponse{
+		Type: schemas.SpeechStreamResponseTypeDone,
+		Usage: &schemas.SpeechUsage{
+			InputTokens:        7,
+			OutputTokens:       50,
+			TotalTokens:        69,
+			OutputTokenDetails: &schemas.SpeechUsageOutputTokenDetails{AudioTokens: 50, ReasoningTokens: 12},
+		},
+	})
+	require.NoError(t, err)
+
+	response := converted.(*gemini.GenerateContentResponse)
+	require.NotNil(t, response.UsageMetadata)
+	assert.Equal(t, int32(50), response.UsageMetadata.CandidatesTokenCount)
+	assert.Equal(t, int32(12), response.UsageMetadata.ThoughtsTokenCount)
+	require.Len(t, response.UsageMetadata.CandidatesTokensDetails, 1)
+	assert.Equal(t, gemini.ModalityAudio, response.UsageMetadata.CandidatesTokensDetails[0].Modality)
+	assert.Equal(t, int32(50), response.UsageMetadata.CandidatesTokensDetails[0].TokenCount)
+}
+
 func TestExtractAndSetModelAndRequestTypePreservesRawBodyForGenerateContent(t *testing.T) {
 	rawBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"responseJsonSchema":{"type":"object","properties":{"b":{"type":"string"},"a":{"type":"string"}}}}}`)
 	ctx := &fasthttp.RequestCtx{}

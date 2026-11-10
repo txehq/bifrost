@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	bifrost "github.com/capsohq/bifrost/core"
+	"github.com/capsohq/bifrost/core/providers/gemini"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
@@ -156,6 +157,54 @@ func TestPrepareTranscriptionRequest_FileAndURLIsNotURLOnly(t *testing.T) {
 	}
 	if string(req.Input.File) != "ID3fake-mp3" || req.IsURLOnly() {
 		t.Fatalf("input = %+v, URL-only = %v; want the file kept and not URL-only", req.Input, req.IsURLOnly())
+	}
+}
+
+// TXE-6539, the /v1/audio/transcriptions route into the Gemini transcription conversion:
+// generateContent has no language, timestamp or output-format field, so language and
+// timestamp_granularities are fields core's unified-field check refuses by name against what
+// the Gemini provider declares, and a response_format other than json is a value the provider
+// refuses. prompt and a json response_format are delivered.
+func TestPrepareTranscriptionRequest_GeminiUnifiedFields(t *testing.T) {
+	prepare := func(fields [][2]string) *schemas.BifrostTranscriptionRequest {
+		req, _, err := prepareTranscriptionRequest(multipartTranscriptionCtx(t, append([][2]string{{"model", "gemini/gemini-3.5-transcribe"}}, fields...)), nil)
+		if err != nil {
+			t.Fatalf("prepareTranscriptionRequest: %v", err)
+		}
+		return req
+	}
+	assertRefused := func(fieldErr *schemas.BifrostError, param string) {
+		t.Helper()
+		if fieldErr == nil {
+			t.Fatalf("%s was not refused", param)
+		}
+		if fieldErr.Error.Param != param || fieldErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || *fieldErr.StatusCode != 400 {
+			t.Errorf("got status %d error_type %q param %q, want 400 caller_unsupported_parameter %q",
+				*fieldErr.StatusCode, fieldErr.ExtraFields.ErrorType, fieldErr.Error.Param, param)
+		}
+	}
+	declared := func(req *schemas.BifrostTranscriptionRequest) *schemas.BifrostError {
+		return schemas.CheckUnifiedFields(&schemas.BifrostRequest{TranscriptionRequest: req}, gemini.TranscriptionUnifiedFields)
+	}
+
+	assertRefused(declared(prepare([][2]string{{"language", "en"}})), "language")
+	assertRefused(declared(prepare([][2]string{{"timestamp_granularities[]", "word"}})), "timestamp_granularities")
+
+	srt := prepare([][2]string{{"response_format", "srt"}})
+	if fieldErr := declared(srt); fieldErr != nil {
+		t.Fatalf("response_format is a declared field, refused as a field: %+v", fieldErr.Error)
+	}
+	assertRefused(gemini.ValidateTranscriptionRequest(srt), "response_format")
+
+	delivered := prepare([][2]string{{"prompt", "Transcribe the call."}, {"response_format", "json"}})
+	if fieldErr := declared(delivered); fieldErr != nil {
+		t.Fatalf("a deliverable request was refused: %+v", fieldErr.Error)
+	}
+	if fieldErr := gemini.ValidateTranscriptionRequest(delivered); fieldErr != nil {
+		t.Fatalf("a deliverable request was refused: %+v", fieldErr.Error)
+	}
+	if got := gemini.ToGeminiTranscriptionRequest(delivered).Contents[0].Parts[0].Text; got != "Transcribe the call." {
+		t.Errorf("prompt sent to Gemini = %q", got)
 	}
 }
 

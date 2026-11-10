@@ -3,6 +3,8 @@ package gemini
 import (
 	"context"
 	"fmt"
+	"maps"
+	"math"
 	"strings"
 
 	"github.com/capsohq/bifrost/core/providers/utils"
@@ -67,6 +69,11 @@ func (request *GeminiGenerationRequest) ToBifrostSpeechRequest(ctx *schemas.Bifr
 			}
 		}
 
+		// The native generationConfig.maxOutputTokens is the unified output-token bound.
+		if request.GenerationConfig.MaxOutputTokens > 0 {
+			bifrostReq.Params.MaxOutputTokens = schemas.Ptr(int(request.GenerationConfig.MaxOutputTokens))
+		}
+
 		// Store response modalities in extra params if needed
 		if len(request.GenerationConfig.ResponseModalities) > 0 {
 			if bifrostReq.Params.ExtraParams == nil {
@@ -83,15 +90,72 @@ func (request *GeminiGenerationRequest) ToBifrostSpeechRequest(ctx *schemas.Bifr
 	return bifrostReq
 }
 
+// Speech response formats. Gemini's generateContent answers 24 kHz 16-bit mono PCM and
+// nothing else: pcm returns those bytes as they are, wav wraps them in a RIFF header.
+const (
+	SpeechResponseFormatWAV = "wav"
+	SpeechResponseFormatPCM = "pcm"
+)
+
+// speechMaxOutputTokensParam is the unified speech field for the output-token bound.
+const speechMaxOutputTokensParam = "max_output_tokens"
+
+// SpeechUnifiedFields are the unified speech fields (the JSON names of
+// schemas.SpeechParameters) the generateContent conversion delivers: voice as
+// speechConfig, response_format by converting the PCM, max_output_tokens as
+// generationConfig.maxOutputTokens. Every other speech field has no generateContent
+// counterpart, so a provider that sends speech through ToGeminiSpeechRequest declares
+// exactly these (schemas.UnifiedFieldDeclarer) and a request carrying another one is
+// refused with caller_unsupported_parameter (contract C4).
+var SpeechUnifiedFields = []string{"voice", "response_format", speechMaxOutputTokensParam}
+
+// TranscriptionUnifiedFields are the unified transcription fields the generateContent
+// conversion delivers: prompt as the text part, temperature as
+// generationConfig.temperature, response_format when it is json (the only shape the
+// transcript is returned in), and file_format, which describes the upload and is sent as
+// the audio part's detected MIME type. generateContent has no language, timestamp or
+// output-format field, so those are refused (contract C4).
+var TranscriptionUnifiedFields = []string{"prompt", "temperature", "response_format", "file_format"}
+
+// ResolveSpeechResponseFormat returns the format a speech response is returned in: the
+// requested one, or wav when none is named.
+func ResolveSpeechResponseFormat(params *schemas.SpeechParameters) string {
+	if params == nil || params.ResponseFormat == "" {
+		return SpeechResponseFormatWAV
+	}
+	return params.ResponseFormat
+}
+
+// ValidateSpeechRequest returns the caller_unsupported_parameter error for a value of a
+// declared speech field that generateContent cannot take as given, and nil otherwise. The
+// fields themselves are checked against SpeechUnifiedFields by core; this is the half of
+// contract C4 that needs the value. It allocates only when it refuses.
+func ValidateSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *schemas.BifrostError {
+	if bifrostReq == nil || bifrostReq.Params == nil {
+		return nil
+	}
+	switch bifrostReq.Params.ResponseFormat {
+	case "", SpeechResponseFormatWAV, SpeechResponseFormatPCM:
+	default:
+		return schemas.NewUnsupportedParameterError("response_format",
+			fmt.Sprintf("response_format %q is not supported for Gemini speech; use wav or pcm (default wav)", bifrostReq.Params.ResponseFormat))
+	}
+	if maxTokens := bifrostReq.Params.MaxOutputTokens; maxTokens != nil && (*maxTokens < 1 || *maxTokens > math.MaxInt32) {
+		return schemas.NewUnsupportedParameterError(speechMaxOutputTokensParam,
+			fmt.Sprintf("max_output_tokens %d cannot be sent to Gemini; it must be between 1 and %d", *maxTokens, math.MaxInt32))
+	}
+	return nil
+}
+
 // ToGeminiSpeechRequest converts a BifrostSpeechRequest to a GeminiGenerationRequest
 func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) (*GeminiGenerationRequest, error) {
 	if bifrostReq == nil {
 		return nil, fmt.Errorf("bifrostReq is nil")
 	}
-	// Here we confirm if the response_format is wav or empty string
-	// If its anything else, we will return an error
-	if bifrostReq.Params != nil && bifrostReq.Params.ResponseFormat != "" && bifrostReq.Params.ResponseFormat != "wav" {
-		return nil, fmt.Errorf("gemini does not support response_format: %s. Only wav or empty string is supported which defaults to wav", bifrostReq.Params.ResponseFormat)
+	// Callers on the provider path have run ValidateSpeechRequest; this keeps a direct
+	// caller of the converter from sending a value Gemini cannot take.
+	if bifrostErr := ValidateSpeechRequest(bifrostReq); bifrostErr != nil {
+		return nil, fmt.Errorf("%s", bifrostErr.Error.Message)
 	}
 	// Create the base Gemini generation request
 	geminiReq := &GeminiGenerationRequest{
@@ -99,6 +163,10 @@ func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) (*GeminiGen
 	}
 	// Convert parameters to generation config
 	geminiReq.GenerationConfig.ResponseModalities = []Modality{ModalityAudio}
+	// The output-token bound, sent as given (never clamped).
+	if bifrostReq.Params != nil && bifrostReq.Params.MaxOutputTokens != nil {
+		geminiReq.GenerationConfig.MaxOutputTokens = int32(*bifrostReq.Params.MaxOutputTokens)
+	}
 	// Convert speech input to Gemini format
 	if bifrostReq.Input != nil && bifrostReq.Input.Input != "" {
 		geminiReq.Contents = []Content{
@@ -117,12 +185,64 @@ func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) (*GeminiGen
 				addSpeechConfigToGenerationConfig(&geminiReq.GenerationConfig, bifrostReq.Params.VoiceConfig)
 			}
 			geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
+			// The HTTP transport also leaves max_output_tokens in the extra params. It was
+			// delivered above; merged into the body under that name Gemini would refuse it.
+			if _, ok := geminiReq.ExtraParams[speechMaxOutputTokensParam]; ok {
+				geminiReq.ExtraParams = maps.Clone(geminiReq.ExtraParams)
+				delete(geminiReq.ExtraParams, speechMaxOutputTokensParam)
+			}
 		}
 	}
 	return geminiReq, nil
 }
 
-// ToBifrostSpeechResponse converts a GenerateContentResponse to a BifrostSpeechResponse
+// SpeechBlockError returns the error for a speech generation Gemini blocked, and nil when
+// it was not blocked: a prompt refused before generating (promptFeedback.blockReason with
+// no candidates) or a candidate that ended on a safety finishReason. A speech response is
+// audio bytes with nowhere to carry a content_filter marker, so the vendor's 200 becomes a
+// 400 caller_content_filtered whose error.code is the vendor's reason verbatim (contract
+// C6). It allocates only when the response is blocked.
+func (response *GenerateContentResponse) SpeechBlockError() *schemas.BifrostError {
+	if response == nil {
+		return nil
+	}
+	if len(response.Candidates) == 0 {
+		feedback := response.PromptFeedback
+		if feedback == nil || feedback.BlockReason == "" {
+			return nil
+		}
+		message := feedback.BlockReasonMessage
+		if message == "" {
+			message = "Gemini blocked the prompt: " + feedback.BlockReason
+		}
+		return schemas.NewVendorErrorObjectError(schemas.VendorErrorCauseContentFiltered, feedback.BlockReason, message)
+	}
+	for _, candidate := range response.Candidates {
+		if candidate == nil || !isSpeechSafetyFinishReason(candidate.FinishReason) {
+			continue
+		}
+		message := candidate.FinishMessage
+		if message == "" {
+			message = "Gemini blocked the speech: finishReason " + string(candidate.FinishReason)
+		}
+		return schemas.NewVendorErrorObjectError(schemas.VendorErrorCauseContentFiltered, string(candidate.FinishReason), message)
+	}
+	return nil
+}
+
+// isSpeechSafetyFinishReason reports whether a candidate's finishReason says Gemini stopped
+// the speech over its content. LANGUAGE (an unsupported language) and the reasons that only
+// image or tool generation produce are not content blocks.
+func isSpeechSafetyFinishReason(reason FinishReason) bool {
+	switch reason {
+	case FinishReasonSafety, FinishReasonRecitation, FinishReasonBlocklist, FinishReasonProhibitedContent, FinishReasonSPII:
+		return true
+	}
+	return false
+}
+
+// ToBifrostSpeechResponse converts a GenerateContentResponse to a BifrostSpeechResponse.
+// A blocked response is the caller's to turn into an error first (SpeechBlockError).
 func (response *GenerateContentResponse) ToBifrostSpeechResponse(ctx context.Context) (*schemas.BifrostSpeechResponse, error) {
 	bifrostResp := &schemas.BifrostSpeechResponse{}
 
@@ -149,10 +269,11 @@ func (response *GenerateContentResponse) ToBifrostSpeechResponse(ctx context.Con
 				}
 			}
 			if len(audioData) > 0 {
-				responseFormat := ctx.Value(BifrostContextKeyResponseFormat).(string)
-				// Gemini returns PCM audio (s16le, 24000 Hz, mono)
-				// Convert to WAV for standard playable output format
-				if responseFormat == "wav" {
+				// Gemini returns PCM audio (s16le, 24000 Hz, mono). It is converted to WAV, a
+				// standard playable format, unless the request asked for the bare PCM; a context
+				// that names no format gets WAV, the default.
+				responseFormat, _ := ctx.Value(BifrostContextKeyResponseFormat).(string)
+				if responseFormat != SpeechResponseFormatPCM {
 					wavData, err := utils.ConvertPCMToWAV(audioData, utils.DefaultGeminiPCMConfig())
 					if err != nil {
 						return nil, fmt.Errorf("failed to convert PCM to WAV: %v", err)

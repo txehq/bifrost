@@ -486,6 +486,43 @@ const imagenPartiallyBlocked = {
 		{ bytesBase64Encoded: "aW1hZ2Uy", mimeType: "image/png" },
 	],
 };
+// Gemini API audio, TXE-6539 (contract C4, C5, C6, C10). The model in the path selects the answer, in the
+// generateContent shape a Gemini TTS or transcription model gives: pp-tts-ok is six bytes of PCM that end on
+// finishReason STOP with every usage detail the vendor reports (thought tokens, the candidates' modality
+// breakdown); pp-tts-blocked is a prompt refused before generation (promptFeedback.blockReason, no candidates);
+// pp-tts-truncated streams one audio chunk and ends with no finishReason; pp-stt-ok is a transcript. No Gemini
+// TTS response has been recorded for these rows: the shapes are the ones the fork's Gemini types decode.
+const geminiPCMPart = { inlineData: { mimeType: "audio/L16;codec=pcm;rate=24000", data: "AAECAwQF" } };
+const geminiSpeechUsage = {
+	promptTokenCount: 7, candidatesTokenCount: 50, totalTokenCount: 69, thoughtsTokenCount: 12,
+	promptTokensDetails: [{ modality: "TEXT", tokenCount: 7 }],
+	candidatesTokensDetails: [{ modality: "AUDIO", tokenCount: 50 }],
+};
+const geminiSpeechAudioChunk = { candidates: [{ index: 0, content: { role: "model", parts: [geminiPCMPart] } }] };
+const geminiSpeechFinal = { candidates: [{ index: 0, finishReason: "STOP", content: { role: "model", parts: [geminiPCMPart] } }], usageMetadata: geminiSpeechUsage };
+const geminiPromptBlocked = {
+	promptFeedback: { blockReason: "SAFETY", blockReasonMessage: "The prompt is blocked due to safety" },
+	usageMetadata: { promptTokenCount: 7, totalTokenCount: 7 },
+};
+const geminiTranscript = {
+	candidates: [{ index: 0, finishReason: "STOP", content: { role: "model", parts: [{ text: "hello from the fixture" }] } }],
+	usageMetadata: { promptTokenCount: 40, candidatesTokenCount: 5, totalTokenCount: 45, promptTokensDetails: [{ modality: "AUDIO", tokenCount: 32 }, { modality: "TEXT", tokenCount: 8 }] },
+};
+const geminiAudioFrames = {
+	"pp-tts-ok": [geminiSpeechAudioChunk, geminiSpeechFinal],
+	"pp-tts-blocked": [geminiPromptBlocked],
+	"pp-tts-truncated": [geminiSpeechAudioChunk],
+	"pp-stt-ok": [geminiTranscript],
+};
+// geminiAudioAnswer answers /pp/gemini/models/<model>:generateContent with the model's last frame and
+// :streamGenerateContent with all of them as SSE; undefined for any other path or model.
+const geminiAudioAnswer = (path) => {
+	const m = /^\/pp\/gemini\/models\/([^:/]+):(generateContent|streamGenerateContent)$/.exec(path);
+	const frames = m && geminiAudioFrames[m[1]];
+	if (!frames) return undefined;
+	if (m[2] === "streamGenerateContent") return { status: 200, stream: frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join("") };
+	return { status: 200, body: JSON.stringify(frames[frames.length - 1]) };
+};
 
 const miniMaxBaseRespRoutes = new Set([
 	"/pp/minimax/v1/chat/completions",
@@ -616,6 +653,8 @@ const wireAnswer = (path, body, bytes) => {
 		return { status: 200, body: JSON.stringify(anthropicMessage(body.model)) };
 	}
 	if (path.endsWith(":predict")) return { status: 200, body: JSON.stringify(imagenPartiallyBlocked) };
+	const geminiAudio = geminiAudioAnswer(path);
+	if (geminiAudio) return geminiAudio;
 	if (path.endsWith(":generateContent")) return { status: 200, body: JSON.stringify(geminiCodeExecution) };
 	if (path.endsWith(":streamGenerateContent")) return { status: 200, stream: `data: ${JSON.stringify(geminiCodeExecution)}\n\n` };
 	if (path === "/pp/cloudflare/accounts/acct-1/ai/run/@cf/cloudflare/clef-flash") return { status: 200, body: JSON.stringify(clefAnswer) };
