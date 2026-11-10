@@ -443,3 +443,30 @@ func TestMergeStreamFrameKeepsLargestTokenCounts(t *testing.T) {
 	nilAcc.MergeStreamFrame(&BifrostLLMUsage{PromptTokens: 1}) // no panic
 	acc.MergeStreamFrame(nil)                                  // no-op
 }
+
+// BenchmarkMergeStreamFrame measures the per-frame cost of the stream accumulators' usage merge
+// (TXE-6522): a token-only frame (the common OpenAI frame) and a frame with every field a vendor
+// reports beyond tokens (web search calls, cost, cost_in_usd_ticks).
+func BenchmarkMergeStreamFrame(b *testing.B) {
+	ticks := int64(123000000)
+	frames := map[string]*BifrostLLMUsage{
+		"tokens-only": {PromptTokens: 120, CompletionTokens: 48, TotalTokens: 168},
+		"extended": {
+			PromptTokens: 120, CompletionTokens: 48, TotalTokens: 168,
+			PromptTokensDetails:     &ChatPromptTokensDetails{CachedReadTokens: 64},
+			CompletionTokensDetails: &ChatCompletionTokensDetails{ReasoningTokens: 12, NumSearchQueries: new(2)},
+			ToolUsage:               &ToolUsage{WebSearch: &WebSearchToolUsage{NumRequests: 2}},
+			Cost:                    &BifrostCost{TotalCost: 0.0123},
+			CostInUsdTicks:          &ticks,
+		},
+	}
+	for name, frame := range frames {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				var acc BifrostLLMUsage
+				acc.MergeStreamFrame(frame)
+			}
+		})
+	}
+}

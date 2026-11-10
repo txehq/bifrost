@@ -54,6 +54,30 @@ const behaviours = {
 };
 // upstream-slow answers as upstream-ok does, after SLOW_MS.
 behaviours["upstream-slow"] = () => ({ ...behaviours["upstream-ok"](), delayMs: SLOW_MS });
+// upstream-ok with every usage field a vendor reports beyond tokens, TXE-6522 (contract C10 BF21): web search calls,
+// a reported cost and xAI's cost_in_usd_ticks. Streamed, they arrive once, on the trailing usage frame, and must reach
+// the gateway's final frame as they reach its non-streamed response.
+const extendedUsage = {
+	prompt_tokens: 120, completion_tokens: 48, total_tokens: 168,
+	completion_tokens_details: { reasoning_tokens: 12, num_search_queries: 2 },
+	tool_usage: { web_search: { num_requests: 2 } },
+	cost: { total_cost: 0.0123 },
+	cost_in_usd_ticks: 123000000,
+};
+behaviours["upstream-usage-extended"] = () => {
+	const r = behaviours["upstream-ok"]();
+	const completion = JSON.parse(r.body);
+	return { ...r, body: JSON.stringify({ ...completion, id: "chatcmpl-upstream-usage-extended", model: "upstream-usage-extended", usage: extendedUsage }) };
+};
+// Text completions for upstream-usage-extended: one text frame with the finish reason, then the usage frame.
+const textCompletionAnswer = (stream) => {
+	const base = { id: "cmpl-upstream-usage-extended", object: "text_completion", created: 1, model: "upstream-usage-extended" };
+	if (!stream) return { ...base, choices: [{ index: 0, text: "hello", finish_reason: "stop" }], usage: extendedUsage };
+	return [
+		{ ...base, choices: [{ index: 0, text: "hello", finish_reason: "stop" }] },
+		{ ...base, choices: [], usage: extendedUsage },
+	].map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n";
+};
 // upstream-cut starts answering as upstream-ok does and drops the connection partway: a stream gets its first
 // content chunk and then a closed socket, a non-streamed request a closed socket.
 behaviours["upstream-cut"] = () => ({ ...behaviours["upstream-ok"](), cut: true });
@@ -584,7 +608,7 @@ const server = http.createServer((req, res) => {
 	if (req.method === "GET" && path === "/mcp") {
 		return send(405, {}, errorBody("no server stream", "invalid_request_error", "method_not_allowed"));
 	}
-	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions" && path !== "/mcp" && path !== "/v1/decisions" && path !== "/alpha/decisions" && path !== "/v1/audio/speech")) {
+	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions" && path !== "/mcp" && path !== "/v1/decisions" && path !== "/alpha/decisions" && path !== "/v1/audio/speech" && path !== "/v1/completions")) {
 		return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));
 	}
 	const chunks = [];
@@ -668,6 +692,14 @@ const server = http.createServer((req, res) => {
 				choices: [{ index: 0, message: { role: "assistant", content: Array.from({ length: GAPPED_FRAMES }, (_, i) => gapMarker(i)).join("") }, finish_reason: "stop" }],
 				usage: { prompt_tokens: 5, completion_tokens: GAPPED_FRAMES, total_tokens: 5 + GAPPED_FRAMES },
 			}));
+		}
+		if (path === "/v1/completions") {
+			if (model !== "upstream-usage-extended") {
+				return send(404, {}, errorBody(`unknown fixture model ${model}`, "invalid_request_error", "model_not_found"));
+			}
+			if (parsed.stream !== true) return send(200, {}, JSON.stringify(textCompletionAnswer(false)));
+			res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+			return res.end(textCompletionAnswer(true));
 		}
 		if (model === "upstream-fixed-length-short" || model === "upstream-fixed-length-ok") {
 			// finish_reason makes this semantically complete even without [DONE].

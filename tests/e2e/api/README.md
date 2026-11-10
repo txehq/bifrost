@@ -134,6 +134,12 @@ request to the gateway itself and reports when each SSE event arrived, measured 
 write the frames. Each marker must reach the client before the fixture writes the next one, and the gaps
 must survive. A gateway that buffers fails with the send and arrival times in the message.
 
+Rows 9-13 pin BF21: `upstream-usage-extended` reports web search calls (`tool_usage`), a `cost` and xAI's
+`cost_in_usd_ticks`, and the non-streamed chat response, the final frame of a chat stream (both routes), of a
+text-completion stream (`/v1/completions`) and `response.completed` of a Responses stream served by the chat
+fallback (the config's `parasail` entry points at the fixture) must all carry them. Against the accumulator
+before TXE-6522 the four streamed rows fail and the non-streamed one passes.
+
 Start the fixture and the isolated gateway as for content-length truncation above (ports 8790, 8791 and
 8799), then:
 
