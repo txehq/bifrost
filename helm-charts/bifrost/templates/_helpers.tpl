@@ -461,6 +461,12 @@ false
 {{- if hasKey .Values.bifrost.client "disablePassthroughSseHeartbeat" }}
 {{- $_ := set $client "disable_passthrough_sse_heartbeat" .Values.bifrost.client.disablePassthroughSseHeartbeat }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "enforceVkObjectOwnership" }}
+{{- $_ := set $client "enforce_vk_object_ownership" .Values.bifrost.client.enforceVkObjectOwnership }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "a2aStoreRawRequestResponse" }}
+{{- $_ := set $client "a2a_store_raw_request_response" .Values.bifrost.client.a2aStoreRawRequestResponse }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "disableEncryptedReasoningRetry" }}
 {{- $_ := set $client "disable_encrypted_reasoning_retry" .Values.bifrost.client.disableEncryptedReasoningRetry }}
 {{- end }}

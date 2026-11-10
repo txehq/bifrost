@@ -43,7 +43,7 @@ else
 fi
 
 # A mapping removed from _helpers.tpl: the setting is in the schema and nothing renders it.
-for key in disable_provider_job_accounting disable_passthrough_sse_heartbeat; do
+for key in disable_provider_job_accounting disable_passthrough_sse_heartbeat enforce_vk_object_ownership; do
   grep -v "set \$client \"$key\"" "$HELPERS" > "$WORK/helpers-without-$key.tpl"
   expect_fail "mapping of $key removed" \
     "client.$key is in config.schema.json but _helpers.tpl never sets it" \
@@ -71,6 +71,17 @@ PY
 expect_fail "value missing from values.schema.json" \
   "rendered from bifrost.client.disableProviderJobAccounting, which values.schema.json does not declare" \
   --values-schema "$WORK/values-schema-undeclared.json"
+
+# A value the chart's values schema accepts and no template reads.
+python3 - "$VALUES_SCHEMA" "$WORK/values-schema-unread.json" <<'PY'
+import json, sys
+schema = json.load(open(sys.argv[1]))
+schema["properties"]["bifrost"]["properties"]["client"]["properties"]["aValueNothingReads"] = {"type": "boolean"}
+json.dump(schema, open(sys.argv[2], "w"))
+PY
+expect_fail "declared value no template reads" \
+  "bifrost.client.aValueNothingReads is declared in values.schema.json but _helpers.tpl never reads it" \
+  --values-schema "$WORK/values-schema-unread.json"
 
 # A mapping of a key the config schema does not have.
 { cat "$HELPERS"; echo '{{- $_ := set $client "not_a_schema_key" .Values.bifrost.client.enableLogging }}'; } > "$WORK/helpers-extra-key.tpl"
