@@ -1953,6 +1953,7 @@ type BifrostLLMUsage struct {
 	CompletionTokens        int                          `json:"completion_tokens,omitempty"`
 	CompletionTokensDetails *ChatCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 	ReasoningTokens         int                          `json:"reasoning_tokens,omitempty"` // SGLang's top-level spelling; folded by NormalizeReasoningTokens
+	CachedTokens            int                          `json:"cached_tokens,omitempty"`    // StepFun's top-level spelling; folded by NormalizeCachedTokens
 	TotalTokens             int                          `json:"total_tokens"`
 	// AudioSeconds carries duration-based audio usage when a provider reports
 	// seconds instead of tokens.
@@ -1997,41 +1998,6 @@ type BifrostLLMUsage struct {
 	BillingTurns            []BifrostLLMUsage `json:"-"` // Separate provider calls this usage sums; set only by AddBillingTurn
 }
 
-// UnmarshalJSON decodes usage and folds a top-level cached_tokens into
-// PromptTokensDetails.CachedReadTokens. StepFun's OpenAI-compatible chat reports its cache
-// hits there, with no prompt_tokens_details object, and the count was dropped because the
-// unified structure has no top-level field for it (Bifrost-Tokun contract C5). A cached-read
-// count the vendor nests under prompt_tokens_details wins over the top-level one, and a
-// top-level zero or absence creates nothing: a field the vendor did not report stays empty.
-// It runs on every decode of a usage object, streamed frames included, so no provider has to
-// call a normalizer. Fields absent from data keep the receiver's values, as a plain struct
-// decode does.
-func (u *BifrostLLMUsage) UnmarshalJSON(data []byte) error {
-	if u == nil {
-		return fmt.Errorf("schemas: UnmarshalJSON on nil *BifrostLLMUsage")
-	}
-	// plain has BifrostLLMUsage's fields without its methods, so the decode below does not
-	// recurse into this function.
-	type plain BifrostLLMUsage
-	raw := struct {
-		*plain
-		CachedTokens *int `json:"cached_tokens"`
-	}{plain: (*plain)(u)}
-	if err := Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	if raw.CachedTokens == nil || *raw.CachedTokens <= 0 {
-		return nil
-	}
-	if u.PromptTokensDetails == nil {
-		u.PromptTokensDetails = &ChatPromptTokensDetails{}
-	}
-	if u.PromptTokensDetails.CachedReadTokens == 0 {
-		u.PromptTokensDetails.CachedReadTokens = *raw.CachedTokens
-	}
-	return nil
-}
-
 // AddBillingTurn returns the sum of total and turn, keeping each provider call it sums in
 // BillingTurns so pricing applies context-length thresholds, tiers and per-request fees to
 // each call rather than to the sum. Use it only to add up distinct calls, never the partial
@@ -2074,6 +2040,32 @@ func (u *BifrostLLMUsage) NormalizeReasoningTokens() {
 		u.CompletionTokensDetails.ReasoningTokens = u.ReasoningTokens
 	}
 	u.ReasoningTokens = 0
+}
+
+// NormalizeCachedTokens folds a top-level cached_tokens into PromptTokensDetails.CachedReadTokens,
+// keeping a nested value if set. StepFun's international site reports its cache hits there, with
+// no prompt_tokens_details object (Bifrost-Tokun contract C5). A zero or absent count creates
+// nothing: a field the vendor did not report stays empty.
+func (u *BifrostLLMUsage) NormalizeCachedTokens() {
+	if u == nil || u.CachedTokens == 0 {
+		return
+	}
+	if u.PromptTokensDetails == nil {
+		u.PromptTokensDetails = &ChatPromptTokensDetails{}
+	}
+	if u.PromptTokensDetails.CachedReadTokens == 0 {
+		u.PromptTokensDetails.CachedReadTokens = u.CachedTokens
+	}
+	u.CachedTokens = 0
+}
+
+// NormalizeVendorSpellings moves every top-level field an OpenAI-compatible vendor reports under
+// its own name into the unified location, and clears it. Decode sites call this one method, so a
+// spelling added later needs no new call. It costs two integer comparisons on a usage that
+// carries none of them.
+func (u *BifrostLLMUsage) NormalizeVendorSpellings() {
+	u.NormalizeReasoningTokens()
+	u.NormalizeCachedTokens()
 }
 
 type ChatPromptTokensDetails struct {

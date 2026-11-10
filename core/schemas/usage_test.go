@@ -797,58 +797,56 @@ func TestSearchContextSizeSurvivesCopyMergeAndResponsesConversion(t *testing.T) 
 const stepFunChatBody = `{"id":"0190f7e2c1b27c1a9a0f6d1f3b2a4c5d","object":"chat.completion","created":1762761600,"model":"step-5-preview","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"cached_tokens":512,"prompt_tokens":591,"completion_tokens":120,"total_tokens":711}}`
 
 // A top-level usage.cached_tokens (StepFun) must land in prompt_tokens_details.cached_read_tokens
-// on every decoder Bifrost uses, in a whole response and in a streamed frame (StepFun sends
-// usage on its chunks in the same four fields), and must be served back at the unified path
+// once the usage is normalized, in a whole response and in a streamed frame (StepFun sends usage
+// on its chunks in the same four fields), and must be served back at the unified path only
 // (contract C5).
-func TestBifrostLLMUsageDecodesTopLevelCachedTokens(t *testing.T) {
+func TestBifrostLLMUsageNormalizeCachedTokens(t *testing.T) {
 	streamFrame := `{"id":"0190f7e2","object":"chat.completion.chunk","created":1762761600,"model":"step-5-preview","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"cached_tokens":512,"prompt_tokens":591,"completion_tokens":120,"total_tokens":711}}`
-	decoders := map[string]func([]byte, any) error{
-		"sonic":         Unmarshal,
-		"encoding/json": json.Unmarshal,
-	}
-	for name, decode := range decoders {
-		for label, body := range map[string]string{"response": stepFunChatBody, "stream frame": streamFrame} {
-			var resp BifrostChatResponse
-			if err := decode([]byte(body), &resp); err != nil {
-				t.Fatalf("%s %s: decode: %v", name, label, err)
-			}
-			u := resp.Usage
-			if u == nil || u.PromptTokensDetails == nil {
-				t.Fatalf("%s %s: usage = %+v, want prompt_tokens_details set", name, label, u)
-			}
-			if got := u.PromptTokensDetails.CachedReadTokens; got != 512 {
-				t.Errorf("%s %s: cached_read_tokens = %d, want 512", name, label, got)
-			}
-			if u.PromptTokens != 591 || u.CompletionTokens != 120 || u.TotalTokens != 711 {
-				t.Errorf("%s %s: token counts = %d/%d/%d, want 591/120/711", name, label, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
-			}
-			out, err := Marshal(u)
-			if err != nil {
-				t.Fatalf("%s %s: marshal: %v", name, label, err)
-			}
-			var served struct {
-				CachedTokens        *int `json:"cached_tokens"`
-				PromptTokensDetails struct {
-					CachedReadTokens int `json:"cached_read_tokens"`
-					CachedTokens     int `json:"cached_tokens"`
-				} `json:"prompt_tokens_details"`
-			}
-			if err := json.Unmarshal(out, &served); err != nil {
-				t.Fatalf("%s %s: decode served usage: %v", name, label, err)
-			}
-			if served.PromptTokensDetails.CachedReadTokens != 512 || served.PromptTokensDetails.CachedTokens != 512 {
-				t.Errorf("%s %s: served usage = %s, want cached_read_tokens and cached_tokens 512 under prompt_tokens_details", name, label, out)
-			}
-			if served.CachedTokens != nil {
-				t.Errorf("%s %s: served usage = %s, want no top-level cached_tokens", name, label, out)
-			}
+	for label, body := range map[string]string{"response": stepFunChatBody, "stream frame": streamFrame} {
+		var resp BifrostChatResponse
+		if err := Unmarshal([]byte(body), &resp); err != nil {
+			t.Fatalf("%s: decode: %v", label, err)
+		}
+		resp.Usage.NormalizeVendorSpellings()
+		u := resp.Usage
+		if u == nil || u.PromptTokensDetails == nil {
+			t.Fatalf("%s: usage = %+v, want prompt_tokens_details set", label, u)
+		}
+		if got := u.PromptTokensDetails.CachedReadTokens; got != 512 {
+			t.Errorf("%s: cached_read_tokens = %d, want 512", label, got)
+		}
+		if u.CachedTokens != 0 {
+			t.Errorf("%s: top-level cached_tokens = %d after normalizing, want it cleared", label, u.CachedTokens)
+		}
+		if u.PromptTokens != 591 || u.CompletionTokens != 120 || u.TotalTokens != 711 {
+			t.Errorf("%s: token counts = %d/%d/%d, want 591/120/711", label, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+		}
+		out, err := Marshal(u)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", label, err)
+		}
+		var served struct {
+			CachedTokens        *int `json:"cached_tokens"`
+			PromptTokensDetails struct {
+				CachedReadTokens int `json:"cached_read_tokens"`
+				CachedTokens     int `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
+		}
+		if err := json.Unmarshal(out, &served); err != nil {
+			t.Fatalf("%s: decode served usage: %v", label, err)
+		}
+		if served.PromptTokensDetails.CachedReadTokens != 512 || served.PromptTokensDetails.CachedTokens != 512 {
+			t.Errorf("%s: served usage = %s, want cached_read_tokens and cached_tokens 512 under prompt_tokens_details", label, out)
+		}
+		if served.CachedTokens != nil {
+			t.Errorf("%s: served usage = %s, want no top-level cached_tokens", label, out)
 		}
 	}
 }
 
 // The top-level count is a fallback only: a cached-read count nested under prompt_tokens_details
 // wins, and a vendor that reports zero or nothing gets no prompt_tokens_details invented for it.
-func TestBifrostLLMUsageTopLevelCachedTokensPrecedence(t *testing.T) {
+func TestBifrostLLMUsageNormalizeCachedTokensPrecedence(t *testing.T) {
 	cases := []struct {
 		name        string
 		body        string
@@ -871,8 +869,12 @@ func TestBifrostLLMUsageTopLevelCachedTokensPrecedence(t *testing.T) {
 			if err := Unmarshal([]byte(tc.body), &u); err != nil {
 				t.Fatalf("decode: %v", err)
 			}
+			u.NormalizeVendorSpellings()
 			if u.PromptTokens != 10 {
 				t.Errorf("prompt_tokens = %d, want 10", u.PromptTokens)
+			}
+			if u.CachedTokens != 0 {
+				t.Errorf("top-level cached_tokens = %d after normalizing, want it cleared", u.CachedTokens)
 			}
 			if !tc.wantDetails {
 				if u.PromptTokensDetails != nil {
@@ -889,70 +891,39 @@ func TestBifrostLLMUsageTopLevelCachedTokensPrecedence(t *testing.T) {
 			}
 		})
 	}
-}
-
-// The custom decoder must lose no field: a usage with every serialized field set survives a
-// marshal and decode on both decoders, and a decode into a populated usage keeps the fields the
-// body does not name, as a plain struct decode does. A field added to BifrostLLMUsage that the
-// decoder drops fails here by name.
-func TestBifrostLLMUsageUnmarshalKeepsEveryField(t *testing.T) {
-	var full BifrostLLMUsage
-	fillNonZero(t, reflect.ValueOf(&full).Elem(), 0)
-	body, err := Marshal(full)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	want := serializedFieldsOf(t, body)
-	for name, decode := range map[string]func([]byte, any) error{"sonic": Unmarshal, "encoding/json": json.Unmarshal} {
-		var got BifrostLLMUsage
-		if err := decode(body, &got); err != nil {
-			t.Fatalf("%s: decode: %v", name, err)
-		}
-		back, err := Marshal(got)
-		if err != nil {
-			t.Fatalf("%s: marshal decoded: %v", name, err)
-		}
-		if gotFields := serializedFieldsOf(t, back); !reflect.DeepEqual(gotFields, want) {
-			t.Errorf("%s: decoded usage lost or changed fields:\n got %v\nwant %v", name, gotFields, want)
-		}
-	}
-
-	kept := BifrostLLMUsage{PromptTokens: 5, TotalTokens: 9}
-	if err := Unmarshal([]byte(`{"completion_tokens":4,"cached_tokens":2}`), &kept); err != nil {
-		t.Fatalf("decode into populated usage: %v", err)
-	}
-	if kept.PromptTokens != 5 || kept.TotalTokens != 9 || kept.CompletionTokens != 4 {
-		t.Errorf("populated usage after decode = %+v, want prompt 5, completion 4, total 9", kept)
-	}
-	if kept.PromptTokensDetails == nil || kept.PromptTokensDetails.CachedReadTokens != 2 {
-		t.Errorf("populated usage details = %+v, want cached_read_tokens 2", kept.PromptTokensDetails)
-	}
-
 	var nilUsage *BifrostLLMUsage
-	if err := nilUsage.UnmarshalJSON([]byte(`{}`)); err == nil {
-		t.Error("UnmarshalJSON on a nil receiver returned no error")
+	nilUsage.NormalizeCachedTokens()
+	nilUsage.NormalizeVendorSpellings()
+}
+
+// StepFun sends usage on every streamed chunk. Each frame is normalized as it is decoded, so the
+// accumulated usage carries the cached count at the unified path and never the top-level one.
+func TestMergeStreamFrameCarriesNormalizedCachedTokens(t *testing.T) {
+	acc := &BifrostLLMUsage{}
+	for _, body := range []string{
+		`{"cached_tokens":512,"prompt_tokens":591,"completion_tokens":1,"total_tokens":592}`,
+		`{"cached_tokens":512,"prompt_tokens":591,"completion_tokens":120,"total_tokens":711}`,
+	} {
+		var frame BifrostLLMUsage
+		if err := Unmarshal([]byte(body), &frame); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		frame.NormalizeVendorSpellings()
+		acc.MergeStreamFrame(&frame)
+	}
+	if acc.PromptTokensDetails == nil || acc.PromptTokensDetails.CachedReadTokens != 512 {
+		t.Fatalf("accumulated details = %+v, want cached_read_tokens 512", acc.PromptTokensDetails)
+	}
+	if acc.CachedTokens != 0 || acc.CompletionTokens != 120 || acc.TotalTokens != 711 {
+		t.Errorf("accumulated usage = %+v, want no top-level cached_tokens, completion 120, total 711", acc)
 	}
 }
 
-func serializedFieldsOf(t *testing.T, body []byte) map[string]any {
-	t.Helper()
-	var fields map[string]any
-	if err := json.Unmarshal(body, &fields); err != nil {
-		t.Fatalf("decode %s: %v", body, err)
-	}
-	if len(fields) == 0 {
-		t.Fatalf("no serialized fields in %s", body)
-	}
-	return fields
-}
-
-// BenchmarkBifrostLLMUsageCustomDecoder measures what the custom decoder (TXE-6439) costs on the
-// response path, where every chat response and every streamed usage frame decodes one usage
-// object. "before" decodes the same bytes into the struct without the method, which is what
-// every decode did before the change; the other rows are OpenAI's usage (nested details),
-// StepFun's (top-level cached_tokens) and a token-only usage through the method.
-func BenchmarkBifrostLLMUsageCustomDecoder(b *testing.B) {
-	type plainUsage BifrostLLMUsage
+// BenchmarkBifrostLLMUsageNormalizeVendorSpellings measures the response-path cost of decoding a
+// usage object and normalizing it (TXE-6439). A usage with no top-level vendor spelling, which
+// is every vendor but SGLang and StepFun, must pay nothing beyond the decode: the normalizer is
+// two integer comparisons there. Only the StepFun row allocates, for the details object it fills.
+func BenchmarkBifrostLLMUsageNormalizeVendorSpellings(b *testing.B) {
 	bodies := map[string][]byte{
 		"tokens-only":      []byte(`{"prompt_tokens":591,"completion_tokens":120,"total_tokens":711}`),
 		"nested-details":   []byte(`{"prompt_tokens":591,"completion_tokens":120,"total_tokens":711,"prompt_tokens_details":{"cached_tokens":512,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":4,"audio_tokens":0,"accepted_prediction_tokens":0,"rejected_prediction_tokens":0}}`),
@@ -960,22 +931,23 @@ func BenchmarkBifrostLLMUsageCustomDecoder(b *testing.B) {
 	}
 	for _, name := range []string{"tokens-only", "nested-details", "top-level-cached"} {
 		body := bodies[name]
-		b.Run("before/"+name, func(b *testing.B) {
-			b.ReportAllocs()
-			for b.Loop() {
-				var u plainUsage
-				if err := Unmarshal(body, &u); err != nil {
-					b.Fatal(err)
-				}
-			}
-		})
-		b.Run("after/"+name, func(b *testing.B) {
+		b.Run("decode/"+name, func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				var u BifrostLLMUsage
 				if err := Unmarshal(body, &u); err != nil {
 					b.Fatal(err)
 				}
+			}
+		})
+		b.Run("decode-and-normalize/"+name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				var u BifrostLLMUsage
+				if err := Unmarshal(body, &u); err != nil {
+					b.Fatal(err)
+				}
+				u.NormalizeVendorSpellings()
 			}
 		})
 	}
