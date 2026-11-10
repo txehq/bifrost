@@ -1990,8 +1990,9 @@ func TestMiniMaxContentFilterCodesOnEveryOperation(t *testing.T) {
 			assertMiniMaxError(t, bifrostErr, http.StatusBadRequest, schemas.ErrorTypeCallerContentFiltered, code)
 		})
 		t.Run("responses/"+code, func(t *testing.T) {
+			// Responses goes to MiniMax's native /v1/responses (TXE-6595), which reports base_resp the same way.
 			provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
-				"POST /v1/chat/completions": jsonResponse(http.StatusOK, `{"id":"","choices":null,`+baseResp+`}`),
+				"POST /v1/responses": jsonResponse(http.StatusOK, `{"id":"","output":null,`+baseResp+`}`),
 			})
 			_, bifrostErr := provider.Responses(testContext(t), testKey(), &schemas.BifrostResponsesRequest{
 				Provider: schemas.MiniMax,
