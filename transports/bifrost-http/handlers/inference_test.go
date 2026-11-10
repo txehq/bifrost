@@ -21,6 +21,7 @@ import (
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
@@ -708,4 +709,44 @@ func TestWriteSpeechAudioEmptyAudioDropsUsageHeader(t *testing.T) {
 	if got := string(ok.Response.Header.ContentType()); got != "audio/wav" {
 		t.Fatalf("Content-Type = %q, want audio/wav from the bytes", got)
 	}
+}
+
+// TXE-6606 (contract C4): /v1/images/generations JSON reaches xAI's wire; the xaiEgress helper is
+// in inference_imageedit_test.go.
+func TestXAIImageGenerationIngressToEgress(t *testing.T) {
+	t.Run("JSON body: quality, resolution, aspect_ratio and n reach xAI", func(t *testing.T) {
+		egress := &xaiEgress{}
+		provider := egress.provider(t)
+		_, req, err := prepareImageGenerationRequest(jsonRequestCtx("/v1/images/generations",
+			`{"model":"xai/grok-imagine-image-2.0","prompt":"a lighthouse","n":2,"quality":"medium","resolution":"2K","aspect_ratio":"16:9"}`), nil)
+		require.NoError(t, err)
+		require.Equal(t, schemas.XAI, req.Provider)
+
+		response, bifrostErr := provider.ImageGeneration(xaiEgressCtx(), xaiEgressKey, req)
+		require.Nil(t, bifrostErr)
+		require.Len(t, response.Data, 1)
+
+		path, ctype, body := egress.only(t)
+		require.Equal(t, "/v1/images/generations", path)
+		require.Equal(t, "application/json", ctype)
+		require.Equal(t, "grok-imagine-image-2.0", body["model"])
+		require.Equal(t, "medium", body["quality"])
+		require.Equal(t, "2k", body["resolution"], "the unified tier is sent in xAI's spelling, once")
+		require.Equal(t, "16:9", body["aspect_ratio"])
+		require.EqualValues(t, 2, body["n"])
+	})
+
+	t.Run("JSON body: deferred is refused before any upstream call", func(t *testing.T) {
+		egress := &xaiEgress{}
+		provider := egress.provider(t)
+		_, req, err := prepareImageGenerationRequest(jsonRequestCtx("/v1/images/generations",
+			`{"model":"xai/grok-imagine-image-2.0","prompt":"a lighthouse","deferred":true}`), nil)
+		require.NoError(t, err)
+
+		_, bifrostErr := provider.ImageGeneration(xaiEgressCtx(), xaiEgressKey, req)
+		require.NotNil(t, bifrostErr)
+		require.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+		require.Equal(t, "deferred", bifrostErr.Error.Param)
+		require.Zero(t, egress.calls())
+	})
 }
