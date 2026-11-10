@@ -14,8 +14,9 @@
 // of its variables set runs as before, so a partly configured provider still fails loudly.
 // Providers marked is_key_less, and providers whose keys carry literal values, are never keyless.
 //
-// A request is aimed at a provider when its raw JSON body's "model" is "<provider>/<model>",
-// the notation the native /v1 routes take. Drop-in routes that carry the provider elsewhere
+// A request is aimed at a provider when its raw JSON body's "model", or the "model" field of
+// its multipart form (the transcription and image-edit routes), is "<provider>/<model>", the
+// notation the native /v1 routes take. Drop-in routes that carry the provider elsewhere
 // (in the URL, or a bare model name) are not matched and run as before.
 
 const ENV_REF_RE = /^env\.([A-Za-z0-9_]+)$/;
@@ -63,14 +64,19 @@ export function findKeylessProviders(profile, env = process.env) {
 
 // The provider half of a request body's "model", or "" when the body has none.
 export function bodyModelProvider(item) {
-  const raw = item?.request?.body?.raw;
-  if (typeof raw !== "string" || raw === "") return "";
+  const body = item?.request?.body;
   let model;
-  try {
-    model = JSON.parse(raw)?.model;
-  } catch {
-    // Bodies with Postman templates are not JSON until newman substitutes them.
-    model = /"model"\s*:\s*"([^"]+)"/.exec(raw)?.[1];
+  if (body?.mode === "formdata" && Array.isArray(body.formdata)) {
+    model = body.formdata.find((field) => field?.key === "model" && !field.disabled)?.value;
+  } else {
+    const raw = body?.raw;
+    if (typeof raw !== "string" || raw === "") return "";
+    try {
+      model = JSON.parse(raw)?.model;
+    } catch {
+      // Bodies with Postman templates are not JSON until newman substitutes them.
+      model = /"model"\s*:\s*"([^"]+)"/.exec(raw)?.[1];
+    }
   }
   if (typeof model !== "string") return "";
   const slash = model.indexOf("/");

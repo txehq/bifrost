@@ -73,6 +73,12 @@ test("the request's provider comes from the body's provider/model, or is empty",
   assert.equal(bodyModelProvider(request("b", "text-embedding-3-small")), "");
   assert.equal(bodyModelProvider({ request: { body: { raw: '{"model": "deepinfra/x", "n": {{count}}}' } } }), "deepinfra");
   assert.equal(bodyModelProvider({ request: { method: "GET" } }), "");
+  // A multipart request (transcription, image edit) names its model in a form field.
+  const form = (fields) => ({ request: { method: "POST", body: { mode: "formdata", formdata: fields } } });
+  assert.equal(bodyModelProvider(form([{ key: "model", value: "elevenlabs/scribe_v2", type: "text" }, { key: "file", src: "a.mp3", type: "file" }])), "elevenlabs");
+  assert.equal(bodyModelProvider(form([{ key: "model", value: "whisper-1", type: "text" }])), "");
+  assert.equal(bodyModelProvider(form([{ key: "model", value: "elevenlabs/scribe_v2", type: "text", disabled: true }])), "");
+  assert.equal(bodyModelProvider(form([{ key: "file", src: "a.mp3", type: "file" }])), "");
 });
 
 test("requests aimed at a keyless provider get a passing skip assertion and skipRequest; others are untouched", () => {
