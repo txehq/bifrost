@@ -1970,13 +1970,10 @@ type BifrostLLMUsage struct {
 	// ProcessedTokens carries the token counts the vendor processed when it reports them
 	// apart from the billed counts in PromptTokens/CompletionTokens (Cohere's usage.tokens
 	// next to usage.billed_units). Absent when the vendor reports only one set (contract C5).
-	ProcessedTokens *ProcessedTokenUsage `json:"processed_tokens,omitempty"`
-	ToolUsage       *ToolUsage           `json:"tool_usage,omitempty"`
-	// SearchContextSize is the search context tier the vendor says it billed the request at
-	// ("low" | "medium" | "high"): Perplexity's per-request search fee is priced by it (fork,
-	// TXE-6549, contract C5). Copied from the vendor's usage, never from the request.
-	SearchContextSize *string      `json:"search_context_size,omitempty"`
-	Cost              *BifrostCost `json:"cost,omitempty"` // Only for the providers which support cost calculation
+	ProcessedTokens   *ProcessedTokenUsage `json:"processed_tokens,omitempty"`
+	ToolUsage         *ToolUsage           `json:"tool_usage,omitempty"`
+	SearchContextSize *string              `json:"search_context_size,omitempty"` // Search context tier the vendor billed ("low" | "medium" | "high")
+	Cost              *BifrostCost         `json:"cost,omitempty"`                // Only for the providers which support cost calculation
 	// xAI-specific usage field, normalized into Cost by NormalizeProviderCost.
 	CostInUsdTicks *int64 `json:"cost_in_usd_ticks,omitempty"`
 	// Laya decision usage: state token accounting and truncation, reported on /v1/decisions.
@@ -2373,13 +2370,10 @@ func (p *ProcessedTokenUsage) Add(o *ProcessedTokenUsage) *ProcessedTokenUsage {
 // A new counter or field must also be handled in Add and DeepCopy;
 // TestToolUsageAddDeepCopyCoverEveryField fails when it is not.
 type ToolUsage struct {
-	WebSearch     *WebSearchToolUsage `json:"web_search,omitempty"`
-	WebFetch      *ToolRequestUsage   `json:"web_fetch,omitempty"`      // Anthropic server_tool_use.web_fetch_requests
-	CodeExecution *ToolRequestUsage   `json:"code_execution,omitempty"` // Anthropic server_tool_use.code_execution_requests
-	// PerTool is every tool the vendor reported a call count for, keyed by the vendor's own
-	// tool name and copied as reported (Perplexity's usage.tool_calls_details.<tool>.invocation).
-	// Filled only from the vendor's report (fork, TXE-6549, contract C5); nil when it reported none.
-	PerTool map[string]ToolRequestUsage `json:"per_tool,omitempty"`
+	WebSearch     *WebSearchToolUsage         `json:"web_search,omitempty"`
+	WebFetch      *ToolRequestUsage           `json:"web_fetch,omitempty"`      // Anthropic server_tool_use.web_fetch_requests
+	CodeExecution *ToolRequestUsage           `json:"code_execution,omitempty"` // Anthropic server_tool_use.code_execution_requests
+	PerTool       map[string]ToolRequestUsage `json:"per_tool,omitempty"`       // Call count per vendor tool name, as the vendor reported it
 }
 
 // ToolRequestUsage counts billable calls of one server-side tool.
@@ -2410,7 +2404,10 @@ func (t *ToolUsage) Add(o *ToolUsage) *ToolUsage {
 }
 
 // addPerToolUsage returns an owned tool-by-tool sum; nil when neither side reports per-tool
-// counts, so a usage without them never allocates a map.
+// counts, so a usage without them never allocates a map. ToolUsage.PerTool holds every tool the
+// vendor reported a call count for, keyed by the vendor's own tool name (Perplexity's
+// usage.tool_calls_details.<tool>.invocation). It is filled only from the vendor's report
+// (fork, TXE-6549, contract C5).
 func addPerToolUsage(a, b map[string]ToolRequestUsage) map[string]ToolRequestUsage {
 	if len(a) == 0 && len(b) == 0 {
 		return nil

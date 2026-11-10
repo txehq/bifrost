@@ -249,7 +249,7 @@ func (provider *PerplexityProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 // hands back an empty frame, which the stream loop passes over, instead of an error, which
 // would end the stream.
 func (provider *PerplexityProvider) parseChatStreamFrame(responseBody []byte, response *schemas.BifrostChatResponse, _ []byte, _ bool, _ bool) (interface{}, interface{}, *schemas.BifrostError) {
-	frame := streamFrame{BifrostChatResponse: response}
+	frame := PerplexityStreamFrame{BifrostChatResponse: response}
 	if err := sonic.Unmarshal(responseBody, &frame); err != nil {
 		provider.logger.Warn("Failed to parse stream response: %v", err)
 		*response = schemas.BifrostChatResponse{}

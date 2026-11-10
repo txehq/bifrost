@@ -1336,20 +1336,18 @@ type ResponsesStopDetails struct {
 }
 
 type ResponsesResponseUsage struct {
-	Type                *string                        `json:"type,omitempty"`          // type field is sent by anthropic
-	Model               *string                        `json:"model,omitempty"`         // model that produced this (iteration) attempt; sent on iterations[] for Anthropic server-side fallback
-	InputTokens         int                            `json:"input_tokens"`            // Number of input tokens (prompt tokens + cached tokens)
-	InputTokensDetails  *ResponsesResponseInputTokens  `json:"input_tokens_details"`    // Detailed breakdown of input tokens
-	OutputTokens        int                            `json:"output_tokens"`           // Number of output tokens (completion tokens + reasoning tokens)
-	OutputTokensDetails *ResponsesResponseOutputTokens `json:"output_tokens_details"`   // Detailed breakdown of output tokens	TotalTokens int `json:"total_tokens"` // Total number of tokens used
-	TotalTokens         int                            `json:"total_tokens"`            // Total number of tokens used
-	AudioSeconds        *float64                       `json:"audio_seconds,omitempty"` // Duration-based audio usage when tokens are unavailable
-	Cost                *BifrostCost                   `json:"cost,omitempty"`          // Only for the providers which support cost calculation
-	Iterations          []ResponsesResponseUsage       `json:"iterations,omitempty"`    // iterations field is sent by anthropic
-	ToolUsage           *ToolUsage                     `json:"tool_usage,omitempty"`    // Server-side tool call counts; moved to the response's top-level tool_usage on the wire
-	// SearchContextSize mirrors BifrostLLMUsage.SearchContextSize, so a chat usage converted to
-	// Responses (Perplexity's Sonar models) keeps the tier the vendor billed (fork, TXE-6549).
-	SearchContextSize *string `json:"search_context_size,omitempty"`
+	Type                *string                        `json:"type,omitempty"`                // type field is sent by anthropic
+	Model               *string                        `json:"model,omitempty"`               // model that produced this (iteration) attempt; sent on iterations[] for Anthropic server-side fallback
+	InputTokens         int                            `json:"input_tokens"`                  // Number of input tokens (prompt tokens + cached tokens)
+	InputTokensDetails  *ResponsesResponseInputTokens  `json:"input_tokens_details"`          // Detailed breakdown of input tokens
+	OutputTokens        int                            `json:"output_tokens"`                 // Number of output tokens (completion tokens + reasoning tokens)
+	OutputTokensDetails *ResponsesResponseOutputTokens `json:"output_tokens_details"`         // Detailed breakdown of output tokens	TotalTokens int `json:"total_tokens"` // Total number of tokens used
+	TotalTokens         int                            `json:"total_tokens"`                  // Total number of tokens used
+	AudioSeconds        *float64                       `json:"audio_seconds,omitempty"`       // Duration-based audio usage when tokens are unavailable
+	Cost                *BifrostCost                   `json:"cost,omitempty"`                // Only for the providers which support cost calculation
+	Iterations          []ResponsesResponseUsage       `json:"iterations,omitempty"`          // iterations field is sent by anthropic
+	ToolUsage           *ToolUsage                     `json:"tool_usage,omitempty"`          // Server-side tool call counts; moved to the response's top-level tool_usage on the wire
+	SearchContextSize   *string                        `json:"search_context_size,omitempty"` // Search context tier the vendor billed; mirrors BifrostLLMUsage.SearchContextSize
 
 	// xAI-specific usage fields
 	NumSourcesUsed             *int                                 `json:"num_sources_used,omitempty"`
