@@ -695,3 +695,48 @@ func TestBatchResultsOfABigmodelBatch(t *testing.T) {
 	assert.Equal(t, "1210", failed.Error.Code)
 	assert.Equal(t, "API 调用参数有误，请检查文档。", failed.Error.Message)
 }
+
+// BenchmarkBatchAndFileResourceURL measures building the URL of a batch or file call that
+// names its target. "before" is what the six call sites did until they read
+// request_path_overrides: one concatenation onto the base URL. The built-in provider and a
+// custom provider without overrides must cost the same; only an overridden path pays for
+// the template.
+func BenchmarkBatchAndFileResourceURL(b *testing.B) {
+	const id = "batch_1791490810192076800"
+	newProvider := func(custom *schemas.CustomProviderConfig) *OpenAIProvider {
+		return NewOpenAIProvider(&schemas.ProviderConfig{
+			NetworkConfig:        schemas.NetworkConfig{BaseURL: "https://open.bigmodel.cn", DefaultRequestTimeoutInSeconds: 30},
+			CustomProviderConfig: custom,
+		}, testNoopLogger{})
+	}
+	var sink string
+	b.Run("before: base URL + /v1 path", func(b *testing.B) {
+		provider := newProvider(nil)
+		b.ReportAllocs()
+		for b.Loop() {
+			sink = provider.networkConfig.BaseURL + "/v1/batches/" + id + "/cancel"
+		}
+	})
+	for _, bc := range []struct {
+		name   string
+		custom *schemas.CustomProviderConfig
+	}{
+		{"built-in provider", nil},
+		{"custom provider without overrides", &schemas.CustomProviderConfig{CustomProviderKey: "tkp_plain", BaseProviderType: schemas.OpenAI}},
+		{"custom provider, path override", &schemas.CustomProviderConfig{CustomProviderKey: "tkp_bigmodel", BaseProviderType: schemas.OpenAI, RequestPathOverrides: bigmodelPathOverrides}},
+		{"custom provider, full URL override", &schemas.CustomProviderConfig{CustomProviderKey: "tkp_bigmodel", BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{schemas.BatchCancelRequest: "https://open.bigmodel.cn/api/paas/v4/batches/{batch_id}/cancel"}}},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			provider := newProvider(bc.custom)
+			b.ReportAllocs()
+			for b.Loop() {
+				url, err := provider.buildResourceURL("/v1/batches/", id, "/cancel", schemas.BatchCancelRequest)
+				if err != nil {
+					b.Fatal(err.Error.Message)
+				}
+				sink = url
+			}
+		})
+	}
+	_ = sink
+}

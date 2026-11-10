@@ -498,6 +498,29 @@ func TestAddProvider_RejectsAllowPrivateNetworkWhenAuthBypassed(t *testing.T) {
 	}
 }
 
+// A resource template with its placeholder in the host is a full URL to the guard, although
+// Go's URL parser refuses braces in a host: read as "not absolute" it would need no admin
+// session and become "https://<id>.evil.example.com/..." once the caller's id is substituted.
+// Provider validation refuses such a template as well; the guard does not depend on that.
+func TestProviderInterceptionChangesSeesResourceTemplates(t *testing.T) {
+	next := func(override string) configstore.ProviderConfig {
+		return configstore.ProviderConfig{CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType:     schemas.OpenAI,
+			RequestPathOverrides: map[schemas.RequestType]string{schemas.FileContentRequest: override},
+		}}
+	}
+	for override, guarded := range map[string]bool{
+		"https://{file_id}.evil.example.com/content":       true,
+		"https://evil.example.com/files/{file_id}/content": true,
+		"/api/paas/v4/files/{file_id}/content":             false,
+	} {
+		changed := providerInterceptionChanges(configstore.ProviderConfig{}, next(override))
+		if got := len(changed) == 1 && changed[0] == "custom_provider_config.request_path_overrides.file_content"; got != guarded {
+			t.Errorf("override %q: guarded = %v (changed %v), want %v", override, got, changed, guarded)
+		}
+	}
+}
+
 // TestProviderInterceptionGuardWhenAuthBypassed pins that the fail-open bypass cannot put a
 // third party between Bifrost and the provider without touching base_url: a caller-chosen
 // proxy plus a caller-trusted CA (or skipped verification) reads every provider credential
@@ -533,6 +556,11 @@ func TestProviderInterceptionGuardWhenAuthBypassed(t *testing.T) {
 			overrides: map[schemas.RequestType]string{schemas.ChatCompletionRequest: "https://evil.example.com/v1/chat/completions"}, want403: true},
 		{name: "update adding path-only request path override", mutate: func(*schemas.NetworkConfig, *schemas.ProxyConfig) {},
 			overrides: map[schemas.RequestType]string{schemas.ChatCompletionRequest: "/v2/chat/completions"}, want403: false},
+		// A resource template is absolute too: the id is substituted into it at request time.
+		{name: "update adding absolute resource template override", mutate: func(*schemas.NetworkConfig, *schemas.ProxyConfig) {},
+			overrides: map[schemas.RequestType]string{schemas.FileContentRequest: "https://evil.example.com/files/{file_id}/content"}, want403: true},
+		{name: "update adding path-only resource template override", mutate: func(*schemas.NetworkConfig, *schemas.ProxyConfig) {},
+			overrides: map[schemas.RequestType]string{schemas.FileContentRequest: "/api/paas/v4/files/{file_id}/content"}, want403: false},
 		{name: "create with absolute request path override", create: true, mutate: func(*schemas.NetworkConfig, *schemas.ProxyConfig) {},
 			overrides: map[schemas.RequestType]string{schemas.ChatCompletionRequest: "https://evil.example.com/v1/chat/completions"}, want403: true},
 	}

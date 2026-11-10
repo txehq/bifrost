@@ -117,14 +117,18 @@ func (provider *OpenAIProvider) buildRequestURL(ctx *schemas.BifrostContext, def
 }
 
 // buildResourceURL constructs the URL of a call that names one resource (a batch or a file)
-// by its id. Without an override it is the provider's base URL plus defaultPath, which
-// already holds the id. A custom provider's request_path_overrides entry for such a call is
-// a template: its placeholder ({batch_id} or {file_id}, see
-// providerUtils.ResourcePathPlaceholders) is replaced by the escaped id. requestTypes are
-// tried in order and the first one that has an override wins; an override without its
-// placeholder is a configuration error, never a request to a path that lost the id.
-func (provider *OpenAIProvider) buildResourceURL(defaultPath string, escapedID string, requestTypes ...schemas.RequestType) (string, *schemas.BifrostError) {
-	path, isCompleteURL, err := providerUtils.GetResourceRequestPath(defaultPath, provider.customProviderConfig, escapedID, requestTypes...)
+// by its id: the default path is prefix + escapedID + suffix. Without path overrides, which
+// is every built-in provider, it is one concatenation onto the base URL, as before. A custom
+// provider's request_path_overrides entry for such a call is a template: its placeholder
+// ({batch_id} or {file_id}, see providerUtils.ResourcePathPlaceholders) is replaced by the
+// escaped id. requestTypes are tried in order and the first one that has an override wins;
+// an override without its placeholder is a configuration error, never a request to a path
+// that lost the id.
+func (provider *OpenAIProvider) buildResourceURL(prefix string, escapedID string, suffix string, requestTypes ...schemas.RequestType) (string, *schemas.BifrostError) {
+	if provider.customProviderConfig == nil || len(provider.customProviderConfig.RequestPathOverrides) == 0 {
+		return provider.networkConfig.BaseURL + prefix + escapedID + suffix, nil
+	}
+	path, isCompleteURL, err := providerUtils.GetResourceRequestPath(prefix+escapedID+suffix, provider.customProviderConfig, escapedID, requestTypes...)
 	if err != nil {
 		return "", providerUtils.NewConfigurationError(err.Error())
 	}
@@ -6488,7 +6492,7 @@ func (provider *OpenAIProvider) FileRetrieve(ctx *schemas.BifrostContext, keys [
 	if idErr != nil {
 		return nil, idErr
 	}
-	requestURL, urlErr := provider.buildResourceURL("/v1/files/"+escapedFileID, escapedFileID, schemas.FileRetrieveRequest)
+	requestURL, urlErr := provider.buildResourceURL("/v1/files/", escapedFileID, "", schemas.FileRetrieveRequest)
 	if urlErr != nil {
 		return nil, urlErr
 	}
@@ -6579,7 +6583,7 @@ func (provider *OpenAIProvider) FileDelete(ctx *schemas.BifrostContext, keys []s
 	if idErr != nil {
 		return nil, idErr
 	}
-	requestURL, urlErr := provider.buildResourceURL("/v1/files/"+escapedFileID, escapedFileID, schemas.FileDeleteRequest)
+	requestURL, urlErr := provider.buildResourceURL("/v1/files/", escapedFileID, "", schemas.FileDeleteRequest)
 	if urlErr != nil {
 		return nil, urlErr
 	}
@@ -6687,7 +6691,7 @@ func (provider *OpenAIProvider) FileContent(ctx *schemas.BifrostContext, keys []
 	if idErr != nil {
 		return nil, idErr
 	}
-	requestURL, urlErr := provider.buildResourceURL("/v1/files/"+escapedFileID+"/content", escapedFileID, schemas.FileContentRequest)
+	requestURL, urlErr := provider.buildResourceURL("/v1/files/", escapedFileID, "/content", schemas.FileContentRequest)
 	if urlErr != nil {
 		return nil, urlErr
 	}
@@ -7128,7 +7132,7 @@ func (provider *OpenAIProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys 
 	if idErr != nil {
 		return nil, idErr
 	}
-	requestURL, urlErr := provider.buildResourceURL("/v1/batches/"+escapedBatchID, escapedBatchID, schemas.BatchRetrieveRequest)
+	requestURL, urlErr := provider.buildResourceURL("/v1/batches/", escapedBatchID, "", schemas.BatchRetrieveRequest)
 	if urlErr != nil {
 		return nil, urlErr
 	}
@@ -7223,7 +7227,7 @@ func (provider *OpenAIProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 	if idErr != nil {
 		return nil, idErr
 	}
-	requestURL, urlErr := provider.buildResourceURL("/v1/batches/"+escapedBatchID+"/cancel", escapedBatchID, schemas.BatchCancelRequest)
+	requestURL, urlErr := provider.buildResourceURL("/v1/batches/", escapedBatchID, "/cancel", schemas.BatchCancelRequest)
 	if urlErr != nil {
 		return nil, urlErr
 	}
@@ -7358,7 +7362,7 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 	if idErr != nil {
 		return nil, idErr
 	}
-	retrieveURL, urlErr := provider.buildResourceURL("/v1/batches/"+escapedBatchID, escapedBatchID, schemas.BatchResultsRequest, schemas.BatchRetrieveRequest)
+	retrieveURL, urlErr := provider.buildResourceURL("/v1/batches/", escapedBatchID, "", schemas.BatchResultsRequest, schemas.BatchRetrieveRequest)
 	if urlErr != nil {
 		return nil, urlErr
 	}
@@ -7389,7 +7393,7 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 		if idErr != nil {
 			return nil, providerUtils.NewBifrostOperationError("provider returned an invalid "+file.field, nil)
 		}
-		fileURL, urlErr := provider.buildResourceURL("/v1/files/"+escapedFileID+"/content", escapedFileID, schemas.FileContentRequest)
+		fileURL, urlErr := provider.buildResourceURL("/v1/files/", escapedFileID, "/content", schemas.FileContentRequest)
 		if urlErr != nil {
 			return nil, urlErr
 		}

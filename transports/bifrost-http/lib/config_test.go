@@ -25092,6 +25092,11 @@ func TestValidateCustomProvider_ResourcePathOverrides(t *testing.T) {
 		schemas.ChatCompletionRequest: "/api/paas/v4/chat/completions",
 	}), "tkp_bigmodel"))
 
+	// In a full URL the placeholder may stand only in the path: the id is the caller's.
+	err := ValidateCustomProvider(withOverrides(schemas.OpenAI, map[schemas.RequestType]string{schemas.FileContentRequest: "https://{file_id}.evil.example.com/content"}), "tkp_bigmodel")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "only in the path of a full URL")
+
 	for requestType := range providerUtils.ResourcePathPlaceholders {
 		err := ValidateCustomProvider(withOverrides(schemas.OpenAI, map[schemas.RequestType]string{requestType: "/api/paas/v4/batches"}), "tkp_bigmodel")
 		require.Error(t, err, "%s", requestType)

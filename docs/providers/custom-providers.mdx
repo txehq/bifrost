@@ -476,7 +476,9 @@ An override replaces the whole default path. A batch or a file call that names i
 
 `batch_create`, `batch_list`, `file_upload` and `file_list` name no resource and take a plain path. Reading a batch's results is a batch retrieve followed by a download of its output and error files: the retrieve uses the `batch_results` override, or the `batch_retrieve` one when `batch_results` has none, and each download uses `file_content`.
 
-An override for one of these six request types that does not contain its placeholder is refused when the provider is created or updated, and a request on a provider that already has one fails with a configuration error before anything is sent upstream.
+The template may be a path on `base_url` or a full URL. In a full URL the placeholder may stand only in the path or the query, never in the scheme, the credentials or the host: the id comes from the caller, and the provider key is sent wherever the URL points.
+
+An override for one of these six request types that does not contain its placeholder, or carries it in the host of a full URL, is refused when the provider is created or updated, and a request on a provider that already has one fails with a configuration error before anything is sent upstream.
 
 ```json
 {

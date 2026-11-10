@@ -1882,7 +1882,18 @@ func GetPathFromContext(ctx context.Context, defaultPath string) string {
 
 // IsAbsoluteRequestURL reports whether a request-path override is a full URL (scheme and host)
 // that GetRequestPath sends requests to directly, rather than a path on the provider's base URL.
+//
+// A resource path placeholder ({batch_id}, {file_id}) is read as an ordinary path segment
+// first. Go's URL parser refuses braces in a host, so a template such as
+// "https://{file_id}.example.com/x" would otherwise read as "not absolute" here and become
+// an absolute URL once the id is substituted, slipping past every check that asks this
+// function whether an override leaves the provider's host.
 func IsAbsoluteRequestURL(s string) bool {
+	if strings.IndexByte(s, '{') >= 0 {
+		for _, placeholder := range resourcePathPlaceholderNames {
+			s = strings.ReplaceAll(s, placeholder, "id")
+		}
+	}
 	u, err := url.Parse(strings.TrimSpace(s))
 	return err == nil && u != nil && u.IsAbs() && u.Host != ""
 }
@@ -1939,18 +1950,57 @@ var ResourcePathPlaceholders = map[schemas.RequestType]string{
 	schemas.FileContentRequest:   "{file_id}",
 }
 
-// ValidateResourcePathOverride reports whether a non-blank request_path_overrides entry for a
-// request type listed in ResourcePathPlaceholders carries that type's placeholder. Other
-// request types and blank overrides pass.
+// resourcePathPlaceholderNames is the distinct placeholders of ResourcePathPlaceholders.
+var resourcePathPlaceholderNames = func() []string {
+	seen := map[string]bool{}
+	names := []string{}
+	for _, placeholder := range ResourcePathPlaceholders {
+		if !seen[placeholder] {
+			seen[placeholder] = true
+			names = append(names, placeholder)
+		}
+	}
+	slices.Sort(names)
+	return names
+}()
+
+// ValidateResourcePathOverride checks a non-blank request_path_overrides entry for a request
+// type listed in ResourcePathPlaceholders: it must carry that type's placeholder, and in a
+// full URL the placeholder may stand only in the path. An id is the caller's, so a
+// placeholder in the scheme, the credentials or the host would let a caller choose where
+// the provider key is sent. Other request types and blank overrides pass.
 func ValidateResourcePathOverride(requestType schemas.RequestType, override string) error {
-	placeholder, ok := ResourcePathPlaceholders[requestType]
-	if !ok || strings.TrimSpace(override) == "" {
-		return nil
+	_, _, err := parseResourcePathOverride(requestType, override)
+	return err
+}
+
+// parseResourcePathOverride validates a resource path override and reports whether it is a
+// full URL. A blank override, or a request type with no placeholder, returns ok false.
+// Whether the override is a full URL is decided here, on the template, never on the string
+// the id was substituted into.
+func parseResourcePathOverride(requestType schemas.RequestType, override string) (isCompleteURL bool, ok bool, err error) {
+	placeholder, listed := ResourcePathPlaceholders[requestType]
+	override = strings.TrimSpace(override)
+	if !listed || override == "" {
+		return false, false, nil
 	}
 	if !strings.Contains(override, placeholder) {
-		return fmt.Errorf("request_path_overrides.%s must contain %s where the id goes (for example %q), got %q", requestType, placeholder, "/v1/resources/"+placeholder, override)
+		return false, false, fmt.Errorf("request_path_overrides.%s must contain %s where the id goes (for example %q), got %q", requestType, placeholder, "/v1/resources/"+placeholder, override)
 	}
-	return nil
+	if !IsAbsoluteRequestURL(override) {
+		return false, true, nil
+	}
+	// scheme://authority ends at the first "/", "?" or "#" after the "://".
+	authorityEnd := len(override)
+	if schemeEnd := strings.Index(override, "://"); schemeEnd >= 0 {
+		if rest := strings.IndexAny(override[schemeEnd+3:], "/?#"); rest >= 0 {
+			authorityEnd = schemeEnd + 3 + rest
+		}
+	}
+	if strings.ContainsAny(override[:authorityEnd], "{}") {
+		return false, false, fmt.Errorf("request_path_overrides.%s may carry %s only in the path of a full URL, not in its scheme or host, got %q", requestType, placeholder, override)
+	}
+	return true, true, nil
 }
 
 // GetResourceRequestPath resolves the path of a call that names one resource by its id.
@@ -1958,11 +2008,12 @@ func ValidateResourcePathOverride(requestType schemas.RequestType, override stri
 // one with a non-blank override wins: its placeholder (ResourcePathPlaceholders) is replaced
 // by escapedID. Every requestType must be listed in ResourcePathPlaceholders. An override
 // without its placeholder is an error, so a misconfigured provider never sends a request to
-// a path that lost the id. The boolean reports a full URL, as in GetRequestPath. Unlike
+// a path that lost the id. The boolean reports a full URL, as in GetRequestPath; it is
+// decided on the template, so no id can turn a path override into a full URL. Unlike
 // GetRequestPath it does not read a path from the context: a context path belongs to the
 // caller's own request and holds no id of a batch or a file.
 func GetResourceRequestPath(defaultPath string, customProviderConfig *schemas.CustomProviderConfig, escapedID string, requestTypes ...schemas.RequestType) (string, bool, error) {
-	if customProviderConfig == nil {
+	if customProviderConfig == nil || len(customProviderConfig.RequestPathOverrides) == 0 {
 		return defaultPath, false, nil
 	}
 	for _, requestType := range requestTypes {
@@ -1970,21 +2021,19 @@ func GetResourceRequestPath(defaultPath string, customProviderConfig *schemas.Cu
 		if override == "" {
 			continue
 		}
-		placeholder, ok := ResourcePathPlaceholders[requestType]
-		if !ok {
+		placeholder, listed := ResourcePathPlaceholders[requestType]
+		if !listed {
 			return "", false, fmt.Errorf("request type %s has no resource path placeholder", requestType)
 		}
-		if err := ValidateResourcePathOverride(requestType, override); err != nil {
+		isCompleteURL, _, err := parseResourcePathOverride(requestType, override)
+		if err != nil {
 			return "", false, err
 		}
 		override = strings.ReplaceAll(override, placeholder, escapedID)
-		if IsAbsoluteRequestURL(override) {
-			return override, true, nil
-		}
-		if !strings.HasPrefix(override, "/") {
+		if !isCompleteURL && !strings.HasPrefix(override, "/") {
 			override = "/" + override
 		}
-		return override, false, nil
+		return override, isCompleteURL, nil
 	}
 	return defaultPath, false, nil
 }

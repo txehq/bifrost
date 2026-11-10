@@ -479,6 +479,7 @@ func TestGetResourceRequestPath(t *testing.T) {
 		name          string
 		config        *schemas.CustomProviderConfig
 		requestTypes  []schemas.RequestType
+		id            string
 		expectedPath  string
 		expectedIsURL bool
 		expectedErr   string
@@ -493,11 +494,20 @@ func TestGetResourceRequestPath(t *testing.T) {
 		{name: "a later request type's override is used when the first has none", config: overrides(map[schemas.RequestType]string{schemas.BatchRetrieveRequest: "/retrieve/{batch_id}"}), requestTypes: []schemas.RequestType{schemas.BatchResultsRequest, schemas.BatchRetrieveRequest}, expectedPath: "/retrieve/batch%201"},
 		{name: "an override without its placeholder is an error", config: overrides(map[schemas.RequestType]string{schemas.FileDeleteRequest: "/api/paas/v4/files"}), requestTypes: []schemas.RequestType{schemas.FileDeleteRequest}, expectedErr: "request_path_overrides.file_delete must contain {file_id}"},
 		{name: "the other resource's placeholder does not count", config: overrides(map[schemas.RequestType]string{schemas.FileDeleteRequest: "/api/paas/v4/files/{batch_id}"}), requestTypes: []schemas.RequestType{schemas.FileDeleteRequest}, expectedErr: "must contain {file_id}"},
+		{name: "a placeholder in the host of a full URL is an error", config: overrides(map[schemas.RequestType]string{schemas.FileContentRequest: "https://{file_id}.evil.example.com/content"}), requestTypes: []schemas.RequestType{schemas.FileContentRequest}, expectedErr: "only in the path of a full URL"},
+		{name: "a placeholder in the credentials of a full URL is an error", config: overrides(map[schemas.RequestType]string{schemas.FileContentRequest: "https://{file_id}@evil.example.com/files/{file_id}"}), requestTypes: []schemas.RequestType{schemas.FileContentRequest}, expectedErr: "only in the path of a full URL"},
+		{name: "a placeholder in the scheme of a full URL is an error", config: overrides(map[schemas.RequestType]string{schemas.FileContentRequest: "{file_id}://evil.example.com/files/{file_id}"}), requestTypes: []schemas.RequestType{schemas.FileContentRequest}, expectedErr: "only in the path of a full URL"},
+		{name: "a placeholder in the query of a full URL is allowed", config: overrides(map[schemas.RequestType]string{schemas.FileContentRequest: "https://open.bigmodel.cn/content?file={file_id}"}), requestTypes: []schemas.RequestType{schemas.FileContentRequest}, expectedPath: "https://open.bigmodel.cn/content?file=batch%201", expectedIsURL: true},
+		{name: "a path template stays a path whatever the id is", config: overrides(map[schemas.RequestType]string{schemas.FileContentRequest: "{file_id}//evil.example.com/x"}), requestTypes: []schemas.RequestType{schemas.FileContentRequest}, id: "https:", expectedPath: "/https://evil.example.com/x"},
 		{name: "a request type with no placeholder registered is an error", config: overrides(map[schemas.RequestType]string{schemas.BatchListRequest: "/api/paas/v4/batches"}), requestTypes: []schemas.RequestType{schemas.BatchListRequest}, expectedErr: "has no resource path placeholder"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			path, isURL, err := GetResourceRequestPath("/v1/batches/batch%201", tt.config, "batch%201", tt.requestTypes...)
+			id := tt.id
+			if id == "" {
+				id = "batch%201"
+			}
+			path, isURL, err := GetResourceRequestPath("/v1/batches/"+id, tt.config, id, tt.requestTypes...)
 			if tt.expectedErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.expectedErr) {
 					t.Fatalf("expected an error containing %q, got path %q err %v", tt.expectedErr, path, err)
@@ -4312,6 +4322,13 @@ func TestIsAbsoluteRequestURL(t *testing.T) {
 		"v2/chat/completions":              false,
 		"https:///no-host":                 false,
 		"":                                 false,
+		// A resource template is judged as the URL it becomes: braces in a host would
+		// otherwise fail to parse and read as "not absolute".
+		"https://open.bigmodel.cn/api/paas/v4/files/{file_id}/content": true,
+		"https://{file_id}.evil.example.com/content":                   true,
+		"https://{batch_id}/x":                                         true,
+		"/api/paas/v4/batches/{batch_id}":                              false,
+		"{file_id}//evil.example.com/x":                                false,
 	}
 	for in, want := range cases {
 		if got := IsAbsoluteRequestURL(in); got != want {
@@ -4607,6 +4624,31 @@ func TestExtractDecisionImages_ForwardsURLsForTheProviderToJudge(t *testing.T) {
 // headers come from decoding a network config, so the same benchmark builds against
 // the string-valued map the previous release used and records a true before/after.
 // "none" is the common case (no extra headers configured) and must not allocate.
+// BenchmarkGetResourceRequestPath measures what resolving the path of a batch or file call
+// costs: nothing for a provider without overrides, one substitution for an overridden path.
+func BenchmarkGetResourceRequestPath(b *testing.B) {
+	const defaultPath, id = "/v1/batches/batch_1791490810192076800", "batch_1791490810192076800"
+	for _, bc := range []struct {
+		name   string
+		config *schemas.CustomProviderConfig
+	}{
+		{"no custom provider", nil},
+		{"custom provider without overrides", &schemas.CustomProviderConfig{}},
+		{"override for another request type", &schemas.CustomProviderConfig{RequestPathOverrides: map[schemas.RequestType]string{schemas.BatchCreateRequest: "/api/paas/v4/batches"}}},
+		{"path override", &schemas.CustomProviderConfig{RequestPathOverrides: map[schemas.RequestType]string{schemas.BatchRetrieveRequest: "/api/paas/v4/batches/{batch_id}"}}},
+		{"full URL override", &schemas.CustomProviderConfig{RequestPathOverrides: map[schemas.RequestType]string{schemas.BatchRetrieveRequest: "https://open.bigmodel.cn/api/paas/v4/batches/{batch_id}"}}},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, _, err := GetResourceRequestPath(defaultPath, bc.config, id, schemas.BatchResultsRequest, schemas.BatchRetrieveRequest); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkSetExtraHeaders(b *testing.B) {
 	b.Setenv("BF_BENCH_EXTRA_HEADER", "from-env")
 	cases := []struct {
