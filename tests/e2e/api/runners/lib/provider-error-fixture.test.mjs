@@ -474,4 +474,12 @@ test("the vendor chat sites answer with each vendor's documented usage shape", a
 
   const unknown = await ask("stepfun-eu");
   assert.equal(unknown.status, 500, "a site the fixture does not play has no answer");
+
+  // The capability sheet lists service tiers for one model per vendor provider, so a harness row can send a
+  // tier outside the list and be refused.
+  const sheet = await (await fetch(`http://127.0.0.1:${post.port}/model-parameters.json`)).json();
+  for (const [model, provider] of [["hy-tiered", "tencent_tokenhub"], ["step-tiered", "stepfun"], ["mimo-tiered", "xiaomi"]]) {
+    assert.equal(sheet[model].provider, provider, model);
+    assert.deepEqual(sheet[model].service_tiers, ["default", "priority"], model);
+  }
 });

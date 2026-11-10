@@ -321,9 +321,12 @@ shape the vendor documents: StepFun's international site puts the cache-hit coun
 under `prompt_tokens_details`, and Tencent and Xiaomi report the three token counts. The folder pins
 that the counts reach the unified `usage` (StepFun's cached count at
 `prompt_tokens_details.cached_read_tokens`, streamed or not) and that a request type outside a
-provider's `allowed_requests` is refused with nothing sent to the vendor. Three cases prove the
-shared change of TXE-6527 on these providers: `max_completion_tokens: 8` and a `service_tier` reach
-the vendor as sent (these models have no capability record, so the tier is delivered, not refused).
+provider's `allowed_requests` is refused with nothing sent to the vendor. Seven cases prove the
+shared change of TXE-6527 on these providers. On a model with no capability record,
+`max_completion_tokens: 8` and a `service_tier` reach the vendor as sent. The fixture's capability
+sheet also lists service tiers for one model per vendor provider (`hy-tiered`, `step-tiered`,
+`mimo-tiered`): a tier outside the list is refused with 400 `caller_unsupported_parameter` and
+nothing is sent, and a listed tier reaches the vendor.
 No answer is recorded from
 a real request yet; replace them when the staging requests are made.
 

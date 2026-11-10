@@ -943,6 +943,11 @@ const server = http.createServer((req, res) => {
 			// plugin would drop or lower for them shows in the request the fixture records.
 			"cp-capped": { provider: "cp_plain", mode: "chat", max_output_tokens: 64, supported_endpoints: ["/v1/chat/completions", "/v1/responses"] },
 			"oc-capped": { provider: "moonshot", mode: "chat", max_output_tokens: 64 },
+			// TXE-6439: a capability record on each vendor custom provider that lists its service tiers, so a tier
+			// outside the list is one the model cannot take (folder 408).
+			"hy-tiered": { provider: "tencent_tokenhub", mode: "chat", service_tiers: ["default", "priority"] },
+			"step-tiered": { provider: "stepfun", mode: "chat", service_tiers: ["default", "priority"] },
+			"mimo-tiered": { provider: "xiaomi", mode: "chat", service_tiers: ["default", "priority"] },
 		}));
 	}
 	if (req.method === "POST" && path === "/__reset") {
