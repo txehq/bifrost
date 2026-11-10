@@ -38,6 +38,8 @@ USE_NODE = NVM_SH="$${NVM_DIR:-$$HOME/.nvm}/nvm.sh"; \
 #   USE_INFISICAL=1|y|Y|yes|YES|true|TRUE  -> source secrets from Infisical (`infisical export --path <p>`)
 #   anything else                          -> source ./.env
 # Honors INFISICAL_PATH (default /local) when sourcing from Infisical.
+# BIFROST_TEST_OFFLINE=1 (set by scripts/test-offline.sh, TXE-7053) loads nothing, so a recipe
+# run under that script cannot re-load the credentials it removed.
 # After invoking `$(EXPOSE_ENV);`, all subsequent commands inherit the secrets
 # - no per-command prefix needed.
 # Use as: `$(EXPOSE_ENV); <your command>`
@@ -46,7 +48,9 @@ define EXPOSE_ENV
 		1|y|Y|yes|YES|true|TRUE) USE_INFISICAL_RESOLVED=1 ;; \
 		*) USE_INFISICAL_RESOLVED=0 ;; \
 	esac; \
-	if [ "$$USE_INFISICAL_RESOLVED" = "1" ]; then \
+	if [ "$$BIFROST_TEST_OFFLINE" = "1" ]; then \
+		$(ECHO) "$(YELLOW)BIFROST_TEST_OFFLINE=1 (scripts/test-offline.sh): not loading .env or Infisical secrets$(NC)"; \
+	elif [ "$$USE_INFISICAL_RESOLVED" = "1" ]; then \
 		if ! which infisical > /dev/null 2>&1; then \
 			$(ECHO) "$(RED)infisical CLI not found. Install: https://infisical.com/docs/cli/overview$(NC)"; \
 			exit 1; \
@@ -2514,7 +2518,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	fi; \
 	rm -f tmp/harness-token-parity-*.json tmp/harness-cache-parity-*.json tmp/harness-token-parity.md tmp/harness-cache-parity.md; \
 	cp tests/e2e/api/runners/lib/newman-merge.jq tmp/newman-merge.jq; \
-	if command -v gcloud > /dev/null 2>&1; then \
+	if [ "$$BIFROST_TEST_OFFLINE" = "1" ]; then \
+		VERTEX_ACCESS_TOKEN_VAL=""; \
+		say "$(YELLOW)BIFROST_TEST_OFFLINE=1 (scripts/test-offline.sh): no Vertex token is minted - Vertex direct-provider parity cells will 401.$(NC)"; \
+	elif command -v gcloud > /dev/null 2>&1; then \
 		VERTEX_ACCESS_TOKEN_VAL="$$(gcloud auth print-access-token 2>/dev/null)"; \
 		if [ -n "$$VERTEX_ACCESS_TOKEN_VAL" ]; then \
 			say "$(CYAN)Vertex direct-call access token minted via gcloud (expires in ~1h).$(NC)"; \

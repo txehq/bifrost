@@ -18,6 +18,9 @@ set -euo pipefail
 #   runners/newman-exit-when-done.test.mjs    the request-guard runner's newman exit hook
 #       (TXE-5180): never an early or false success. Spawns newman against a loopback
 #       server of its own.
+#   tests/test_offline_test.sh                 scripts/test-offline.sh, the runner every local
+#       test run goes through so no credential reaches it (TXE-7053): fails when any
+#       *_API_KEY, secret, token or cloud credential variable reaches the child. Bash only.
 #
 # Usage: ./test-api-collections-offline.sh
 
@@ -40,3 +43,7 @@ node "$SUITES_DIR/collections/collection-scripts.test.mjs"
 echo ""
 echo "🧪 newman-exit-when-done.test.mjs (newman exit hook)"
 node "$SUITES_DIR/runners/newman-exit-when-done.test.mjs"
+
+echo ""
+echo "🧪 test_offline_test.sh (no credential reaches a test run, TXE-7053)"
+bash "$REPO_ROOT/tests/test_offline_test.sh"
