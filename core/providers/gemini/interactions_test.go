@@ -67,15 +67,15 @@ func marshalInteractionRequest(t *testing.T, req *GeminiInteractionRequest, merg
 	return string(body)
 }
 
-func requireUnsupportedParameter(t *testing.T, err error, param string) {
+func requireOmniConverterRefusal(t *testing.T, err error, param string) {
 	t.Helper()
 	require.Error(t, err)
 	bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
 	require.True(t, ok, "want a 400 converter refusal, got %v", err)
-	requireUnsupportedParameterError(t, bifrostErr, param)
+	requireOmniRefusal(t, bifrostErr, param)
 }
 
-func requireUnsupportedParameterError(t *testing.T, bifrostErr *schemas.BifrostError, param string) {
+func requireOmniRefusal(t *testing.T, bifrostErr *schemas.BifrostError, param string) {
 	t.Helper()
 	require.NotNil(t, bifrostErr)
 	require.NotNil(t, bifrostErr.StatusCode)
@@ -163,7 +163,7 @@ func TestToGeminiInteractionVideoRequest_DefaultsAndDelivery(t *testing.T) {
 	_, err = ToGeminiInteractionVideoRequest(omniVideoRequest("gemini-omni-1.1-flash", nil, &schemas.VideoGenerationParameters{
 		ExtraParams: map[string]any{"delivery": "gcs"},
 	}), GeminiInteractionVideoOptions)
-	requireUnsupportedParameter(t, err, "delivery")
+	requireOmniConverterRefusal(t, err, "delivery")
 }
 
 // Images keep the form the caller sent: a URL goes in uri unchanged, a data URL is decoded.
@@ -208,14 +208,14 @@ func TestToGeminiInteractionVideoRequest_Images(t *testing.T) {
 	// A last frame is only the second of two images; references and frames are two tasks.
 	_, err = ToGeminiInteractionVideoRequest(omniVideoRequest("gemini-omni-1.1-flash", nil,
 		&schemas.VideoGenerationParameters{LastFrame: dataURL}), GeminiInteractionVideoOptions)
-	requireUnsupportedParameter(t, err, "last_frame")
+	requireOmniConverterRefusal(t, err, "last_frame")
 	_, err = ToGeminiInteractionVideoRequest(omniVideoRequest("gemini-omni-1.1-flash",
 		&schemas.VideoGenerationInput{Prompt: "p", InputReference: schemas.Ptr(dataURL)},
 		&schemas.VideoGenerationParameters{ReferenceImages: schemas.VideoReferenceImages{dataURL}}), GeminiInteractionVideoOptions)
-	requireUnsupportedParameter(t, err, "reference_images")
+	requireOmniConverterRefusal(t, err, "reference_images")
 	_, err = ToGeminiInteractionVideoRequest(omniVideoRequest("gemini-omni-1.1-flash",
 		&schemas.VideoGenerationInput{Prompt: "p", InputReference: schemas.Ptr("data:;base64,")}, nil), GeminiInteractionVideoOptions)
-	requireUnsupportedParameter(t, err, "input_reference")
+	requireOmniConverterRefusal(t, err, "input_reference")
 }
 
 // A field the Interactions API has no field for is refused, never dropped (contract C4).
@@ -231,13 +231,13 @@ func TestToGeminiInteractionVideoRequest_RefusesUndeliverableFields(t *testing.T
 		"output_storage_uri":    {TaskControlParameters: schemas.TaskControlParameters{OutputStorageURI: schemas.Ptr("gs://b/p")}},
 	} {
 		_, err := ToGeminiInteractionVideoRequest(omniVideoRequest("gemini-omni-1.1-flash", nil, params), GeminiInteractionVideoOptions)
-		requireUnsupportedParameter(t, err, param)
+		requireOmniConverterRefusal(t, err, param)
 	}
 
 	for _, seconds := range []string{"8.5", "eight", "", "0", "-3"} {
 		_, err := ToGeminiInteractionVideoRequest(omniVideoRequest("gemini-omni-1.1-flash", nil,
 			&schemas.VideoGenerationParameters{Seconds: schemas.Ptr(seconds)}), GeminiInteractionVideoOptions)
-		requireUnsupportedParameter(t, err, "seconds")
+		requireOmniConverterRefusal(t, err, "seconds")
 	}
 
 	// Where webhook_config is not documented (Vertex), the two control fields are refused.
@@ -247,7 +247,7 @@ func TestToGeminiInteractionVideoRequest_RefusesUndeliverableFields(t *testing.T
 	} {
 		_, err := ToGeminiInteractionVideoRequest(omniVideoRequest("gemini-omni-1.1-flash-preview", nil,
 			&schemas.VideoGenerationParameters{TaskControlParameters: control}), InteractionVideoOptions{})
-		requireUnsupportedParameter(t, err, param)
+		requireOmniConverterRefusal(t, err, param)
 	}
 }
 
@@ -498,16 +498,16 @@ func TestGeminiVideoGeneration_RefusesUndeliverableFieldsWithoutUpstreamCall(t *
 
 	_, bifrostErr := provider.VideoGeneration(omniTestContext(), omniTestKey, omniVideoRequest("gemini-omni-1.1-flash", nil,
 		&schemas.VideoGenerationParameters{Size: "1280x720"}))
-	requireUnsupportedParameterError(t, bifrostErr, "size")
+	requireOmniRefusal(t, bifrostErr, "size")
 
 	// predictLongRunning (Veo) has no webhook field: the control fields the provider declares
 	// for the Interactions API are refused on that path, not dropped.
 	_, bifrostErr = provider.VideoGeneration(omniTestContext(), omniTestKey, omniVideoRequest("veo-3.1-generate-001", nil,
 		&schemas.VideoGenerationParameters{TaskControlParameters: schemas.TaskControlParameters{CallbackURL: schemas.Ptr("https://hooks.tokun.sh/v/task-1")}}))
-	requireUnsupportedParameterError(t, bifrostErr, "callback_url")
+	requireOmniRefusal(t, bifrostErr, "callback_url")
 	_, bifrostErr = provider.VideoGeneration(omniTestContext(), omniTestKey, omniVideoRequest("veo-3.1-generate-001", nil,
 		&schemas.VideoGenerationParameters{TaskControlParameters: schemas.TaskControlParameters{ClientReferenceID: schemas.Ptr("task-1")}}))
-	requireUnsupportedParameterError(t, bifrostErr, "client_reference_id")
+	requireOmniRefusal(t, bifrostErr, "client_reference_id")
 
 	calls, _ := recorder.snapshot()
 	assert.Empty(t, calls)
