@@ -5471,34 +5471,51 @@ func TestDecodeRequestBodyWithLimit_BoundaryEveryEncoding(t *testing.T) {
 	}
 }
 
-// TestApplyHTTPRequestToCtxKeepsRepeatedQueryParameters pins the transport-plugin round trip of
+// TestApplyHTTPRequestToCtxKeepsRepeatedVideoListFilters pins the transport-plugin round trip of
 // the query string (TXE-6587, contract C7 / BF15). A plugin sees one value per parameter name,
-// the last of a repeated one, and every value used to be written back: the first of a repeated
-// parameter was replaced by the last, so GET /v1/videos?status=completed&status=failed reached
-// the vendor as status=failed&status=failed. A parameter the plugins did not change is now left
-// as the caller sent it, while one a plugin set or changed is still applied.
-func TestApplyHTTPRequestToCtxKeepsRepeatedQueryParameters(t *testing.T) {
-	var ctx fasthttp.RequestCtx
-	ctx.Request.Header.SetMethod(fasthttp.MethodGet)
-	ctx.Request.SetRequestURI("/v1/videos?provider=azure&status=completed&status=failed&limit=2")
+// the last of a repeated one, and every value is written back, which replaces the first of a
+// repeated parameter with the last. That is kept for every parameter the gateway reads, so a
+// handler and a plugin never read different values of one name; but it turned the video list's
+// status=completed&status=failed into status=failed&status=failed, so the vendor filters of
+// GET /v1/videos, which Bifrost does not interpret, now keep every value unless a plugin
+// changed them.
+func TestApplyHTTPRequestToCtxKeepsRepeatedVideoListFilters(t *testing.T) {
+	roundTrip := func(uri string, change func(query map[string]string)) string {
+		t.Helper()
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+		ctx.Request.SetRequestURI(uri)
+		req := schemas.AcquireHTTPRequest()
+		defer schemas.ReleaseHTTPRequest(req)
+		fasthttpToHTTPRequest(&ctx, req)
+		if change != nil {
+			change(req.Query)
+		}
+		if !applyHTTPRequestToCtx(&ctx, req) {
+			t.Fatalf("%s must apply", uri)
+		}
+		return ctx.Request.URI().QueryArgs().String()
+	}
 
-	req := schemas.AcquireHTTPRequest()
-	defer schemas.ReleaseHTTPRequest(req)
-	fasthttpToHTTPRequest(&ctx, req)
-	if !applyHTTPRequestToCtx(&ctx, req) {
-		t.Fatal("an unmodified request must apply")
+	// Vendor filters keep their repeated values; the parameters Bifrost reads are still made
+	// to read the same for the handler as for the plugins.
+	if got := roundTrip("/v1/videos?provider=azure&status=completed&status=failed&limit=2", nil); got != "provider=azure&status=completed&status=failed&limit=2" {
+		t.Fatalf("an untouched video list query changed in the round trip: %s", got)
 	}
-	if got := ctx.Request.URI().QueryArgs().String(); got != "provider=azure&status=completed&status=failed&limit=2" {
-		t.Fatalf("an untouched query changed in the round trip: %s", got)
+	if got := roundTrip("/v1/videos?provider=openai&provider=azure&limit=1&limit=2", nil); got != "provider=azure&provider=azure&limit=2&limit=2" {
+		t.Fatalf("a repeated reserved parameter must read as the value the plugins saw: %s", got)
 	}
-
-	// A plugin's own changes still reach the handler.
-	req.Query["limit"] = "5"
-	req.Query["added"] = "by-plugin"
-	if !applyHTTPRequestToCtx(&ctx, req) {
-		t.Fatal("a request with a changed query must apply")
-	}
-	if got := ctx.Request.URI().QueryArgs().String(); got != "provider=azure&status=completed&status=failed&limit=5&added=by-plugin" {
+	// A plugin's own changes still reach the handler, filters included.
+	got := roundTrip("/v1/videos?provider=azure&status=completed&status=failed&limit=2", func(query map[string]string) {
+		query["limit"] = "5"
+		query["status"] = "queued"
+		query["added"] = "by-plugin"
+	})
+	if got != "provider=azure&status=queued&status=failed&limit=5&added=by-plugin" {
 		t.Fatalf("query after a plugin's change = %s", got)
+	}
+	// Every other route keeps the behaviour it had.
+	if got := roundTrip("/v1/batches?provider=openai&status=a&status=b", nil); got != "provider=openai&status=b&status=b" {
+		t.Fatalf("another route's query = %s", got)
 	}
 }

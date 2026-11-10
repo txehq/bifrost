@@ -3713,6 +3713,15 @@ func (h *CompletionHandler) videoList(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Fork: a parameter Bifrost reads is sent once. A repeated one would be read by its first
+	// value here and by its last in a plugin or a routing rule, so it is refused (TXE-6587).
+	for _, name := range schemas.VideoListReservedParams {
+		if len(ctx.QueryArgs().PeekMulti(name)) > 1 {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("%s query parameter must be sent once", name))
+			return
+		}
+	}
+
 	// Build Bifrost video list request
 	bifrostVideoReq := &schemas.BifrostVideoListRequest{
 		Provider: schemas.ModelProvider(provider),

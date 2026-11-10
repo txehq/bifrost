@@ -43,6 +43,7 @@ video-generation:
       is the vendor's own filter (a time window, a status, a model, a page number or token).
       Bifrost sends each name and value to the vendor unchanged, repeated values included,
       and does not interpret them; which filters exist is the vendor's documentation.
+      `provider`, `after`, `limit` and `order` are each sent once: a repeated one is a 400.
 
       **Paging.** A vendor that pages by cursor returns `has_more` and `last_id`: send
       `last_id` back as `after`. A vendor that pages by a number or a token returns `next`:

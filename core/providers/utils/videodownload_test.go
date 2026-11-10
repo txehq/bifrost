@@ -176,6 +176,50 @@ func TestFetchVideoContentBufferedAndErrors(t *testing.T) {
 	}
 }
 
+// TestFetchVideoContentFollowsRedirectsWhenStreaming covers Gemini's file download, which answers
+// with a redirect to the bytes: the redirect is followed and the final body is the stream.
+func TestFetchVideoContentFollowsRedirectsWhenStreaming(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/download" {
+			http.Redirect(w, r, "/bytes", http.StatusFound)
+			return
+		}
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("REDIRECTED-MP4"))
+	}))
+	t.Cleanup(srv.Close)
+
+	for _, stream := range []bool{true, false} {
+		req := fasthttp.AcquireRequest()
+		req.SetRequestURI(srv.URL + "/download")
+		req.Header.SetMethod(http.MethodGet)
+		resp, bifrostErr := FetchVideoContent(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), VideoContentFetch{
+			Request: req, Client: &fasthttp.Client{}, StreamingClient: BuildStreamingClient(&fasthttp.Client{}),
+			Stream: stream, VideoID: "v:gemini", MaxRedirects: 5,
+			ParseError: func(resp *fasthttp.Response) *schemas.BifrostError {
+				return NewProviderAPIError(string(resp.Body()), nil, resp.StatusCode(), nil, nil)
+			},
+		})
+		fasthttp.ReleaseRequest(req)
+		if bifrostErr != nil {
+			t.Fatalf("stream=%v: %+v", stream, bifrostErr.Error)
+		}
+		got := resp.Content
+		if stream {
+			if resp.Body == nil {
+				t.Fatal("a streamed fetch through a redirect must still return Body")
+			}
+			var err error
+			if got, err = io.ReadAll(resp.Body); err != nil || resp.Body.Close() != nil {
+				t.Fatalf("read: %v", err)
+			}
+		}
+		if string(got) != "REDIRECTED-MP4" || resp.ContentType != "video/mp4" {
+			t.Fatalf("stream=%v: got %q type %q", stream, got, resp.ContentType)
+		}
+	}
+}
+
 // TestNewVideoContentResponse: bytes a provider already holds are Content, or Body with their
 // length when the request asked for a stream.
 func TestNewVideoContentResponse(t *testing.T) {

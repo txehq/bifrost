@@ -718,6 +718,15 @@ func TestVideoListForwardsVendorFiltersWithTheNamedKey(t *testing.T) {
 		"GET /v1/videos?after=video_b&created_after=1762700000&limit=2&status=completed&status=failed Bearer sk-b",
 	}, upstream.seen())
 
+	// A parameter Bifrost reads itself is refused when repeated, before any upstream call.
+	var repeated fasthttp.RequestCtx
+	repeated.Request.Header.SetMethod(fasthttp.MethodGet)
+	repeated.Request.SetRequestURI("/v1/videos?provider=openai&provider=azure")
+	h.videoList(&repeated)
+	require.Equal(t, fasthttp.StatusBadRequest, repeated.Response.StatusCode(), "body: %s", repeated.Response.Body())
+	require.Contains(t, string(repeated.Response.Body()), "provider query parameter must be sent once")
+	require.Len(t, upstream.seen(), 2)
+
 	var args fasthttp.Args
 	args.Parse("provider=azure&after=x&limit=1&order=asc")
 	require.Nil(t, videoListFilters(&args), "the parameters Bifrost reads are not vendor filters")

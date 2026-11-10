@@ -1146,6 +1146,12 @@ func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 	}
 }
 
+// isVideoListVendorFilter reports whether key is a vendor filter of GET /v1/videos: a query
+// parameter of that route that Bifrost does not read itself.
+func isVideoListVendorFilter(ctx *fasthttp.RequestCtx, key string) bool {
+	return ctx.IsGet() && string(ctx.Path()) == "/v1/videos" && !slices.Contains(schemas.VideoListReservedParams, key)
+}
+
 // applyHTTPRequestToCtx applies modifications from HTTPRequest back to fasthttp context.
 // Reports false when a plugin rewrote the method or path: the request has already been
 // failed with 409 and the caller must stop.
@@ -1161,13 +1167,19 @@ func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) b
 		ctx.Request.Header.Set(key, value)
 	}
 	// Apply query params. req.Query holds one value per name, the last one of a repeated
-	// parameter, so a name the plugins left as it was is skipped: writing it back replaced the
-	// first of its repeated values with the last (status=a&status=b reached the handler as
-	// status=b&status=b), which broke any vendor filter sent more than once (fork, TXE-6587).
+	// parameter, and writing it back makes a repeated parameter read the same for the handler
+	// (which takes the first value) as it did for the plugins (which saw the last): a caller
+	// cannot show a plugin one provider and the handler another. The vendor filters of the
+	// video list are the exception. Bifrost does not interpret them, and writing them back
+	// replaced the first of a repeated filter with the last (status=completed&status=failed
+	// reached the vendor as status=failed&status=failed), so a filter the plugins left as it
+	// was keeps every value (fork, TXE-6587, contract C7 / BF15).
 	args := ctx.Request.URI().QueryArgs()
 	for key, value := range req.Query {
-		if values := args.PeekMulti(key); len(values) > 0 && string(values[len(values)-1]) == value {
-			continue
+		if isVideoListVendorFilter(ctx, key) {
+			if values := args.PeekMulti(key); len(values) > 0 && string(values[len(values)-1]) == value {
+				continue
+			}
 		}
 		args.Set(key, value)
 	}
