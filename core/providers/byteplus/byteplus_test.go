@@ -2141,6 +2141,8 @@ func TestBytePlusImageUnsupportedFieldsAreRefusedBeforeArk(t *testing.T) {
 		{"n", &schemas.ImageGenerationParameters{N: schemas.Ptr(0)}, &schemas.ImageEditParameters{N: schemas.Ptr(0)}},
 		{"mask", nil, &schemas.ImageEditParameters{Mask: []byte("mask")}},
 		{"resolution", &schemas.ImageGenerationParameters{Size: schemas.Ptr("2048x2048"), Resolution: "2K"}, &schemas.ImageEditParameters{Size: schemas.Ptr("2048x2048"), Resolution: "2K"}},
+		// A Go SDK caller may send the tier only as an extra param, which bytePlusImageSize also reads.
+		{"resolution", &schemas.ImageGenerationParameters{Size: schemas.Ptr("2048x2048"), ExtraParams: map[string]interface{}{"resolution": "2K"}}, &schemas.ImageEditParameters{Size: schemas.Ptr("2048x2048"), ExtraParams: map[string]interface{}{"resolution": "2K"}}},
 	}
 	provider, captured, _ := newMockBytePlus(t, nil)
 	ctx := testContext(t)

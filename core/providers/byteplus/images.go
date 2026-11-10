@@ -150,17 +150,23 @@ func ValidateBytePlusImageParams(gen *schemas.ImageGenerationParameters, edit *s
 		resolution                                 string
 		steps, n                                   *int
 		mask                                       []byte
+		extraParams                                map[string]interface{}
 	)
 	switch {
 	case gen != nil:
 		quality, aspectRatio, negativePrompt = gen.Quality, gen.AspectRatio, gen.NegativePrompt
 		steps, n, size, resolution = gen.NumInferenceSteps, gen.N, gen.Size, string(gen.Resolution)
+		extraParams = gen.ExtraParams
 	case edit != nil:
 		quality, aspectRatio, negativePrompt = edit.Quality, edit.AspectRatio, edit.NegativePrompt
 		steps, n, size, resolution = edit.NumInferenceSteps, edit.N, edit.Size, string(edit.Resolution)
-		mask = edit.Mask
+		mask, extraParams = edit.Mask, edit.ExtraParams
 	default:
 		return nil
+	}
+	if resolution == "" {
+		// bytePlusImageSize also takes the tier from the resolution extra param, so it counts here too.
+		resolution, _ = extraParams["resolution"].(string)
 	}
 	notTaken := func(param string) *schemas.BifrostError {
 		return schemas.NewUnsupportedParameterError(param, fmt.Sprintf("%s is not supported by byteplus seedream images", param))
