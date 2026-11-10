@@ -597,3 +597,47 @@ func BenchmarkBFLImageTaskConversion(b *testing.B) {
 		}
 	}
 }
+
+// TXE-6431 review: the handlers keep resolution in the extras as well as in the typed field. The
+// converted value is the one sent; the raw copy is dropped, or the merge would refuse "2K" against
+// "2k" and a valid request would never reach BFL. The caller's extras are not modified.
+func TestBFLImageTaskSendsTheConvertedResolutionOnly(t *testing.T) {
+	rec := &bflRecorder{submit: `{"id":"t1","polling_url":"https://api.bfl.ai/v1/get_result?id=t1"}`}
+	server := httptest.NewServer(http.HandlerFunc(rec.serve))
+	defer server.Close()
+	provider := newTestProvider(t, schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true})
+	extra := map[string]any{"resolution": "2K", "safety_tolerance": float64(3)}
+	_, bifrostErr := provider.ImageGenerationTask(imageTaskCtx(t), schemas.Key{Value: *schemas.NewSecretVar("k")}, &schemas.BifrostImageGenerationRequest{
+		Model: "flux-3-image", Input: &schemas.ImageGenerationInput{Prompt: "a fox"},
+		Params: &schemas.ImageGenerationParameters{Resolution: "2K", ExtraParams: extra},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("submit: %+v", bifrostErr.Error)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal(rec.bodies[0], &sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent["resolution"] != "2k" || sent["safety_tolerance"] != float64(3) {
+		t.Fatalf("sent %v, want resolution 2k and the extra field", sent)
+	}
+	if extra["resolution"] != "2K" {
+		t.Fatalf("the caller's extras were modified: %v", extra)
+	}
+}
+
+// TXE-6431 review (AGENTS.md): the converted body encodes with sorted keys, so identical requests
+// are byte-identical.
+func TestBFLImageBodyIsSorted(t *testing.T) {
+	body, err := toBFLImageBody(imageTaskInput{model: "flux-pro-1.1", prompt: "p", size: schemas.Ptr("1024x768"), seed: schemas.Ptr(1), callbackURL: schemas.Ptr("https://h/x")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := body.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"height":768,"prompt":"p","seed":1,"webhook_url":"https://h/x","width":1024}`; string(data) != want {
+		t.Fatalf("body = %s, want %s", data, want)
+	}
+}

@@ -8310,3 +8310,37 @@ func BenchmarkComputeTextCostCacheWriteTiers(b *testing.B) {
 		})
 	}
 }
+
+// TXE-6431: an image task is billed once, at its create, as the one image it makes; the query that
+// returns the finished task and the cancel are not billed again. Before, every image task cost 0,
+// so a budget-limited virtual key's paid BFL submits charged nothing.
+func TestCalculateCost_ImageTaskBilledOnceAtCreate(t *testing.T) {
+	perImage := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(0.0),
+		OutputCostPerToken: bifrost.Ptr(0.0),
+		OutputCostPerImage: bifrost.Ptr(0.04),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("flux-pro-1.1", "bfl", "image_generation"): perImage,
+	})
+	task := func(requestType schemas.RequestType, status schemas.TaskStatus, data []schemas.TaskArtifact) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ImageTaskResponse: &schemas.BifrostImageTaskResponse{
+			Status: status,
+			Data:   data,
+			Usage:  &schemas.ImageUsage{VendorCost: &schemas.VendorCost{Amount: 4, Unit: schemas.VendorCostUnitCredit}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: requestType,
+				RoutingInfo: routingInfoFor(schemas.BFL, "flux-pro-1.1"),
+			},
+		}}
+	}
+	link := []schemas.TaskArtifact{{Type: schemas.VideoOutputTypeURL, URL: bifrost.Ptr("https://delivery.example.test/s.jpeg")}}
+
+	assert.InDelta(t, 0.04, s.CalculateCost(task(schemas.ImageGenerationTaskRequest, schemas.VideoStatusQueued, []schemas.TaskArtifact{}), nil), 1e-12,
+		"the create is billed as one image")
+	assert.InDelta(t, 0.04, s.CalculateCost(task(schemas.ImageEditTaskRequest, schemas.VideoStatusQueued, nil), nil), 1e-12,
+		"an edit task create falls back to the model's image generation price")
+	assert.Zero(t, s.CalculateCost(task(schemas.ImageTaskRetrieveRequest, schemas.VideoStatusCompleted, link), nil),
+		"the query of the finished task is not billed again")
+	assert.Zero(t, s.CalculateCost(task(schemas.ImageTaskCancelRequest, schemas.VideoStatusQueued, nil), nil))
+}

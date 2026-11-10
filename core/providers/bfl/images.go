@@ -50,7 +50,8 @@ type bflImageBody struct {
 }
 
 // MarshalJSON encodes the endpoint's fields.
-func (b *bflImageBody) MarshalJSON() ([]byte, error) { return sonic.Marshal(b.fields) }
+// Keys are sorted, so identical requests encode to identical bytes (AGENTS.md).
+func (b *bflImageBody) MarshalJSON() ([]byte, error) { return providerUtils.MarshalSorted(b.fields) }
 
 // GetExtraParams returns the caller's extra fields.
 func (b *bflImageBody) GetExtraParams() map[string]any { return b.extra }
@@ -201,6 +202,24 @@ func bflImageInput(image string) string {
 	return image
 }
 
+// extraWithout copies the caller's extra fields without the named ones. The handlers keep each
+// unified field in the extras too (schemas.UnifiedImageFields, UnifiedVideoGenerationFields), so a
+// provider that converts the typed field must not also send the raw copy: the merge would refuse
+// the two differing values ("2K" against the converted "2k"). The caller's map is not modified.
+func extraWithout(extra map[string]any, names []string) map[string]any {
+	if len(extra) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(extra))
+	for k, v := range extra {
+		out[k] = v
+	}
+	for _, name := range names {
+		delete(out, name)
+	}
+	return out
+}
+
 // generationTaskInput reads an image generation task create.
 func generationTaskInput(request *schemas.BifrostImageGenerationRequest) imageTaskInput {
 	in := imageTaskInput{model: request.Model}
@@ -210,7 +229,7 @@ func generationTaskInput(request *schemas.BifrostImageGenerationRequest) imageTa
 	if p := request.Params; p != nil {
 		in.n, in.size, in.aspectRatio, in.resolution = p.N, p.Size, p.AspectRatio, string(p.Resolution)
 		in.seed, in.outputFormat, in.responseFormat = p.Seed, p.OutputFormat, p.ResponseFormat
-		in.numInferenceSteps, in.extra = p.NumInferenceSteps, p.ExtraParams
+		in.numInferenceSteps, in.extra = p.NumInferenceSteps, extraWithout(p.ExtraParams, schemas.UnifiedImageFields)
 		for _, image := range p.InputImages {
 			in.images = append(in.images, bflImageInput(image))
 		}
@@ -237,7 +256,7 @@ func editTaskInput(request *schemas.BifrostImageEditRequest) imageTaskInput {
 	if p := request.Params; p != nil {
 		in.n, in.size, in.aspectRatio, in.resolution = p.N, p.Size, p.AspectRatio, string(p.Resolution)
 		in.seed, in.outputFormat, in.responseFormat = p.Seed, p.OutputFormat, p.ResponseFormat
-		in.numInferenceSteps, in.mask, in.extra = p.NumInferenceSteps, p.Mask, p.ExtraParams
+		in.numInferenceSteps, in.mask, in.extra = p.NumInferenceSteps, p.Mask, extraWithout(p.ExtraParams, schemas.UnifiedImageFields)
 	}
 	if request.TaskControl != nil {
 		in.callbackURL = request.TaskControl.CallbackURL

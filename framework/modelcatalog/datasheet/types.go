@@ -495,9 +495,10 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		return "audio_speech"
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		return "audio_transcription"
-	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest, schemas.ImageVariationRequest:
+	// Fork (TXE-6431): an image task create is priced as the image it makes.
+	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest, schemas.ImageVariationRequest, schemas.ImageGenerationTaskRequest:
 		return "image_generation"
-	case schemas.ImageEditRequest, schemas.ImageEditStreamRequest:
+	case schemas.ImageEditRequest, schemas.ImageEditStreamRequest, schemas.ImageEditTaskRequest:
 		return "image_edit"
 	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest, schemas.VideoEditRequest:
 		return "video_generation"
