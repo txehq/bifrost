@@ -119,11 +119,12 @@ else
 	echo "  skip - make recipe: make is not installed here"
 fi
 
-# Every file that loads a .env file (the Makefile's EXPOSE_ENV, the integration suites' dotenv
-# setup, any loader added later) honours BIFROST_TEST_OFFLINE, or a test run under the runner
+# Every file that loads a .env file or mints a cloud token from a CLI login (the Makefile's
+# EXPOSE_ENV and its gcloud print-access-token, the integration suites' dotenv setup, any loader
+# added later) honours BIFROST_TEST_OFFLINE, or a test run under the runner
 # could re-load the credentials it removed. The patterns are the loaders the repository uses:
 # shell `set -a; . ./.env`, dotenv's config(), python-dotenv's load_dotenv() and godotenv.
-loader_pattern='set -a; \. \./\.env|from .dotenv.|load_dotenv\(|godotenv\.(Load|Overload)|require\(.dotenv.\)|dotenv/config'
+loader_pattern='set -a; \. \./\.env|from .dotenv.|load_dotenv\(|godotenv\.(Load|Overload)|require\(.dotenv.\)|dotenv/config|print-access-token'
 if loaders=$(git -C "$ROOT" grep -lE "$loader_pattern" -- . ':!docs' ':!**/node_modules/**' ':!tests/test_offline_test.sh' 2>/dev/null); then
 	unguarded=()
 	for file in $loaders; do

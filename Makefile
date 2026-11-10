@@ -2518,7 +2518,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	fi; \
 	rm -f tmp/harness-token-parity-*.json tmp/harness-cache-parity-*.json tmp/harness-token-parity.md tmp/harness-cache-parity.md; \
 	cp tests/e2e/api/runners/lib/newman-merge.jq tmp/newman-merge.jq; \
-	if command -v gcloud > /dev/null 2>&1; then \
+	if [ "$$BIFROST_TEST_OFFLINE" = "1" ]; then \
+		VERTEX_ACCESS_TOKEN_VAL=""; \
+		say "$(YELLOW)BIFROST_TEST_OFFLINE=1 (scripts/test-offline.sh): no Vertex token is minted - Vertex direct-provider parity cells will 401.$(NC)"; \
+	elif command -v gcloud > /dev/null 2>&1; then \
 		VERTEX_ACCESS_TOKEN_VAL="$$(gcloud auth print-access-token 2>/dev/null)"; \
 		if [ -n "$$VERTEX_ACCESS_TOKEN_VAL" ]; then \
 			say "$(CYAN)Vertex direct-call access token minted via gcloud (expires in ~1h).$(NC)"; \

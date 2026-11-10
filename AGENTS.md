@@ -572,15 +572,17 @@ Only `framework/vectorstore` needs any of this. Every other framework package pa
 
 ### Run local tests through `scripts/test-offline.sh`
 
-A provider's live suite runs whenever its key variable is set, and it calls the vendor for real. Run every local `go test`, harness run and test script through the offline runner, which removes every credential variable from the command's environment:
+A provider's live suite runs whenever its key variable is set, and it calls the vendor for real. Run every local `go test` and test script through the offline runner, which removes every credential variable from the command's environment:
 
 ```bash
 scripts/test-offline.sh go test ./...                 # in core/, transports/ or a plugin
-scripts/test-offline.sh make run-provider-harness-test PROVIDER=openai ...
+scripts/test-offline.sh node tests/e2e/api/collections/collection-scripts.test.mjs
 scripts/test-offline.sh --list                        # names it would remove; never values
 ```
 
-It removes `*_API_KEY`, `*SECRET*`, `*_TOKEN`, `*_CREDENTIALS` (`VERTEX_CREDENTIALS`, `GOOGLE_APPLICATION_CREDENTIALS`), `*_PRIVATE_KEY`, `AWS_*` and `AZURE_*` (the full list is in the script's header). It also sets `BIFROST_TEST_OFFLINE=1`, which makes the Makefile's `EXPOSE_ENV` load neither `.env` nor Infisical, so a `make` target run under it cannot re-load what was removed; the integration suites' `.env` loaders (`tests/integrations/typescript/tests/setup.ts`, `tests/integrations/python/run_all_tests.py`) honour it too, and the check fails on any `.env` loader that does not. A vendor credential added to `OTHER_PROVIDER_CREDENTIALS` in `check-provider-key-environment.py` must match one of the runner's patterns; the check fails otherwise. It behaves the same whatever shell calls it, so live suites skip and nothing leaves the machine. Never strip keys by hand. The common idiom `U=$(env | grep … | sed 's/^/-u /'); env $U go test` passes one argument in zsh, which does not word-split an unquoted parameter, so every key stayed set and a live suite called the vendor (TXE-7053). A run that is meant to be live (`make test-core` with real keys) is the only exception, and it is a deliberate, paid choice. `tests/test_offline_test.sh`, which runs in the API collection offline suites, fails when any credential reaches the child.
+The provider harness (`make run-provider-harness-test`) is live by design and is not covered by this guarantee: besides keys it can reach credentials no environment variable holds, such as a cached `gcloud` login. Under the runner the Makefile mints no Vertex token and loads no `.env`, but run the harness only when a live run is the intent, or against the provider-error fixture with its dummy keys.
+
+It removes `*_API_KEY`, `*SECRET*`, `*_TOKEN`, `*_CREDENTIALS` (`VERTEX_CREDENTIALS`, `GOOGLE_APPLICATION_CREDENTIALS`), `*_PRIVATE_KEY`, `AWS_*` and `AZURE_*` (the full list is in the script's header). It also sets `BIFROST_TEST_OFFLINE=1`, which makes the Makefile's `EXPOSE_ENV` load neither `.env` nor Infisical, so a `make` target run under it cannot re-load what was removed; the integration suites' `.env` loaders (`tests/integrations/typescript/tests/setup.ts`, `tests/integrations/python/run_all_tests.py`) honour it too, and the check fails on any `.env` loader that does not. A vendor credential added to `OTHER_PROVIDER_CREDENTIALS` in `check-provider-key-environment.py` must match one of the runner's patterns; the check fails otherwise. It behaves the same whatever shell calls it, so live Go suites skip. Never strip keys by hand. The common idiom `U=$(env | grep … | sed 's/^/-u /'); env $U go test` passes one argument in zsh, which does not word-split an unquoted parameter, so every key stayed set and a live suite called the vendor (TXE-7053). A run that is meant to be live (`make test-core` with real keys) is the only exception, and it is a deliberate, paid choice. `tests/test_offline_test.sh`, which runs in the API collection offline suites, fails when any credential reaches the child.
 
 ### Every fix and every change ships with regression tests
 
