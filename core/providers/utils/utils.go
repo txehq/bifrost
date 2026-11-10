@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"reflect"
 	"regexp"
 	"runtime"
 	"slices"
@@ -2512,26 +2513,202 @@ func hasFoldedPrefix(b, name []byte) bool {
 	return bytes.EqualFold(b[:n], name[:n])
 }
 
-// MergeExtraParams merges extraParams into jsonMap, handling nested maps recursively.
-func MergeExtraParams(jsonMap map[string]interface{}, extraParams map[string]interface{}) {
-	for k, v := range extraParams {
-		if existingVal, exists := jsonMap[k]; exists {
-			if existingMap, ok := existingVal.(map[string]interface{}); ok {
-				if newMap, ok := v.(map[string]interface{}); ok {
-					MergeExtraParams(existingMap, newMap)
-					continue
-				}
-			}
+// Extra params are caller-supplied fields a converter has no typed home for. They reach
+// the provider through the functions below, under one rule: an extra param may add a
+// field the converter left unset, and a request whose extra param names a field the
+// converter set is refused. The converted body is what the gateway authorized and
+// will bill - the model, the input, every field mapped from a unified parameter - so
+// nothing a caller nests in extra params may stand in for it. The refusal is a 400
+// (caller_invalid_request) naming the extra param in error.param, built before any
+// request is sent upstream.
+//
+// The rule reads the converted body itself, never a per-provider list of field names,
+// so a new converter is covered without declaring anything.
+//
+//   - Field names are compared by sameJSONField, not byte for byte: a provider that
+//     decodes JSON case-insensitively or accepts both camelCase and snake_case would
+//     otherwise read "Model" or "max_tokens" as a second spelling of a set field.
+//   - Where both values are JSON objects the rule applies one level down, so a caller
+//     can still add a sub-field to an object the converter built.
+//   - An extra param that repeats the converter's value exactly replaces nothing and is
+//     dropped, not refused: converters copy some extra params into typed fields and
+//     leave the original in the map.
+//   - "model" is refused at the top level of a request body whatever the body holds.
+//     A provider that carries the model in the URL has no "model" in its body, and one
+//     added there could be read in its place.
+
+// reservedExtraParamFields are top-level request fields an extra param never names,
+// even when the converter left them out of the body.
+var reservedExtraParamFields = []string{"model"}
+
+// sameJSONField reports whether a and b name the same field once case and
+// underscores are ignored: "max_tokens", "maxTokens" and "MaxTokens" are one field.
+// It allocates nothing.
+func sameJSONField(a, b string) bool {
+	i, j := 0, 0
+	for {
+		for i < len(a) && a[i] == '_' {
+			i++
 		}
-		jsonMap[k] = v
+		for j < len(b) && b[j] == '_' {
+			j++
+		}
+		if i == len(a) || j == len(b) {
+			return i == len(a) && j == len(b)
+		}
+		ca, cb := a[i], b[j]
+		if 'A' <= ca && ca <= 'Z' {
+			ca += 'a' - 'A'
+		}
+		if 'A' <= cb && cb <= 'Z' {
+			cb += 'a' - 'A'
+		}
+		if ca != cb {
+			return false
+		}
+		i++
+		j++
 	}
 }
 
-// MergeExtraParamsIntoJSON merges extra params into serialized JSON while preserving
-// the original key ordering. This avoids the order-destroying roundtrip through
-// map[string]interface{} that would lose key ordering in tool schemas and other
-// order-sensitive JSON structures.
+// reservedExtraParamField returns the reserved field an extra param named key
+// stands for, or "".
+func reservedExtraParamField(key string) string {
+	for _, reserved := range reservedExtraParamFields {
+		if sameJSONField(key, reserved) {
+			return reserved
+		}
+	}
+	return ""
+}
+
+// ExtraParamConflictError is the refusal for an extra param that names a field the
+// request already sets. param is the extra param as the caller wrote it (a dotted
+// path when nested) and field the request field it collides with. It is a 400
+// caller_invalid_request with error.param set; CheckContextAndGetRequestBody and
+// AsBifrostBadRequestError return it to the caller unchanged.
+func ExtraParamConflictError(param, field string) error {
+	bifrostErr := NewBifrostBadRequestError(fmt.Sprintf(
+		"extra params cannot set %q: the request already sets %s, and an extra param never replaces a field of the request; send the value in the request's own %s field",
+		param, field, field))
+	bifrostErr.Error.Param = param
+	bifrostErr.ExtraFields.ErrorType = schemas.ErrorTypeCallerInvalidRequest
+	return ConverterBifrostError(bifrostErr)
+}
+
+// ExtraParamNamesField reports whether an extra param named key names one of fields
+// under the extra-params rule's comparison, which ignores case and underscores.
+func ExtraParamNamesField(key string, fields ...string) bool {
+	for _, field := range fields {
+		if sameJSONField(key, field) {
+			return true
+		}
+	}
+	return false
+}
+
+// ExtraParamNamingASetField returns the first extra param, in sorted order, that
+// names one of setFields - the fields a writer already produced from the typed request -
+// and the field it names. It is the extra-params rule for a body that is not JSON (a
+// multipart form) or that is assembled by hand, where MergeExtraParamsIntoJSON cannot
+// apply it; the caller refuses the request with ExtraParamConflictError.
+func ExtraParamNamingASetField(extraParams map[string]interface{}, setFields []string) (param, field string, found bool) {
+	for key := range extraParams {
+		for _, set := range setFields {
+			if sameJSONField(key, set) && (!found || key < param) {
+				param, field, found = key, set, true
+			}
+		}
+	}
+	return param, field, found
+}
+
+// jsonValuesEqual reports whether two serialized JSON values are the same value.
+func jsonValuesEqual(a, b []byte) bool {
+	a, b = bytes.TrimSpace(a), bytes.TrimSpace(b)
+	if bytes.Equal(a, b) {
+		return true
+	}
+	var va, vb interface{}
+	da := json.NewDecoder(bytes.NewReader(a))
+	da.UseNumber()
+	db := json.NewDecoder(bytes.NewReader(b))
+	db.UseNumber()
+	if da.Decode(&va) != nil || db.Decode(&vb) != nil {
+		return false
+	}
+	return reflect.DeepEqual(va, vb)
+}
+
+// MergeExtraParams adds extraParams to jsonMap under the extra-params rule: a key
+// jsonMap does not hold is added, two maps under the same key are merged by the same
+// rule, and an extra param naming a key that is set to a different value is an
+// ExtraParamConflictError.
+func MergeExtraParams(jsonMap map[string]interface{}, extraParams map[string]interface{}) error {
+	return mergeExtraParamsAt("", jsonMap, extraParams)
+}
+
+func mergeExtraParamsAt(path string, jsonMap map[string]interface{}, extraParams map[string]interface{}) error {
+	keys := make([]string, 0, len(extraParams))
+	for k := range extraParams {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := extraParams[k]
+		existingKey, exists := "", false
+		for candidate := range jsonMap {
+			if sameJSONField(candidate, k) {
+				existingKey, exists = candidate, true
+				break
+			}
+		}
+		if !exists {
+			jsonMap[k] = v
+			continue
+		}
+		existing := jsonMap[existingKey]
+		if existingMap, ok := existing.(map[string]interface{}); ok {
+			if newMap, ok := v.(map[string]interface{}); ok {
+				if err := mergeExtraParamsAt(path+k+".", existingMap, newMap); err != nil {
+					return err
+				}
+				continue
+			}
+		}
+		existingBytes, errExisting := MarshalSorted(existing)
+		newBytes, errNew := MarshalSorted(v)
+		if errExisting != nil || errNew != nil || !jsonValuesEqual(existingBytes, newBytes) {
+			return ExtraParamConflictError(path+k, existingKey)
+		}
+	}
+	return nil
+}
+
+// MergeExtraParamsIntoJSON adds a request's extra params to its converted body under
+// the extra-params rule, and refuses a reserved field such as "model". It is the one
+// place extra params join a request body: every converter's body passes through it,
+// so a converter cannot let a caller replace what it set. A refusal is an
+// ExtraParamConflictError.
+//
+// The body keeps its key order; new keys are appended in sorted order. This avoids
+// the roundtrip through map[string]interface{} that would lose key ordering in tool
+// schemas and other order-sensitive JSON structures.
 func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{}) ([]byte, error) {
+	return fillJSONObject(jsonBody, extraParams, "", true)
+}
+
+// MergeExtraParamsIntoJSONObject is MergeExtraParamsIntoJSON for an object nested
+// inside a request body (Replicate's model-defined "input"), where no field name is
+// reserved: a nested "model" is the provider's own input field, not the routed model.
+func MergeExtraParamsIntoJSONObject(jsonObject []byte, extraParams map[string]interface{}) ([]byte, error) {
+	return fillJSONObject(jsonObject, extraParams, "", false)
+}
+
+// fillJSONObject implements the extra-params rule on one serialized JSON object.
+// topLevel is true for a request body, where reserved fields are refused; path is
+// the dotted prefix of the object inside the extra params, for the refusal.
+func fillJSONObject(jsonBody []byte, extraParams map[string]interface{}, path string, topLevel bool) ([]byte, error) {
 	trimmed := bytes.TrimSpace(jsonBody)
 	if len(trimmed) < 2 || trimmed[0] != '{' {
 		return jsonBody, nil // not a JSON object, return as-is
@@ -2551,7 +2728,6 @@ func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{
 		val json.RawMessage
 	}
 	var pairs []kvPair
-	seen := make(map[string]int)
 
 	for dec.More() {
 		tok, err := dec.Token()
@@ -2566,53 +2742,65 @@ func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{
 		if err := dec.Decode(&val); err != nil {
 			return jsonBody, nil
 		}
-		seen[key] = len(pairs)
 		pairs = append(pairs, kvPair{key, val})
 	}
 
-	// Add/merge extra params (deterministic order for new keys)
+	// Add extra params in a deterministic order.
 	extraKeys := make([]string, 0, len(extraParams))
 	for k := range extraParams {
 		extraKeys = append(extraKeys, k)
 	}
 	sort.Strings(extraKeys)
 	for _, k := range extraKeys {
-		v := extraParams[k]
-		newValBytes, err := MarshalSorted(v)
+		if topLevel {
+			if reserved := reservedExtraParamField(k); reserved != "" {
+				return nil, ExtraParamConflictError(path+k, reserved)
+			}
+		}
+		idx := -1
+		for i := range pairs {
+			if sameJSONField(pairs[i].key, k) {
+				idx = i
+				break
+			}
+		}
+		newValBytes, err := MarshalSorted(extraParams[k])
 		if err != nil {
 			continue
 		}
-		if idx, exists := seen[k]; exists {
-			// If both existing and new are JSON objects, merge recursively
-			existingTrimmed := bytes.TrimSpace(pairs[idx].val)
-			newTrimmed := bytes.TrimSpace(newValBytes)
-			if len(existingTrimmed) > 0 && existingTrimmed[0] == '{' &&
-				len(newTrimmed) > 0 && newTrimmed[0] == '{' {
-				var existingMap, newMap map[string]interface{}
-				existingDec := json.NewDecoder(bytes.NewReader(existingTrimmed))
-				existingDec.UseNumber()
+		if idx < 0 {
+			pairs = append(pairs, kvPair{k, newValBytes})
+			continue
+		}
+		// The field is set, by the converter or by an extra param spelled another
+		// way. Two objects are merged by this same rule; the same value again
+		// changes nothing; anything else would replace the field.
+		existingTrimmed := bytes.TrimSpace(pairs[idx].val)
+		newTrimmed := bytes.TrimSpace(newValBytes)
+		if len(existingTrimmed) > 0 && existingTrimmed[0] == '{' && len(newTrimmed) > 0 && newTrimmed[0] == '{' {
+			newMap, ok := extraParams[k].(map[string]interface{})
+			if !ok {
 				newDec := json.NewDecoder(bytes.NewReader(newTrimmed))
 				newDec.UseNumber()
-				if existingDec.Decode(&existingMap) == nil {
-					if newDec.Decode(&newMap) == nil {
-						MergeExtraParams(existingMap, newMap)
-						if merged, err := MarshalSorted(existingMap); err == nil {
-							pairs[idx].val = merged
-							continue
-						}
-					}
+				if err := newDec.Decode(&newMap); err != nil {
+					return nil, ExtraParamConflictError(path+k, pairs[idx].key)
 				}
 			}
-			// Non-object or merge failed: overwrite in place (preserving position)
-			pairs[idx].val = newValBytes
-		} else {
-			// New key: append at end
-			pairs = append(pairs, kvPair{k, newValBytes})
+			merged, err := fillJSONObject(existingTrimmed, newMap, path+k+".", false)
+			if err != nil {
+				return nil, err
+			}
+			pairs[idx].val = merged
+			continue
+		}
+		if !jsonValuesEqual(existingTrimmed, newTrimmed) {
+			return nil, ExtraParamConflictError(path+k, pairs[idx].key)
 		}
 	}
 
 	// Rebuild compact JSON in the original key order
 	var compact bytes.Buffer
+	compact.Grow(len(trimmed))
 	compact.WriteByte('{')
 	for i, kv := range pairs {
 		if i > 0 {
@@ -2730,6 +2918,10 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 		if err != nil {
 			if mt != nil {
 				mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
+			}
+			// An extra param naming a field the request sets is the caller's mistake.
+			if badRequest, ok := AsBifrostBadRequestError(err); ok {
+				return nil, badRequest
 			}
 			return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 		}

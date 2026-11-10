@@ -851,6 +851,9 @@ func (provider *MistralProvider) OCR(ctx *schemas.BifrostContext, key schemas.Ke
 	// Merge extra params into JSON payload
 	if len(mistralReq.ExtraParams) > 0 {
 		requestBody, err = providerUtils.MergeExtraParamsIntoJSON(requestBody, mistralReq.ExtraParams)
+		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+			return nil, badRequest
+		}
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 		}

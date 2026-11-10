@@ -305512,6 +305512,453 @@
           ]
         }
       ]
+    },
+    {
+      "name": "409. Passthrough extra params never replace the model, the input or a field the request set (extra-params-guard)",
+      "description": "With x-bf-passthrough-extra-params: true a caller's extra params are merged into the body sent to the vendor: the extra_params object on the integration routes, every unknown top-level field on the native /v1 routes. The merge used to replace fields the converter had already set. So extra_params.model could send the vendor a model the caller's key does not allow after governance had authorized the model in the request's model field, extra_params.messages or .input could swap the content after the gateway had read it, and a price-affecting field such as size could change what the vendor bills without the unified field showing it (found by the security review of the Voyage provider, and in review of the Tencent provider). The merge is one function, providerUtils.MergeExtraParamsIntoJSON, and it has one rule: an extra param may add a field the request left unset; a request whose extra param names a field the request set, or the model, in any spelling (case and underscores ignored), is refused with 400 caller_invalid_request naming the extra param, before any upstream call. The rule reads the converted body, never a per-provider list. It is pinned in Go for every provider and request type against a local vendor (TestExtraParamsNeverReplaceTheModelOrInputOnAnyProvider, TestExtraParamsModelIsRefusedOnAnOpenAIBasedCustomProvider) and as a table on the merger. These rows pin it on the live wire. On the /openai drop-in routes the planted field sits under extra_params. On the native /v1 routes of an openai-based custom provider it is a second, differently cased top-level key (Model beside model): the gateway reads the request's model from the last of the two, so the planted key comes first and reaches the provider only as an extra param. One row sends a field the request left unset (dimensions) and expects it to arrive.",
+      "item": [
+        {
+          "name": "[EXPECT-400] openai gpt-4o-mini extra-params-guard: /openai/v1/chat/completions - extra_params.model is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('extra-params-guard openai gpt-4o-mini extra-params-guard: /openai/v1/chat/completions - extra_params.model is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "var err = j.error || {};",
+                  "pm.test('extra-params-guard openai gpt-4o-mini extra-params-guard: /openai/v1/chat/completions - extra_params.model is refused: the refusal is the extra-params rule and names model', function () {",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('model');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly this code and nothing else: GUARD-ORIGINAL-7018\"\n    }\n  ],\n  \"max_tokens\": 20,\n  \"extra_params\": {\n    \"model\": \"gpt-4o\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai gpt-4o-mini extra-params-guard: /openai/v1/chat/completions stream - extra_params.model is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('extra-params-guard openai gpt-4o-mini extra-params-guard: /openai/v1/chat/completions stream - extra_params.model is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "var err = j.error || {};",
+                  "pm.test('extra-params-guard openai gpt-4o-mini extra-params-guard: /openai/v1/chat/completions stream - extra_params.model is refused: the refusal is the extra-params rule and names model', function () {",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('model');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly this code and nothing else: GUARD-ORIGINAL-7018\"\n    }\n  ],\n  \"max_tokens\": 20,\n  \"stream\": true,\n  \"extra_params\": {\n    \"model\": \"gpt-4o\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai gpt-4o-mini extra-params-guard: /openai/v1/chat/completions - extra_params.Messages is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('extra-params-guard openai gpt-4o-mini extra-params-guard: /openai/v1/chat/completions - extra_params.Messages is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "var err = j.error || {};",
+                  "pm.test('extra-params-guard openai gpt-4o-mini extra-params-guard: /openai/v1/chat/completions - extra_params.Messages is refused: the refusal is the extra-params rule and names Messages', function () {",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('Messages');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly this code and nothing else: GUARD-ORIGINAL-7018\"\n    }\n  ],\n  \"max_tokens\": 20,\n  \"extra_params\": {\n    \"Messages\": [\n      {\n        \"role\": \"user\",\n        \"content\": \"Reply with exactly this code and nothing else: GUARD-REPLACED-7018\"\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai text-embedding-3-small extra-params-guard: /openai/v1/embeddings - extra_params.MODEL is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('extra-params-guard openai text-embedding-3-small extra-params-guard: /openai/v1/embeddings - extra_params.MODEL is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "var err = j.error || {};",
+                  "pm.test('extra-params-guard openai text-embedding-3-small extra-params-guard: /openai/v1/embeddings - extra_params.MODEL is refused: the refusal is the extra-params rule and names MODEL', function () {",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('MODEL');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/text-embedding-3-small\",\n  \"input\": \"ok\",\n  \"extra_params\": {\n    \"MODEL\": \"text-embedding-3-large\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai text-embedding-3-small extra-params-guard: /openai/v1/embeddings - extra_params.input is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('extra-params-guard openai text-embedding-3-small extra-params-guard: /openai/v1/embeddings - extra_params.input is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "var err = j.error || {};",
+                  "pm.test('extra-params-guard openai text-embedding-3-small extra-params-guard: /openai/v1/embeddings - extra_params.input is refused: the refusal is the extra-params rule and names input', function () {",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('input');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/text-embedding-3-small\",\n  \"input\": \"ok\",\n  \"extra_params\": {\n    \"input\": \"another input\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai text-embedding-3-small extra-params-guard: /openai/v1/embeddings - an extra param the request left unset still reaches the vendor",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('extra-params-guard unset field: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('extra-params-guard unset field: extra_params.dimensions reached the vendor', function () {",
+                  "  pm.expect(j.data, 'data').to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(j.data[0].embedding, 'embedding').to.be.an('array').with.lengthOf(256);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/text-embedding-3-small\",\n  \"input\": \"ok\",\n  \"extra_params\": {\n    \"dimensions\": 256\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] deepinfra BAAI/bge-m3 extra-params-guard: /v1/embeddings on an openai-based custom provider - a second Model key is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('extra-params-guard deepinfra BAAI/bge-m3 extra-params-guard: /v1/embeddings on an openai-based custom provider - a second Model key is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "var err = j.error || {};",
+                  "pm.test('extra-params-guard deepinfra BAAI/bge-m3 extra-params-guard: /v1/embeddings on an openai-based custom provider - a second Model key is refused: the refusal is the extra-params rule and names Model', function () {",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('Model');",
+                  "});",
+                  "pm.test('extra-params-guard deepinfra BAAI/bge-m3 extra-params-guard: /v1/embeddings on an openai-based custom provider - a second Model key is refused: error.param is the extra param', function () {",
+                  "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('Model');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Model\": \"deepinfra/Qwen/Qwen3-Embedding-8B\",\n  \"model\": \"deepinfra/BAAI/bge-m3\",\n  \"input\": \"ok\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai_websearch gpt-image-1 extra-params-guard: /v1/images/generations on an openai-based custom provider - a second Model key is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('extra-params-guard openai_websearch gpt-image-1 extra-params-guard: /v1/images/generations on an openai-based custom provider - a second Model key is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "var err = j.error || {};",
+                  "pm.test('extra-params-guard openai_websearch gpt-image-1 extra-params-guard: /v1/images/generations on an openai-based custom provider - a second Model key is refused: the refusal is the extra-params rule and names Model', function () {",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('Model');",
+                  "});",
+                  "pm.test('extra-params-guard openai_websearch gpt-image-1 extra-params-guard: /v1/images/generations on an openai-based custom provider - a second Model key is refused: error.param is the extra param', function () {",
+                  "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('Model');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Model\": \"openai_websearch/gpt-image-1.5\",\n  \"model\": \"openai_websearch/gpt-image-1\",\n  \"prompt\": \"a red square\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai_websearch sora-2 extra-params-guard: /v1/videos on an openai-based custom provider - a second Model key is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('extra-params-guard openai_websearch sora-2 extra-params-guard: /v1/videos on an openai-based custom provider - a second Model key is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "var err = j.error || {};",
+                  "pm.test('extra-params-guard openai_websearch sora-2 extra-params-guard: /v1/videos on an openai-based custom provider - a second Model key is refused: the refusal is the extra-params rule and names Model', function () {",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('Model');",
+                  "});",
+                  "pm.test('extra-params-guard openai_websearch sora-2 extra-params-guard: /v1/videos on an openai-based custom provider - a second Model key is refused: error.param is the extra param', function () {",
+                  "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('Model');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Model\": \"openai_websearch/sora-2-pro\",\n  \"model\": \"openai_websearch/sora-2\",\n  \"prompt\": \"a red square\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

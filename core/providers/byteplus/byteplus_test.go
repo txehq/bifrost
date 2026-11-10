@@ -1783,14 +1783,16 @@ func TestBytePlusRefusesModelInExtraParams(t *testing.T) {
 			return e
 		},
 	}
+	// The refusal is the shared extra-params rule (providerUtils.MergeExtraParamsIntoJSON,
+	// TXE-7018), applied where extra params join the body.
 	for name, call := range operations {
 		bifrostErr := call(streamTestContext(t))
 		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
 			t.Errorf("%s: want a 400 for extra params naming a model, got %+v", name, bifrostErr)
 			continue
 		}
-		if !strings.Contains(bifrostErr.Error.Message, "model") {
-			t.Errorf("%s: error should name the model field: %q", name, bifrostErr.Error.Message)
+		if !strings.Contains(bifrostErr.Error.Message, "model") || bifrostErr.Error.Param != "model" || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerInvalidRequest {
+			t.Errorf("%s: want caller_invalid_request naming model in the message and error.param, got %q / %v / %q", name, bifrostErr.Error.Message, bifrostErr.Error.Param, bifrostErr.ExtraFields.ErrorType)
 		}
 	}
 	// The key is refused in any case: "Model" would sit beside "model" in the body, and a JSON

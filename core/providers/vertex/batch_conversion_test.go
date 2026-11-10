@@ -415,6 +415,38 @@ func TestToBifrostBatchCreateRequestModelLookup(t *testing.T) {
 		require.NoError(t, sonic.Unmarshal(body, &decoded))
 		assert.Equal(t, "publishers/meta/models/llama-3.1-405b-instruct-maas", decoded["model"])
 	})
+
+	t.Run("ExtraParamsModelCannotNameAnotherModel", func(t *testing.T) {
+		// TXE-7018: the publisher path among the extra params is honoured only for the
+		// model the request was authorized for. Anything else is left for the shared
+		// merge, which refuses a request whose extra params name the model.
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		for _, planted := range []interface{}{
+			"publishers/meta/models/another-model",
+			"another-model",
+			map[string]interface{}{"id": "another-model"},
+		} {
+			req := &schemas.BifrostBatchCreateRequest{
+				Model:       schemas.Ptr("gemini-2.5-flash"),
+				ExtraParams: map[string]interface{}{"model": planted},
+			}
+			out, err := ToVertexBatchCreateRequest(ctx, req, "job", "gs://in/input.jsonl", "gs://out/")
+			require.NoError(t, err)
+			assert.Equal(t, "publishers/google/models/gemini-2.5-flash", out.Model)
+			_, err = providerUtils.MergeExtraParamsIntoJSON(mustMarshal(t, out), out.GetExtraParams())
+			bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
+			require.True(t, ok, "want a bad-request refusal for %v, got %v", planted, err)
+			assert.Equal(t, "model", bifrostErr.Error.Param)
+		}
+
+		// The caller's map is not changed by taking the path out of it.
+		extra := map[string]interface{}{"model": "publishers/meta/models/llama-3.1-405b-instruct-maas", "modelVersionId": "3"}
+		req := &schemas.BifrostBatchCreateRequest{Model: schemas.Ptr("llama-3.1-405b-instruct-maas"), ExtraParams: extra}
+		out, err := ToVertexBatchCreateRequest(ctx, req, "job", "gs://in/input.jsonl", "gs://out/")
+		require.NoError(t, err)
+		assert.Equal(t, map[string]interface{}{"modelVersionId": "3"}, out.GetExtraParams())
+		assert.Contains(t, extra, "model")
+	})
 }
 
 // mustMarshal serializes v to JSON bytes, failing the test if serialization fails.

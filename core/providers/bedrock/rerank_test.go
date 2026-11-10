@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -387,4 +388,35 @@ func TestToBedrockRerankResponseOmitsMissingDocument(t *testing.T) {
 	assert.Nil(t, response.Results[0].Document)
 
 	assert.Nil(t, ToBedrockRerankResponse(nil))
+}
+
+// TXE-7018: extra params reach the reranker model's request fields. One naming the model,
+// the query, the documents or a field the typed request set is refused; any other is added.
+func TestToBedrockRerankRequestExtraParamsNeverReplaceTheRequest(t *testing.T) {
+	const arn = "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0"
+	request := func(extra map[string]interface{}) *schemas.BifrostRerankRequest {
+		return &schemas.BifrostRerankRequest{
+			Model:     "cohere.rerank-v3-5:0",
+			Query:     "original query",
+			Documents: []schemas.RerankDocument{{Text: "original document"}},
+			Params:    &schemas.RerankParameters{MaxTokensPerDoc: schemas.Ptr(128), ExtraParams: extra},
+		}
+	}
+	for param, value := range map[string]interface{}{
+		"model": "denied-model", "Model": "denied-model", "query": "other query", "Documents": []interface{}{"other"},
+		"max_tokens_per_doc": 4096, "maxTokensPerDoc": 4096,
+	} {
+		t.Run("refused "+param, func(t *testing.T) {
+			_, err := ToBedrockRerankRequest(request(map[string]interface{}{param: value}), arn)
+			bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
+			require.True(t, ok, "want a bad-request refusal, got %v", err)
+			assert.Equal(t, param, bifrostErr.Error.Param)
+			assert.Equal(t, schemas.ErrorTypeCallerInvalidRequest, bifrostErr.ExtraFields.ErrorType)
+		})
+	}
+
+	req, err := ToBedrockRerankRequest(request(map[string]interface{}{"api_version": 2, "max_tokens_per_doc": 128}), arn)
+	require.NoError(t, err)
+	fields := req.RerankingConfiguration.BedrockRerankingConfiguration.ModelConfiguration.AdditionalModelRequestFields
+	assert.Equal(t, map[string]interface{}{"max_tokens_per_doc": 128, "api_version": 2}, fields)
 }

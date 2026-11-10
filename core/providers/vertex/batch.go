@@ -198,6 +198,19 @@ func ToVertexBatchCreateRequest(ctx *schemas.BifrostContext, request *schemas.Bi
 	if request.Model != nil {
 		model = *request.Model
 	}
+	// The genai ingress keeps the caller's publishers/{publisher}/models/{id} path in the
+	// extra params (ToBifrostBatchCreateRequest) because a publisher cannot always be
+	// re-derived from the id. It is taken from there only when it names the very model
+	// the request was authorized for, and is then removed from the extra params below.
+	// Any other "model" among them stays, and the shared merge refuses the request for
+	// it: extra params never choose the model (providerUtils.MergeExtraParamsIntoJSON).
+	consumedQualifiedModel := false
+	if qualified, ok := request.ExtraParams["model"].(string); ok && model != "" {
+		if bare, isPublisherPath := stripVertexPublisherModelPath(qualified); isPublisherPath && bare == model {
+			model = qualified
+			consumedQualifiedModel = true
+		}
+	}
 	if model != "" && !strings.Contains(model, "/") {
 		// Bare model names are resolved to a publisher path; Claude models live under the
 		// Anthropic publisher (publishers/anthropic/models/...), everything else under Google.
@@ -211,6 +224,16 @@ func ToVertexBatchCreateRequest(ctx *schemas.BifrostContext, request *schemas.Bi
 	labels, extraParams, err := vertexBatchJobLabels(request)
 	if err != nil {
 		return nil, err
+	}
+	if consumedQualifiedModel {
+		// Copy: the model moves out of the map the caller's request holds.
+		withoutModel := make(map[string]interface{}, len(extraParams))
+		for key, value := range extraParams {
+			if key != "model" {
+				withoutModel[key] = value
+			}
+		}
+		extraParams = withoutModel
 	}
 
 	req := &VertexBatchCreateRequest{

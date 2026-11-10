@@ -69,6 +69,13 @@ func ToOpenAITranscriptionURLRequest(bifrostReq *schemas.BifrostTranscriptionReq
 
 // ParseTranscriptionFormDataBodyFromRequest parses the transcription request and writes it to the multipart form.
 func ParseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *OpenAITranscriptionRequest, providerName schemas.ModelProvider) *schemas.BifrostError {
+	// written holds every field this function writes from the typed request. A request
+	// whose extra params name one of them is refused (the extra-params rule,
+	// providerUtils.MergeExtraParamsIntoJSON): a form that carried a field twice would let
+	// the upstream pick either, and the typed value - the routed model above all - is the
+	// one the gateway authorized.
+	written := []string{"model", "file"}
+
 	// Add model field before the file so upstreams can route without buffering the audio payload.
 	if err := writer.WriteField("model", openaiReq.Model); err != nil {
 		return utils.NewBifrostOperationError("failed to write model field", err)
@@ -76,27 +83,38 @@ func ParseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiR
 
 	// Add optional fields
 	if openaiReq.Language != nil {
+		written = append(written, "language")
 		if err := writer.WriteField("language", *openaiReq.Language); err != nil {
 			return utils.NewBifrostOperationError("failed to write language field", err)
 		}
 	}
 
 	if openaiReq.Prompt != nil {
+		written = append(written, "prompt")
 		if err := writer.WriteField("prompt", *openaiReq.Prompt); err != nil {
 			return utils.NewBifrostOperationError("failed to write prompt field", err)
 		}
 	}
 
 	if openaiReq.ResponseFormat != nil {
+		written = append(written, "response_format")
 		if err := writer.WriteField("response_format", *openaiReq.ResponseFormat); err != nil {
 			return utils.NewBifrostOperationError("failed to write response_format field", err)
 		}
 	}
 
 	if openaiReq.Temperature != nil {
+		written = append(written, "temperature")
 		if err := writer.WriteField("temperature", fmt.Sprintf("%g", *openaiReq.Temperature)); err != nil {
 			return utils.NewBifrostOperationError("failed to write temperature field", err)
 		}
+	}
+
+	if len(openaiReq.TimestampGranularities) > 0 {
+		written = append(written, "timestamp_granularities[]", "timestamp_granularities")
+	}
+	if len(openaiReq.Include) > 0 {
+		written = append(written, "include[]", "include")
 	}
 
 	for _, granularity := range openaiReq.TimestampGranularities {
@@ -112,6 +130,7 @@ func ParseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiR
 	}
 
 	if openaiReq.Stream != nil && *openaiReq.Stream {
+		written = append(written, "stream")
 		if err := writer.WriteField("stream", "true"); err != nil {
 			return utils.NewBifrostOperationError("failed to write stream field", err)
 		}
@@ -124,6 +143,10 @@ func ParseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiR
 	// are sorted so the emitted form is deterministic.
 	if len(openaiReq.ExtraParams) > 0 {
 		extraKeys := make([]string, 0, len(openaiReq.ExtraParams))
+		if param, field, repeats := utils.ExtraParamNamingASetField(openaiReq.ExtraParams, written); repeats {
+			bifrostErr, _ := utils.AsBifrostBadRequestError(utils.ExtraParamConflictError(param, field))
+			return bifrostErr
+		}
 		for key := range openaiReq.ExtraParams {
 			extraKeys = append(extraKeys, key)
 		}

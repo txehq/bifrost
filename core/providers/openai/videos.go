@@ -226,6 +226,14 @@ func (req *OpenAIVideoGenerationRequest) ToBifrostVideoGenerationRequest(ctx *sc
 
 // parseVideoGenerationFormDataBodyFromRequest parses the video generation request and writes it to the multipart form.
 func parseVideoGenerationFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *OpenAIVideoGenerationRequest, providerName schemas.ModelProvider) *schemas.BifrostError {
+	// This form carries no extra params, so one naming the model could never replace it.
+	// The request is refused all the same, as on every route where extra params do reach
+	// the body (the extra-params rule, providerUtils.MergeExtraParamsIntoJSON): a caller
+	// who nests a model there is told so on videos as well (fork, TXE-7018).
+	if param, field, names := providerUtils.ExtraParamNamingASetField(openaiReq.ExtraParams, []string{"model"}); names {
+		bifrostErr, _ := providerUtils.AsBifrostBadRequestError(providerUtils.ExtraParamConflictError(param, field))
+		return bifrostErr
+	}
 	// Add prompt field (required)
 	if openaiReq.Prompt == "" {
 		return providerUtils.NewBifrostOperationError("prompt is required", nil)

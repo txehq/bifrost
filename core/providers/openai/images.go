@@ -290,12 +290,16 @@ func buildImageEditRequestBody(openaiReq *OpenAIImageEditRequest, providerName s
 			extraParams := make(map[string]interface{}, len(jsonReq.ExtraParams))
 			for key, value := range jsonReq.ExtraParams {
 				// As in the form: a typed field is the one sent, never a same-named extra.
-				if !imageEditFormFieldNames[key] && key != "images" {
+				// model is left in, so the shared merge refuses the request for it.
+				if !imageEditExtraParamNamesATypedField(key) && !providerUtils.ExtraParamNamesField(key, "images") {
 					extraParams[key] = value
 				}
 			}
 			if len(extraParams) > 0 {
 				jsonBody, err = providerUtils.MergeExtraParamsIntoJSON(jsonBody, extraParams)
+				if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+					return nil, "", badRequest
+				}
 				if err != nil {
 					return nil, "", providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 				}
@@ -488,13 +492,22 @@ func passthroughExtraParamsEnabled(ctx *schemas.BifrostContext) bool {
 }
 
 // imageEditFormFieldNames are the form fields parseImageEditFormDataBodyFromRequest writes from the
-// typed request. An extra param with one of these names is not written a second time: the typed
-// value is the one sent, so the form never carries a field twice.
-var imageEditFormFieldNames = map[string]bool{
-	"model": true, "prompt": true, "stream": true, "n": true, "size": true, "response_format": true,
-	"quality": true, "background": true, "input_fidelity": true, "partial_images": true,
-	"output_format": true, "output_compression": true, "user": true, "image": true, "image[]": true,
-	"mask": true,
+// typed request. An extra param naming one of them is not written a second time: the typed
+// value is the one sent, so the form never carries a field twice. model is the exception: a
+// request whose extra params name it is refused, as on every other route (the extra-params rule,
+// providerUtils.MergeExtraParamsIntoJSON).
+var imageEditFormFieldNames = []string{
+	"prompt", "stream", "n", "size", "response_format",
+	"quality", "background", "input_fidelity", "partial_images",
+	"output_format", "output_compression", "user", "image", "image[]",
+	"mask",
+}
+
+// imageEditExtraParamNamesATypedField reports whether an extra param names a typed form field
+// other than model, in any spelling: "Size" or "outputFormat" would otherwise sit in the form
+// beside the typed "size" or "output_format" (fork, TXE-7018).
+func imageEditExtraParamNamesATypedField(key string) bool {
+	return providerUtils.ExtraParamNamesField(key, imageEditFormFieldNames...)
 }
 
 // writeImageEditExtraParamFields writes each extra param as one form field, keys sorted so the form
@@ -505,9 +518,13 @@ func writeImageEditExtraParamFields(writer *multipart.Writer, extraParams map[st
 	if len(extraParams) == 0 {
 		return nil
 	}
+	if param, field, names := providerUtils.ExtraParamNamingASetField(extraParams, []string{"model"}); names {
+		bifrostErr, _ := providerUtils.AsBifrostBadRequestError(providerUtils.ExtraParamConflictError(param, field))
+		return bifrostErr
+	}
 	keys := make([]string, 0, len(extraParams))
 	for key := range extraParams {
-		if !imageEditFormFieldNames[key] {
+		if !imageEditExtraParamNamesATypedField(key) {
 			keys = append(keys, key)
 		}
 	}
