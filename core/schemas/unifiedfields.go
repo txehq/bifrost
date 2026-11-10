@@ -123,7 +123,7 @@ func PriceAffectingUnifiedFields(requestType RequestType) []string {
 // provider to declare. Core runs it in the request worker before a key is chosen, so a
 // refused request makes no upstream call.
 //
-// Three things are not refused:
+// Four things are not refused:
 //
 //   - A field the request did send, with the same value. The HTTP handlers also keep some
 //     unified fields in the extra params under the same name (UnifiedImageFields,
@@ -133,6 +133,8 @@ func PriceAffectingUnifiedFields(requestType RequestType) []string {
 //     VideoReferenceImages): Runware 3D's numeric resolution and Runway's reference image
 //     objects leave the typed field empty and travel as an extra param by design. Only a
 //     value the field would have taken is the field under another route.
+//   - An empty value (nil, "", [] or {}): it supplies no field. A client that serializes
+//     an optional list as [] is not refused.
 //   - A vendor's own name for the field (BytePlus ratio, Gemini aspectRatio). The name is
 //     compared ignoring letter case only, so "Size" is size but "aspectRatio" is not
 //     aspect_ratio.
@@ -186,7 +188,7 @@ func checkExtraParamPriceFields(req *BifrostRequest, table []string, params refl
 				break
 			}
 		}
-		if field == "" || value == nil {
+		if field == "" || extraParamIsEmpty(value) {
 			continue
 		}
 		if sent, isSet := unifiedFieldSent(req, params, field); isSet {
@@ -210,6 +212,25 @@ func checkExtraParamPriceFields(req *BifrostRequest, table []string, params refl
 	return NewUnsupportedParameterError(refused, fmt.Sprintf(
 		"extra params cannot set %q: %s affects the price of this request, so it is sent as the request's own %s field, never as an extra param",
 		refused, refusedField, refusedField))
+}
+
+// extraParamIsEmpty reports whether an extra param carries nothing: nil, "", or an empty
+// list or object. The handlers keep a unified field among the extra params even when the
+// caller sent it empty (reference_images: []), and an empty value supplies no field.
+func extraParamIsEmpty(value interface{}) bool {
+	switch v := value.(type) {
+	case nil:
+		return true
+	case string:
+		return v == ""
+	case []interface{}:
+		return len(v) == 0
+	case []string:
+		return len(v) == 0
+	case map[string]interface{}:
+		return len(v) == 0
+	}
+	return false
 }
 
 // sentUnifiedField is the value of a unified field the request sent.

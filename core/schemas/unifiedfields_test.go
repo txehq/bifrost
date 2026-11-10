@@ -262,6 +262,13 @@ func TestCheckExtraParamPriceFieldsLeavesEverythingElseAlone(t *testing.T) {
 				Params: &VideoGenerationParameters{ReferenceImages: VideoReferenceImages{"https://example.invalid/a.png"},
 					ExtraParams: map[string]interface{}{"reference_images": []interface{}{"https://example.invalid/a.png"}}}},
 		}},
+		{"empty values the handlers mirror supply no field", &BifrostRequest{
+			RequestType: VideoGenerationRequest,
+			VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p"},
+				Params: &VideoGenerationParameters{ExtraParams: map[string]interface{}{
+					"reference_images": []interface{}{}, "resolution": "", "aspect_ratio": "", "last_frame": map[string]interface{}{},
+				}}},
+		}},
 		{"a nil value", imageReq(&ImageGenerationParameters{ExtraParams: map[string]interface{}{"size": nil}})},
 		{"an operation outside the C4 table", &BifrostRequest{
 			RequestType: ChatCompletionRequest,
