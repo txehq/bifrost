@@ -531,6 +531,22 @@ const geminiFileUpload = () => {
 	return { status: 200, body: JSON.stringify({ file: { name, displayName: "sample.png", mimeType: "image/png", sizeBytes: "70", createTime: "2026-11-10T00:00:00Z", state: "ACTIVE", uri: `https://generativelanguage.googleapis.com/v1beta/${name}` } }) };
 };
 
+// MiniMax speech usage, TXE-6629. A recorded /v1/t2a_v2 extra_info: usage_characters is what MiniMax bills and
+// audio_length is milliseconds. A non-streamed answer carries hex audio; a streamed one sends status-1 audio chunks and
+// a status-2 chunk with extra_info and, under exclude_aggregated_audio, no audio.
+const miniMaxSpeechExtraInfo = { audio_length: 2500, audio_sample_rate: 32000, audio_size: 40960, bitrate: 128000, word_count: 30, invisible_character_ratio: 0, usage_characters: 37, audio_format: "mp3", audio_channel: 1, usage_voice_count: 1 };
+const miniMaxOk = { status_code: 0, status_msg: "success" };
+const miniMaxSpeechAnswer = (body) => {
+	if (body.stream === true) {
+		const chunks = [
+			{ data: { audio: "aabb", status: 1 }, trace_id: "t_pp", base_resp: miniMaxOk },
+			{ data: { audio: "", status: 2 }, extra_info: miniMaxSpeechExtraInfo, trace_id: "t_pp", base_resp: miniMaxOk },
+		];
+		return { status: 200, stream: chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") };
+	}
+	return { status: 200, body: JSON.stringify({ data: { audio: "4944330000", status: 2 }, extra_info: miniMaxSpeechExtraInfo, trace_id: "t_pp", base_resp: miniMaxOk }) };
+};
+
 const wireAnswer = (path, body, bytes) => {
 	if (isOpenAIImagePath(path)) return openAIImageAnswer(body, bytes, path === "/v1/images/edits");
 	const geminiImage = geminiImageAnswerFor(path);
@@ -540,6 +556,7 @@ const wireAnswer = (path, body, bytes) => {
 		return { status: 200, body: JSON.stringify({ id: "chatcmpl_bounds", object: "chat.completion", created: 1, model: body.model, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) };
 	}
 	if (path === "/pp/cp/v1/chat/completions") return cpChatAnswerFor(body);
+	if (path === "/pp/minimax/v1/t2a_v2") return miniMaxSpeechAnswer(body);
 	if (path === "/pp/vercel/v1/images/generations") return { status: 200, body: JSON.stringify(vercelImageAnswer(body)) };
 	if (path === "/pp/cp/v1/responses") return cpResponsesAnswerFor(body);
 	if (path === "/pp/cloudflare/accounts/acct-1/ai/v1/chat/completions") return cpCloudflareChat(body);
