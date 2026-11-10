@@ -141,6 +141,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           # Registration-only providers: every operation answers unsupported with no upstream call,
           # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
           DASHSCOPE_API_KEY: registration-only-no-upstream-call

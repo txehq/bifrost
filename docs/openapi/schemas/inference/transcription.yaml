@@ -17,7 +17,7 @@ TranscriptionRequest:
       format: uri
       description: >-
         Audio URL in place of `file`, forwarded to the provider unchanged; Bifrost does not
-        download it. Only providers whose transcription takes a URL accept it (Groq); any
+        download it. Only providers whose transcription takes a URL accept it (Deepgram); any
         other provider answers 400 with `extra_fields.error_type`
         `caller_unsupported_parameter` and `error.param` `url`.
     fallbacks:

@@ -11,6 +11,7 @@ ModelProvider:
     - cerebras
     - cohere
     - deepseek
+    - deepgram
     - gemini
     - groq
     - mistral

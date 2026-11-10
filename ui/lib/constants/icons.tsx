@@ -238,6 +238,22 @@ export const ProviderIcons = {
 		);
 	},
 
+	deepgram: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg width={resolvedSize} height={resolvedSize} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
+				<title>Deepgram</title>
+				<path
+					fillRule="evenodd"
+					clipRule="evenodd"
+					fill="currentColor"
+					d="M4 3h8.5a9 9 0 0 1 0 18H7.2l3.1-3.9h2.2a5.1 5.1 0 0 0 0-10.2H7.9v6.3H4V3Z"
+				/>
+			</svg>
+		);
+	},
+
 	elevenlabs: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 
