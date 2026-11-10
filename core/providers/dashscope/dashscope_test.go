@@ -1120,3 +1120,64 @@ func TestDashScopeAudioMediaType(t *testing.T) {
 		}
 	}
 }
+
+// Request-path cost of the speech and transcription conversions (AGENTS.md: every change
+// states its cost). The file input is base64-encoded into a data URL, so its cost scales
+// with the audio size; the URL input is written as given.
+func BenchmarkDashScopeTTSRequest(b *testing.B) {
+	req := speechRequest("Cherry", func(p *schemas.SpeechParameters) { p.LanguageCode = schemas.Ptr("English") })
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := ToDashScopeTTSRequest(req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkDashScopeTTSResponse(b *testing.B) {
+	var resp DashScopeTTSResponse
+	if err := json.Unmarshal([]byte(recordedTTSResponse), &resp); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, bifrostErr := ToBifrostSpeechResponse(&resp); bifrostErr != nil {
+			b.Fatal(bifrostErr.Error.Message)
+		}
+	}
+}
+
+func BenchmarkDashScopeASRRequest(b *testing.B) {
+	b.Run("url", func(b *testing.B) {
+		req := transcriptionRequest(nil, "https://example.com/audio/clip.wav", func(p *schemas.TranscriptionParameters) { p.Language = schemas.Ptr("en") })
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := ToDashScopeASRRequest(req); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("file_1MiB", func(b *testing.B) {
+		req := transcriptionRequest(make([]byte, 1<<20), "", nil)
+		b.SetBytes(1 << 20)
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := ToDashScopeASRRequest(req); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkDashScopeASRResponse(b *testing.B) {
+	var resp DashScopeASRResponse
+	if err := json.Unmarshal([]byte(recordedASRResponse), &resp); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, bifrostErr := ToBifrostTranscriptionResponse(&resp); bifrostErr != nil {
+			b.Fatal(bifrostErr.Error.Message)
+		}
+	}
+}

@@ -51,7 +51,7 @@ func ToDashScopeASRRequest(request *schemas.BifrostTranscriptionRequest) (*DashS
 	case hasURL:
 		audio = audioURL
 	case hasFile:
-		audio = "data:" + audioMediaType(request.Input.Filename, request.Input.File) + ";base64," + base64.StdEncoding.EncodeToString(request.Input.File)
+		audio = audioDataURL(request.Input.Filename, request.Input.File)
 	default:
 		return nil, providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError("file", "file or url is required for DashScope transcription"))
 	}
@@ -167,6 +167,21 @@ func (provider *DashScopeProvider) Transcription(ctx *schemas.BifrostContext, ke
 		bifrostResp.ExtraFields.RawResponse = rawResponse
 	}
 	return bifrostResp, nil
+}
+
+// audioDataURL returns data as a base64 data URL, encoded straight into one buffer sized for
+// it, so the audio is copied once rather than once for the encoding and again for the prefix.
+func audioDataURL(filename string, data []byte) string {
+	mediaType := audioMediaType(filename, data)
+	var b strings.Builder
+	b.Grow(len("data:") + len(mediaType) + len(";base64,") + base64.StdEncoding.EncodedLen(len(data)))
+	b.WriteString("data:")
+	b.WriteString(mediaType)
+	b.WriteString(";base64,")
+	encoder := base64.NewEncoder(base64.StdEncoding, &b)
+	_, _ = encoder.Write(data) // strings.Builder never returns an error
+	_ = encoder.Close()
+	return b.String()
 }
 
 // audioMediaType is the media type written into the data URL for uploaded bytes: from the
