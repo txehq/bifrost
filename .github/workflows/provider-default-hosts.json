@@ -1,6 +1,7 @@
 {
   "anthropic": "api.anthropic.com",
   "azure": "",
+  "azurespeech": "",
   "bedrock": "",
   "bedrock_mantle": "",
   "bfl": "api.bfl.ai",
