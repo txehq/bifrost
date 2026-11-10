@@ -962,4 +962,11 @@ test("seedream answers a 200 that mixes delivered images with per-image refusals
   const empty = await (await post({ model: "seedream-empty", prompt: "p" }, path)).json();
   assert.deepEqual(empty.data, []);
   assert.equal((await post({ model: "seedream-unknown", prompt: "p" }, path)).status, 404);
+  for (const [model, code] of [["seedream-moderated", "InputTextSensitiveContentDetected"], ["seedream-invalid-param", "InvalidParameter"]]) {
+    for (const stream of [false, true]) {
+      const res = await post({ model, prompt: "p", stream }, path);
+      assert.equal(res.status, 400);
+      assert.equal((await res.json()).error.code, code);
+    }
+  }
 });

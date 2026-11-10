@@ -1039,7 +1039,9 @@ const xaiResponsesAnswer = (body) => {
 // answers a sequential generation with a 200 whose data[] mixes delivered images with per-image error objects; the
 // codes and shape are the ones core/providers/byteplus/byteplus_test.go pins. The model selects the answer:
 // seedream-partly-filtered delivers two images and refuses one, seedream-all-filtered refuses its only image, and
-// seedream-empty delivers nothing and refuses nothing.
+// seedream-empty delivers nothing and refuses nothing. seedream-moderated and seedream-invalid-param are refused over
+// HTTP instead: a 400 carrying Ark's error object, a moderation code and a parameter code, on every request including a
+// stream, since Ark refuses before it sends a frame.
 const seedreamRefusal = { error: { code: "OutputImageSensitiveContentDetected", message: "The request failed because the output image may contain sensitive information." } };
 const seedreamImage = (i) => ({ url: `https://fixture.invalid/seedream/${i}.png`, size: "2048x2048" });
 const seedreamUsage = (n) => ({ generated_images: n, output_tokens: 16384 * n, total_tokens: 16384 * n });
@@ -1048,7 +1050,13 @@ const seedreamAnswers = {
 	"seedream-all-filtered": () => ({ data: [seedreamRefusal], usage: seedreamUsage(0) }),
 	"seedream-empty": () => ({ data: [], usage: seedreamUsage(0) }),
 };
+const seedreamHTTPErrors = {
+	"seedream-moderated": { code: "InputTextSensitiveContentDetected", message: "The request failed because the input text may contain sensitive information." },
+	"seedream-invalid-param": { code: "InvalidParameter", message: "The parameter `size` specified in the request is not valid." },
+};
 const seedreamAnswer = (body) => {
+	const refused = seedreamHTTPErrors[body.model];
+	if (refused) return { status: 400, body: JSON.stringify({ error: { ...refused, param: "", type: "BadRequest" } }) };
 	const answer = seedreamAnswers[body.model];
 	if (!answer) return { status: 404, body: errorBody(`unknown fixture model ${body.model}`, "invalid_request_error", "model_not_found") };
 	return { status: 200, body: JSON.stringify({ model: body.model, created: 1, ...answer() }) };
