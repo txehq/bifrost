@@ -296173,7 +296173,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash-preview-tts\",\n  \"input\": \"Hello from Gemini through Bifrost.\",\n  \"voice\": \"Kore\"\n}"
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash-preview-tts\",\n  \"input\": \"Hello from Gemini through Bifrost.\",\n  \"voice\": \"Kore\",\n  \"response_format\": \"pcm\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/audio/speech",

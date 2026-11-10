@@ -678,9 +678,9 @@ func TestSpeechNonStreamingCarriesUsageHeaderAndContentType(t *testing.T) {
 	})
 
 	t.Run("gemini", func(t *testing.T) {
-		// Gemini accepts only wav or no response_format; with none it answers raw PCM, which
-		// used to go out labeled audio/mpeg.
-		ctx := speechCtx(`{"model":"gemini/gemini-2.5-flash-preview-tts","input":"Hello","voice":"Kore"}`)
+		// Gemini answers raw PCM, returned as is when pcm is named (wav is the default,
+		// TXE-6539); it used to go out labeled audio/mpeg.
+		ctx := speechCtx(`{"model":"gemini/gemini-2.5-flash-preview-tts","input":"Hello","voice":"Kore","response_format":"pcm"}`)
 		h.speech(ctx)
 		if ctx.Response.StatusCode() != fasthttp.StatusOK {
 			t.Fatalf("status %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
