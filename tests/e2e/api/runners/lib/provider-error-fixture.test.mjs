@@ -437,3 +437,41 @@ test("a Replicate prediction create answers 201 with no urls", async (t) => {
   assert.equal(answer.status, 201);
   assert.deepEqual(await answer.json(), { id: "pred_fixture_no_urls", status: "starting" });
 });
+
+// TXE-6439: one /pp/<site> base per vendor site, each answering chat with the usage shape its vendor
+// documents. StepFun's international site is the one that puts cached_tokens at the top of usage and
+// sends usage on every streamed chunk; the cases of folder 408 depend on exactly these shapes.
+test("the vendor chat sites answer with each vendor's documented usage shape", async (t) => {
+  const post = await startFixture(t);
+  const ask = async (site, extra = {}) =>
+    post({ model: "any-model", messages: [{ role: "user", content: "hi" }], ...extra }, `/pp/${site}/v1/chat/completions`);
+
+  const stepfun = await (await ask("stepfun")).json();
+  assert.deepEqual(stepfun.usage, { cached_tokens: 512, prompt_tokens: 591, completion_tokens: 120, total_tokens: 711 });
+  assert.equal(stepfun.model, "any-model", "the answer names the requested model");
+
+  const domestic = await (await ask("stepfun-cn")).json();
+  assert.equal(domestic.usage.cached_tokens, undefined, "the domestic site nests the count");
+  assert.equal(domestic.usage.prompt_tokens_details.cached_tokens, 512);
+
+  for (const site of ["tencent", "xiaomi"]) {
+    const answer = await (await ask(site)).json();
+    assert.equal(answer.usage.cached_tokens, undefined, `${site} has no top-level cached_tokens`);
+    assert.equal(answer.usage.total_tokens, 145, site);
+  }
+
+  const frames = async (site, extra) =>
+    (await (await ask(site, { stream: true, ...extra })).text())
+      .split("\n")
+      .filter((line) => line.startsWith("data: {"))
+      .map((line) => JSON.parse(line.slice(6)));
+  const stepfunFrames = await frames("stepfun", {});
+  assert.equal(stepfunFrames.length, 3);
+  for (const frame of stepfunFrames) assert.equal(frame.usage.cached_tokens, 512, "StepFun sends usage on every chunk");
+  const xiaomiFrames = await frames("xiaomi", { stream_options: { include_usage: true } });
+  assert.deepEqual(xiaomiFrames.map((f) => f.usage !== undefined), [false, false, false, true], "usage only on the trailing frame");
+  assert.equal((await frames("xiaomi", {})).length, 3, "no usage frame unless include_usage asks for one");
+
+  const unknown = await ask("stepfun-eu");
+  assert.equal(unknown.status, 500, "a site the fixture does not play has no answer");
+});

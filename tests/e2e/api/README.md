@@ -310,6 +310,30 @@ first-token deadline and a fallback on the fixture, and asserts the fallback ser
 although the attempt never got a connection. Run it like folder 185, with
 `providerErrorFixtureStallProxyUrl` when the stall proxy is not on `http://127.0.0.1:8799`.
 
+## Tencent, StepFun and Xiaomi chat on openai-based custom providers
+
+Folder 408 (TXE-6439) uses the same fixture and the same isolated gateway as folder 154. The
+fixture's gateway config holds one openai-based custom provider per vendor site, as Tokun's
+reconciler writes them (`tencent_tokenhub`, `stepfun`, `stepfun_cn`, `xiaomi`), each with its base
+on the fixture's `/pp/<site>`. The fixture answers `/pp/<site>/v1/chat/completions` with the usage
+shape the vendor documents: StepFun's international site puts the cache-hit count at the top of
+`usage` (`cached_tokens`) and sends usage on every streamed chunk, its domestic site nests the count
+under `prompt_tokens_details`, and Tencent and Xiaomi report the three token counts. The folder pins
+that the counts reach the unified `usage` (StepFun's cached count at
+`prompt_tokens_details.cached_read_tokens`, streamed or not) and that a request type outside a
+provider's `allowed_requests` is refused with nothing sent to the vendor. No answer is recorded from
+a real request yet; replace them when the staging requests are made.
+
+Start the fixture and the isolated gateway as in the previous section, then:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "408. Tencent, StepFun and Xiaomi chat on openai-based custom providers: usage, cached tokens and allowed request types (vendor chat channels) [SERIAL]" \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1 \
+  --env-var providerErrorFixtureUrl=http://127.0.0.1:8791
+```
+
 ## Fork deployment switches: provider job accounting off and passthrough heartbeat off
 
 Folder 329 (TXE-6519) uses the same fixture and the same isolated gateway as folder 154. The
