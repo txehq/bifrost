@@ -32,13 +32,20 @@ while :; do sleep 0.2; done
 );
 chmodSync(FAKE, 0o755);
 
+// A port the OS reports free: boot_clean_bifrost refuses a port in use, and a random pick
+// collides on a busy machine, which failed this test in the required offline check (TXE-7067).
+function freePort() {
+  const probe = "const s = require('net').createServer().listen(0, '127.0.0.1', () => { console.log(s.address().port); s.close(); });";
+  return Number(execFileSync(process.execPath, ["-e", probe], { encoding: "utf8" }).trim());
+}
+
 // Boots the fake server through boot_clean_bifrost in one shell, runs then in that shell, and stops
 // it through stop_clean_bifrost into <WORK>/report, the way a runner's EXIT trap does. env is the
 // runner's environment; BIFROST_SETUP_TOKEN is left out unless env sets it.
 function runClean(then, env = {}, timeout = 30000) {
   const base = { ...process.env };
   delete base.BIFROST_SETUP_TOKEN;
-  const port = 20000 + Math.floor(Math.random() * 20000);
+  const port = freePort();
   // The fake server is killed however the shell ends, including when a timeout stops it.
   const body = `source ${JSON.stringify(SCRIPT)}
 trap 'kill -9 "$CLEAN_BIFROST_PID" 2>/dev/null' EXIT
