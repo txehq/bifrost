@@ -559,7 +559,7 @@
           "name": "BFL API Key",
           "value": "env.BFL_API_KEY",
           "weight": 1,
-          "models": ["flux-2-pro", "flux-kontext-pro", "flux-pro-1.1"]
+          "models": ["flux-2-pro", "flux-kontext-pro", "flux-pro-1.1", "flux-3-video"]
         }
       ],
       "network_config": {
