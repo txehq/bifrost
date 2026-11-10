@@ -281,20 +281,36 @@ func geminiResponseEmbeddings(resp *GeminiEmbeddingResponse) []GeminiEmbedding {
 }
 
 // geminiEmbeddingUsage reports what Google reported and nothing else (contract C5):
-// usageMetadata's token counts, and a billable character count as billed_characters. It
-// does not fall back to per-embedding statistics or count characters as tokens. Nil when
-// Google reported neither.
+// usageMetadata's token counts first; else the per-embedding statistics.tokenCount that
+// Vertex :embedContent reports (a vendor count, summed across embeddings); and a billable
+// character count as billed_characters, never as tokens. Bifrost counts nothing itself.
+// Nil when Google reported none of them.
 func geminiEmbeddingUsage(geminiResp *GeminiEmbeddingResponse) *schemas.BifrostLLMUsage {
+	statsTokens, hasStats := 0, false
+	for _, emb := range geminiResponseEmbeddings(geminiResp) {
+		if emb.Statistics != nil {
+			hasStats = true
+			statsTokens += int(emb.Statistics.TokenCount)
+		}
+	}
+
 	var usage *schemas.BifrostLLMUsage
 	if um := geminiResp.UsageMetadata; um != nil && (um.PromptTokenCount > 0 || um.TotalTokenCount > 0) {
-		usage = &schemas.BifrostLLMUsage{PromptTokens: int(um.PromptTokenCount), TotalTokens: int(um.TotalTokenCount)}
-		// An embedding has no output tokens, so either count is the input count.
-		if usage.TotalTokens == 0 {
-			usage.TotalTokens = usage.PromptTokens
+		prompt, total := int(um.PromptTokenCount), int(um.TotalTokenCount)
+		// An embedding has no output tokens, so either count is the input count; the
+		// per-embedding statistics are the finer report when only a total came back.
+		if prompt == 0 {
+			prompt = statsTokens
+			if prompt == 0 {
+				prompt = total
+			}
 		}
-		if usage.PromptTokens == 0 {
-			usage.PromptTokens = usage.TotalTokens
+		if total == 0 {
+			total = prompt
 		}
+		usage = &schemas.BifrostLLMUsage{PromptTokens: prompt, TotalTokens: total}
+	} else if hasStats {
+		usage = &schemas.BifrostLLMUsage{PromptTokens: statsTokens, TotalTokens: statsTokens}
 	}
 	if md := geminiResp.Metadata; md != nil && md.BillableCharacterCount > 0 {
 		if usage == nil {

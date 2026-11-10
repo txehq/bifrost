@@ -312,9 +312,9 @@ func TestToBifrostEmbeddingResponseUsage(t *testing.T) {
 		assert.Equal(t, 9, resp.Usage.PromptTokens)
 	})
 
-	// Contract C5: usage is what Google bills. Per-embedding statistics are not a billing
-	// report, so without usageMetadata the usage stays empty and Tokun measures it.
-	t.Run("statistics alone do not become usage", func(t *testing.T) {
+	// Vertex :embedContent reports statistics.tokenCount per embedding: a vendor count,
+	// so it is usage under contract C5 when usageMetadata is absent.
+	t.Run("statistics drive usage when usageMetadata is absent", func(t *testing.T) {
 		resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
 			Embeddings: []gemini.GeminiEmbedding{
 				{Values: []float64{0.1}, Statistics: &gemini.ContentEmbeddingStatistics{TokenCount: 2}},
@@ -322,7 +322,22 @@ func TestToBifrostEmbeddingResponseUsage(t *testing.T) {
 			},
 		}, "gemini-embedding-001")
 
-		assert.Nil(t, resp.Usage)
+		require.NotNil(t, resp.Usage)
+		assert.Equal(t, 5, resp.Usage.PromptTokens)
+		assert.Equal(t, 5, resp.Usage.TotalTokens)
+		assert.Nil(t, resp.Usage.BilledCharacters)
+	})
+
+	t.Run("statistics and billable characters are reported side by side", func(t *testing.T) {
+		resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+			Embedding: &gemini.GeminiEmbedding{Values: []float64{0.1}, Statistics: &gemini.ContentEmbeddingStatistics{TokenCount: 4}},
+			Metadata:  &gemini.EmbedContentMetadata{BillableCharacterCount: 20},
+		}, "gemini-embedding-001")
+
+		require.NotNil(t, resp.Usage)
+		assert.Equal(t, 4, resp.Usage.PromptTokens, "tokens are not replaced by the character count")
+		require.NotNil(t, resp.Usage.BilledCharacters)
+		assert.Equal(t, 20, *resp.Usage.BilledCharacters)
 	})
 
 	// A billable character count is characters, never tokens: it lands in
