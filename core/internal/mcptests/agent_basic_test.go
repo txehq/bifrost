@@ -1006,3 +1006,57 @@ func TestAgent_EarlierTurnReasoningPrecedesLaterReasoning_ResponsesFormat(t *tes
 	require.NotNil(t, last.Type)
 	assert.Equal(t, schemas.ResponsesMessageTypeMessage, *last.Type, "the answer comes after both turns' reasoning")
 }
+
+// TestAgent_VendorCostCoversEveryTurn (TXE-6967): xAI reports each call's charge as vendor_cost in usd_ticks. When
+// the agent auto-executes a tool and calls the model again, the final usage carries the charge for both
+// calls, on chat and on Responses, instead of losing it in the turn merge.
+func TestAgent_VendorCostCoversEveryTurn(t *testing.T) {
+	t.Parallel()
+	turnUsage := func(ticks int64) *schemas.BifrostLLMUsage {
+		return &schemas.BifrostLLMUsage{
+			PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15,
+			CostInUsdTicks: &ticks,
+			VendorCost:     &schemas.VendorCost{Amount: float64(ticks), Unit: schemas.VendorCostUnitUSDTicks},
+		}
+	}
+	want := &schemas.VendorCost{Amount: 300, Unit: schemas.VendorCostUnitUSDTicks}
+
+	t.Run("chat", func(t *testing.T) {
+		manager := setupMCPManager(t)
+		require.NoError(t, RegisterEchoTool(manager))
+		require.NoError(t, SetInternalClientAutoExecute(manager, []string{"echo"}))
+		turn1 := CreateChatResponseWithToolCalls([]schemas.ChatAssistantMessageToolCall{GetSampleEchoToolCall("call-1", "hi")})
+		turn1.Usage = turnUsage(100)
+		turn2 := CreateChatResponseWithText("done")
+		turn2.Usage = turnUsage(200)
+		mockLLM := &MockLLMCaller{chatResponses: []*schemas.BifrostChatResponse{turn1, turn2}, chatCallCount: 1}
+		req := &schemas.BifrostChatRequest{Provider: schemas.XAI, Model: "grok-4.5", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("echo hi")}}}}
+
+		result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(createTestContext(), req, turn1, mockLLM.MakeChatRequest)
+		require.Nil(t, bifrostErr)
+		require.Equal(t, 2, mockLLM.chatCallCount)
+		require.NotNil(t, result.Usage)
+		assert.Equal(t, 20, result.Usage.PromptTokens, "usage covers both turns")
+		assert.Equal(t, want, result.Usage.VendorCost)
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		manager := setupMCPManager(t)
+		require.NoError(t, RegisterEchoTool(manager))
+		require.NoError(t, SetInternalClientAutoExecute(manager, []string{"echo"}))
+		turn1 := CreateResponsesResponseWithToolCalls([]schemas.ResponsesToolMessage{{
+			CallID: schemas.Ptr("call-1"), Name: schemas.Ptr("bifrostInternal-echo"), Arguments: schemas.Ptr(`{"message": "hi"}`),
+		}})
+		turn1.Usage = turnUsage(100).ToResponsesResponseUsage()
+		turn2 := &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{}, Usage: turnUsage(200).ToResponsesResponseUsage()}
+		mockLLM := &MockLLMCaller{responsesResponses: []*schemas.BifrostResponsesResponse{turn1, turn2}, responsesCallCount: 1}
+		req := &schemas.BifrostResponsesRequest{Provider: schemas.XAI, Model: "grok-4.5", Input: []schemas.ResponsesMessage{GetSampleResponsesUserMessage("echo hi")}}
+
+		result, bifrostErr := manager.CheckAndExecuteAgentForResponsesRequest(createTestContext(), req, turn1, mockLLM.MakeResponsesRequest)
+		require.Nil(t, bifrostErr)
+		require.Equal(t, 2, mockLLM.responsesCallCount)
+		require.NotNil(t, result.Usage)
+		assert.Equal(t, 20, result.Usage.InputTokens, "usage covers both turns")
+		assert.Equal(t, want, result.Usage.VendorCost)
+	})
+}

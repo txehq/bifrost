@@ -1076,3 +1076,38 @@ func TestVendorCostSerialisesOnUsage(t *testing.T) {
 		t.Errorf("DeepCopy shares vendor_cost")
 	}
 }
+
+// TestMergeBifrostLLMUsageSumsVendorCost (TXE-6967): a request made of several upstream calls (an MCP agent's
+// turns, injected-tool stream turns) carries the vendor's charge for all of them: the sum when every call
+// reported one in the same unit, otherwise nothing, never a partial sum. cost_in_usd_ticks follows the same rule.
+func TestMergeBifrostLLMUsageSumsVendorCost(t *testing.T) {
+	ticks := func(n int64) *int64 { return &n }
+	vc := func(a float64, u VendorCostUnit) *VendorCost { return &VendorCost{Amount: a, Unit: u} }
+	cases := []struct {
+		name      string
+		base, add *BifrostLLMUsage
+		want      *VendorCost
+		wantTicks *int64
+	}{
+		{"both reported", &BifrostLLMUsage{VendorCost: vc(100, VendorCostUnitUSDTicks), CostInUsdTicks: ticks(100)}, &BifrostLLMUsage{VendorCost: vc(250, VendorCostUnitUSDTicks), CostInUsdTicks: ticks(250)}, vc(350, VendorCostUnitUSDTicks), ticks(350)},
+		{"one call unreported", &BifrostLLMUsage{VendorCost: vc(100, VendorCostUnitUSDTicks), CostInUsdTicks: ticks(100)}, &BifrostLLMUsage{PromptTokens: 1}, nil, nil},
+		{"units differ", &BifrostLLMUsage{VendorCost: vc(1, VendorCostUnitUSD)}, &BifrostLLMUsage{VendorCost: vc(2, VendorCostUnitCredit)}, nil, nil},
+		{"neither reported", &BifrostLLMUsage{PromptTokens: 1}, &BifrostLLMUsage{PromptTokens: 2}, nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := MergeBifrostLLMUsage(tc.base, tc.add)
+			if !reflect.DeepEqual(got.VendorCost, tc.want) {
+				t.Errorf("vendor_cost = %+v, want %+v", got.VendorCost, tc.want)
+			}
+			if !reflect.DeepEqual(got.CostInUsdTicks, tc.wantTicks) {
+				t.Errorf("cost_in_usd_ticks = %v, want %v", got.CostInUsdTicks, tc.wantTicks)
+			}
+		})
+	}
+	// AddBillingTurn is the path the injected-tool streams take.
+	total := AddBillingTurn(&BifrostLLMUsage{VendorCost: vc(1, VendorCostUnitUSDTicks)}, &BifrostLLMUsage{VendorCost: vc(2, VendorCostUnitUSDTicks)})
+	if !reflect.DeepEqual(total.VendorCost, vc(3, VendorCostUnitUSDTicks)) {
+		t.Errorf("AddBillingTurn vendor_cost = %+v", total.VendorCost)
+	}
+}

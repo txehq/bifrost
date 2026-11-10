@@ -2379,6 +2379,8 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 	if merged.SearchContextSize == nil {
 		merged.SearchContextSize = base.SearchContextSize
 	}
+	merged.CostInUsdTicks = sumReportedInt64(base.CostInUsdTicks, add.CostInUsdTicks)
+	merged.VendorCost = SumVendorCosts(base.VendorCost, add.VendorCost)
 
 	return merged
 }
