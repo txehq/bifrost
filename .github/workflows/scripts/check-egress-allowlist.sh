@@ -8,8 +8,9 @@ set -euo pipefail
 #   2. every job that runs the provider harness allowlists each external host
 #      the harness will dial - see the second python block for why that is not
 #      the same set as "the hosts the collection sends requests to";
-#   3. every job that builds the release binaries allowlists the Go module proxy
-#      and checksum database the workspace build verifies modules against.
+#   3. every job that builds the release binaries or runs schemasync allowlists
+#      the Go module proxy and checksum database the workspace build verifies
+#      modules against.
 #
 # harden-runner's `egress-policy: block` drops every destination absent from
 # `allowed-endpoints`, so a job that shells out to `apt-get update` fails at the
@@ -457,13 +458,14 @@ PY
 # and go.work.sum is not committed, so the build dials sum.golang.org as well
 # as proxy.golang.org. With sum.golang.org blocked the build fails with
 # "verifying module: ... connection refused" (TXE-4972), and only on push to
-# main, after every test has passed.
+# main, after every test has passed. schemasync (validate-schema-sync.sh) loads
+# the same workspace, so a job that runs it needs both hosts too (TXE-7064).
 
 python3 - "${FILES[@]}" <<'PY'
 import sys
 import yaml
 
-BUILD_MARKERS = ("build-executables.sh",)
+BUILD_MARKERS = ("build-executables.sh", "validate-schema-sync.sh")
 REQUIRED_GO_HOSTS = ("proxy.golang.org:443", "sum.golang.org:443")
 
 failures = []
@@ -510,7 +512,7 @@ for path in sys.argv[1:]:
 
 for path, job_name, missing in failures:
     print(
-        f"FAIL {path} :: job '{job_name}' builds the release binaries under "
+        f"FAIL {path} :: job '{job_name}' loads the Go workspace under "
         f"egress-policy: block but omits {', '.join(missing)}",
         file=sys.stderr,
     )
@@ -519,7 +521,7 @@ if failures:
     sys.exit(1)
 
 if checked == 0:
-    print("OK: no binary-building blocked-egress jobs found.")
+    print("OK: no Go-workspace blocked-egress jobs found.")
 else:
-    print(f"OK: all {checked} binary-building blocked-egress job(s) allowlist the Go module hosts.")
+    print(f"OK: all {checked} Go-workspace blocked-egress job(s) allowlist the Go module hosts.")
 PY
