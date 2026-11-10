@@ -219,6 +219,67 @@ func BenchmarkBifrostLLMUsageUnmarshal(b *testing.B) {
 	}
 }
 
+// TXE-6531: the request-path cost of decoding and re-encoding usage with and without OpenAI's
+// 30m/12h cache-write split. "no_split" is every other response (the common case); "tiers"
+// carries cache_write_tokens_details.
+var openAIUsageTierBenchPayloads = map[string][]byte{
+	"chat_no_split":      []byte(`{"prompt_tokens":40000,"completion_tokens":12,"total_tokens":40012,"prompt_tokens_details":{"cached_tokens":1024,"cache_write_tokens":38000},"completion_tokens_details":{"reasoning_tokens":0}}`),
+	"chat_tiers":         []byte(`{"prompt_tokens":40000,"completion_tokens":12,"total_tokens":40012,"prompt_tokens_details":{"cached_tokens":1024,"cache_write_tokens":38000,"cache_write_tokens_details":{"ttl_30m_tokens":30000,"ttl_12h_tokens":8000}},"completion_tokens_details":{"reasoning_tokens":0}}`),
+	"responses_no_split": []byte(`{"input_tokens":40000,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":38000},"output_tokens":12,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":40012}`),
+	"responses_tiers":    []byte(`{"input_tokens":40000,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":38000,"cache_write_tokens_details":{"ttl_30m_tokens":30000,"ttl_12h_tokens":8000}},"output_tokens":12,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":40012}`),
+}
+
+func BenchmarkOpenAIUsageCacheWriteTiersDecode(b *testing.B) {
+	for _, name := range []string{"chat_no_split", "chat_tiers", "responses_no_split", "responses_tiers"} {
+		data := openAIUsageTierBenchPayloads[name]
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if name[0] == 'c' {
+					var u BifrostLLMUsage
+					if err := Unmarshal(data, &u); err != nil {
+						b.Fatal(err)
+					}
+				} else {
+					var u ResponsesResponseUsage
+					if err := Unmarshal(data, &u); err != nil {
+						b.Fatal(err)
+					}
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkOpenAIUsageCacheWriteTiersEncode(b *testing.B) {
+	for _, name := range []string{"chat_no_split", "chat_tiers", "responses_no_split", "responses_tiers"} {
+		data := openAIUsageTierBenchPayloads[name]
+		var chat BifrostLLMUsage
+		var resp ResponsesResponseUsage
+		if name[0] == 'c' {
+			if err := Unmarshal(data, &chat); err != nil {
+				b.Fatal(err)
+			}
+		} else if err := Unmarshal(data, &resp); err != nil {
+			b.Fatal(err)
+		}
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				var err error
+				if name[0] == 'c' {
+					_, err = Marshal(&chat)
+				} else {
+					_, err = Marshal(&resp)
+				}
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 // TestAddBillingTurn pins what pricing depends on: totals still add up, every provider call
 // stays separate however the sum was built, and a single call records no turns.
 func TestAddBillingTurn(t *testing.T) {

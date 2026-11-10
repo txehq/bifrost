@@ -1396,14 +1396,15 @@ type ResponsesResponseInputTokens struct {
 // UnmarshalJSON maps OpenAI's cached_tokens into CachedReadTokens for compatibility.
 func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		TextTokens              int                          `json:"text_tokens"`
-		AudioTokens             int                          `json:"audio_tokens"`
-		ImageTokens             int                          `json:"image_tokens"`
-		CachedReadTokens        int                          `json:"cached_read_tokens"`
-		CachedWriteTokens       int                          `json:"cached_write_tokens"`
-		CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details"`
-		CachedTokens            *int                         `json:"cached_tokens"`
-		CacheWriteTokens        *int                         `json:"cache_write_tokens"`
+		TextTokens              int                            `json:"text_tokens"`
+		AudioTokens             int                            `json:"audio_tokens"`
+		ImageTokens             int                            `json:"image_tokens"`
+		CachedReadTokens        int                            `json:"cached_read_tokens"`
+		CachedWriteTokens       int                            `json:"cached_write_tokens"`
+		CachedWriteTokenDetails *ChatCachedWriteTokenDetails   `json:"cached_write_token_details"`
+		CachedTokens            *int                           `json:"cached_tokens"`
+		CacheWriteTokens        *int                           `json:"cache_write_tokens"`
+		CacheWriteTokensDetails *openAICacheWriteTokensDetails `json:"cache_write_tokens_details"`
 	}
 	if err := Unmarshal(data, &raw); err != nil {
 		return err
@@ -1422,6 +1423,8 @@ func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 	if raw.CacheWriteTokens != nil && d.CachedWriteTokens == 0 {
 		d.CachedWriteTokens = *raw.CacheWriteTokens
 	}
+	// OpenAI splits cache writes by lifetime (30m, 12h) under cache_write_tokens_details.
+	d.CachedWriteTokenDetails = withOpenAICacheWriteTiers(d.CachedWriteTokenDetails, raw.CacheWriteTokensDetails)
 	return nil
 }
 
@@ -1440,6 +1443,8 @@ func (d ResponsesResponseInputTokens) MarshalJSON() ([]byte, error) {
 		// OpenAI's field name for cache writes (mirrors cached_tokens for reads) so the
 		// OpenAI SDK — which reads cache_write_tokens, not cached_write_tokens — finds it.
 		CacheWriteTokens int `json:"cache_write_tokens"`
+		// OpenAI's per-lifetime split of cache writes, present only when a 30m or 12h tier is set.
+		CacheWriteTokensDetails *openAICacheWriteTokensDetails `json:"cache_write_tokens_details,omitempty"`
 	}
 	return MarshalSorted(raw{
 		TextTokens:              d.TextTokens,
@@ -1450,6 +1455,7 @@ func (d ResponsesResponseInputTokens) MarshalJSON() ([]byte, error) {
 		CachedWriteTokenDetails: d.CachedWriteTokenDetails,
 		CachedTokens:            d.CachedReadTokens,
 		CacheWriteTokens:        d.CachedWriteTokens,
+		CacheWriteTokensDetails: openAICacheWriteTiersOf(d.CachedWriteTokenDetails),
 	})
 }
 

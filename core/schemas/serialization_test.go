@@ -1713,6 +1713,145 @@ func TestSonic_ChatPromptTokensDetails_OpenAICacheWriteTokensAlias(t *testing.T)
 	assert.Equal(t, 100, d2.CachedWriteTokens)
 }
 
+// --- OpenAI cache-write lifetime tiers (TXE-6531, contract C5) ---
+
+// An OpenAI Chat Completions response that splits its cache writes by lifetime yields the 30m
+// and 12h unified tiers; the 5m and 1h tiers, which OpenAI does not report, stay zero.
+func TestSonic_ChatResponse_OpenAICacheWriteTiers(t *testing.T) {
+	body := `{
+		"id": "chatcmpl-1",
+		"object": "chat.completion",
+		"created": 1762000000,
+		"model": "gpt-5.6",
+		"choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+		"usage": {
+			"prompt_tokens": 40000,
+			"completion_tokens": 12,
+			"total_tokens": 40012,
+			"prompt_tokens_details": {
+				"cached_tokens": 1024,
+				"cache_write_tokens": 38000,
+				"cache_write_tokens_details": {"ttl_30m_tokens": 30000, "ttl_12h_tokens": 8000}
+			}
+		}
+	}`
+	var resp BifrostChatResponse
+	require.NoError(t, Unmarshal([]byte(body), &resp))
+	require.NotNil(t, resp.Usage)
+	d := resp.Usage.PromptTokensDetails
+	require.NotNil(t, d)
+	assert.Equal(t, 1024, d.CachedReadTokens)
+	assert.Equal(t, 38000, d.CachedWriteTokens)
+	require.NotNil(t, d.CachedWriteTokenDetails)
+	assert.Equal(t, 30000, d.CachedWriteTokenDetails.CachedWriteTokens30m)
+	assert.Equal(t, 8000, d.CachedWriteTokenDetails.CachedWriteTokens12h)
+	assert.Equal(t, 0, d.CachedWriteTokenDetails.CachedWriteTokens5m)
+	assert.Equal(t, 0, d.CachedWriteTokenDetails.CachedWriteTokens1h)
+
+	// The unified response carries both the unified tiers and OpenAI's own shape.
+	out, err := Marshal(d)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"cached_write_tokens_30m":30000`)
+	assert.Contains(t, string(out), `"cached_write_tokens_12h":8000`)
+	assert.Contains(t, string(out), `"cache_write_tokens_details":{"ttl_30m_tokens":30000,"ttl_12h_tokens":8000}`)
+
+	// Round trip is stable.
+	var again ChatPromptTokensDetails
+	require.NoError(t, Unmarshal(out, &again))
+	assert.Equal(t, *d.CachedWriteTokenDetails, *again.CachedWriteTokenDetails)
+}
+
+// An OpenAI Responses response yields the same unified tiers from input_tokens_details.
+func TestSonic_ResponsesResponse_OpenAICacheWriteTiers(t *testing.T) {
+	body := `{
+		"id": "resp_1",
+		"object": "response",
+		"created_at": 1762000000,
+		"model": "gpt-5.6",
+		"output": [],
+		"usage": {
+			"input_tokens": 40000,
+			"input_tokens_details": {
+				"cached_tokens": 0,
+				"cache_write_tokens": 38000,
+				"cache_write_tokens_details": {"ttl_30m_tokens": 30000, "ttl_12h_tokens": 8000}
+			},
+			"output_tokens": 12,
+			"output_tokens_details": {"reasoning_tokens": 0},
+			"total_tokens": 40012
+		}
+	}`
+	var resp BifrostResponsesResponse
+	require.NoError(t, Unmarshal([]byte(body), &resp))
+	require.NotNil(t, resp.Usage)
+	require.NotNil(t, resp.Usage.InputTokensDetails)
+	w := resp.Usage.InputTokensDetails.CachedWriteTokenDetails
+	require.NotNil(t, w)
+	assert.Equal(t, 30000, w.CachedWriteTokens30m)
+	assert.Equal(t, 8000, w.CachedWriteTokens12h)
+	assert.Equal(t, 0, w.CachedWriteTokens5m)
+	assert.Equal(t, 0, w.CachedWriteTokens1h)
+
+	// The tiers survive conversion to the chat-shaped unified usage.
+	chat := resp.Usage.ToBifrostLLMUsage()
+	require.NotNil(t, chat.PromptTokensDetails)
+	require.NotNil(t, chat.PromptTokensDetails.CachedWriteTokenDetails)
+	assert.Equal(t, 30000, chat.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens30m)
+	assert.Equal(t, 8000, chat.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens12h)
+}
+
+// C5: a split OpenAI did not report leaves the unified details empty, and Bifrost's own
+// cached_write_token_details wins per tier over OpenAI's alias.
+func TestSonic_OpenAICacheWriteTiers_UnreportedStaysEmptyAndUnifiedWins(t *testing.T) {
+	for _, body := range []string{
+		`{"cached_tokens":0,"cache_write_tokens":80}`,
+		`{"cached_tokens":0,"cache_write_tokens":80,"cache_write_tokens_details":{"ttl_30m_tokens":0,"ttl_12h_tokens":0}}`,
+	} {
+		var chat ChatPromptTokensDetails
+		require.NoError(t, Unmarshal([]byte(body), &chat))
+		assert.Nil(t, chat.CachedWriteTokenDetails, body)
+		out, err := Marshal(chat)
+		require.NoError(t, err)
+		assert.NotContains(t, string(out), "cache_write_tokens_details")
+		assert.NotContains(t, string(out), "cached_write_token_details")
+
+		var responses ResponsesResponseInputTokens
+		require.NoError(t, Unmarshal([]byte(body), &responses))
+		assert.Nil(t, responses.CachedWriteTokenDetails, body)
+	}
+
+	// 5m/1h-only details (Anthropic) do not grow the 30m/12h fields on output.
+	anthropic, err := Marshal(ChatPromptTokensDetails{CachedWriteTokens: 5, CachedWriteTokenDetails: &ChatCachedWriteTokenDetails{CachedWriteTokens5m: 5}})
+	require.NoError(t, err)
+	assert.NotContains(t, string(anthropic), "_30m")
+	assert.NotContains(t, string(anthropic), "_12h")
+	assert.NotContains(t, string(anthropic), "cache_write_tokens_details")
+
+	body := `{"cached_write_token_details":{"cached_write_tokens_5m":0,"cached_write_tokens_1h":0,"cached_write_tokens_30m":7},` +
+		`"cache_write_tokens_details":{"ttl_30m_tokens":30000,"ttl_12h_tokens":8000}}`
+	var d ChatPromptTokensDetails
+	require.NoError(t, Unmarshal([]byte(body), &d))
+	require.NotNil(t, d.CachedWriteTokenDetails)
+	assert.Equal(t, 7, d.CachedWriteTokenDetails.CachedWriteTokens30m)
+	assert.Equal(t, 8000, d.CachedWriteTokenDetails.CachedWriteTokens12h)
+}
+
+// Accumulating usage across turns keeps the 30m and 12h tiers.
+func TestMergeBifrostLLMUsage_SumsOpenAICacheWriteTiers(t *testing.T) {
+	base := &BifrostLLMUsage{PromptTokensDetails: &ChatPromptTokensDetails{
+		CachedWriteTokens:       30,
+		CachedWriteTokenDetails: &ChatCachedWriteTokenDetails{CachedWriteTokens30m: 10, CachedWriteTokens12h: 20},
+	}}
+	add := &BifrostLLMUsage{PromptTokensDetails: &ChatPromptTokensDetails{
+		CachedWriteTokens:       4,
+		CachedWriteTokenDetails: &ChatCachedWriteTokenDetails{CachedWriteTokens30m: 1, CachedWriteTokens12h: 3},
+	}}
+	merged := MergeBifrostLLMUsage(base, add)
+	require.NotNil(t, merged.PromptTokensDetails.CachedWriteTokenDetails)
+	assert.Equal(t, 11, merged.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens30m)
+	assert.Equal(t, 23, merged.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens12h)
+}
+
 // --- prompt_cache_options / prompt_cache_breakpoint (OpenAI gpt-5.6+) ---
 
 func TestSonic_PromptCacheOptions_RoundTrip(t *testing.T) {
