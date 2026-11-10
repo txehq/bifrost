@@ -752,7 +752,8 @@ func cachedContentFileNames(req *schemas.BifrostCachedContentCreateRequest) []st
 }
 
 // inferenceFileIDs returns the uploaded files a chat or responses request names by file_id in its
-// messages (a file or image block in chat, an input block in responses), each once.
+// messages (a file or image block in chat, an input block in responses), and the Gemini files an
+// image edit names as input image URLs, each once.
 func inferenceFileIDs(req *schemas.BifrostRequest) []string {
 	var ids []string
 	seen := make(map[string]struct{})
@@ -796,6 +797,14 @@ func inferenceFileIDs(req *schemas.BifrostRequest) []string {
 				if block.ResponsesInputMessageContentBlockImage != nil {
 					add(geminiFileName(block.ResponsesInputMessageContentBlockImage.ImageURL))
 				}
+			}
+		}
+	case req.ImageEditRequest != nil:
+		// An image edit's input image given as a URL is forwarded to Gemini as fileData
+		// (TXE-6526), so a Gemini file URI there names an uploaded file like one in chat.
+		if req.ImageEditRequest.Input != nil {
+			for i := range req.ImageEditRequest.Input.Images {
+				add(geminiFileName(&req.ImageEditRequest.Input.Images[i].URL))
 			}
 		}
 	}

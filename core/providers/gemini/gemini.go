@@ -2058,6 +2058,10 @@ func (provider *GeminiProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 	if schemas.IsImagenModel(request.Model) {
 		return provider.handleImagenImageGeneration(ctx, key, request)
 	}
+	// A field the vendor cannot be sent as given is refused before any upstream call (contract C4).
+	if bifrostErr := CheckGeminiImageGenerationRequest(request); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	// Prepare body
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
@@ -2090,6 +2094,11 @@ func (provider *GeminiProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 
 	response, bifrostErr := geminiResponse.ToBifrostImageGenerationResponse()
 	if bifrostErr != nil {
+		// A vendor 200 with no image and no block marker: the error keeps the vendor's body.
+		providerUtils.SetErrorLatency(bifrostErr, latency)
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			bifrostErr.ExtraFields.RawResponse = rawResponse
+		}
 		return nil, bifrostErr
 	}
 	if response == nil {
@@ -2290,6 +2299,11 @@ func (provider *GeminiProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		return response, nil
 	}
 
+	// A field the vendor cannot be sent as given is refused before any upstream call (contract C4).
+	if bifrostErr := CheckGeminiImageEditRequest(request); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
 	// Prepare body for non-Imagen models
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
@@ -2322,6 +2336,11 @@ func (provider *GeminiProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 
 	response, bifrostErr := geminiResponse.ToBifrostImageGenerationResponse()
 	if bifrostErr != nil {
+		// A vendor 200 with no image and no block marker: the error keeps the vendor's body.
+		providerUtils.SetErrorLatency(bifrostErr, latency)
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			bifrostErr.ExtraFields.RawResponse = rawResponse
+		}
 		return nil, bifrostErr
 	}
 	if response == nil {
@@ -2330,6 +2349,7 @@ func (provider *GeminiProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 			fmt.Errorf("ToBifrostImageGenerationResponse returned nil response"),
 		)
 	}
+	SetGeminiImageEditInputImages(response, request)
 
 	// Set ExtraFields
 	response.ExtraFields.Latency = latency.Milliseconds()

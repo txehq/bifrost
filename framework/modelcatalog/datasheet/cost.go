@@ -849,6 +849,9 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 			input.imageUsage = &schemas.ImageUsage{}
 		}
 		populateOutputImageCount(input.imageUsage, len(result.ImageGenerationResponse.Data))
+		if result.ImageGenerationResponse.ContentFilter != nil && len(result.ImageGenerationResponse.Data) == 0 {
+			markNoOutputImages(input.imageUsage)
+		}
 		if result.ImageGenerationResponse.ImageGenerationResponseParameters != nil {
 			input.imageSize = result.ImageGenerationResponse.ImageGenerationResponseParameters.Size
 			input.imageQuality = result.ImageGenerationResponse.ImageGenerationResponseParameters.Quality
@@ -1569,6 +1572,17 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 	if imageUsage.OutputTokensDetails != nil {
 		outputImageTokens = imageUsage.OutputTokensDetails.ImageTokens
 		outputTextTokens = imageUsage.OutputTokensDetails.TextTokens
+		// Details that carry only reasoning tokens (a vendor that reports thinking but no
+		// modality breakdown, TXE-6526), or only the cost path's own no-images mark, say
+		// nothing about the output tokens: price the aggregate as when there are no details,
+		// so it is not left unpriced.
+		// Only when the model has a token rate for it: a model priced per image or per pixel
+		// keeps reaching those fallbacks below.
+		if outputImageTokens == 0 && outputTextTokens == 0 &&
+			(imageUsage.OutputTokensDetails.ReasoningTokens != nil || imageUsage.OutputTokensDetails.NImages == noOutputImages) &&
+			tieredImageOutputRate(pricing, totalTokens, tier) > 0 {
+			outputImageTokens = imageUsage.OutputTokens
+		}
 	} else {
 		outputImageTokens = imageUsage.OutputTokens
 	}
@@ -1576,6 +1590,13 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 	if outputTextTokens > 0 || outputImageTokens > 0 {
 		return float64(outputTextTokens)*tieredOutputRate(pricing, totalTokens, tier) +
 			float64(outputImageTokens)*tieredImageOutputRate(pricing, totalTokens, tier)
+	}
+
+	// The vendor blocked every image (a 200 with content_filter and no data, TXE-6526): nothing
+	// was delivered, so neither per-pixel nor per-image pricing applies. Reported tokens were
+	// priced above.
+	if imageUsage.OutputTokensDetails != nil && imageUsage.OutputTokensDetails.NImages == noOutputImages {
+		return 0
 	}
 
 	// Per-pixel pricing fallback
@@ -2286,6 +2307,24 @@ func populateOutputImageCount(imageUsage *schemas.ImageUsage, dataLen int) {
 	if imageUsage.OutputTokensDetails.NImages == 0 {
 		imageUsage.OutputTokensDetails.NImages = dataLen
 	}
+}
+
+// noOutputImages is the NImages value markNoOutputImages writes on the cost path's own copy of
+// the usage. NImages 0 means "not counted" and prices as one image, so a response whose every
+// image the vendor blocked needs a value of its own.
+const noOutputImages = -1
+
+// markNoOutputImages records on imageUsage (the cost path's copy, never the response's) that
+// the vendor delivered no image because it blocked them all, so computeImageOutputCost charges
+// no per-image or per-pixel output.
+func markNoOutputImages(imageUsage *schemas.ImageUsage) {
+	if imageUsage == nil {
+		return
+	}
+	if imageUsage.OutputTokensDetails == nil {
+		imageUsage.OutputTokensDetails = &schemas.ImageTokenDetails{}
+	}
+	imageUsage.OutputTokensDetails.NImages = noOutputImages
 }
 
 // ---------------------------------------------------------------------------

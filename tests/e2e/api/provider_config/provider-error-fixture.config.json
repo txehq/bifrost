@@ -282,7 +282,8 @@
           "models": [
             "*"
           ],
-          "weight": 1
+          "weight": 1,
+          "use_for_batch_api": true
         }
       ],
       "network_config": {

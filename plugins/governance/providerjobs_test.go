@@ -1009,7 +1009,12 @@ func TestPreLLMHookBindsObjectsReferencedInsideRequests(t *testing.T) {
 			return &schemas.BifrostRequest{RequestType: schemas.CachedContentCreateRequest, CachedContentCreateRequest: &schemas.BifrostCachedContentCreateRequest{Provider: schemas.Gemini, Model: "m",
 				Contents: []any{map[string]any{"role": "user", "parts": []any{map[string]any{"fileData": map[string]any{"fileUri": uri, "mimeType": "application/pdf"}}}}}}}
 		}
-		for name, build := range map[string]func(string) *schemas.BifrostRequest{"chat file": chatFile, "chat image": chatImage, "responses file": responsesFile, "responses image": responsesImage, "cached content create": cacheOn} {
+		// An image edit's URL input image is forwarded to Gemini as fileData (TXE-6526).
+		imageEdit := func(uri string) *schemas.BifrostRequest {
+			return &schemas.BifrostRequest{RequestType: schemas.ImageEditRequest, ImageEditRequest: &schemas.BifrostImageEditRequest{Provider: schemas.Gemini, Model: "m",
+				Input: &schemas.ImageEditInput{Prompt: "make it blue", Images: []schemas.ImageInput{{Image: []byte("png")}, {URL: uri}}}}}
+		}
+		for name, build := range map[string]func(string) *schemas.BifrostRequest{"chat file": chatFile, "chat image": chatImage, "responses file": responsesFile, "responses image": responsesImage, "cached content create": cacheOn, "image edit": imageEdit} {
 			t.Run(name, func(t *testing.T) {
 				refused(t, build(geminiFiles+"g-other"), "files/g-other")
 				allowed(t, presentCtx(mcpTestVKValue), build(geminiFiles+"g-own"), "the creating key uses its own file")

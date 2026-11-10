@@ -1119,6 +1119,16 @@ func convertGeminiUsageMetadataToImageUsage(metadata *GenerateContentResponseUsa
 		usage.OutputTokensDetails = outputDetails
 	}
 
+	// Fork (TXE-6526, contract C5): thinking tokens, billed at the text output price. Gemini
+	// reports them outside candidatesTokenCount, so they are in addition to output_tokens and
+	// inside total_tokens. Left nil when the vendor reported none.
+	if metadata.ThoughtsTokenCount > 0 {
+		if usage.OutputTokensDetails == nil {
+			usage.OutputTokensDetails = &schemas.ImageTokenDetails{}
+		}
+		usage.OutputTokensDetails.ReasoningTokens = schemas.Ptr(int(metadata.ThoughtsTokenCount))
+	}
+
 	return usage
 }
 
@@ -1163,6 +1173,9 @@ func convertBifrostImageUsageToGeminiUsageMetadata(usage *schemas.ImageUsage) *G
 				Modality:   ModalityImage,
 				TokenCount: int32(usage.OutputTokensDetails.ImageTokens),
 			})
+		}
+		if usage.OutputTokensDetails.ReasoningTokens != nil {
+			metadata.ThoughtsTokenCount = int32(*usage.OutputTokensDetails.ReasoningTokens)
 		}
 	}
 

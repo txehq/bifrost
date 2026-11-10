@@ -1920,6 +1920,106 @@ func TestComputeImageCost_PerImage(t *testing.T) {
 	assert.InDelta(t, 0.104, cost, 1e-12)
 }
 
+// TXE-6526: output details that carry only reasoning tokens (Gemini reports thoughtsTokenCount
+// with no candidatesTokensDetails) must not hide the aggregate output tokens from token pricing.
+func TestComputeImageCost_ReasoningOnlyDetailsKeepAggregateOutputTokens(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(0.0),
+		OutputCostPerToken: bifrost.Ptr(0.00003),
+	}
+	withoutDetails := computeImageCostTotal(&p, &schemas.ImageUsage{OutputTokens: 1300}, "", "", serviceTier{})
+	assert.InDelta(t, 0.039, withoutDetails, 1e-12)
+
+	reasoningOnly := computeImageCostTotal(&p, &schemas.ImageUsage{
+		OutputTokens:        1300,
+		OutputTokensDetails: &schemas.ImageTokenDetails{ReasoningTokens: bifrost.Ptr(200)},
+	}, "", "", serviceTier{})
+	assert.InDelta(t, withoutDetails, reasoningOnly, 1e-12)
+
+	// A model priced per image, with no token rate, keeps its per-image price for the same usage
+	// (the cost path counts the delivered images into NImages).
+	perImage := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(0.0),
+		OutputCostPerToken: bifrost.Ptr(0.0),
+		OutputCostPerImage: bifrost.Ptr(0.04),
+	}
+	in := extractCostInput(&schemas.BifrostResponse{ImageGenerationResponse: &schemas.BifrostImageGenerationResponse{
+		Data:  []schemas.ImageData{{B64JSON: "aW1hZ2U="}},
+		Usage: &schemas.ImageUsage{OutputTokens: 1300, OutputTokensDetails: &schemas.ImageTokenDetails{ReasoningTokens: bifrost.Ptr(200)}},
+	}})
+	assert.InDelta(t, 0.04, computeImageCostTotal(&perImage, in.imageUsage, "", "", serviceTier{}), 1e-12)
+	// And the token-priced model prices the aggregate through the same path.
+	assert.InDelta(t, withoutDetails, computeImageCostTotal(&p, in.imageUsage, "", "", serviceTier{}), 1e-12)
+
+	// A modality breakdown still wins over the aggregate.
+	withBreakdown := computeImageCostTotal(&p, &schemas.ImageUsage{
+		OutputTokens:        1300,
+		OutputTokensDetails: &schemas.ImageTokenDetails{ImageTokens: 1000, ReasoningTokens: bifrost.Ptr(200)},
+	}, "", "", serviceTier{})
+	assert.InDelta(t, 0.03, withBreakdown, 1e-12)
+}
+
+// TXE-6526: a response whose every image the vendor blocked (a 200 with content_filter and no
+// data) delivered nothing, so per-image and per-pixel pricing charge no output. Tokens the vendor
+// reported are still priced, and a response with no data and no content_filter (large response
+// mode) keeps the one-image default.
+func TestComputeImageCost_BlockedResponseChargesNoOutputImage(t *testing.T) {
+	perImage := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(0.000001),
+		OutputCostPerToken: bifrost.Ptr(0.0),
+		OutputCostPerImage: bifrost.Ptr(0.04),
+	}
+	price := func(p *configstoreTables.TableModelPricing, resp *schemas.BifrostImageGenerationResponse, size string) float64 {
+		in := extractCostInput(&schemas.BifrostResponse{ImageGenerationResponse: resp})
+		return computeImageCostTotal(p, in.imageUsage, size, "", serviceTier{})
+	}
+	blocked := func() *schemas.BifrostImageGenerationResponse {
+		return &schemas.BifrostImageGenerationResponse{
+			Data:          []schemas.ImageData{},
+			ContentFilter: &schemas.ContentFilterInfo{FilteredCount: 1, Reasons: []string{"IMAGE_SAFETY"}},
+			Usage:         &schemas.ImageUsage{InputTokens: 9, TotalTokens: 9, OutputImages: bifrost.Ptr(0)},
+		}
+	}
+
+	// Blocked: only the 9 input tokens are charged.
+	resp := blocked()
+	assert.InDelta(t, 0.000009, price(&perImage, resp, ""), 1e-12)
+	assert.Nil(t, resp.Usage.OutputTokensDetails, "the response's own usage is not written to")
+
+	// Same usage with no content_filter: the one-image default still applies.
+	unmarked := blocked()
+	unmarked.ContentFilter = nil
+	assert.InDelta(t, 0.040009, price(&perImage, unmarked, ""), 1e-12)
+
+	// Delivered: one image charged.
+	delivered := &schemas.BifrostImageGenerationResponse{
+		Data:  []schemas.ImageData{{B64JSON: "aW1hZ2U="}},
+		Usage: &schemas.ImageUsage{InputTokens: 9, TotalTokens: 9, OutputImages: bifrost.Ptr(1)},
+	}
+	assert.InDelta(t, 0.040009, price(&perImage, delivered, ""), 1e-12)
+
+	// Per-pixel pricing is not charged on a block either.
+	perPixel := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(0.0),
+		OutputCostPerToken: bifrost.Ptr(0.0),
+		OutputCostPerPixel: bifrost.Ptr(0.00000001),
+	}
+	assert.InDelta(t, 0.0, price(&perPixel, blocked(), "1024x1024"), 1e-12)
+
+	// A block that answered in text keeps its reported output tokens priced.
+	tokenPriced := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(0.0),
+		OutputCostPerToken: bifrost.Ptr(0.00003),
+		OutputCostPerImage: bifrost.Ptr(0.04),
+	}
+	textOnly := blocked()
+	textOnly.Usage = &schemas.ImageUsage{OutputTokens: 7, OutputTokensDetails: &schemas.ImageTokenDetails{TextTokens: 7}, OutputImages: bifrost.Ptr(0)}
+	assert.InDelta(t, 0.00021, price(&tokenPriced, textOnly, ""), 1e-12)
+	aggregateOnly := blocked()
+	aggregateOnly.Usage = &schemas.ImageUsage{OutputTokens: 7, OutputImages: bifrost.Ptr(0)}
+	assert.InDelta(t, 0.00021, price(&tokenPriced, aggregateOnly, ""), 1e-12)
+}
+
 func TestComputeImageCost_PerImageDefaultsToOne(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
 		OutputCostPerImage: bifrost.Ptr(0.052),

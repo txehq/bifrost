@@ -270,6 +270,17 @@ func RunImageEditTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 			t.Fatalf("Failed to create mask image: %v", err)
 		}
 
+		// The Gemini API image models (generateContent) take no mask or edit type and refuse both
+		// with 400 caller_unsupported_parameter (fork, TXE-6526); their edit is prompt plus image.
+		editParams := &schemas.ImageEditParameters{
+			Size: bifrost.Ptr("1024x1024"),
+			N:    bifrost.Ptr(1),
+		}
+		if testConfig.Provider != schemas.Gemini || schemas.IsImagenModel(testConfig.ImageEditModel) {
+			editParams.Type = bifrost.Ptr("inpainting")
+			editParams.Mask = maskBytes
+		}
+
 		// Test basic image edit (inpainting)
 		imageEditOperation := func() (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 			request := &schemas.BifrostImageEditRequest{
@@ -283,12 +294,7 @@ func RunImageEditTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 					},
 					Prompt: "Add a beautiful sunset in the background",
 				},
-				Params: &schemas.ImageEditParameters{
-					Size: bifrost.Ptr("1024x1024"),
-					N:    bifrost.Ptr(1),
-					Type: bifrost.Ptr("inpainting"),
-					Mask: maskBytes,
-				},
+				Params:    editParams,
 				Fallbacks: testConfig.ImageEditFallbacks,
 			}
 
