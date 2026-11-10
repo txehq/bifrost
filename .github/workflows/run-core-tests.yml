@@ -71,9 +71,11 @@ jobs:
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
       DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
-      # Registration-only providers: every operation answers unsupported with no upstream call,
+      # dashscope runs live speech and transcription rows (TXE-6433), so its key is a secret; while
+      # the secret is unset the harness skips every dashscope row (keyless provider, TXE-6638).
+      DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+      # Registration-only provider: every operation answers unsupported with no upstream call,
       # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
-      DASHSCOPE_API_KEY: registration-only-no-upstream-call
       BFL_API_KEY: registration-only-no-upstream-call
       AZURE_SPEECH_API_KEY: ${{ secrets.AZURE_SPEECH_API_KEY }}
       AZURE_SPEECH_ENDPOINT: ${{ secrets.AZURE_SPEECH_ENDPOINT }}
@@ -119,9 +121,9 @@ jobs:
           # tokenhub.tencentmaas.com, sync.assemblyai.com, api-singapore.klingai.com and api.moonshot.ai are listed although this job does not pass those
           # providers' keys yet: the harness skips a provider only while its key is
           # absent, so the host must already be here the day a key is added (TXE-6981).
-          # dashscope-intl.aliyuncs.com is dialled by no harness row yet: its key is a
-          # non-secret sentinel, and the dashscope rows that run with it are refused
-          # before any upstream call (TXE-6590, TXE-6432).
+          # dashscope-intl.aliyuncs.com is dialled by the dashscope speech and transcription
+          # rows (TXE-6433) when the DASHSCOPE_API_KEY secret is set; the other dashscope
+          # rows are refused before any upstream call (TXE-6590, TXE-6432).
           # api.bfl.ai is dialled by no request yet: every bfl operation is
           # unsupported and its key is a non-secret sentinel (TXE-6591).
           allowed-endpoints: >
