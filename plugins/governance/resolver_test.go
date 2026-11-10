@@ -632,6 +632,8 @@ func TestBudgetResolver_EvaluateRequest_FileBatchWithoutModel(t *testing.T) {
 		{"openai, restricted allowlist, allowed hint is not enough", schemas.OpenAI, []string{"gpt-4"}, nil, "gpt-4", DecisionModelBlocked, "allows every model"},
 		{"openai, wildcard with a blacklist", schemas.OpenAI, []string{"*"}, []string{"gpt-4o"}, "", DecisionModelBlocked, "allows every model"},
 		{"azure, restricted allowlist, allowed hint is not enough", schemas.Azure, []string{"gpt-4"}, nil, "gpt-4", DecisionModelBlocked, "allows every model"},
+		// xAI file batches send only name and input_file_id: each uploaded row runs its own model.
+		{"xai, restricted allowlist, allowed hint is not enough", schemas.XAI, []string{"grok-4.3"}, nil, "grok-4.3", DecisionModelBlocked, "allows every model"},
 		{"gemini, restricted allowlist, no hint", schemas.Gemini, []string{"gemini-2.5-flash"}, nil, "", DecisionModelBlocked, "requires a model"},
 		{"gemini, restricted allowlist, allowed hint", schemas.Gemini, []string{"gemini-2.5-flash"}, nil, "gemini-2.5-flash", DecisionAllow, ""},
 		{"gemini, restricted allowlist, disallowed hint", schemas.Gemini, []string{"gemini-2.5-flash"}, nil, "gemini-2.5-pro", DecisionModelBlocked, "not allowed"},

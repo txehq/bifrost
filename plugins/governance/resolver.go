@@ -133,7 +133,7 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 	// to what the provider actually binds: where the batch job runs the model named on the request
 	// (Gemini, Vertex, Bedrock), that model has to be present, and the allowlist below checks it;
 	// where the batch API ignores the request's model and runs whatever the rows name (OpenAI,
-	// Azure), no hint can stand in for the rows, so the access has to permit every model of the
+	// Azure, xAI), no hint can stand in for the rows, so the access has to permit every model of the
 	// provider. A custom provider is held to what its base provider binds. Inline batches are not
 	// opaque: PreLLMHook evaluates each item's model first.
 	if requestType == schemas.BatchCreateRequest && evaluationRequest.OpaqueBatchInput && !skipModelCheck && !providerUnconfigured && !access.AllowsEveryModel(string(provider)) {
