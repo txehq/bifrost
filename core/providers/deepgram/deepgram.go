@@ -115,7 +115,7 @@ func (provider *DeepgramProvider) Transcription(ctx *schemas.BifrostContext, key
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, deepgramListenPath) + "?" + deepgramReq.Query)
+	req.SetRequestURI(provider.networkConfig.BaseURL + deepgramListenPath + "?" + deepgramReq.Query)
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType(deepgramReq.ContentType)
 	if key.Value.GetValue() != "" {
