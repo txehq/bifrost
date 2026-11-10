@@ -544,6 +544,10 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.VideoDownload
 	case VideoDeleteRequest:
 		return ar.VideoDelete
+	case VideoCancelRequest:
+		// Fork (TXE-6521): cancel has no flag of its own. On the vendors that have it, it is the
+		// delete API restricted to queued tasks, so it follows the delete permission.
+		return ar.VideoDelete
 	case VideoListRequest:
 		return ar.VideoList
 	case VideoRemixRequest:

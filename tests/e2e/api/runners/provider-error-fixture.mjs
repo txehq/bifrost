@@ -594,6 +594,8 @@ const probeStreamGaps = (spec, reply) => {
 	upstream.on("error", (err) => reply(502, { error: { message: `probe could not reach the gateway: ${err.message}`, type: "probe_error" } }));
 	upstream.end(payload);
 };
+// An OpenAI video task as GET /v1/videos/{id} returns it while the task waits in the queue.
+const videoTask = (id) => ({ id, object: "video", model: "sora-2", status: "queued", progress: 0, created_at: 1762700000, seconds: "4", size: "720x1280" });
 
 // Hit counters are keyed by the request body's model, so they must not inherit Object.prototype names.
 const hits = Object.create(null);
@@ -710,6 +712,25 @@ const server = http.createServer((req, res) => {
 	if (req.method === "GET" && path === "/__sent") {
 		const model = new URL(req.url, "http://localhost").searchParams.get("model") || "";
 		return send(200, {}, JSON.stringify({ data: [{ model, body: Object.hasOwn(sentBodies, model) ? sentBodies[model] : null }] }));
+	}
+	// The OpenAI video task routes (TXE-6521). Every request is counted under
+	// "videos <METHOD> <bearer token>", so a case can prove which key a task query used and that a
+	// request the gateway refuses never got here. A query answers a queued task; a create answers the
+	// same task. Nothing else exists upstream: OpenAI has no cancel API. Only the keys of openai_video_keys
+	// (video-secret-a, video-secret-b) are served here; every other key reaches the folder 329 routes below.
+	const bearer = (req.headers.authorization || "").replace(/^Bearer /, "");
+	if (bearer.startsWith("video-secret-") && (path === "/v1/videos" || path.startsWith("/v1/videos/"))) {
+		const counter = `videos ${req.method} ${bearer}`;
+		hits[counter] = (hits[counter] || 0) + 1;
+		req.resume();
+		const id = decodeURIComponent(path.slice("/v1/videos/".length));
+		if (req.method === "GET" && id && !id.includes("/")) {
+			return send(200, {}, JSON.stringify(videoTask(id)));
+		}
+		if (req.method === "POST" && path === "/v1/videos") {
+			return send(200, {}, JSON.stringify(videoTask("video_fixture_created")));
+		}
+		return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));
 	}
 	if (req.method === "GET" && path === "/mcp") {
 		return send(405, {}, errorBody("no server stream", "invalid_request_error", "method_not_allowed"));

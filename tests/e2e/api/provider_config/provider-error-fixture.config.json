@@ -134,6 +134,34 @@
         "default_request_timeout_in_seconds": 10
       }
     },
+    "openai_video_keys": {
+      "keys": [
+        {
+          "name": "video-key-a",
+          "value": "video-secret-a",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        },
+        {
+          "name": "video-key-b",
+          "value": "video-secret-b",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai"
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
     "openai_turns": {
       "keys": [
         {

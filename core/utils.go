@@ -647,7 +647,8 @@ func isContainerRequestType(reqType schemas.RequestType) bool {
 func isModellessVideoRequestType(reqType schemas.RequestType) bool {
 	switch reqType {
 	case schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoListRequest,
-		schemas.VideoDeleteRequest, schemas.VideoRemixRequest, schemas.VideoEditRequest:
+		schemas.VideoDeleteRequest, schemas.VideoRemixRequest, schemas.VideoEditRequest,
+		schemas.VideoCancelRequest:
 		return true
 	default:
 		return false

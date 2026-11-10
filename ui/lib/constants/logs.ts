@@ -119,6 +119,7 @@ export const RequestTypes = [
 	"video_delete",
 	"video_list",
 	"video_remix",
+	"video_cancel",
 	"count_tokens",
 	"compaction",
 	// Batch operations
@@ -353,6 +354,7 @@ export const RequestTypeLabels = {
 	video_delete: "Video Delete",
 	video_list: "Video List",
 	video_remix: "Video Remix",
+	video_cancel: "Video Cancel",
 	count_tokens: "Count Tokens",
 	compaction: "Compaction",
 
@@ -448,6 +450,7 @@ export const RequestTypeColors = {
 	video_delete: "bg-rose-100 text-rose-800",
 	video_list: "bg-cyan-100 text-cyan-800",
 	video_remix: "bg-pink-100 text-pink-800",
+	video_cancel: "bg-rose-100 text-rose-800",
 	count_tokens: "bg-cyan-100 text-cyan-800",
 	compaction: "bg-indigo-100 text-indigo-800",
 

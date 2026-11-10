@@ -3,6 +3,7 @@ package llmtests
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -445,12 +446,7 @@ func waitForVideoCompletion(
 }
 
 func isValidVideoStatus(status schemas.VideoStatus) bool {
-	switch status {
-	case schemas.VideoStatusQueued, schemas.VideoStatusInProgress, schemas.VideoStatusCompleted, schemas.VideoStatusFailed:
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(schemas.VideoStatuses, status)
 }
 
 func isUnsupportedOperationError(err *schemas.BifrostError) bool {

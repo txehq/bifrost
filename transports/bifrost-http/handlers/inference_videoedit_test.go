@@ -2,11 +2,21 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
+	"github.com/bytedance/sonic"
+	bifrost "github.com/capsohq/bifrost/core"
 	schemas "github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/framework/configstore"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/fasthttp/router"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
@@ -250,6 +260,7 @@ func TestVideoRouteShapesDoNotConflict(t *testing.T) {
 	r.GET("/v1/videos/{video_id}/content", mark("download"))
 	r.DELETE("/v1/videos/{video_id}", mark("delete"))
 	r.POST("/v1/videos/{video_id}/remix", mark("remix"))
+	r.POST("/v1/videos/{video_id}/cancel", mark("cancel"))
 
 	cases := []struct {
 		method, path, want string
@@ -257,6 +268,7 @@ func TestVideoRouteShapesDoNotConflict(t *testing.T) {
 		{"POST", "/v1/videos/edits", "edit"},
 		{"POST", "/v1/videos", "generation"},
 		{"POST", "/v1/videos/video_abc123:openai/remix", "remix"},
+		{"POST", "/v1/videos/video_abc123:openai/cancel", "cancel"},
 		{"GET", "/v1/videos/video_abc123:openai", "retrieve"},
 		{"GET", "/v1/videos/video_abc123:openai/content", "download"},
 		{"DELETE", "/v1/videos/video_abc123:openai", "delete"},
@@ -272,4 +284,148 @@ func TestVideoRouteShapesDoNotConflict(t *testing.T) {
 			t.Fatalf("%s %s dispatched to %q (status %d), want %q", tc.method, tc.path, hit, ctx.Response.StatusCode(), tc.want)
 		}
 	}
+}
+
+// videoTaskAccount configures OpenAI against a local upstream, with two keys.
+type videoTaskAccount struct{ baseURL string }
+
+func (videoTaskAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenAI}, nil
+}
+
+func (videoTaskAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{
+		{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-test-1"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "k2", Name: "K2", Value: *schemas.NewSecretVar("sk-test-2"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	}, nil
+}
+
+func (a videoTaskAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	network := schemas.DefaultNetworkConfig
+	network.BaseURL = a.baseURL
+	return &schemas.ProviderConfig{NetworkConfig: network, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// videoTaskRoutes serves the video task routes from a real core client whose OpenAI provider
+// points at a local upstream, and reports how many requests reached that upstream.
+func videoTaskRoutes(t *testing.T) (fasthttp.RequestHandler, *atomic.Int64) {
+	t.Helper()
+	var upstream atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstream.Add(1)
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	t.Cleanup(server.Close)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: videoTaskAccount{baseURL: server.URL}, Logger: bifrost.NewDefaultLogger(schemas.LogLevelError)})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+
+	h := &CompletionHandler{client: client, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+	r := router.New()
+	r.POST("/v1/videos", h.videoGeneration)
+	r.POST("/v1/videos/{video_id}/cancel", h.videoCancel)
+	return r.Handler, &upstream
+}
+
+// TXE-6521 (contract C7 BF12): the four task control fields parse on POST /v1/videos as typed
+// fields and never as extra params, so none can reach a vendor unconverted.
+func TestVideoGenerationRequestParsesTaskControlFields(t *testing.T) {
+	body := []byte(`{"model":"byteplus/seedance","prompt":"a dog","callback_url":"https://hooks.tokun.sh/v/task_1",` +
+		`"client_reference_id":"task_1","expires_after_seconds":7200,"output_storage_uri":"gs://bucket/task_1/","watermark":false}`)
+	var req VideoGenerationRequest
+	require.NoError(t, sonic.Unmarshal(body, &req))
+	require.NotNil(t, req.VideoGenerationParameters)
+	control := req.VideoGenerationParameters.TaskControlParameters
+	require.NotNil(t, control.CallbackURL)
+	assert.Equal(t, "https://hooks.tokun.sh/v/task_1", *control.CallbackURL)
+	require.NotNil(t, control.ClientReferenceID)
+	assert.Equal(t, "task_1", *control.ClientReferenceID)
+	require.NotNil(t, control.ExpiresAfterSeconds)
+	assert.Equal(t, 7200, *control.ExpiresAfterSeconds)
+	require.NotNil(t, control.OutputStorageURI)
+	assert.Equal(t, "gs://bucket/task_1/", *control.OutputStorageURI)
+
+	extra, err := extractExtraParams(body, videoGenerationParamsKnownFields)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"watermark": false}, extra, "only the vendor-specific switch is an extra param")
+	for _, field := range schemas.TaskControlFields {
+		assert.True(t, videoGenerationParamsKnownFields[field], "%s must be a known field", field)
+	}
+}
+
+// TXE-6521 (contract C7 BF12, C4 convention three): POST /v1/videos with a task control field the
+// provider does not take is 400 caller_unsupported_parameter naming the field, with no upstream
+// call. OpenAI takes none of the four.
+func TestVideoGenerationRefusesUnsupportedTaskControlField(t *testing.T) {
+	handler, upstream := videoTaskRoutes(t)
+	for field, value := range map[string]string{
+		"callback_url":          `"https://hooks.tokun.sh/v/task_1"`,
+		"client_reference_id":   `"task_1"`,
+		"expires_after_seconds": `7200`,
+		"output_storage_uri":    `"gs://bucket/task_1/"`,
+	} {
+		t.Run(field, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.SetRequestURI("/v1/videos")
+			ctx.Request.Header.SetContentType("application/json")
+			ctx.Request.SetBody([]byte(`{"model":"openai/sora-2","prompt":"a dog","` + field + `":` + value + `}`))
+			handler(ctx)
+
+			body := ctx.Response.Body()
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "body: %s", body)
+			var got struct {
+				Error       struct{ Param, Code string }
+				ExtraFields struct {
+					ErrorType string `json:"error_type"`
+				} `json:"extra_fields"`
+			}
+			require.NoError(t, sonic.Unmarshal(body, &got), "body: %s", body)
+			assert.Equal(t, "caller_unsupported_parameter", got.ExtraFields.ErrorType, "body: %s", body)
+			assert.Equal(t, field, got.Error.Param, "body: %s", body)
+		})
+	}
+	assert.Zero(t, upstream.Load(), "a refused control field must make no upstream call")
+}
+
+// TXE-6521 (contract C7 BF13): POST /v1/videos/{id}/cancel on a provider with no cancel API is
+// 400 provider_cancel_unsupported with no upstream call, named key or not. The route validates the
+// id like the other id-addressed video routes.
+func TestVideoCancelRoute(t *testing.T) {
+	handler, upstream := videoTaskRoutes(t)
+	post := func(path, keyName string) *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("POST")
+		ctx.Request.SetRequestURI(path)
+		if keyName != "" {
+			ctx.Request.Header.Set("x-bf-api-key", keyName)
+		}
+		handler(ctx)
+		return ctx
+	}
+
+	for _, keyName := range []string{"", "K2"} {
+		ctx := post("/v1/videos/video_abc123:openai/cancel", keyName)
+		body := ctx.Response.Body()
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "body: %s", body)
+		var got struct {
+			Error       struct{ Code string }
+			ExtraFields struct {
+				ErrorType   string `json:"error_type"`
+				Provider    string `json:"provider"`
+				RequestType string `json:"request_type"`
+			} `json:"extra_fields"`
+		}
+		require.NoError(t, sonic.Unmarshal(body, &got), "body: %s", body)
+		assert.Equal(t, "provider_cancel_unsupported", got.ExtraFields.ErrorType, "body: %s", body)
+		assert.Equal(t, "provider_cancel_unsupported", got.Error.Code, "body: %s", body)
+		assert.Equal(t, "openai", got.ExtraFields.Provider, "body: %s", body)
+		assert.Equal(t, "video_cancel", got.ExtraFields.RequestType, "body: %s", body)
+	}
+	assert.Zero(t, upstream.Load(), "a provider with no cancel API must not be called")
+
+	ctx := post("/v1/videos/video_abc123/cancel", "")
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	assert.Contains(t, string(ctx.Response.Body()), "video_id must be in id:provider format")
+	assert.Zero(t, upstream.Load())
 }
