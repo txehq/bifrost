@@ -354,8 +354,11 @@ func (provider *VertexProvider) resolveVertexServiceTierHeader(region string, mo
 	case "", schemas.BifrostServiceTierAuto, schemas.BifrostServiceTierDefault:
 		return "", nil
 	}
-	if _, pinned := provider.networkConfig.ExtraHeaders[VertexServiceTierHeader]; pinned {
-		return "", nil
+	// Header names are case-insensitive and the config keeps the operator's spelling.
+	for name := range provider.networkConfig.ExtraHeaders {
+		if strings.EqualFold(name, VertexServiceTierHeader) {
+			return "", nil
+		}
 	}
 	if value := vertexServiceTierHeaderValue(region, model, *tier); value != "" {
 		return value, nil

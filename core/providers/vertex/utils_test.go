@@ -1850,17 +1850,20 @@ func TestVertexGeminiServiceTierIsDeliveredOrRefused(t *testing.T) {
 	// An operator who pins the header in the provider's extra headers owns the tier: the
 	// pinned value is what is sent, and the request is not refused for its own value.
 	t.Run("an operator-pinned header wins", func(t *testing.T) {
-		pinned := newVertexGeminiFixture(t, vertexGeminiOKResponse)
-		pinned.provider.networkConfig.ExtraHeaders = map[string]schemas.SecretVar{VertexServiceTierHeader: *schemas.NewSecretVar("flex")}
-		for route, call := range vertexGeminiRoutes(t, pinned.provider) {
-			pinned.take()
-			tier := schemas.BifrostServiceTierPriority
-			if bifrostErr := call(pinned.key("us-central1"), "gemini-2.5-pro", &tier, ""); bifrostErr != nil {
-				t.Fatalf("%s: %s", route, bifrostErr.GetErrorString())
-			}
-			sent, _ := pinned.take()
-			if len(sent) != 1 || sent[0].tierHeader != "flex" {
-				t.Errorf("%s: upstream saw %+v, want one request with the pinned flex header", route, sent)
+		// Header names are case-insensitive: the config keeps the operator's spelling.
+		for _, headerName := range []string{VertexServiceTierHeader, strings.ToLower(VertexServiceTierHeader)} {
+			pinned := newVertexGeminiFixture(t, vertexGeminiOKResponse)
+			pinned.provider.networkConfig.ExtraHeaders = map[string]schemas.SecretVar{headerName: *schemas.NewSecretVar("flex")}
+			for route, call := range vertexGeminiRoutes(t, pinned.provider) {
+				pinned.take()
+				tier := schemas.BifrostServiceTierPriority
+				if bifrostErr := call(pinned.key("us-central1"), "gemini-2.5-pro", &tier, ""); bifrostErr != nil {
+					t.Fatalf("%s pinned as %q: %s", route, headerName, bifrostErr.GetErrorString())
+				}
+				sent, _ := pinned.take()
+				if len(sent) != 1 || sent[0].tierHeader != "flex" {
+					t.Errorf("%s pinned as %q: upstream saw %+v, want one request with the pinned flex header", route, headerName, sent)
+				}
 			}
 		}
 	})
