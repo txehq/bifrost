@@ -3229,6 +3229,9 @@ func HandleOpenAITranscriptionRequest(
 	// Time the request conversion as the convertor phase.
 	ct, ch := providerUtils.StartPhaseSpan(ctx, "convertor")
 	reqBody := ToOpenAITranscriptionRequest(request)
+	if reqBody == nil {
+		reqBody = ToOpenAITranscriptionURLRequest(request)
+	}
 	if ct != nil {
 		if reqBody == nil {
 			ct.EndSpan(ch, schemas.SpanStatusError, "transcription input is not provided")
@@ -3470,6 +3473,9 @@ func HandleOpenAITranscriptionStreamRequest(
 	// Time the request conversion as the convertor phase.
 	ct, ch := providerUtils.StartPhaseSpan(ctx, "convertor")
 	reqBody := ToOpenAITranscriptionRequest(request)
+	if reqBody == nil {
+		reqBody = ToOpenAITranscriptionURLRequest(request)
+	}
 	if ct != nil {
 		if reqBody == nil {
 			ct.EndSpan(ch, schemas.SpanStatusError, "transcription input is not provided")

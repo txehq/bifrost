@@ -167,7 +167,7 @@ func (r *BifrostTranscriptionRequest) AudioURL() (string, bool) {
 // IsURLOnly reports whether the request carries an audio URL and no file. Such a request
 // reaches a provider only when the provider takes a URL (TranscriptionURLInputProvider).
 func (r *BifrostTranscriptionRequest) IsURLOnly() bool {
-	if r == nil || (r.Input != nil && len(r.Input.File) > 0) {
+	if r == nil || (r.Input != nil && r.Input.File != nil) {
 		return false
 	}
 	_, ok := r.AudioURL()

@@ -265,3 +265,60 @@ func TestBifrostTranscriptionResponse_UnmarshalJSON_LegacyDiarizedNoMarker(t *te
 		t.Fatalf("expected legacy (unmarked) diarized data to still be sniffed correctly, got %+v", reloaded.DiarizedSegments)
 	}
 }
+
+type urlInputProvider struct{}
+
+func (urlInputProvider) AcceptsTranscriptionURLInput() bool { return true }
+
+// BenchmarkTranscriptionURLOnlyGate measures the request worker's URL-only check. A file request
+// stops at the file length; only a URL-only request reaches the extra-params lookup and the
+// provider's opt-in assertion.
+func BenchmarkTranscriptionURLOnlyGate(b *testing.B) {
+	for _, tc := range []struct {
+		name string
+		req  *BifrostTranscriptionRequest
+	}{
+		{name: "file", req: &BifrostTranscriptionRequest{Input: &TranscriptionInput{File: []byte("ID3fake-mp3")}, Params: &TranscriptionParameters{}}},
+		{name: "url_only", req: &BifrostTranscriptionRequest{Input: &TranscriptionInput{}, Params: &TranscriptionParameters{
+			ExtraParams: map[string]interface{}{TranscriptionURLParam: "https://example.com/a.m4a"},
+		}}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			var provider any = urlInputProvider{}
+			b.ReportAllocs()
+			for b.Loop() {
+				if tc.req.IsURLOnly() && !AcceptsTranscriptionURLInput(provider) {
+					b.Fatal("unexpected refusal")
+				}
+			}
+		})
+	}
+}
+
+func TestTranscriptionURLOnly(t *testing.T) {
+	url := map[string]interface{}{TranscriptionURLParam: "https://example.com/a.m4a"}
+	for name, tc := range map[string]struct {
+		req  *BifrostTranscriptionRequest
+		want bool
+	}{
+		"nil request":     {nil, false},
+		"file":            {&BifrostTranscriptionRequest{Input: &TranscriptionInput{File: []byte("a")}}, false},
+		"file and url":    {&BifrostTranscriptionRequest{Input: &TranscriptionInput{File: []byte("a")}, Params: &TranscriptionParameters{ExtraParams: url}}, false},
+		"url only":        {&BifrostTranscriptionRequest{Input: &TranscriptionInput{}, Params: &TranscriptionParameters{ExtraParams: url}}, true},
+		"url, nil input":  {&BifrostTranscriptionRequest{Params: &TranscriptionParameters{ExtraParams: url}}, true},
+		"empty url":       {&BifrostTranscriptionRequest{Params: &TranscriptionParameters{ExtraParams: map[string]interface{}{TranscriptionURLParam: ""}}}, false},
+		"non-string url":  {&BifrostTranscriptionRequest{Params: &TranscriptionParameters{ExtraParams: map[string]interface{}{TranscriptionURLParam: 1}}}, false},
+		"no file, no url": {&BifrostTranscriptionRequest{Input: &TranscriptionInput{}}, false},
+		"empty file, url": {&BifrostTranscriptionRequest{Input: &TranscriptionInput{File: []byte{}}, Params: &TranscriptionParameters{ExtraParams: url}}, false},
+	} {
+		if got := tc.req.IsURLOnly(); got != tc.want {
+			t.Errorf("%s: IsURLOnly = %v, want %v", name, got, tc.want)
+		}
+	}
+	if AcceptsTranscriptionURLInput(struct{}{}) {
+		t.Error("a provider that does not opt in must not take a URL")
+	}
+	if err := NewTranscriptionURLUnsupportedError(); *err.StatusCode != 400 || err.Error.Param != TranscriptionURLParam || err.ExtraFields.ErrorType != "caller_unsupported_parameter" {
+		t.Errorf("refusal = %+v / %+v", err.Error, err.ExtraFields)
+	}
+}

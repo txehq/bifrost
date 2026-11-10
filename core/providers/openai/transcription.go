@@ -25,20 +25,22 @@ func (request *OpenAITranscriptionRequest) ToBifrostTranscriptionRequest(ctx *sc
 	}
 }
 
-// ToOpenAITranscriptionRequest converts a Bifrost transcription request to OpenAI format
+// ToOpenAITranscriptionRequest converts a Bifrost transcription request to OpenAI format.
+// It returns nil when the request has no file; a URL-only request is converted by
+// ToOpenAITranscriptionURLRequest instead. The two stay separate so this one remains
+// inlinable and a file request's OpenAITranscriptionRequest stays on the caller's stack.
 func ToOpenAITranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionRequest) *OpenAITranscriptionRequest {
-	if bifrostReq == nil || ((bifrostReq.Input == nil || bifrostReq.Input.File == nil) && !bifrostReq.IsURLOnly()) {
+	if bifrostReq == nil || bifrostReq.Input == nil || bifrostReq.Input.File == nil {
 		return nil
 	}
 
+	transcriptionInput := bifrostReq.Input
 	params := bifrostReq.Params
 
-	// A URL-only request carries no file: the URL goes out as its own form field from the
-	// extra params, and the file part is omitted.
-	openaiReq := &OpenAITranscriptionRequest{Model: bifrostReq.Model}
-	if bifrostReq.Input != nil && !bifrostReq.IsURLOnly() {
-		openaiReq.File = bifrostReq.Input.File
-		openaiReq.Filename = bifrostReq.Input.Filename
+	openaiReq := &OpenAITranscriptionRequest{
+		Model:    bifrostReq.Model,
+		File:     transcriptionInput.File,
+		Filename: transcriptionInput.Filename,
 	}
 
 	if params != nil {
@@ -46,6 +48,22 @@ func ToOpenAITranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 		openaiReq.ExtraParams = params.ExtraParams
 	}
 
+	return openaiReq
+}
+
+// ToOpenAITranscriptionURLRequest converts a URL-only transcription request (an audio URL
+// in the extra params and no file). It carries no file: the URL goes out as its own form
+// field from the extra params, and ParseTranscriptionFormDataBodyFromRequest omits the file
+// part. Nil for any other request.
+func ToOpenAITranscriptionURLRequest(bifrostReq *schemas.BifrostTranscriptionRequest) *OpenAITranscriptionRequest {
+	if !bifrostReq.IsURLOnly() {
+		return nil
+	}
+	openaiReq := &OpenAITranscriptionRequest{Model: bifrostReq.Model}
+	if params := bifrostReq.Params; params != nil {
+		openaiReq.TranscriptionParameters = *params
+		openaiReq.ExtraParams = params.ExtraParams
+	}
 	return openaiReq
 }
 

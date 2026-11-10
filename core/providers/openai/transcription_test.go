@@ -513,9 +513,15 @@ func TestToOpenAITranscriptionRequest_URLOnlyHasURLFieldAndNoFilePart(t *testing
 			ExtraParams: map[string]interface{}{schemas.TranscriptionURLParam: audioURL},
 		},
 	}
-	reqBody := ToOpenAITranscriptionRequest(request)
+	if got := ToOpenAITranscriptionRequest(request); got != nil {
+		t.Fatalf("the file converter must leave a URL-only request to the URL converter, got %+v", got)
+	}
+	reqBody := ToOpenAITranscriptionURLRequest(request)
 	if reqBody == nil {
 		t.Fatal("expected a URL-only request to convert, got nil")
+	}
+	if reqBody.File != nil || reqBody.Model != "whisper-large-v3-turbo" {
+		t.Fatalf("converted request = %+v, want the model and no file", reqBody)
 	}
 
 	var body bytes.Buffer
@@ -545,6 +551,9 @@ func TestToOpenAITranscriptionRequest_NoFileNoURLIsNil(t *testing.T) {
 	} {
 		if got := ToOpenAITranscriptionRequest(request); got != nil {
 			t.Fatalf("%s: expected nil, got %+v", name, got)
+		}
+		if got := ToOpenAITranscriptionURLRequest(request); got != nil {
+			t.Fatalf("%s: URL converter expected nil, got %+v", name, got)
 		}
 	}
 }
@@ -633,5 +642,57 @@ func TestTranscription_ResponseUsageIsNeverReplacedOrInvented(t *testing.T) {
 	noDuration := `{"text":"hi"}`
 	if resp = transcribeWithResponse(t, "json", noDuration); resp.Usage != nil {
 		t.Fatalf("usage = %+v, want none when the vendor reported nothing", resp.Usage)
+	}
+}
+
+// BenchmarkTranscriptionFormBody measures the request conversion and multipart encode for a
+// file request (the common case) and a URL-only request (no file part).
+func BenchmarkTranscriptionFormBody(b *testing.B) {
+	audio := bytes.Repeat([]byte("ID3fake-mp3"), 1024)
+	for _, tc := range []struct {
+		name string
+		req  *schemas.BifrostTranscriptionRequest
+	}{
+		{name: "file", req: &schemas.BifrostTranscriptionRequest{Model: "whisper-1", Input: &schemas.TranscriptionInput{File: audio, Filename: "a.mp3"}, Params: &schemas.TranscriptionParameters{}}},
+		{name: "url_only", req: &schemas.BifrostTranscriptionRequest{Model: "whisper-large-v3-turbo", Input: &schemas.TranscriptionInput{}, Params: &schemas.TranscriptionParameters{
+			ExtraParams: map[string]interface{}{schemas.TranscriptionURLParam: "https://example.com/a.m4a"},
+		}}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				var body bytes.Buffer
+				writer := multipart.NewWriter(&body)
+				reqBody := ToOpenAITranscriptionRequest(tc.req)
+				if reqBody == nil {
+					reqBody = ToOpenAITranscriptionURLRequest(tc.req)
+				}
+				if err := ParseTranscriptionFormDataBodyFromRequest(writer, reqBody, schemas.Groq); err != nil {
+					b.Fatal(err.Error.Message)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkFillTranscriptionDurationUsage measures the usage backfill: a response with its own
+// usage or no duration returns after a nil check; only a fill allocates the usage.
+func BenchmarkFillTranscriptionDurationUsage(b *testing.B) {
+	duration := 12.4
+	for _, tc := range []struct {
+		name string
+		resp schemas.BifrostTranscriptionResponse
+	}{
+		{name: "has_usage", resp: schemas.BifrostTranscriptionResponse{Duration: &duration, Usage: &schemas.TranscriptionUsage{Type: "duration"}}},
+		{name: "no_duration", resp: schemas.BifrostTranscriptionResponse{}},
+		{name: "fill", resp: schemas.BifrostTranscriptionResponse{Duration: &duration}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				resp := tc.resp
+				fillTranscriptionDurationUsage(&resp)
+			}
+		})
 	}
 }

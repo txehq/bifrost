@@ -637,6 +637,85 @@ func TestOpenAISpeechRouteLabelsAudioAndCarriesUsage(t *testing.T) {
 	}
 }
 
+// groqTranscriptionTestAccount configures the Groq provider at a local upstream, so the
+// OpenAI drop-in transcription route runs end to end without a live key.
+type groqTranscriptionTestAccount struct {
+	baseURL string
+}
+
+func (a groqTranscriptionTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.Groq}, nil
+}
+
+func (a groqTranscriptionTestAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	if p != schemas.Groq {
+		return nil, nil
+	}
+	return []schemas.Key{{ID: "groq-test-key", Name: "groq-test-key", Value: *schemas.NewSecretVar("gsk-test"), Models: schemas.WhiteList{"*"}, Weight: 1.0}}, nil
+}
+
+func (a groqTranscriptionTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	if p != schemas.Groq {
+		return nil, fmt.Errorf("unsupported provider %s", p)
+	}
+	nc := schemas.DefaultNetworkConfig
+	nc.BaseURL = a.baseURL
+	return &schemas.ProviderConfig{NetworkConfig: nc, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// The OpenAI drop-in route /openai/v1/audio/transcriptions reaches the duration-usage backfill
+// too (contract C5): a Groq file upload whose verbose_json carries duration and no usage comes
+// back with usage{type: duration, seconds}, the vendor's number unchanged. The route still
+// requires a file; a URL-only request is not taken there.
+func TestOpenAITranscriptionRouteReportsGroqDurationAsUsage(t *testing.T) {
+	var calls int
+	var mu sync.Mutex
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"task":"transcribe","language":"English","duration":12.4,"text":"Your transcribed text appears here.","segments":[],"x_groq":{"id":"req_1"}}`)
+	}))
+	defer upstream.Close()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: groqTranscriptionTestAccount{baseURL: upstream.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewOpenAIRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	require.NoError(t, writer.WriteField("model", "groq/whisper-large-v3-turbo"))
+	require.NoError(t, writer.WriteField("response_format", "verbose_json"))
+	part, err := writer.CreateFormFile("file", "sample.mp3")
+	require.NoError(t, err)
+	_, err = part.Write([]byte("ID3fake-mp3"))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/openai/v1/audio/transcriptions")
+	ctx.Request.Header.SetContentType(writer.FormDataContentType())
+	ctx.Request.SetBody(body.Bytes())
+	r.Handler(&ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+	usage := gjson.GetBytes(ctx.Response.Body(), "usage")
+	require.Equal(t, "duration", usage.Get("type").String(), "body: %s", ctx.Response.Body())
+	require.Equal(t, 12.4, usage.Get("seconds").Float(), "body: %s", ctx.Response.Body())
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, 1, calls)
+}
+
 // azureDataSourcesJSON is an Azure "On Your Data" data_sources value, the
 // extension the Azure OpenAI SDK sends at the top level of a chat body.
 const azureDataSourcesJSON = `[{"type":"azure_search","parameters":{"endpoint":"https://unreachable.search.windows.net","index_name":"idx","authentication":{"type":"api_key","key":"k"}}}]`
