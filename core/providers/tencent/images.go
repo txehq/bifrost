@@ -67,6 +67,9 @@ func validateTencentImageParams(params *schemas.ImageGenerationParameters) *sche
 	if params == nil {
 		return nil
 	}
+	if bifrostErr := rejectTencentBodyKeysInExtraParams(params.ExtraParams); bifrostErr != nil {
+		return bifrostErr
+	}
 	if params.N != nil && *params.N != 1 {
 		return schemas.NewUnsupportedParameterError("n", fmt.Sprintf(
 			"tencent TokenHub generates one image per request; n=%d cannot be delivered", *params.N))
@@ -74,6 +77,30 @@ func validateTencentImageParams(params *schemas.ImageGenerationParameters) *sche
 	if params.ResponseFormat != nil && *params.ResponseFormat != "" && *params.ResponseFormat != "url" {
 		return schemas.NewUnsupportedParameterError("response_format", fmt.Sprintf(
 			"tencent TokenHub returns image URLs only; response_format %q cannot be delivered", *params.ResponseFormat))
+	}
+	return nil
+}
+
+// tencentConvertedBodyKeys are the body fields the converter writes. With
+// x-bf-passthrough-extra-params an extra param of the same name would overwrite the converted
+// value after governance and pricing have read the request: an extra model would run a model the
+// caller was not checked for, and an extra size would change the price tier unseen.
+var tencentConvertedBodyKeys = []string{"model", "prompt", "messages", "images", "size", "seed"}
+
+// rejectTencentBodyKeysInExtraParams refuses an extra param that names a converted body field,
+// in any letter case: a differently cased key would sit beside the converter's, and a decoder
+// that folds case could read either.
+func rejectTencentBodyKeysInExtraParams(extraParams map[string]interface{}) *schemas.BifrostError {
+	for name := range extraParams {
+		for _, key := range tencentConvertedBodyKeys {
+			if strings.EqualFold(name, key) {
+				bifrostErr := providerUtils.NewBifrostBadRequestError(fmt.Sprintf(
+					"tencent: extra params cannot set %q; use the request's own %s field", name, key))
+				bifrostErr.Error.Param = name
+				bifrostErr.ExtraFields.ErrorType = schemas.ErrorTypeCallerInvalidRequest
+				return bifrostErr
+			}
+		}
 	}
 	return nil
 }

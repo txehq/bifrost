@@ -476,3 +476,91 @@ func TestTencentUnsupportedOperations(t *testing.T) {
 		t.Errorf("upstream calls = %d, want 0", n)
 	}
 }
+
+// An extra param naming a field the converter writes is refused before any call, in any letter
+// case: an extra model would run a model governance never checked, an extra size would change the
+// price tier unseen (contract C3/C4).
+func TestTencentImageGenerationRefusesExtraParamsOverridingTheBody(t *testing.T) {
+	for _, name := range []string{"model", "Model", "size", "messages", "prompt", "images", "seed"} {
+		t.Run(name, func(t *testing.T) {
+			provider, captured := newMockTencent(t, nil, http.StatusOK, v35SuccessBody)
+			ctx := testContext(t)
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+			_, bifrostErr := provider.ImageGeneration(ctx, testKey(), imageRequest("hy-image-v3.5-preview", &schemas.ImageGenerationParameters{
+				ExtraParams: map[string]interface{}{name: "hy-image-v3"},
+			}))
+			if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %+v", bifrostErr)
+			}
+			if bifrostErr.Error.Param != name || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerInvalidRequest {
+				t.Errorf("param/error_type = %q/%q", bifrostErr.Error.Param, bifrostErr.ExtraFields.ErrorType)
+			}
+			if n := len(captured()); n != 0 {
+				t.Errorf("upstream calls = %d, want 0", n)
+			}
+		})
+	}
+}
+
+// Request-path cost of the converters (AGENTS.md "Every change states its cost on the request
+// flow"): request conversion for each model family, and response conversion with usage.
+func BenchmarkToTencentImageGenerationRequest(b *testing.B) {
+	params := &schemas.ImageGenerationParameters{
+		Size:        schemas.Ptr("1024x1024"),
+		Seed:        schemas.Ptr(7),
+		InputImages: []string{"https://example.com/ref.png"},
+		ExtraParams: map[string]interface{}{"footnote": "tokun"},
+	}
+	for _, model := range []string{"hy-image-v3", "hy-image-v3.5-preview"} {
+		req := imageRequest(model, params)
+		b.Run(model, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := tencent.ToTencentImageGenerationRequest(req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkToBifrostTencentImageGenerationResponse(b *testing.B) {
+	for name, body := range map[string]string{"v3": v3SuccessBody, "v3.5": v35SuccessBody} {
+		var resp tencent.TencentImageResponse
+		if err := schemas.Unmarshal([]byte(body), &resp); err != nil {
+			b.Fatal(err)
+		}
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, bifrostErr := tencent.ToBifrostImageGenerationResponse(&resp, "hy-image-v3"); bifrostErr != nil {
+					b.Fatal(bifrostErr.Error.Message)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkTencentImageGenerationRoundTrip(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(v35SuccessBody))
+	}))
+	b.Cleanup(server.Close)
+	provider, err := tencent.NewTencentProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{
+		BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true,
+	}}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		b.Fatal(err)
+	}
+	req := imageRequest("hy-image-v3.5-preview", &schemas.ImageGenerationParameters{Size: schemas.Ptr("1024x1024")})
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), time.Minute)
+	b.Cleanup(cancel)
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, bifrostErr := provider.ImageGeneration(ctx, testKey(), req); bifrostErr != nil {
+			b.Fatal(bifrostErr.Error.Message)
+		}
+	}
+}
