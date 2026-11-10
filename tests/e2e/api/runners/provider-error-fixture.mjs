@@ -672,7 +672,7 @@ const dashScopeTasks = {
 	"ds-pending": { output: { task_status: "PENDING", submit_time: dashScopeTimes.submit_time } },
 	"ds-running": { output: { task_status: "RUNNING", ...dashScopeTimes } },
 	"ds-succeeded": {
-		output: { task_status: "SUCCEEDED", ...dashScopeEnded, orig_prompt: "A kitten on a rooftop", video_url: "https://dashscope-result-sh.oss-accelerate.aliyuncs.com/fixture/ds-succeeded.mp4?Expires=1762842232&Signature=fixture" },
+		output: { task_status: "SUCCEEDED", ...dashScopeEnded, orig_prompt: "A kitten on a rooftop", video_url: "https://dashscope-result.example.test/fixture/ds-succeeded.mp4?Expires=1762842232&Signature=fixture" },
 		usage: { duration: 10, input_video_duration: 0, output_video_duration: 10, video_count: 1, ratio: "16:9", SR: 720 },
 	},
 	"ds-filtered": { output: { task_status: "FAILED", ...dashScopeEnded, code: "DataInspectionFailed", message: "Output data may contain inappropriate content." } },
