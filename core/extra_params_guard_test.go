@@ -484,9 +484,10 @@ func guardOperationsWith(guardExtraParams func() map[string]interface{}) []guard
 }
 
 // guardProvidersWithoutLocalUpstream names the providers none of whose operations
-// can be observed by this test, with the reason. A provider not listed here must
-// reach the local upstream on at least one operation, or the test fails: a new
-// provider is either covered or consciously exempted. It is empty today.
+// can be observed by this test, with the reason. A provider not listed here that
+// serves any of the operations must reach the local upstream on at least one, or the
+// test fails: a new provider is either covered or consciously exempted. It is empty
+// today.
 var guardProvidersWithoutLocalUpstream = map[schemas.ModelProvider]string{}
 
 // guardVendorModelInputField names, per provider, the body field that holds the
@@ -580,8 +581,13 @@ func TestExtraParamsNeverReplaceTheModelOrInputOnAnyProvider(t *testing.T) {
 			// all, and which of them pass extra params through.
 			reached := map[string]bool{}
 			passesExtraParams := map[string]bool{}
+			served := []string{} // operations the provider did not answer with unsupported_operation
 			for _, op := range guardOperations(guardPlantBenign) {
-				if _, requests := send(op); len(requests) > 0 {
+				bifrostErr, requests := send(op)
+				if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "unsupported_operation" {
+					served = append(served, op.name)
+				}
+				if len(requests) > 0 {
 					reached[op.name] = true
 					passesExtraParams[op.name] = carries(requests, []byte(guardBenignValue))
 				}
@@ -628,8 +634,11 @@ func TestExtraParamsNeverReplaceTheModelOrInputOnAnyProvider(t *testing.T) {
 			}
 			sort.Strings(names)
 			t.Logf("checked on the wire: %s", strings.Join(names, ", "))
-			if _, exempt := guardProvidersWithoutLocalUpstream[providerKey]; len(reached) == 0 && !exempt {
-				t.Errorf("no operation of %s reached the local upstream; give it what it needs in guardKey or guardModel, or list it in guardProvidersWithoutLocalUpstream with the reason", tc.name)
+			// A provider that serves none of these operations (one that is registered
+			// before its first operation lands) has nothing to check yet. The day it
+			// serves one, it must be seen on the wire.
+			if _, exempt := guardProvidersWithoutLocalUpstream[providerKey]; len(reached) == 0 && len(served) > 0 && !exempt {
+				t.Errorf("%s serves %s but none reached the local upstream; give it what it needs in guardKey or guardModel, or list it in guardProvidersWithoutLocalUpstream with the reason", tc.name, strings.Join(served, ", "))
 			}
 		})
 	}

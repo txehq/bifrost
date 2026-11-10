@@ -1295,6 +1295,19 @@ func TestMergeExtraParamsIntoJSON_NeverReplacesAConvertedField(t *testing.T) {
 		{name: "MODEL", body: `{"contents":[]}`, extra: map[string]interface{}{"MODEL": "denied"}, wantParam: "MODEL"},
 		{name: "_model", body: `{"model":"allowed"}`, extra: map[string]interface{}{"_model": "denied"}, wantParam: "_model"},
 		{
+			// Go's encoding/json reads the long s as s and the Kelvin sign as k.
+			name:      "a Unicode spelling a case-folding decoder reads as the field",
+			body:      `{"stream":true}`,
+			extra:     map[string]interface{}{"\u017ftream": false},
+			wantParam: "\u017ftream",
+		},
+		{
+			name:      "the Kelvin sign for k",
+			body:      `{"max_tokens":10}`,
+			extra:     map[string]interface{}{"max_to\u212aens": 99},
+			wantParam: "max_to\u212aens",
+		},
+		{
 			name:      "the input is refused",
 			body:      `{"model":"allowed","input":["original"]}`,
 			extra:     map[string]interface{}{"input": "other"},

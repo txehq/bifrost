@@ -26,6 +26,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 	"weak"
 
 	"github.com/bytedance/sonic"
@@ -2543,6 +2545,9 @@ var reservedExtraParamFields = []string{"model"}
 
 // sameJSONField reports whether a and b name the same field once case and
 // underscores are ignored: "max_tokens", "maxTokens" and "MaxTokens" are one field.
+// Case is folded the way the most permissive decoder folds it, Go's encoding/json,
+// which uses Unicode simple folding: "\u017ftream" (long s) and "tas\u212a" (Kelvin
+// sign) are read there as "stream" and "task", so they are the same field here too.
 // It allocates nothing.
 func sameJSONField(a, b string) bool {
 	i, j := 0, 0
@@ -2556,19 +2561,42 @@ func sameJSONField(a, b string) bool {
 		if i == len(a) || j == len(b) {
 			return i == len(a) && j == len(b)
 		}
-		ca, cb := a[i], b[j]
-		if 'A' <= ca && ca <= 'Z' {
-			ca += 'a' - 'A'
+		if ca, cb := a[i], b[j]; ca < utf8.RuneSelf && cb < utf8.RuneSelf {
+			// Both ASCII, the usual case: no decoding.
+			if ca != cb && foldRune(rune(ca)) != foldRune(rune(cb)) {
+				return false
+			}
+			i++
+			j++
+			continue
 		}
-		if 'A' <= cb && cb <= 'Z' {
-			cb += 'a' - 'A'
-		}
-		if ca != cb {
+		ra, sizeA := utf8.DecodeRuneInString(a[i:])
+		rb, sizeB := utf8.DecodeRuneInString(b[j:])
+		if ra != rb && foldRune(ra) != foldRune(rb) {
 			return false
 		}
-		i++
-		j++
+		i += sizeA
+		j += sizeB
 	}
+}
+
+// foldRune returns the smallest rune of r's simple case-folding orbit, so two runes
+// that fold together map to one value ('K', 'k' and the Kelvin sign all give 'K').
+func foldRune(r rune) rune {
+	if r < utf8.RuneSelf {
+		if 'a' <= r && r <= 'z' {
+			return r - ('a' - 'A')
+		}
+		// 'K' and 'S' have non-ASCII members in their orbits, but they are the smallest.
+		return r
+	}
+	smallest := r
+	for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
+		if next < smallest {
+			smallest = next
+		}
+	}
+	return smallest
 }
 
 // reservedExtraParamField returns the reserved field an extra param named key
