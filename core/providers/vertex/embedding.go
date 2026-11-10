@@ -22,6 +22,23 @@ func isVertexGeminiEmbeddingModel(model string) bool {
 	return strings.Contains(model, "gemini-embedding-2")
 }
 
+// toVertexEmbeddingRequestBody builds the body for whichever Vertex embedding endpoint the
+// model uses: :embedContent for gemini-embedding-2, :predict for the native multimodal and
+// the text models. Every one of them returns float vectors only, so a non-float
+// encoding_format is refused first, whichever endpoint the model would reach.
+func toVertexEmbeddingRequestBody(request *schemas.BifrostEmbeddingRequest) (providerUtils.RequestBodyWithExtraParams, error) {
+	if err := gemini.RejectNonFloatEncodingFormat(request); err != nil {
+		return nil, err
+	}
+	if isVertexGeminiEmbeddingModel(request.Model) {
+		return ToVertexGeminiEmbeddingRequest(request)
+	}
+	if isVertexNativeMultimodalEmbeddingModel(request.Model) {
+		return ToVertexMultimodalEmbeddingRequest(request)
+	}
+	return ToVertexEmbeddingRequest(request)
+}
+
 // ToVertexEmbeddingRequest converts a Bifrost embedding request to Vertex AI text embedding format.
 func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*VertexEmbeddingRequest, error) {
 	if bifrostReq == nil || len(bifrostReq.Input) == 0 {

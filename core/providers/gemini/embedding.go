@@ -182,6 +182,34 @@ func applyGeminiEmbeddingParams(req *GeminiEmbeddingRequest, params *schemas.Emb
 	}
 }
 
+// RejectNonFloatEncodingFormat refuses an embedding request whose encoding_format, on the
+// request or on any input item, is anything but float: Gemini's embedContent and
+// batchEmbedContents, and every Vertex embedding endpoint, return float vectors only and
+// take no output-format parameter. Contract C4: a field that cannot be delivered as given
+// is 400 caller_unsupported_parameter, before any upstream call; Bifrost does not encode
+// the floats itself. The error travels through CheckContextAndGetRequestBody intact.
+func RejectNonFloatEncodingFormat(req *schemas.BifrostEmbeddingRequest) error {
+	if req == nil {
+		return nil
+	}
+	check := func(params *schemas.EmbeddingParameters) error {
+		if params == nil || params.EncodingFormat == nil || *params.EncodingFormat == schemas.EmbeddingEncodingFloat {
+			return nil
+		}
+		return providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError("encoding_format",
+			fmt.Sprintf("encoding_format %q is not supported: Google embedding endpoints return float vectors only", *params.EncodingFormat)))
+	}
+	if err := check(req.Params); err != nil {
+		return err
+	}
+	for i := range req.Input {
+		if err := check(req.Input[i].Params); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ToGeminiEmbeddingRequest converts a Bifrost embedding request to Gemini request format.
 // Each element in Contents maps to one GeminiEmbeddingRequest (one output embedding).
 // Parts within a single content are aggregated into one embedding by Gemini.

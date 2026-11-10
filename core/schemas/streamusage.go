@@ -45,6 +45,9 @@ func (u *BifrostLLMUsage) MergeStreamFrame(frame *BifrostLLMUsage) {
 	if frame.ProcessedTokens != nil {
 		u.ProcessedTokens = frame.ProcessedTokens
 	}
+	if frame.BilledCharacters != nil {
+		u.BilledCharacters = frame.BilledCharacters
+	}
 	if frame.ToolUsage != nil {
 		u.ToolUsage = frame.ToolUsage
 	}

@@ -260,3 +260,33 @@ func TestVertexEmbeddingResponseReportsBillableCharacters(t *testing.T) {
 		require.Nil(t, out.Usage.BilledCharacters, "never filled by Bifrost")
 	}
 }
+
+// Every Vertex embedding endpoint returns float vectors only, so a non-float
+// encoding_format is refused with caller_unsupported_parameter whichever endpoint the
+// model reaches (:embedContent, multimodal :predict, text :predict), and float is accepted.
+func TestVertexEmbeddingRequestBodyRefusesNonFloatEncodingFormat(t *testing.T) {
+	for _, model := range []string{"gemini-embedding-2-preview", "multimodalembedding@001", "text-embedding-005"} {
+		t.Run(model, func(t *testing.T) {
+			req := func(format string) *schemas.BifrostEmbeddingRequest {
+				return &schemas.BifrostEmbeddingRequest{
+					Provider: schemas.Vertex,
+					Model:    model,
+					Input: []schemas.EmbeddingInputItem{
+						{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("hi")}}},
+					},
+					Params: &schemas.EmbeddingParameters{EncodingFormat: schemas.Ptr(format)},
+				}
+			}
+			_, err := toVertexEmbeddingRequestBody(req(schemas.EmbeddingEncodingBase64))
+			bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
+			require.True(t, ok, "want a bad request, got %v", err)
+			require.Equal(t, 400, *bifrostErr.StatusCode)
+			require.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+			require.Equal(t, "encoding_format", bifrostErr.Error.Param)
+
+			body, err := toVertexEmbeddingRequestBody(req(schemas.EmbeddingEncodingFloat))
+			require.NoError(t, err)
+			require.NotNil(t, body)
+		})
+	}
+}
