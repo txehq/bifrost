@@ -17,17 +17,6 @@ import (
 // errors and the stream reader are the Gemini provider's; this file adds the Vertex URL and
 // credentials.
 
-// SupportedUnifiedFields implements schemas.UnifiedFieldDeclarer for speech: the fields the
-// Gemini generateContent conversion delivers. Core refuses any other speech field with
-// caller_unsupported_parameter before a key is selected (contract C4).
-func (provider *VertexProvider) SupportedUnifiedFields(requestType schemas.RequestType) ([]string, bool) {
-	switch requestType {
-	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
-		return gemini.SpeechUnifiedFields, true
-	}
-	return nil, false
-}
-
 // isVertexGeminiSpeechModel reports whether Vertex serves speech for model: a Gemini model,
 // or a tuned Gemini model addressed by its numeric endpoint ID.
 func isVertexGeminiSpeechModel(ctx *schemas.BifrostContext, model string) bool {

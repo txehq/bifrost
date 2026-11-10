@@ -366,6 +366,37 @@ func (provider *VertexProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Vertex
 }
 
+// vertexVideoGenerationFields are the unified video create fields Veo on Vertex takes, each
+// converted by gemini.ToVertexVideoGenerationRequest. output_storage_uri is the one task control
+// field the vendor has (parameters.storageUri); it has no callback, external task id or deadline
+// parameter.
+var vertexVideoGenerationFields = []string{
+	"aspect_ratio",
+	"audio",
+	"last_frame",
+	schemas.TaskControlFieldOutputStorageURI,
+	"reference_images",
+	"resolution",
+	"seconds",
+	"size",
+}
+
+// SupportedUnifiedFields implements schemas.UnifiedFieldDeclarer: the unified fields speech and
+// video generation deliver, so core refuses any other with caller_unsupported_parameter before a
+// key is chosen (contract C4 BF4, C7 BF12). Speech takes what the Gemini generateContent
+// conversion delivers (TXE-6540). The video list also covers an Omni model on the Interactions
+// API (TXE-6538): its converter checks gemini.OmniVideoUnifiedFields itself, and Vertex documents
+// no webhook field, so callback_url and client_reference_id are refused on both paths.
+func (provider *VertexProvider) SupportedUnifiedFields(requestType schemas.RequestType) ([]string, bool) {
+	switch requestType {
+	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
+		return gemini.SpeechUnifiedFields, true
+	case schemas.VideoGenerationRequest:
+		return vertexVideoGenerationFields, true
+	}
+	return nil, false
+}
+
 // listModelsByKey performs a list models request for a single key.
 // Returns the response and latency, or an error if the request fails.
 //
@@ -2615,7 +2646,7 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 		ctx,
 		bifrostReq,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return gemini.ToGeminiVideoGenerationRequest(bifrostReq)
+			return gemini.ToVertexVideoGenerationRequest(bifrostReq)
 		},
 	)
 	if bifrostErr != nil {

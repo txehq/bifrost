@@ -261,7 +261,8 @@ func CheckTaskControlFields(provider any, req *BifrostRequest) *BifrostError {
 	return nil
 }
 
-// DefaultVideoDuration is the default video duration in seconds for Gemini/Vertex when not specified.
+// DefaultVideoDuration is the duration Veo renders when the request names none. It is used only
+// to estimate passthrough usage for Bifrost's own logs; a task object never carries it.
 const DefaultVideoDuration = "8"
 
 // BifrostVideoGenerationResponse represents the video generation job response in bifrost format.
@@ -370,54 +371,15 @@ type VideoTokenDetails struct {
 	AudioTokens *int `json:"audio_tokens,omitempty"`
 }
 
-// getSecondsFromVideoRequest extracts Seconds from video-related requests.
-func getSecondsFromVideoRequest(req *BifrostRequest) *string {
-	if req == nil {
-		return nil
-	}
-	useDefaultForSeconds := func(p ModelProvider) bool {
-		return p == Gemini || p == Vertex
-	}
-	if req.VideoGenerationRequest != nil {
-		var seconds *string
-		if req.VideoGenerationRequest.Params != nil {
-			seconds = req.VideoGenerationRequest.Params.Seconds
-		}
-		// The default is Veo's. An Omni model picks its own duration when the request names
-		// none, so nothing is filled in for it (fork, TXE-6538).
-		if seconds == nil && useDefaultForSeconds(req.VideoGenerationRequest.Provider) && !IsGeminiOmniModel(req.VideoGenerationRequest.Model) {
-			seconds = Ptr(DefaultVideoDuration)
-		}
-		return seconds
-	}
-	if req.VideoRemixRequest != nil && useDefaultForSeconds(req.VideoRemixRequest.Provider) {
-		return Ptr(DefaultVideoDuration)
-	}
-	return nil
-}
-
-// videoRequestNamesSeconds reports whether the video create request names a duration itself.
-func videoRequestNamesSeconds(req *BifrostRequest) bool {
-	return req.VideoGenerationRequest != nil && req.VideoGenerationRequest.Params != nil && req.VideoGenerationRequest.Params.Seconds != nil
-}
-
-// BackfillParams populates response fields from the original request that are needed
-// for cost calculation but may not be returned by the provider.
-// - Seconds (duration from request params or default), only when the provider reported none
+// BackfillParams populates response fields from the original request that the provider may not
+// return. It fills the model only.
+//
+// Fork (TXE-6537, contract C5): the duration is never filled from the request, nor from a
+// default (it was 8 seconds for Gemini and Vertex). Seconds is what the provider reported or
+// ordered; when the provider says nothing it stays empty, and so does usage.output_seconds.
 func (r *BifrostVideoGenerationResponse) BackfillParams(req *BifrostRequest) {
 	if r == nil || req == nil {
 		return
-	}
-	// Fork: keep a duration the provider already reported. A provider can normalize the requested
-	// duration (MiniMax clamps H3-Max to 5-15s), and that is the clip that was ordered and billed.
-	if r.Seconds == nil {
-		r.Seconds = getSecondsFromVideoRequest(req)
-		// The request's model can be an alias's opaque wire id. The response carries the model
-		// the vendor ran, so an Omni task is recognised there too and gets no Veo default
-		// (fork, TXE-6538): only a duration the request itself named is kept.
-		if r.Seconds != nil && IsGeminiOmniModel(r.Model) && !videoRequestNamesSeconds(req) {
-			r.Seconds = nil
-		}
 	}
 	if r.Model == "" {
 		switch {
