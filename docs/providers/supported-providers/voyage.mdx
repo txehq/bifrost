@@ -50,7 +50,9 @@ Omitted options remain omitted. Dimensions accept 256, 512, 1024 and 2048.
 Unsupported unified options, per-item parameters, and non-text inputs return
 400 with `extra_fields.error_type: caller_unsupported_parameter` and the field
 in `error.param`. Vendor-specific extras are forwarded with
-`x-bf-passthrough-extra-params: true`.
+`x-bf-passthrough-extra-params: true`. Extra parameters cannot replace `model`,
+`input`, or an option already supplied through its unified field; these collisions
+return 400 before the upstream call.
 
 Voyage's `usage.total_tokens` supplies both unified `usage.prompt_tokens` and
 `usage.total_tokens`; missing usage stays absent. Vendor error statuses are

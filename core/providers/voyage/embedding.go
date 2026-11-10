@@ -24,6 +24,26 @@ func ToVoyageEmbeddingRequest(request *schemas.BifrostEmbeddingRequest) (*Voyage
 	}
 	out := &VoyageEmbeddingRequest{Model: request.Model, Input: input.Texts()}
 	if p := request.Params; p != nil {
+		// Extra parameters are merged after governance has authorized the model
+		// and after conversion. They must not replace either decision's fields.
+		for field := range p.ExtraParams {
+			collision := false
+			switch field {
+			case "model", "input":
+				collision = true
+			case "output_dimension":
+				collision = p.Dimensions != nil
+			case "output_dtype", "encoding_format":
+				collision = p.EncodingFormat != nil
+			case "input_type":
+				collision = p.TaskType != nil
+			case "truncation":
+				collision = p.AutoTruncate != nil
+			}
+			if collision {
+				return nil, schemas.NewUnsupportedParameterError("extra_params."+field, "extra parameters cannot replace authorized or unified request fields")
+			}
+		}
 		if p.Dimensions != nil {
 			switch *p.Dimensions {
 			case 256, 512, 1024, 2048:

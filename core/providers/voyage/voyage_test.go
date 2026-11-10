@@ -225,3 +225,28 @@ func TestVoyageDocumentedResponse(t *testing.T) {
 	require.Equal(t, 8, got.Usage.TotalTokens)
 	require.Equal(t, []float64{-0.016709786, 0.026996311, -0.027496673, -0.012125067}, got.Data[0].Embedding.EmbeddingArray)
 }
+
+func TestVoyageExtraParamsCannotReplaceAuthorizedFields(t *testing.T) {
+	for _, field := range []string{"model", "input", "output_dimension", "output_dtype", "encoding_format", "input_type", "truncation"} {
+		t.Run(field, func(t *testing.T) {
+			r := request("voyage-4-lite")
+			r.Params = &schemas.EmbeddingParameters{Dimensions: schemas.Ptr(256), EncodingFormat: schemas.Ptr("float"), TaskType: schemas.Ptr("query"), AutoTruncate: schemas.Ptr(false), ExtraParams: map[string]interface{}{field: "replacement"}}
+			got, err := voyage.ToVoyageEmbeddingRequest(r)
+			require.Nil(t, got)
+			require.NotNil(t, err)
+			require.Equal(t, 400, *err.StatusCode)
+			require.Equal(t, "extra_params."+field, err.Error.Param)
+		})
+	}
+	for _, field := range []string{"model", "input"} {
+		var ingress openai.OpenAIEmbeddingRequest
+		payload := fmt.Sprintf(`{"model":"voyage/voyage-4-lite","input":"hello","extra_params":{%q:"voyage-4-large"}}`, field)
+		require.NoError(t, json.Unmarshal([]byte(payload), &ingress))
+		// The HTTP router promotes the explicit extra_params object before
+		// invoking the OpenAI converter; exercise that normalized ingress.
+		ingress.SetExtraParams(map[string]interface{}{field: "voyage-4-large"})
+		r := ingress.ToBifrostEmbeddingRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+		_, err := voyage.ToVoyageEmbeddingRequest(r)
+		require.NotNil(t, err)
+	}
+}

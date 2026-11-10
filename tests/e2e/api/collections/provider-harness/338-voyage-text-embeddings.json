@@ -355,6 +355,78 @@
           "raw": "{\n  \"model\": \"voyage/voyage-4-lite\",\n  \"input\": [\n    \"hello\",\n    \"world\"\n  ],\n  \"dimensions\": 256,\n  \"encoding_format\": \"float\",\n  \"task_type\": \"document\"\n}"
         }
       }
+    },
+    {
+      "name": "[EXPECT-400] Voyage embeddings structural extra_params rejected /v1/embeddings voyage-4-lite",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extras cannot override the authorized Voyage model', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(400); pm.expect(b.error.param).to.equal('extra_params.model'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "Voyage API Key"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"voyage/voyage-4-lite\",\n  \"input\": [\n    \"hello\"\n  ],\n  \"extra_params\": {\n    \"model\": \"voyage-4-large\"\n  }\n}"
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] Voyage embeddings structural extra_params rejected /openai/v1/embeddings voyage-4-lite",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extras cannot override the authorized Voyage model', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(400); pm.expect(b.error.param).to.equal('extra_params.model'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "Voyage API Key"
+          }
+        ],
+        "url": "{{baseUrl}}/openai/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"voyage/voyage-4-lite\",\n  \"input\": [\n    \"hello\"\n  ],\n  \"extra_params\": {\n    \"model\": \"voyage-4-large\"\n  }\n}"
+        }
+      }
     }
   ]
 }
