@@ -540,6 +540,12 @@ func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.
 	if batchResp.BatchID == "" {
 		return
 	}
+	// With provider job accounting off (fork, TXE-6519) the results are the caller's to price:
+	// nothing is settled or written, and the log row keeps the batch id and counts for display.
+	if !p.ProviderJobAccountingEnabled() {
+		attachBatchResultsDisplay(entry, batchResp, nil)
+		return
+	}
 
 	// This runs inline on the /results response path, and settlement touches the
 	// config store, the log store and the governance reporter. p.ctx is the
@@ -588,7 +594,7 @@ func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.
 // VideoRetrieveRequest, so polling is never billed. This writes the job's own
 // aggregate cost row instead, exactly once, under the same claim the sweeper uses.
 func (p *LoggerPlugin) accountVideoResults(entry *logstore.Log, result *schemas.BifrostResponse, pricingScopes *modelcatalog.PricingLookupScopes) {
-	if entry == nil || result == nil || p.pricingManager == nil || p.batchStore == nil {
+	if entry == nil || result == nil || p.pricingManager == nil || p.batchStore == nil || !p.ProviderJobAccountingEnabled() {
 		return
 	}
 	resp := result.VideoGenerationResponse
@@ -756,7 +762,7 @@ func (p *LoggerPlugin) emitSettlementSpan(ctx context.Context, entry *logstore.L
 }
 
 func (p *LoggerPlugin) recordBatchJobLifecycle(entry *logstore.Log, result *schemas.BifrostResponse) {
-	if entry == nil || result == nil || p.batchStore == nil {
+	if entry == nil || result == nil || p.batchStore == nil || !p.ProviderJobAccountingEnabled() {
 		return
 	}
 
@@ -817,7 +823,7 @@ func isVideoJobRequestType(requestType schemas.RequestType) bool {
 // the duration and resolution the price depends on exist nowhere else by then. The
 // request is the only witness, and this is the only moment it is in hand.
 func (p *LoggerPlugin) recordVideoJobLifecycle(entry *logstore.Log, result *schemas.BifrostResponse, requestType schemas.RequestType) {
-	if entry == nil || result == nil || p.batchStore == nil {
+	if entry == nil || result == nil || p.batchStore == nil || !p.ProviderJobAccountingEnabled() {
 		return
 	}
 	resp := result.VideoGenerationResponse
@@ -1321,6 +1327,7 @@ type LoggerPlugin struct {
 	batchCancel                  context.CancelFunc // Cancels batchCtx
 	batchSweeperCancel           context.CancelFunc // Cancels the batch accounting sweeper, when enabled
 	videoSweeperCancel           context.CancelFunc // Cancels the video accounting sweeper, when enabled
+	providerJobAccountingOff     atomic.Bool        // Fork (TXE-6519): client.disable_provider_job_accounting; while set no sweeper runs and no provider job row is written
 	batchWriterDone              chan struct{}      // Closed by batchWriter on exit; receiving from it transfers writeQueue ownership to Cleanup
 	recoveredBatch               []*writeQueueEntry // batchWriter parks its in-memory batch here before exiting; safe to read after batchWriterDone closes (happens-before)
 	userAgentMappings            atomic.Value       // []compiledUserAgentMapping, read from request hot paths
@@ -1584,6 +1591,36 @@ func (p *LoggerPlugin) notifyLogCallbacks(ctx context.Context, entry *logstore.L
 	}
 }
 
+// SetProviderJobAccountingEnabled applies client.disable_provider_job_accounting (fork, TXE-6519).
+// Disabled, the plugin writes no provider job row when a video or batch is created or polled,
+// settles nothing inline from a results or retrieve response, and refuses to start a sweeper; a
+// sweeper already running is cancelled here. Enabled again, the server's wiring starts the
+// sweepers as at bootstrap; jobs created while it was off were never recorded and are not
+// recovered, since they were never this gateway's to settle. The flag is one atomic load on the
+// post-hook path of a video or batch request and is never read for chat.
+func (p *LoggerPlugin) SetProviderJobAccountingEnabled(enabled bool) {
+	p.providerJobAccountingOff.Store(!enabled)
+	if enabled {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.batchSweeperCancel != nil {
+		p.batchSweeperCancel()
+		p.batchSweeperCancel = nil
+	}
+	if p.videoSweeperCancel != nil {
+		p.videoSweeperCancel()
+		p.videoSweeperCancel = nil
+	}
+}
+
+// ProviderJobAccountingEnabled reports whether the plugin records and settles provider jobs;
+// see SetProviderJobAccountingEnabled.
+func (p *LoggerPlugin) ProviderJobAccountingEnabled() bool {
+	return !p.providerJobAccountingOff.Load()
+}
+
 func (p *LoggerPlugin) SetBatchUsageReporter(reporter jobaccounting.UsageReporter) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -1599,6 +1636,12 @@ func (p *LoggerPlugin) SetSettlementTracer(tracer schemas.Tracer) {
 }
 
 func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher jobaccounting.BatchResultFetcher, interval time.Duration, kvStore schemas.KVStore) context.CancelFunc {
+	if !p.ProviderJobAccountingEnabled() {
+		if p.logger != nil {
+			p.logger.Info("batch accounting sweeper not started: client.disable_provider_job_accounting is set")
+		}
+		return func() {}
+	}
 	if fetcher == nil || p.store == nil || p.batchStore == nil || p.pricingManager == nil {
 		if p.logger != nil {
 			p.logger.Warn("batch accounting sweeper not started: missing fetcher, store, batch store, or pricing manager")
@@ -1621,6 +1664,13 @@ func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher jobaccounting.BatchRe
 		if p.logger != nil {
 			p.logger.Warn("batch accounting sweeper not started: logging plugin is shutting down")
 		}
+		return func() {}
+	}
+	// Re-checked under the lock: a save that turned accounting off between the check above
+	// and here cancelled the previous sweeper, and this one must not replace it.
+	if p.providerJobAccountingOff.Load() {
+		p.mu.Unlock()
+		cancel()
 		return func() {}
 	}
 	if p.batchSweeperCancel != nil {
@@ -1649,6 +1699,12 @@ func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher jobaccounting.BatchRe
 // its own client, and the two run on very different clocks — a batch is checked
 // every few minutes for hours, a video every thirty seconds for a few minutes.
 func (p *LoggerPlugin) StartVideoAccountingSweeper(retriever jobaccounting.VideoRetriever, interval time.Duration, kvStore schemas.KVStore) context.CancelFunc {
+	if !p.ProviderJobAccountingEnabled() {
+		if p.logger != nil {
+			p.logger.Info("video accounting sweeper not started: client.disable_provider_job_accounting is set")
+		}
+		return func() {}
+	}
 	if retriever == nil || p.store == nil || p.batchStore == nil || p.pricingManager == nil {
 		if p.logger != nil {
 			p.logger.Warn("video accounting sweeper not started: missing retriever, store, job store, or pricing manager")
@@ -1665,6 +1721,13 @@ func (p *LoggerPlugin) StartVideoAccountingSweeper(retriever jobaccounting.Video
 		if p.logger != nil {
 			p.logger.Warn("video accounting sweeper not started: logging plugin is shutting down")
 		}
+		return func() {}
+	}
+	// Re-checked under the lock: a save that turned accounting off between the check above
+	// and here cancelled the previous sweeper, and this one must not replace it.
+	if p.providerJobAccountingOff.Load() {
+		p.mu.Unlock()
+		cancel()
 		return func() {}
 	}
 	if p.videoSweeperCancel != nil {

@@ -5018,3 +5018,161 @@ func TestA2ARawCaptureContentPolicy(t *testing.T) {
 		}
 	}
 }
+
+// --- Fork (TXE-6519): client.disable_provider_job_accounting ---
+
+type noopVideoRetriever struct{}
+
+func (noopVideoRetriever) RetrieveVideo(context.Context, *cstables.TableProviderJob) (*schemas.BifrostVideoGenerationResponse, error) {
+	return nil, nil
+}
+
+// touchedSweepStore counts the provider job store calls the inline settlement paths make, so a
+// test can tell "nothing reached the store" from "the store had nothing to say".
+type touchedSweepStore struct {
+	jobaccounting.SweepStore
+	calls int
+}
+
+func (s *touchedSweepStore) GetProviderJob(ctx context.Context, jobID string) (*cstables.TableProviderJob, error) {
+	s.calls++
+	return s.SweepStore.GetProviderJob(ctx, jobID)
+}
+
+func (s *touchedSweepStore) ClaimProviderJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error) {
+	s.calls++
+	return s.SweepStore.ClaimProviderJob(ctx, jobID, runnerID, staleBefore, allowUnpriceable)
+}
+
+func (s *touchedSweepStore) UpsertProviderJob(ctx context.Context, job *cstables.TableProviderJob) error {
+	s.calls++
+	return s.SweepStore.UpsertProviderJob(ctx, job)
+}
+
+func sweepersRegistered(p *LoggerPlugin) (batch, video bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.batchSweeperCancel != nil, p.videoSweeperCancel != nil
+}
+
+// With the switch off, neither sweeper starts: each start returns a no-op cancel and registers
+// nothing, so Bifrost makes no vendor call of its own between requests (contract C3). The
+// default starts both, as before the switch existed, and turning the switch off on a running
+// deployment cancels the sweepers already running.
+func TestProviderJobAccountingSwitchGatesTheSweepers(t *testing.T) {
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, newTestStore(t), newFakeBatchStore(), newTestPricingManager(t), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+	require.True(t, plugin.ProviderJobAccountingEnabled(), "accounting is on until a deployment turns it off")
+
+	plugin.SetProviderJobAccountingEnabled(false)
+	batchCancel := plugin.StartBatchAccountingSweeper(noopBatchFetcher{}, time.Hour, nil)
+	videoCancel := plugin.StartVideoAccountingSweeper(noopVideoRetriever{}, time.Hour, nil)
+	require.NotNil(t, batchCancel)
+	require.NotNil(t, videoCancel)
+	batchCancel()
+	videoCancel()
+	batch, video := sweepersRegistered(plugin)
+	require.False(t, batch, "no batch sweeper may run while accounting is off")
+	require.False(t, video, "no video sweeper may run while accounting is off")
+
+	plugin.SetProviderJobAccountingEnabled(true)
+	plugin.StartBatchAccountingSweeper(noopBatchFetcher{}, time.Hour, nil)
+	plugin.StartVideoAccountingSweeper(noopVideoRetriever{}, time.Hour, nil)
+	batch, video = sweepersRegistered(plugin)
+	require.True(t, batch, "the batch sweeper starts once accounting is on again")
+	require.True(t, video, "the video sweeper starts once accounting is on again")
+
+	plugin.SetProviderJobAccountingEnabled(false)
+	batch, video = sweepersRegistered(plugin)
+	require.False(t, batch, "turning accounting off cancels the running batch sweeper")
+	require.False(t, video, "turning accounting off cancels the running video sweeper")
+}
+
+// Off, a video create and a batch create write no provider job row: Tokun owns task and batch
+// state (contract C7, C8), and a row here would hand the job to a sweeper that must not run.
+// The same creates write their rows once accounting is on, so the default is unchanged.
+func TestRecordJobLifecycle_WritesNothingWhileProviderJobAccountingOff(t *testing.T) {
+	plugin, bs := newVideoLifecyclePlugin(t)
+	plugin.SetProviderJobAccountingEnabled(false)
+
+	videoEntry := &logstore.Log{ID: "req-video-off", Provider: string(schemas.OpenAI), Model: "sora-2", SelectedKeyID: "key-abc"}
+	videoResult := &schemas.BifrostResponse{VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "vid_off", Status: schemas.VideoStatusQueued}}
+	plugin.recordVideoJobLifecycle(videoEntry, videoResult, schemas.VideoGenerationRequest)
+	_, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_off"))
+	require.Error(t, err, "a video create must write no provider job row while accounting is off")
+
+	batchEntry := &logstore.Log{ID: "req-batch-off", Provider: string(schemas.OpenAI), Model: "gpt-4o-mini"}
+	batchResult := &schemas.BifrostResponse{BatchCreateResponse: &schemas.BifrostBatchCreateResponse{ID: "batch_off", Endpoint: string(schemas.BatchEndpointChatCompletions), Status: schemas.BatchStatusValidating}}
+	plugin.recordBatchJobLifecycle(batchEntry, batchResult)
+	_, err = bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openai", "batch_off"))
+	require.Error(t, err, "a batch create must write no provider job row while accounting is off")
+
+	plugin.SetProviderJobAccountingEnabled(true)
+	plugin.recordVideoJobLifecycle(videoEntry, videoResult, schemas.VideoGenerationRequest)
+	plugin.recordBatchJobLifecycle(batchEntry, batchResult)
+	_, err = bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_off"))
+	require.NoError(t, err, "with accounting on the same video create writes its row")
+	_, err = bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openai", "batch_off"))
+	require.NoError(t, err, "with accounting on the same batch create writes its row")
+}
+
+// Off, fetching a batch's results or a finished video settles nothing: the provider job store
+// is never touched, while the log row still names the batch and its counts. The same responses
+// reach the store once accounting is on, so it is the gate that kept it idle, not the inputs.
+func TestInlineSettlementSkippedWhileProviderJobAccountingOff(t *testing.T) {
+	store := &touchedSweepStore{SweepStore: newFakeBatchStore()}
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, newTestStore(t), store, newTestPricingManager(t), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+
+	results := func() (*logstore.Log, *schemas.BifrostResponse) {
+		return &logstore.Log{ID: "req-results", Provider: string(schemas.OpenAI), Model: "gpt-4o-mini"},
+			&schemas.BifrostResponse{BatchResultsResponse: &schemas.BifrostBatchResultsResponse{BatchID: "batch_results", Endpoint: schemas.BatchEndpointChatCompletions}}
+	}
+	retrieve := func() (*logstore.Log, *schemas.BifrostResponse) {
+		return &logstore.Log{ID: "req-video-done", Provider: string(schemas.OpenAI), Model: "sora-2"},
+			&schemas.BifrostResponse{VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "vid_done", Status: schemas.VideoStatusCompleted}}
+	}
+
+	plugin.SetProviderJobAccountingEnabled(false)
+	entry, result := results()
+	plugin.accountBatchResults(entry, result, nil)
+	videoEntry, videoResult := retrieve()
+	plugin.accountVideoResults(videoEntry, videoResult, nil)
+	require.Zero(t, store.calls, "nothing may touch the provider job store while accounting is off")
+	require.NotNil(t, entry.BatchDebugParsed, "the log row still names the batch")
+	require.Equal(t, "batch_results", entry.BatchDebugParsed.BatchID)
+	require.Nil(t, entry.BatchDebugParsed.Accounting, "nothing was settled")
+
+	plugin.SetProviderJobAccountingEnabled(true)
+	entry, result = results()
+	plugin.accountBatchResults(entry, result, nil)
+	videoEntry, videoResult = retrieve()
+	plugin.accountVideoResults(videoEntry, videoResult, nil)
+	require.Positive(t, store.calls, "with accounting on the same responses reach the provider job store")
+}
+
+// BenchmarkRecordVideoJobLifecycleGate measures the guard a video request's post-hook pays
+// before any row is written: the nil checks plus, since TXE-6519, one atomic load of the
+// accounting switch. The response carries no video, so the guard is all that runs.
+func BenchmarkRecordVideoJobLifecycleGate(b *testing.B) {
+	plugin := &LoggerPlugin{ctx: context.Background(), batchStore: newFakeBatchStore(), logger: testLogger{}}
+	entry := &logstore.Log{Provider: string(schemas.OpenAI)}
+	result := &schemas.BifrostResponse{}
+	b.ReportAllocs()
+	for b.Loop() {
+		plugin.recordVideoJobLifecycle(entry, result, schemas.VideoGenerationRequest)
+	}
+}
+
+// BenchmarkProviderJobAccountingEnabled is the switch read on its own.
+func BenchmarkProviderJobAccountingEnabled(b *testing.B) {
+	plugin := &LoggerPlugin{}
+	b.ReportAllocs()
+	for b.Loop() {
+		if !plugin.ProviderJobAccountingEnabled() {
+			b.Fatal("accounting is on by default")
+		}
+	}
+}

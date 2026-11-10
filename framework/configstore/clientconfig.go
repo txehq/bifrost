@@ -130,6 +130,8 @@ type ClientConfig struct {
 	HideDeletedVirtualKeysInFilters       bool                                  `json:"hide_deleted_virtual_keys_in_filters"`        // Hide deleted virtual keys from logs/MCP filter data
 	DeleteExpiredVirtualKeys              bool                                  `json:"delete_expired_virtual_keys"`                 // Delete expired virtual keys by default; a key's delete_after_expire overrides this
 	EnforceVKObjectOwnership              bool                                  `json:"enforce_vk_object_ownership"`                 // Restrict provider objects (files, batches, containers, ...) to the virtual key that created them
+	DisableProviderJobAccounting          bool                                  `json:"disable_provider_job_accounting"`             // Fork (TXE-6519): no video or batch accounting sweeper, and no provider job row when a video or batch is created
+	DisablePassthroughSSEHeartbeat        bool                                  `json:"disable_passthrough_sse_heartbeat"`           // Fork (TXE-6519): no SSE comment heartbeat on an idle passthrough stream; the caller gets the vendor's bytes only
 	HiddenRequestTypes                    []string                              `json:"hidden_request_types,omitempty"`              // Request types excluded from dashboard and log API reads; logs are still written
 	RoutingChainMaxDepth                  int                                   `json:"routing_chain_max_depth"`                     // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`           // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
@@ -303,6 +305,14 @@ func (c *ClientConfig) generateClientConfigHashes(prior bool) (string, string, e
 	// Default is true; only hash the opt-out to avoid config hash churn on upgrade.
 	if !c.EnforceVKObjectOwnership {
 		added.Write([]byte("enforceVKObjectOwnership:false"))
+	}
+	// The fork's deployment switches default to off; only the opt-in is hashed, so an
+	// unchanged config.json keeps the hash its checkpoint stored (TXE-6519).
+	if c.DisableProviderJobAccounting {
+		added.Write([]byte("disableProviderJobAccounting:true"))
+	}
+	if c.DisablePassthroughSSEHeartbeat {
+		added.Write([]byte("disablePassthroughSSEHeartbeat:true"))
 	}
 
 	// Always hash when non-zero — explicitly setting the default (10) is a meaningful

@@ -47,6 +47,10 @@ When the URL path names a model (for example `models/{model}` or a deployment pa
 Claude Code OAuth sign-in (`Authorization: Bearer sk-ant-oat…`) is handled separately on the regular `/anthropic` route, where Bifrost forwards the caller's token instead of selecting a key. Point Claude Code there — no passthrough endpoint needed. See [Claude Code authentication](../cli-agents/claude-code#use-a-claude-subscription-through-bifrost).
 </Note>
 
+<Note>
+**Idle streams and the heartbeat switch (txehq/bifrost).** While a streamed passthrough response is `text/event-stream` and the provider is not Gemini or Vertex, Bifrost writes an SSE comment line (`: heartbeat`) into the stream when the vendor has been silent for a second, so a client that disconnected during a long idle gap is noticed. SSE parsers ignore the comment, but it is a byte the vendor did not send. A deployment that promises its callers the vendor's exact bytes turns it off with `client.disable_passthrough_sse_heartbeat: true` in `config.json`, or through `PUT /api/config`; the change applies to the next stream without a restart. With it off, an idle stream carries only the vendor's bytes, and a disconnected client is noticed at the vendor's next event instead.
+</Note>
+
 ---
 
 ## Provider Selection Rules

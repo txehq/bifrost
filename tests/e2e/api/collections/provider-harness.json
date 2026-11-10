@@ -297122,6 +297122,526 @@
           }
         }
       ]
+    },
+    {
+      "name": "329. Fork deployment switches: provider job accounting off and passthrough heartbeat off (provider error fixture, job accounting switch)",
+      "description": "Local fixture regression for TXE-6519 (Bifrost–Tokun contract C3 and C11), no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, which sets client.disable_provider_job_accounting and client.disable_passthrough_sse_heartbeat and the harness's default setup token, and run with providerErrorFixture=1; every case is skipped otherwise. 329.1 reads both switches back through GET /api/config. 329.3 and 329.4 create a video task and a batch through the gateway; the fixture answers in OpenAI shape, keeps the video complete on retrieve and the batch in progress, and counts every call under a fixed key. 329.5 reads the fixture's counters at once and again after 70 seconds, longer than the batch sweeper's one-minute tick and the video sweeper's 30-second tick: only the creates (and the JSONL upload an inline batch makes) reached the fixture, so Bifrost made no vendor call of its own between requests. 329.6 to 329.9 show the video's retrieve, download and delete (the fork's cancel; TXE-6521 adds POST /v1/videos/{id}/cancel) still work with no provider job record, each reaching the fixture exactly once. 329.10 streams a passthrough chat completion whose vendor pauses 2.5 seconds between events, longer than the one-second heartbeat interval, and 329.11 compares the bytes the caller read with the bytes the fixture sent (GET /__sent). Red before the switches existed: 329.1 reported no switch, the video sweeper polled GET /v1/videos/{id} within 60 seconds, and the passthrough body carried ': heartbeat' lines.",
+      "item": [
+        {
+          "name": "329.1 openai fixture gateway reads both fork switches back through GET /api/config (job accounting switch)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('disable_provider_job_accounting reads back on', function () {",
+                  "  pm.expect(j.client_config && j.client_config.disable_provider_job_accounting, pm.response.text().slice(0, 400)).to.equal(true);",
+                  "});",
+                  "pm.test('disable_passthrough_sse_heartbeat reads back on', function () {",
+                  "  pm.expect(j.client_config && j.client_config.disable_passthrough_sse_heartbeat, pm.response.text().slice(0, 400)).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "bifrost-e2e-setup-token"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "329.2 fixture hit counters reset before the openai job accounting rows",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('counters cleared', function () { pm.expect(j.data[0].reset, pm.response.text()).to.equal(true); });",
+                  "pm.collectionVariables.unset('fixtureSwitchVideoId');",
+                  "pm.collectionVariables.unset('fixtureSwitchBatchId');",
+                  "pm.collectionVariables.unset('fixtureSwitchPassthroughBody');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "http://127.0.0.1:8791/__reset"
+          }
+        },
+        {
+          "name": "329.3 openai video create through the gateway is queued at the fixture (job accounting switch)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('create returns a queued task whose id names the provider', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.id, 'no task id: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('queued');",
+                  "});",
+                  "if (j && j.id) { pm.collectionVariables.set('fixtureSwitchVideoId', j.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/sora-fixture\",\n  \"prompt\": \"A paper boat drifts across a still pond at dawn\",\n  \"seconds\": \"4\",\n  \"size\": \"720x1280\"\n}"
+            }
+          }
+        },
+        {
+          "name": "329.4 openai batch create with inline requests through the gateway is accepted at the fixture (job accounting switch)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('create returns a batch that is not finished', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.id, 'no batch id: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(['validating', 'in_progress'], 'status: ' + pm.response.text()).to.include(j.status);",
+                  "});",
+                  "if (j && j.id) { pm.collectionVariables.set('fixtureSwitchBatchId', j.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-ok~batch\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\",\n  \"requests\": [\n    {\n      \"custom_id\": \"fixture-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"upstream-ok~batch\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"hi\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "329.5 openai video and batch creates reached the fixture once each, and 70 seconds later nothing else has: no vendor call between requests (job accounting switch)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var h = pm.response.json().data[0].hits;",
+                  "pm.test('only the creates reached the fixture so far', function () {",
+                  "  pm.expect(h['video.create'], JSON.stringify(h)).to.equal(1);",
+                  "  pm.expect(h['batch.create'], JSON.stringify(h)).to.equal(1);",
+                  "  pm.expect(h['file.upload'], 'an inline batch uploads its JSONL once: ' + JSON.stringify(h)).to.equal(1);",
+                  "  pm.expect(h['video.retrieve'], JSON.stringify(h)).to.equal(undefined);",
+                  "  pm.expect(h['batch.retrieve'], JSON.stringify(h)).to.equal(undefined);",
+                  "});",
+                  "// Longer than both sweeper ticks (one minute for batches, 30 seconds for videos) and than the",
+                  "// first poll each kind schedules at create. With accounting on, the video sweeper would have",
+                  "// asked the fixture for the task by now; with it off, nothing but the caller ever does.",
+                  "setTimeout(function () {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8791/__hits', method: 'GET' }, function (err, res) {",
+                  "    pm.test('after 70 s no poll, download or results fetch reached the fixture', function () {",
+                  "      pm.expect(err, 'fixture unreachable: ' + err).to.equal(null);",
+                  "      var later = res.json().data[0].hits;",
+                  "      pm.expect(later['video.create'], JSON.stringify(later)).to.equal(1);",
+                  "      pm.expect(later['batch.create'], JSON.stringify(later)).to.equal(1);",
+                  "      pm.expect(later['file.upload'], JSON.stringify(later)).to.equal(1);",
+                  "      pm.expect(later['video.retrieve'], 'the video sweeper polled: ' + JSON.stringify(later)).to.equal(undefined);",
+                  "      pm.expect(later['video.content'], 'the video sweeper downloaded: ' + JSON.stringify(later)).to.equal(undefined);",
+                  "      pm.expect(later['batch.retrieve'], 'the batch sweeper polled: ' + JSON.stringify(later)).to.equal(undefined);",
+                  "      pm.expect(later['file.content'], 'the batch sweeper fetched results: ' + JSON.stringify(later)).to.equal(undefined);",
+                  "    });",
+                  "  });",
+                  "}, 70000);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "http://127.0.0.1:8791/__hits"
+          }
+        },
+        {
+          "name": "329.6 openai video retrieve through the gateway works with no provider job record (job accounting switch)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.collectionVariables.get('fixtureSwitchVideoId');",
+                  "var j = pm.response.json();",
+                  "pm.test('retrieve returns the completed task', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.id, pm.response.text()).to.eql(id);",
+                  "  pm.expect(j.status, pm.response.text()).to.eql('completed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/{{fixtureSwitchVideoId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "{{fixtureSwitchVideoId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "329.7 openai video content download through the gateway works with no provider job record (job accounting switch)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('download returns the fixture video bytes as video/*', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 300)).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('Content-Type') || '', 'content type').to.match(/^video\\//);",
+                  "  pm.expect(pm.response.text(), 'body').to.include('FIXTURE-MP4');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/{{fixtureSwitchVideoId}}/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "{{fixtureSwitchVideoId}}",
+                "content"
+              ]
+            }
+          }
+        },
+        {
+          "name": "329.8 openai video delete (the fork's cancel) through the gateway works with no provider job record (job accounting switch)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.collectionVariables.get('fixtureSwitchVideoId');",
+                  "var j = pm.response.json();",
+                  "pm.test('delete reports the task deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.id, pm.response.text()).to.eql(id);",
+                  "  pm.expect(j.deleted, pm.response.text()).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/{{fixtureSwitchVideoId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "{{fixtureSwitchVideoId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "329.9 only the caller's own openai video calls reached the fixture (job accounting switch)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var h = pm.response.json().data[0].hits;",
+                  "pm.test('retrieve, download and delete reached the fixture exactly once each', function () {",
+                  "  pm.expect(h['video.retrieve'], JSON.stringify(h)).to.equal(1);",
+                  "  pm.expect(h['video.content'], JSON.stringify(h)).to.equal(1);",
+                  "  pm.expect(h['video.delete'], JSON.stringify(h)).to.equal(1);",
+                  "  pm.expect(h['batch.retrieve'], 'nothing polled the batch: ' + JSON.stringify(h)).to.equal(undefined);",
+                  "  pm.expect(h['file.content'], 'nothing fetched results: ' + JSON.stringify(h)).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "http://127.0.0.1:8791/__hits"
+          }
+        },
+        {
+          "name": "329.10 openai passthrough SSE stream idle for 2.5 seconds reaches the caller without a heartbeat (passthrough heartbeat switch)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the stream is SSE and carries no gateway heartbeat', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 300)).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('Content-Type') || '', 'content type').to.include('text/event-stream');",
+                  "  pm.expect(body, 'a gateway heartbeat comment was added').to.not.include(': heartbeat');",
+                  "  pm.expect(body, 'the vendor stream ended').to.include('data: [DONE]');",
+                  "});",
+                  "pm.collectionVariables.set('fixtureSwitchPassthroughBody', body);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"upstream-idle-stream\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"stream\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "329.11 the openai passthrough stream reached the caller byte for byte: the body equals what the fixture sent (passthrough heartbeat switch)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var sent = pm.response.json().data[0];",
+                  "var relayed = pm.collectionVariables.get('fixtureSwitchPassthroughBody');",
+                  "pm.test('the caller read exactly the vendor bytes', function () {",
+                  "  pm.expect(sent.body, 'the fixture recorded no stream for upstream-idle-stream').to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(relayed, 'the passthrough row recorded no body').to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(relayed).to.equal(sent.body);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "http://127.0.0.1:8791/__sent?model=upstream-idle-stream"
+          }
+        }
+      ]
     }
   ]
 }

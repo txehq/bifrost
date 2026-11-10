@@ -369,6 +369,10 @@ This binding is on by default and is controlled by **Restrict Provider Objects t
 A Gemini file named by its URI (`https://generativelanguage.googleapis.com/v1beta/files/<id>`) in a file or image block, or in the contents a cached content is created from, is checked as that file. Passthrough routes are checked too: the object a passthrough path addresses (for example `/openai_passthrough/v1/files/<id>/content`), and the files, containers and cached contents its JSON body names. A virtual key cannot list files, batches, containers, container files, videos or cached contents through a passthrough route, since the provider's raw page cannot be narrowed; it is refused with `403`, and the gateway's own list routes show the key's objects. The items of an inline batch are checked the same way as a passthrough body, and a container a Responses `code_interpreter` tool asked the provider to create automatically belongs to the key that asked for it.
 </Note>
 
+<Note>
+**Settlement and the accounting switch (txehq/bifrost).** Bifrost prices a batch and an asynchronous video job when they finish, not when they are created: the logging plugin records each one as a provider job, polls the provider on its own (every minute for a batch, every 30 seconds for a video), downloads a completed batch's results, and writes a settled-cost row. A deployment that owns task and batch state itself, and must not have Bifrost call a vendor outside its own requests, turns this off with `client.disable_provider_job_accounting: true` in `config.json`, or through `PUT /api/config`. With it off, no provider job row is written, neither sweeper runs, and `/v1/batches/{id}/results` and a video retrieve settle nothing; retrieving, cancelling and deleting a batch, and retrieving, deleting and downloading a video, work as before. The change applies on save without a restart; a job created while it was off is never settled by Bifrost.
+</Note>
+
 ```python
 # List batches (specify provider)
 response = client.batches.list(

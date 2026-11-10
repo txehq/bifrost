@@ -1296,6 +1296,10 @@ export const coreConfigSchema = z.object({
 		})
 		.optional(),
 	mcp_enable_temp_token_auth: z.boolean().default(false),
+	// Fork (TXE-6519) deployment switches: optional with no default, so a save never sends a value
+	// the API did not return.
+	disable_provider_job_accounting: z.boolean().optional(),
+	disable_passthrough_sse_heartbeat: z.boolean().optional(),
 	mcp_oauth_private_allowlist: z.array(z.string()).optional(),
 	a2a_private_allowlist: z.array(z.string()).optional(),
 	skills_external_client_url: secretVarSchema.optional(),

@@ -174,3 +174,54 @@ test("a /pp/ provider call is kept byte for byte until a reset", async (t) => {
   await fetch(`${base}/__reset`, { method: "POST" });
   assert.deepEqual(await wire(), []);
 });
+
+// Folder 289 (TXE-6519): the OpenAI-shaped video, file and batch endpoints answer and count under fixed
+// keys, so a case can prove the gateway's accounting sweeper never called them on its own.
+test("video, file and batch endpoints answer in OpenAI shape and count their hits", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}`;
+  await fetch(`${base}/__reset`, { method: "POST" });
+  const created = await post({ model: "sora-fixture", prompt: "a clip" }, "/v1/videos");
+  assert.equal(created.status, 200);
+  const video = await created.json();
+  assert.equal(video.object, "video");
+  assert.equal(video.status, "queued");
+  const retrieved = await (await fetch(`${base}/v1/videos/${video.id}`)).json();
+  assert.equal(retrieved.status, "completed");
+  const content = await fetch(`${base}/v1/videos/${video.id}/content`);
+  assert.equal(content.headers.get("content-type"), "video/mp4");
+  assert.ok((await content.text()).includes("FIXTURE-MP4"));
+  const deleted = await (await fetch(`${base}/v1/videos/${video.id}`, { method: "DELETE" })).json();
+  assert.equal(deleted.deleted, true);
+  const file = await (await fetch(`${base}/v1/files`, { method: "POST", body: "not a multipart body, drained all the same" })).json();
+  assert.equal(file.purpose, "batch");
+  const batch = await (await post({ input_file_id: file.id, endpoint: "/v1/chat/completions" }, "/v1/batches")).json();
+  assert.equal(batch.object, "batch");
+  const polled = await (await fetch(`${base}/v1/batches/${batch.id}`)).json();
+  assert.equal(polled.status, "in_progress");
+  const hits = (await (await fetch(`${base}/__hits`)).json()).data[0].hits;
+  const counted = {};
+  for (const key of ["video.create", "video.retrieve", "video.content", "video.delete", "file.upload", "batch.create", "batch.retrieve"]) counted[key] = hits[key];
+  assert.deepEqual(counted, { "video.create": 1, "video.retrieve": 1, "video.content": 1, "video.delete": 1, "file.upload": 1, "batch.create": 1, "batch.retrieve": 1 });
+  assert.equal(hits["file.content"], undefined, "nothing downloaded a results file");
+});
+
+// upstream-idle-stream answers a streamed chat request in two writes with a 2.5 s gap, and /__sent keeps the
+// exact bytes, so a passthrough case can compare what the gateway relayed byte for byte.
+test("upstream-idle-stream pauses between its events and records the bytes it sent", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}`;
+  const started = Date.now();
+  const res = await post({ model: "upstream-idle-stream", messages: [{ role: "user", content: "hi" }], stream: true });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("content-type"), "text/event-stream");
+  const body = await res.text();
+  assert.ok(Date.now() - started >= 2000, "the stream must stay idle for longer than a heartbeat interval");
+  assert.ok(body.startsWith("data: "), body);
+  assert.ok(body.endsWith("data: [DONE]\n\n"), body);
+  const sent = (await (await fetch(`${base}/__sent?model=upstream-idle-stream`)).json()).data[0];
+  assert.equal(sent.body, body);
+  await fetch(`${base}/__reset`, { method: "POST" });
+  const cleared = (await (await fetch(`${base}/__sent?model=upstream-idle-stream`)).json()).data[0];
+  assert.equal(cleared.body, null, "a reset clears the recorded stream");
+});

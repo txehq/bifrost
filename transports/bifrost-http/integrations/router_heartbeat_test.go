@@ -10,6 +10,7 @@ import (
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/framework/configstore"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -184,5 +185,93 @@ func Test_passthroughHeartbeatEligible(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, passthroughHeartbeatEligible(tc.provider, tc.contentType))
 		})
+	}
+}
+
+// passthroughIdleStreamResult is what the caller of an idle passthrough stream read: the body,
+// the forwarded status and one vendor header, so a test can check the bytes and the envelope.
+type passthroughIdleStreamResult struct {
+	body     string
+	status   int
+	vendorID string
+}
+
+// passthroughIdleStream drives servePassthroughStream with a vendor SSE stream that goes idle
+// for longer than the heartbeat interval between its two events, inside a synctest bubble so the
+// idle gap is fake time, and returns what the caller read.
+func passthroughIdleStream(t *testing.T, store *mockHandlerStore) passthroughIdleStreamResult {
+	t.Helper()
+	var result passthroughIdleStreamResult
+	synctest.Test(t, func(t *testing.T) {
+		stream := make(chan *schemas.BifrostStreamChunk)
+		router := NewGenericRouter(nil, store, nil, nil, nil, bifrost.NewNoOpLogger())
+		ctx := &fasthttp.RequestCtx{}
+		go func() {
+			stream <- &schemas.BifrostStreamChunk{BifrostPassthroughResponse: &schemas.BifrostPassthroughResponse{
+				StatusCode: fasthttp.StatusOK,
+				Headers:    map[string]string{"Content-Type": "text/event-stream; charset=utf-8", "X-Vendor-Request-Id": "req-vendor-1"},
+				Body:       []byte("data: first\n\n"),
+			}}
+			// Longer than one heartbeat tick, so a heartbeat that is on fires at least once.
+			time.Sleep(3*lib.DefaultSSEHeartbeatInterval + time.Millisecond)
+			stream <- &schemas.BifrostStreamChunk{BifrostPassthroughResponse: &schemas.BifrostPassthroughResponse{Body: []byte("data: second\n\ndata: [DONE]\n\n")}}
+			close(stream)
+		}()
+		router.servePassthroughStream(ctx, nil, func() {}, schemas.OpenAI, stream)
+
+		body, err := io.ReadAll(ctx.Response.BodyStream())
+		require.NoError(t, err)
+		result = passthroughIdleStreamResult{
+			body:     string(body),
+			status:   ctx.Response.StatusCode(),
+			vendorID: string(ctx.Response.Header.Peek("X-Vendor-Request-Id")),
+		}
+	})
+	return result
+}
+
+// Test_servePassthroughStreamHeartbeatIsTheDefault pins today's behaviour: with the switch unset,
+// an idle SSE passthrough carries the gateway's comment heartbeat between the vendor's events.
+func Test_servePassthroughStreamHeartbeatIsTheDefault(t *testing.T) {
+	got := passthroughIdleStream(t, &mockHandlerStore{})
+	assert.Equal(t, fasthttp.StatusOK, got.status)
+	assert.Equal(t, "req-vendor-1", got.vendorID, "the vendor's headers pass through")
+	assert.Contains(t, got.body, ": heartbeat\n")
+	assert.True(t, strings.HasPrefix(got.body, "data: first\n\n"), got.body)
+	assert.True(t, strings.HasSuffix(got.body, "data: second\n\ndata: [DONE]\n\n"), got.body)
+}
+
+// Test_servePassthroughStreamWithHeartbeatOffIsByteIdentical pins the fork's switch (TXE-6519,
+// contract C11): with client.disable_passthrough_sse_heartbeat set, the caller reads exactly the
+// bytes the vendor sent across an idle gap longer than the heartbeat interval, and nothing more.
+func Test_servePassthroughStreamWithHeartbeatOffIsByteIdentical(t *testing.T) {
+	got := passthroughIdleStream(t, &mockHandlerStore{disablePassthroughHeartbeat: true})
+	assert.Equal(t, fasthttp.StatusOK, got.status)
+	assert.Equal(t, "req-vendor-1", got.vendorID, "the vendor's headers pass through")
+	assert.Equal(t, "data: first\n\ndata: second\n\ndata: [DONE]\n\n", got.body)
+}
+
+// BenchmarkPassthroughHeartbeatEligible is the heartbeat decision handlePassthroughStream made
+// at the start of every eligible passthrough stream before TXE-6519: the content-type check alone.
+func BenchmarkPassthroughHeartbeatEligible(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		if !passthroughHeartbeatEligible(schemas.OpenAI, "text/event-stream; charset=utf-8") {
+			b.Fatal("an SSE OpenAI stream is eligible")
+		}
+	}
+}
+
+// BenchmarkPassthroughHeartbeatDecision is the same decision with the fork's switch read through
+// the production handler store, a *lib.Config, whose accessor takes the config's read lock. It
+// runs once per stream, never per chunk.
+func BenchmarkPassthroughHeartbeatDecision(b *testing.B) {
+	store := &lib.Config{ClientConfig: &configstore.ClientConfig{}}
+	router := NewGenericRouter(nil, store, nil, nil, nil, bifrost.NewNoOpLogger())
+	b.ReportAllocs()
+	for b.Loop() {
+		if !(passthroughHeartbeatEligible(schemas.OpenAI, "text/event-stream; charset=utf-8") && router.passthroughHeartbeatEnabled()) {
+			b.Fatal("the heartbeat is on by default")
+		}
 	}
 }

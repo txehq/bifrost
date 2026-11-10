@@ -1,7 +1,10 @@
 {
+  "setup_token": "bifrost-e2e-setup-token",
   "client": {
     "allow_per_request_raw_override": true,
-    "enforce_auth_on_inference": false
+    "enforce_auth_on_inference": false,
+    "disable_provider_job_accounting": true,
+    "disable_passthrough_sse_heartbeat": true
   },
   "framework": {
     "pricing": {
@@ -58,8 +61,12 @@
             "decision-emulated",
             "pp-custom-legacy",
             "pp-embedding",
-            "gpt-6-pp-search"
+            "gpt-6-pp-search",
+            "sora-fixture",
+            "upstream-idle-stream",
+            "upstream-ok~batch"
           ],
+          "use_for_batch_api": true,
           "weight": 1
         }
       ],

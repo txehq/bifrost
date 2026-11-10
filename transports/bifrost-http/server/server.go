@@ -1592,6 +1592,10 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 	s.Config.Mu.Lock()
 	*s.Config.ClientConfig = *config
 	s.Config.Mu.Unlock()
+	// The sweepers are wired at bootstrap from the switch's value then; a save that flips
+	// client.disable_provider_job_accounting is applied here, against the logging plugin's own
+	// state rather than the config, which the save has already published (fork, TXE-6519).
+	s.ReconcileProviderJobAccounting()
 	if s.LogsCleaner != nil {
 		s.LogsCleaner.UpdateRetentionDays(config.LogRetentionDays)
 	}

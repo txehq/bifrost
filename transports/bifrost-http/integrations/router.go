@@ -3853,6 +3853,13 @@ func passthroughHeartbeatEligible(provider schemas.ModelProvider, contentType st
 	return strings.EqualFold(strings.TrimSpace(mediaType), "text/event-stream")
 }
 
+// passthroughHeartbeatEnabled reports the deployment's client.disable_passthrough_sse_heartbeat
+// switch (fork, TXE-6519) through the handler store, so a config save is honoured by the next
+// stream without a restart. A router built without a store keeps the heartbeat, as before.
+func (g *GenericRouter) passthroughHeartbeatEnabled() bool {
+	return g.handlerStore == nil || g.handlerStore.ShouldSendPassthroughSSEHeartbeat()
+}
+
 func (g *GenericRouter) handlePassthroughStream(
 	ctx *fasthttp.RequestCtx,
 	bifrostCtx *schemas.BifrostContext,
@@ -3860,10 +3867,6 @@ func (g *GenericRouter) handlePassthroughStream(
 	provider schemas.ModelProvider,
 	req *schemas.BifrostPassthroughRequest,
 ) {
-	// Deferred trace completion must be explicitly finalized after streaming ends.
-	// Without this, observability injectors (including logging) never flush final state.
-	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
-
 	stream, bifrostErr := g.client.PassthroughStream(bifrostCtx, provider, req)
 	if bifrostErr != nil {
 		cancel()
@@ -3872,6 +3875,22 @@ func (g *GenericRouter) handlePassthroughStream(
 		}, bifrostErr)
 		return
 	}
+	g.servePassthroughStream(ctx, bifrostCtx, cancel, provider, stream)
+}
+
+// servePassthroughStream writes a passthrough stream to the caller as it arrives: the first
+// chunk's status and headers, then every chunk's body in order, byte for byte. It is the part of
+// handlePassthroughStream after the upstream stream exists, so a test can drive it with a channel.
+func (g *GenericRouter) servePassthroughStream(
+	ctx *fasthttp.RequestCtx,
+	bifrostCtx *schemas.BifrostContext,
+	cancel context.CancelFunc,
+	provider schemas.ModelProvider,
+	stream chan *schemas.BifrostStreamChunk,
+) {
+	// Deferred trace completion must be explicitly finalized after streaming ends.
+	// Without this, observability injectors (including logging) never flush final state.
+	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
 
 	// Read the first chunk to extract status code and headers before streaming begins.
 	firstChunk, ok := <-stream
@@ -3961,7 +3980,10 @@ func (g *GenericRouter) handlePassthroughStream(
 	// content-type is actually SSE.
 	var heartbeatDone chan struct{}
 	var heartbeatExited <-chan struct{}
-	if passthroughHeartbeatEligible(provider, contentType) {
+	// The fork adds client.disable_passthrough_sse_heartbeat (TXE-6519): a deployment that
+	// promises its callers the vendor's exact bytes turns the heartbeat off for every provider,
+	// and an idle stream then carries nothing the vendor did not send.
+	if passthroughHeartbeatEligible(provider, contentType) && g.passthroughHeartbeatEnabled() {
 		heartbeatDone, heartbeatExited = lib.StartSSEHeartbeat(lib.DefaultSSEHeartbeatInterval, reader.SendHeartbeat, cancel)
 	}
 

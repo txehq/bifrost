@@ -862,6 +862,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if _, present := clientConfigFields["enforce_vk_object_ownership"]; present {
 		updatedConfig.EnforceVKObjectOwnership = payload.ClientConfig.EnforceVKObjectOwnership
 	}
+	// The fork's deployment switches (TXE-6519) are copied only when sent, for the same reason:
+	// a dashboard built before them omits them, and that save must keep the stored values. The
+	// server's client-config reload re-wires the accounting sweepers when the first one changes;
+	// the router reads the second at the start of every passthrough stream.
+	if _, present := clientConfigFields["disable_provider_job_accounting"]; present {
+		updatedConfig.DisableProviderJobAccounting = payload.ClientConfig.DisableProviderJobAccounting
+	}
+	if _, present := clientConfigFields["disable_passthrough_sse_heartbeat"]; present {
+		updatedConfig.DisablePassthroughSSEHeartbeat = payload.ClientConfig.DisablePassthroughSSEHeartbeat
+	}
 
 	// Rotation grace period; bounds validated up front. Copied unconditionally
 	// so 0 clears a previously stored cooldown.

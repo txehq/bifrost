@@ -227,6 +227,39 @@ first-token deadline and a fallback on the fixture, and asserts the fallback ser
 although the attempt never got a connection. Run it like folder 185, with
 `providerErrorFixtureStallProxyUrl` when the stall proxy is not on `http://127.0.0.1:8799`.
 
+## Fork deployment switches: provider job accounting off and passthrough heartbeat off
+
+Folder 329 (TXE-6519) uses the same fixture and the same isolated gateway as folder 154. The
+fixture's gateway config sets the fork's two deployment switches,
+`client.disable_provider_job_accounting` and `client.disable_passthrough_sse_heartbeat`, so the
+folder shows what a deployment that sets them gets: no vendor call of Bifrost's own between
+requests, and a passthrough stream relayed byte for byte.
+
+Start the fixture and the isolated gateway as in the previous section, then:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "329. Fork deployment switches: provider job accounting off and passthrough heartbeat off (provider error fixture, job accounting switch)" \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1
+```
+
+The fixture answers `POST /v1/videos`, `GET /v1/videos/{id}`, `GET /v1/videos/{id}/content`,
+`DELETE /v1/videos/{id}`, `POST /v1/files`, `GET /v1/files/{id}/content`, `POST /v1/batches` and
+`GET /v1/batches/{id}` in OpenAI shape: the video is complete as soon as it is retrieved, the batch
+stays in progress, and every call is counted in `/__hits` under `video.create`, `video.retrieve`,
+`video.content`, `video.delete`, `file.upload`, `file.content`, `batch.create` and `batch.retrieve`.
+Case 329.5 reads the counters right after the creates and again 70 seconds later, longer than the
+batch sweeper's one-minute tick and the video sweeper's 30-second tick, so the folder takes a little
+over a minute. Model `upstream-idle-stream` answers a streamed chat request in two writes 2.5
+seconds apart, longer than the gateway's one-second heartbeat interval, and `GET /__sent?model=`
+returns the exact bytes it wrote; case 329.11 compares them with what the caller read through
+`/openai_passthrough`.
+
+To see the folder red, start the gateway on a copy of the config with both switches removed: 329.1
+reports the switches off, the video sweeper polls `GET /v1/videos/{id}` within a minute, and the
+passthrough body carries `: heartbeat` lines.
+
 ## Vertex endpoint selection and header forwarding
 
 These deterministic cases use a local TLS-intercepting proxy and an isolated gateway. No traffic

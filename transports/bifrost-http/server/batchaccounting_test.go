@@ -2,12 +2,18 @@ package server
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
+	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	"github.com/capsohq/bifrost/framework/jobaccounting"
+	"github.com/capsohq/bifrost/plugins/logging"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/handlers"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/fasthttp/router"
+	"github.com/valyala/fasthttp"
 )
 
 // The sweeper skips the plugin pipeline, so nothing upstream resolves a key for it.
@@ -99,4 +105,143 @@ func TestBifrostVideoRetrieverResolvesCustomBaseProvider(t *testing.T) {
 		t.Errorf("a retriever without config resolved %q", got)
 	}
 	var _ jobaccounting.BaseProviderResolver = retriever
+}
+
+// client.disable_provider_job_accounting (fork, TXE-6519) reaches the logging plugin through this
+// wiring, with or without a client: a disabled deployment records no provider job and starts no
+// sweeper, and the default leaves accounting on, as before the switch existed.
+func TestWireBatchAccountingSweeperAppliesProviderJobAccountingSwitch(t *testing.T) {
+	SetLogger(bifrost.NewNoOpLogger())
+	for _, tc := range []struct {
+		name     string
+		disabled bool
+	}{{"default keeps accounting on", false}, {"switched off", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin := &logging.LoggerPlugin{}
+			config := &lib.Config{ClientConfig: &configstore.ClientConfig{DisableProviderJobAccounting: tc.disabled}}
+			config.BasePlugins.Store(&[]schemas.BasePlugin{plugin})
+			s := &BifrostHTTPServer{Config: config}
+			s.WireBatchAccountingSweeper()
+			if got := plugin.ProviderJobAccountingEnabled(); got != !tc.disabled {
+				t.Fatalf("ProviderJobAccountingEnabled() = %v with disable_provider_job_accounting=%v", got, tc.disabled)
+			}
+		})
+	}
+}
+
+// A client-config save that flips the switch is honoured without a restart. The save path
+// publishes the new client config into the live struct and only then asks for the reload
+// (handlers/config.go), so the reload cannot see the change in the config; it reconciles the
+// logging plugin's own state instead (fork, TXE-6519).
+func TestReloadClientConfigReconcilesProviderJobAccounting(t *testing.T) {
+	SetLogger(bifrost.NewNoOpLogger())
+	ctx := context.Background()
+	store := newSQLiteConfigStore(t)
+
+	plugin := &logging.LoggerPlugin{}
+	live := lib.DefaultClientConfig
+	config := &lib.Config{ClientConfig: &live, ConfigStore: store}
+	config.BasePlugins.Store(&[]schemas.BasePlugin{plugin})
+	s := &BifrostHTTPServer{Config: config}
+	s.WireBatchAccountingSweeper()
+	if !plugin.ProviderJobAccountingEnabled() {
+		t.Fatal("accounting must start on with the default client config")
+	}
+
+	save := func(disabled bool) {
+		t.Helper()
+		stored := lib.DefaultClientConfig
+		stored.DisableProviderJobAccounting = disabled
+		if err := store.UpdateClientConfig(ctx, &stored); err != nil {
+			t.Fatalf("UpdateClientConfig() error = %v", err)
+		}
+		// What the config handler does before it asks for the reload: the live config
+		// already carries the saved value when ReloadClientConfigFromConfigStore runs.
+		config.Mu.Lock()
+		*config.ClientConfig = stored
+		config.Mu.Unlock()
+		if err := s.ReloadClientConfigFromConfigStore(ctx); err != nil {
+			t.Fatalf("ReloadClientConfigFromConfigStore() error = %v", err)
+		}
+	}
+
+	save(true)
+	if plugin.ProviderJobAccountingEnabled() {
+		t.Fatal("a reload after a save that sets the switch must stop provider job accounting")
+	}
+	save(false)
+	if !plugin.ProviderJobAccountingEnabled() {
+		t.Fatal("a reload after a save that clears the switch must resume provider job accounting")
+	}
+}
+
+// The whole save path, PUT /api/config through the real config handler with this server as its
+// manager, flips the logging plugin without a restart (fork, TXE-6519).
+func TestConfigAPISaveFlipsProviderJobAccounting(t *testing.T) {
+	SetLogger(bifrost.NewNoOpLogger())
+	handlers.SetLogger(bifrost.NewNoOpLogger())
+	ctx := context.Background()
+	store := newSQLiteConfigStore(t)
+
+	plugin := &logging.LoggerPlugin{}
+	live := lib.DefaultClientConfig
+	config := &lib.Config{ClientConfig: &live, ConfigStore: store}
+	config.BasePlugins.Store(&[]schemas.BasePlugin{plugin})
+	if err := store.UpdateClientConfig(ctx, &live); err != nil {
+		t.Fatalf("UpdateClientConfig() error = %v", err)
+	}
+	s := &BifrostHTTPServer{Config: config}
+	s.WireBatchAccountingSweeper()
+	if !plugin.ProviderJobAccountingEnabled() {
+		t.Fatal("accounting must start on with the default client config")
+	}
+
+	r := router.New()
+	handlers.NewConfigHandler(s, config).RegisterRoutes(r)
+	put := func(body string) {
+		t.Helper()
+		var req fasthttp.Request
+		req.Header.SetMethod(fasthttp.MethodPut)
+		req.SetRequestURI("/api/config")
+		req.Header.SetContentType("application/json")
+		req.SetBodyString(body)
+		rc := &fasthttp.RequestCtx{}
+		rc.Init(&req, nil, nil)
+		r.Handler(rc)
+		if rc.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("PUT /api/config = %d: %s", rc.Response.StatusCode(), rc.Response.Body())
+		}
+	}
+
+	// The compat block is sent as the live config holds it: an omitted block decodes to the
+	// compat defaults, and the handler would then reload the compat plugin through a client
+	// this test does not have. The save under test is the switch alone.
+	compat := `"compat":{"convert_text_to_chat":false,"convert_chat_to_responses":false,"should_drop_params":false,"should_convert_params":false,"azure_deepseek":false,"force_reasoning_only_models_to_responses":true,"convert_decision_to_responses":false}`
+	put(`{"client_config":{"log_retention_days":8,` + compat + `,"disable_provider_job_accounting":true}}`)
+	if plugin.ProviderJobAccountingEnabled() {
+		t.Fatal("a save that sets the switch must stop provider job accounting")
+	}
+	if config.ShouldRunProviderJobAccounting() {
+		t.Fatal("the live config must carry the saved switch")
+	}
+	put(`{"client_config":{"log_retention_days":8,` + compat + `,"disable_provider_job_accounting":false}}`)
+	if !plugin.ProviderJobAccountingEnabled() {
+		t.Fatal("a save that clears the switch must resume provider job accounting")
+	}
+}
+
+// newSQLiteConfigStore is a fresh config store with every migration applied, closed with the test.
+func newSQLiteConfigStore(t *testing.T) configstore.ConfigStore {
+	t.Helper()
+	ctx := context.Background()
+	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")},
+	}, bifrost.NewNoOpLogger())
+	if err != nil {
+		t.Fatalf("NewConfigStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close(ctx) })
+	return store
 }

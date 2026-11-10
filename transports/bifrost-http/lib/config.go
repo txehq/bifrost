@@ -96,6 +96,9 @@ type HandlerStore interface {
 	ShouldAllowDirectKeys() bool
 	// ShouldSendExtraFieldsInHeaders returns whether inference responses carry extra_fields as headers instead of in the body
 	ShouldSendExtraFieldsInHeaders() bool
+	// ShouldSendPassthroughSSEHeartbeat reports whether an idle SSE passthrough stream gets the gateway's
+	// comment-line heartbeat; off, the caller receives the vendor's bytes and nothing else (fork, TXE-6519)
+	ShouldSendPassthroughSSEHeartbeat() bool
 	// IsProviderConfigured reports whether provider has a configuration on this gateway
 	IsProviderConfigured(provider schemas.ModelProvider) bool
 	// GetMCPExternalClientURL returns the configured external base URL Bifrost uses as the
@@ -7654,6 +7657,24 @@ func (c *Config) ShouldSendExtraFieldsInHeaders() bool {
 	c.Mu.RLock()
 	defer c.Mu.RUnlock()
 	return c.ClientConfig != nil && c.ClientConfig.ExtraFieldsPlacement == configstoreTables.ExtraFieldsPlacementHeaders
+}
+
+// ShouldRunProviderJobAccounting reports the inverse of client.disable_provider_job_accounting
+// (fork, TXE-6519): whether the logging plugin records video tasks and batches as provider jobs
+// and settles them from its own sweepers. It reads under Mu, the lock config saves and reloads
+// hold while they copy the client config in; unset means on, as before the switch existed.
+func (c *Config) ShouldRunProviderJobAccounting() bool {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	return c.ClientConfig == nil || !c.ClientConfig.DisableProviderJobAccounting
+}
+
+// ShouldSendPassthroughSSEHeartbeat reports the inverse of client.disable_passthrough_sse_heartbeat
+// (fork, TXE-6519). It reads under Mu like the other client switches; unset means on.
+func (c *Config) ShouldSendPassthroughSSEHeartbeat() bool {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	return c.ClientConfig == nil || !c.ClientConfig.DisablePassthroughSSEHeartbeat
 }
 
 // ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header.

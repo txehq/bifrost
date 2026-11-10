@@ -396,6 +396,8 @@ func TestPriorFormatClientConfigHashSeesFieldsItLeavesOut(t *testing.T) {
 		`{"extra_fields_placement":"headers"}`:                          false,
 		`{"delete_expired_virtual_keys":true}`:                          false,
 		`{"enforce_vk_object_ownership":false}`:                         false,
+		`{"disable_provider_job_accounting":true}`:                      false,
+		`{"disable_passthrough_sse_heartbeat":true}`:                    false,
 		`{"mcp_max_instructions_per_client":100}`:                       false,
 		`{"mcp_max_instructions_total":100}`:                            false,
 		`{"mcp_code_mode_limits":{"max_tool_calls":3}}`:                 false,

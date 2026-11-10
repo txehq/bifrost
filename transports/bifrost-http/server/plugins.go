@@ -120,8 +120,15 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 			loggingConfig.ObjectStorageEnabled = bifrostConfig.LogsStoreConfig != nil &&
 				bifrostConfig.LogsStoreConfig.ObjectStorage != nil
 		}
-		return logging.Init(ctx, loggingConfig, logger, bifrostConfig.LogsStore,
+		loggingPlugin, err := logging.Init(ctx, loggingConfig, logger, bifrostConfig.LogsStore,
 			bifrostConfig.ConfigStore, bifrostConfig.ModelCatalog, bifrostConfig.MCPCatalog)
+		if err != nil {
+			return nil, err
+		}
+		// The fork's switch (TXE-6519) is applied at construction, so no request that reaches a
+		// reloaded instance before WireBatchAccountingSweeper re-wires it writes a job row.
+		loggingPlugin.SetProviderJobAccountingEnabled(bifrostConfig.ShouldRunProviderJobAccounting())
+		return loggingPlugin, nil
 
 	case governance.PluginName:
 		governanceConfig, err := MarshalPluginConfig[governance.Config](pluginConfig)
