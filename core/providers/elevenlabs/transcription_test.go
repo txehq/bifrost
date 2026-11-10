@@ -274,7 +274,7 @@ func BenchmarkWriteTranscriptionMultipart(b *testing.B) {
 // TXE-7018: a transcription whose extra params name the model, or spell model_id or file
 // another way, is refused; the exact model_id and file are still Bifrost's and skipped.
 func TestWriteTranscriptionExtraFieldsRefusesAModel(t *testing.T) {
-	for _, param := range []string{"model", "Model", "modelId", "MODEL_ID", "File"} {
+	for _, param := range []string{"model", "Model", "modelId", "MODEL_ID", "File", "stream", "version", "deployment", "engine"} {
 		var body bytes.Buffer
 		bifrostErr := writeTranscriptionExtraFields(multipart.NewWriter(&body), &ElevenlabsTranscriptionRequest{
 			ExtraParams: map[string]interface{}{param: "scribe_v2", "keyterms": "Ada"},

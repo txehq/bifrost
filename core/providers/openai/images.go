@@ -526,9 +526,16 @@ func writeImageEditExtraParamFields(writer *multipart.Writer, extraParams map[st
 	}
 	keys := make([]string, 0, len(extraParams))
 	for key := range extraParams {
-		if !imageEditExtraParamNamesATypedField(key) {
-			keys = append(keys, key)
+		if imageEditExtraParamNamesATypedField(key) {
+			continue
 		}
+		// A field only the gateway decides (another vendor's name for the model) cannot
+		// be added as an extra param either (TXE-7031). stream is a typed field above.
+		if field := providerUtils.ExtraParamUnsettableField(key); field != "" {
+			bifrostErr, _ := providerUtils.AsBifrostBadRequestError(providerUtils.ExtraParamUnsettableError(key, field))
+			return bifrostErr
+		}
+		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	for _, key := range keys {

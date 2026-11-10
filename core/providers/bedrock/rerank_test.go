@@ -405,6 +405,8 @@ func TestToBedrockRerankRequestExtraParamsNeverReplaceTheRequest(t *testing.T) {
 	for param, value := range map[string]interface{}{
 		"model": "denied-model", "Model": "denied-model", "query": "other query", "Documents": []interface{}{"other"},
 		"max_tokens_per_doc": 4096, "maxTokensPerDoc": 4096,
+		// TXE-7031: fields only the gateway decides.
+		"stream": true, "version": "v2", "model_id": "other", "engine": "other",
 	} {
 		t.Run("refused "+param, func(t *testing.T) {
 			_, err := ToBedrockRerankRequest(request(map[string]interface{}{param: value}), arn)

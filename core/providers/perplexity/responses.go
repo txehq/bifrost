@@ -95,9 +95,7 @@ func ToPerplexityResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *
 				perplexityReq.TopK = topK
 			}
 
-			if stream, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["stream"]); ok {
-				perplexityReq.Stream = stream
-			}
+			// stream is never taken from the extra params (fork, TXE-7031; see chat.go).
 
 			if disableSearch, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["disable_search"]); ok {
 				perplexityReq.DisableSearch = disableSearch

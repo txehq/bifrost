@@ -820,6 +820,12 @@ func writeTranscriptionExtraFields(writer *multipart.Writer, reqBody *Elevenlabs
 			bifrostErr, _ := providerUtils.AsBifrostBadRequestError(providerUtils.ExtraParamConflictError(key, "model"))
 			return bifrostErr
 		}
+		// Nor can it add a field only the gateway decides: another vendor's name for the
+		// model, or stream (TXE-7031).
+		if field := providerUtils.ExtraParamUnsettableField(key); field != "" {
+			bifrostErr, _ := providerUtils.AsBifrostBadRequestError(providerUtils.ExtraParamUnsettableError(key, field))
+			return bifrostErr
+		}
 		var fieldValue string
 		switch v := extra[key].(type) {
 		case nil:

@@ -727,6 +727,17 @@ func TestParseTranscriptionFormDataBodyFromRequest_ExtraParamsNeverRepeatATypedF
 		})
 	}
 
+	// TXE-7031: nor can an extra param add a field only the gateway decides.
+	for _, param := range []string{"stream", "Stream", "model_id", "version", "deployment", "engine"} {
+		t.Run("cannot add "+param, func(t *testing.T) {
+			var body bytes.Buffer
+			bifrostErr := ParseTranscriptionFormDataBodyFromRequest(multipart.NewWriter(&body), request(map[string]interface{}{param: "true"}), schemas.OpenAI)
+			if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 || bifrostErr.Error.Param != param {
+				t.Fatalf("want a 400 naming %q, got %+v", param, bifrostErr)
+			}
+		})
+	}
+
 	// A typed field the request left unset is still the caller's to send as an extra param.
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)

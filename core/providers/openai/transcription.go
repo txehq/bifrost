@@ -164,6 +164,14 @@ func ParseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiR
 			extraKeys = append(extraKeys, key)
 		}
 		sort.Strings(extraKeys)
+		// A field only the gateway decides (another vendor's name for the model, or
+		// stream on a buffered request) cannot be added as an extra param either.
+		for _, key := range extraKeys {
+			if field := utils.ExtraParamUnsettableField(key); field != "" {
+				bifrostErr, _ := utils.AsBifrostBadRequestError(utils.ExtraParamUnsettableError(key, field))
+				return bifrostErr
+			}
+		}
 		for _, key := range extraKeys {
 			value := openaiReq.ExtraParams[key]
 			var fieldValue string
