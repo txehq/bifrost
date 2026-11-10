@@ -1909,3 +1909,84 @@ func BenchmarkFileListPagination(b *testing.B) {
 		}
 	}
 }
+
+// TXE-7056: Replicate answers a prediction create with a 2xx. When that answer is not a
+// finished prediction and names no urls.get to poll it at, every operation that polls used to
+// dereference prediction.URLs and panic the request worker. Each of the five now returns 502
+// provider_empty_result, and the process keeps serving.
+func TestPredictionWithoutPollURLIsAnEmptyResult(t *testing.T) {
+	user := schemas.ChatMessageRoleUser
+	operations := map[string]func(*replicate.ReplicateProvider, *schemas.BifrostContext) *schemas.BifrostError{
+		"text completion": func(p *replicate.ReplicateProvider, ctx *schemas.BifrostContext) *schemas.BifrostError {
+			_, err := p.TextCompletion(ctx, schemas.Key{}, &schemas.BifrostTextCompletionRequest{Provider: schemas.Replicate, Model: "owner/model",
+				Input: &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")}})
+			return err
+		},
+		"chat completion": func(p *replicate.ReplicateProvider, ctx *schemas.BifrostContext) *schemas.BifrostError {
+			_, err := p.ChatCompletion(ctx, schemas.Key{}, &schemas.BifrostChatRequest{Provider: schemas.Replicate, Model: "owner/model",
+				Input: []schemas.ChatMessage{{Role: user, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}})
+			return err
+		},
+		"responses": func(p *replicate.ReplicateProvider, ctx *schemas.BifrostContext) *schemas.BifrostError {
+			_, err := p.Responses(ctx, schemas.Key{}, &schemas.BifrostResponsesRequest{Provider: schemas.Replicate, Model: "owner/model",
+				Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}}})
+			return err
+		},
+		"image generation": func(p *replicate.ReplicateProvider, ctx *schemas.BifrostContext) *schemas.BifrostError {
+			_, err := p.ImageGeneration(ctx, schemas.Key{}, &schemas.BifrostImageGenerationRequest{Provider: schemas.Replicate, Model: "owner/model",
+				Input: &schemas.ImageGenerationInput{Prompt: "a dog"}})
+			return err
+		},
+		"image edit": func(p *replicate.ReplicateProvider, ctx *schemas.BifrostContext) *schemas.BifrostError {
+			_, err := p.ImageEdit(ctx, schemas.Key{}, &schemas.BifrostImageEditRequest{Provider: schemas.Replicate, Model: "owner/model",
+				Input: &schemas.ImageEditInput{Prompt: "a dog", Images: []schemas.ImageInput{{Image: []byte("\x89PNG")}}}})
+			return err
+		},
+	}
+	// Three answers with no URL to follow: nothing at all, a started prediction with no urls,
+	// and one whose urls object has no get.
+	answers := map[string]string{
+		"an empty object":  `{}`,
+		"no urls":          `{"id":"p1","status":"starting"}`,
+		"urls without get": `{"id":"p1","status":"processing","urls":{"cancel":"https://api.replicate.com/v1/predictions/p1/cancel"}}`,
+	}
+	for opName, run := range operations {
+		for answerName, answer := range answers {
+			t.Run(opName+"/"+answerName, func(t *testing.T) {
+				requests := 0
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					requests++
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusCreated)
+					_, _ = w.Write([]byte(answer))
+				}))
+				defer server.Close()
+				provider, err := replicate.NewReplicateProvider(&schemas.ProviderConfig{
+					NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 5},
+				}, &testLogger{})
+				require.NoError(t, err)
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				defer ctx.Cancel()
+
+				bifrostErr := run(provider, ctx)
+				require.NotNil(t, bifrostErr, "an unfinished prediction with no poll URL cannot be a success")
+				require.Equal(t, schemas.Ptr(http.StatusBadGateway), bifrostErr.StatusCode)
+				require.Equal(t, schemas.ErrorTypeProviderEmptyResult, bifrostErr.ExtraFields.ErrorType)
+				require.False(t, bifrostErr.IsBifrostError, "the vendor answered; this is not a Bifrost fault")
+				require.Equal(t, 1, requests, "the create is sent once and nothing is polled")
+			})
+		}
+	}
+}
+
+// BenchmarkPredictionPollURL measures the check a polled prediction pays once before its
+// first poll request: two nil comparisons and a string comparison.
+func BenchmarkPredictionPollURL(b *testing.B) {
+	created := &replicate.ReplicatePredictionResponse{URLs: &replicate.ReplicatePredictionURLs{Get: "https://api.replicate.com/v1/predictions/p1"}}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, bifrostErr := replicate.PredictionPollURL(created); bifrostErr != nil {
+			b.Fatal(bifrostErr.Error.Message)
+		}
+	}
+}

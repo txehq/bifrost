@@ -676,6 +676,8 @@ const wireAnswer = (path, body, bytes) => {
 		if (body.stream === true) return { status: 200, stream: anthropicMessageStream(body.model) };
 		return { status: 200, body: JSON.stringify(anthropicMessage(body.model)) };
 	}
+	// Replicate accepts a prediction (201) but the answer names no urls.get to poll it at (folder 456, TXE-7056).
+	if (path.startsWith("/pp/replicate/") && path.endsWith("/predictions")) return { status: 201, body: JSON.stringify({ id: "pred_fixture_no_urls", status: "starting" }) };
 	if (path.endsWith(":predict")) return { status: 200, body: JSON.stringify(imagenPartiallyBlocked) };
 	const geminiAudio = geminiAudioAnswer(path);
 	if (geminiAudio) return geminiAudio;

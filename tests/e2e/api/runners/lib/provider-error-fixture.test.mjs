@@ -413,3 +413,11 @@ test("the BFL stand-in answers a submit and the task query by id", async (t) => 
   const hits = (await (await fetch(`${base}/__hits`)).json()).data[0].hits;
   assert.equal(hits["bfl get_result bfl-ready"], 1);
 });
+
+// Folder 456 (TXE-7056): a Replicate prediction create is accepted with no urls to poll.
+test("a Replicate prediction create answers 201 with no urls", async (t) => {
+  const post = await startFixture(t);
+  const answer = await post({ input: { prompt: "a dog" } }, "/pp/replicate/v1/models/owner/model/predictions");
+  assert.equal(answer.status, 201);
+  assert.deepEqual(await answer.json(), { id: "pred_fixture_no_urls", status: "starting" });
+});
