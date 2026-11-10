@@ -36,6 +36,7 @@ type AccumulatedData struct {
 	ErrorDetails     *schemas.BifrostError
 	TokenUsage       *schemas.BifrostLLMUsage
 	ServiceTier      *schemas.BifrostServiceTier
+	ContentSafety    *ChatContentSafety // Chat: provider content-safety flags (MiniMax), newest value of each across chunks
 	// Debug spelling is retained for the established Go contract.
 	CacheDebug            *schemas.BifrostCacheMetadata
 	GuardrailDebug        *schemas.BifrostGuardrailMetadata
@@ -83,12 +84,60 @@ type ChatStreamChunk struct {
 	LogProbs           *schemas.BifrostLogProbs               // LogProbs if available
 	TokenUsage         *schemas.BifrostLLMUsage               // Token usage if available
 	ServiceTier        *schemas.BifrostServiceTier            // Served OpenAI tier if available
+	ContentSafety      *ChatContentSafety                     // Provider content-safety flags (MiniMax) if the chunk carried any
 	SemanticCacheDebug *schemas.BifrostCacheMetadata          // Semantic cache metadata if available
 	GuardrailDebug     *schemas.BifrostGuardrailMetadata      // Guardrail metadata if available
 	Cost               *float64                               // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                  // Error if any
 	ChunkIndex         int                                    // Index of the chunk in the stream
 	RawResponse        *string                                // Raw response if available
+}
+
+// ChatContentSafety holds the content-safety flags a provider reports at the top level of a
+// chat response (MiniMax's input_sensitive, output_sensitive, input_sensitive_type and
+// output_sensitive_type, TXE-6595), so the accumulated stream response keeps them.
+type ChatContentSafety struct {
+	InputSensitive      *bool
+	OutputSensitive     *bool
+	InputSensitiveType  *int
+	OutputSensitiveType *int
+}
+
+// chatContentSafetyFrom copies the flags off a chat response, or returns nil when it carries none.
+func chatContentSafetyFrom(r *schemas.BifrostChatResponse) *ChatContentSafety {
+	if r == nil || (r.InputSensitive == nil && r.OutputSensitive == nil && r.InputSensitiveType == nil && r.OutputSensitiveType == nil) {
+		return nil
+	}
+	c := &ChatContentSafety{}
+	if r.InputSensitive != nil {
+		c.InputSensitive = new(bool(*r.InputSensitive))
+	}
+	if r.OutputSensitive != nil {
+		c.OutputSensitive = new(bool(*r.OutputSensitive))
+	}
+	if r.InputSensitiveType != nil {
+		c.InputSensitiveType = new(int(*r.InputSensitiveType))
+	}
+	if r.OutputSensitiveType != nil {
+		c.OutputSensitiveType = new(int(*r.OutputSensitiveType))
+	}
+	return c
+}
+
+// mergeNewer overlays the non-nil fields of newer onto c.
+func (c *ChatContentSafety) mergeNewer(newer *ChatContentSafety) {
+	if newer.InputSensitive != nil {
+		c.InputSensitive = newer.InputSensitive
+	}
+	if newer.OutputSensitive != nil {
+		c.OutputSensitive = newer.OutputSensitive
+	}
+	if newer.InputSensitiveType != nil {
+		c.InputSensitiveType = newer.InputSensitiveType
+	}
+	if newer.OutputSensitiveType != nil {
+		c.OutputSensitiveType = newer.OutputSensitiveType
+	}
 }
 
 // ResponsesStreamChunk represents a single responses streaming chunk
@@ -408,6 +457,12 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 				},
 			},
 			Usage: usage,
+		}
+		if cs := p.Data.ContentSafety; cs != nil {
+			chatResp.InputSensitive = cs.InputSensitive
+			chatResp.OutputSensitive = cs.OutputSensitive
+			chatResp.InputSensitiveType = cs.InputSensitiveType
+			chatResp.OutputSensitiveType = cs.OutputSensitiveType
 		}
 
 		resp.ChatResponse = chatResp

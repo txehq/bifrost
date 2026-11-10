@@ -482,6 +482,9 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 			tierChunkIndex = streamChunk.ChunkIndex
 		}
 	}
+	// Content-safety flags: MiniMax sends some on content chunks and the full set on its
+	// finish frame, so keep the newest non-nil value of each field, by chunk index.
+	data.ContentSafety = accumulateChatContentSafety(accumulator.ChatStreamChunks)
 	// The highest-index chunk can carry a nil finish_reason (a usage-only chunk,
 	// or the synthetic terminal chunk the OpenAI-compatible handler appends after
 	// forwarding finish_reason on a content chunk). Fall back to the newest chunk
@@ -600,6 +603,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		if result.ChatResponse.ServiceTier != nil {
 			chunk.ServiceTier = new(schemas.BifrostServiceTier(*result.ChatResponse.ServiceTier))
 		}
+		chunk.ContentSafety = chatContentSafetyFrom(result.ChatResponse)
 		chunk.ChunkIndex = result.ChatResponse.ExtraFields.ChunkIndex
 		if result.ChatResponse.ExtraFields.RawResponse != nil {
 			chunk.RawResponse = bifrost.Ptr(fmt.Sprintf("%v", result.ChatResponse.ExtraFields.RawResponse))
@@ -664,4 +668,24 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		RoutingInfo:    bifrost.GetResponseRoutingInfo(result, bifrostErr),
 		Data:           nil,
 	}, nil
+}
+
+// accumulateChatContentSafety merges the chunks' content-safety flags in chunk-index order, so
+// each field ends at the newest value reported; nil when no chunk carried any.
+func accumulateChatContentSafety(chunks []*ChatStreamChunk) *ChatContentSafety {
+	var carrying []*ChatStreamChunk
+	for _, c := range chunks {
+		if c != nil && c.ContentSafety != nil {
+			carrying = append(carrying, c)
+		}
+	}
+	if len(carrying) == 0 {
+		return nil
+	}
+	sort.SliceStable(carrying, func(i, j int) bool { return carrying[i].ChunkIndex < carrying[j].ChunkIndex })
+	merged := &ChatContentSafety{}
+	for _, c := range carrying {
+		merged.mergeNewer(c.ContentSafety)
+	}
+	return merged
 }
