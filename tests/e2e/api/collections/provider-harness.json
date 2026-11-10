@@ -293288,6 +293288,7 @@
                   "});",
                   "pm.test('Content-Type is the one Azure AI Speech sent with the audio (TXE-6530)', function () {",
                   "  pm.expect(pm.response.headers.get('content-type') || '', JSON.stringify(pm.response.headers.toObject())).to.equal('audio/x-wav');",
+                  "  pm.expect(pm.response.headers.get('content-disposition') || '', 'the attachment is named after the audio returned').to.equal('attachment; filename=speech.wav');",
                   "});",
                   "pm.test('x-bifrost-usage carries the input character count and no billed_characters: the vendor reports none (contract C5)', function () {",
                   "  var usage = JSON.parse(pm.response.headers.get('x-bifrost-usage') || 'null');",

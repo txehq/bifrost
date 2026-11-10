@@ -130,6 +130,22 @@ func TestSpeechFilenameForMuLaw(t *testing.T) {
 	}
 }
 
+// A vendor's own spelling of a WAV or WebM type names the file after the audio, not after
+// the mp3 default (TXE-6542: Azure AI Speech answers a riff-* format as audio/x-wav).
+func TestSpeechFilenameForVendorContentTypes(t *testing.T) {
+	for contentType, want := range map[string]string{
+		"audio/x-wav":             "speech.wav",
+		"Audio/X-WAV":             "speech.wav",
+		"audio/wave":              "speech.wav",
+		"audio/vnd.wave":          "speech.wav",
+		"audio/webm; codecs=opus": "speech.webm",
+	} {
+		if got := speechFilenameForContentType(contentType, "riff-48khz-16bit-mono-pcm"); got != want {
+			t.Errorf("%s: filename = %q, want %q", contentType, got, want)
+		}
+	}
+}
+
 // BenchmarkWriteSpeechAudioResponse measures the non-streaming speech writer: the usage header
 // (one JSON encode of SpeechUsage) plus the Content-Type choice and body. "provider_type" is the
 // OpenAI and Gemini case, where the provider recorded the type; "sniffed" derives it from the
