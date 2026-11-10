@@ -389,7 +389,7 @@ passthrough body carries `: heartbeat` lines.
 
 ## Azure AI Speech
 
-Folder 330 pins the `azurespeech` provider against the same local fixture, with no live provider calls:
+Folder 400 pins the `azurespeech` provider against the same local fixture, with no live provider calls:
 the SSML and `X-Microsoft-OutputFormat` of a speech request, the vendor's audio `Content-Type` and the
 `x-bifrost-usage` header on its response, audio chunks forwarded on arrival for a
 streamed one, the multipart `audio` + `definition` of a transcription and the `usage.seconds` read from
@@ -406,7 +406,7 @@ Start the fixture and the isolated gateway as in the provider error fixture sect
 
 ```bash
 newman run tests/e2e/api/collections/provider-harness.json \
-  --folder "330. Azure AI Speech: SSML speech, streamed speech and fast transcription (azure speech provider) [SERIAL]" \
+  --folder "400. Azure AI Speech: SSML speech, streamed speech and fast transcription (azure speech provider) [SERIAL]" \
   --working-dir . \
   --env-var baseUrl=http://127.0.0.1:8790 \
   --env-var providerErrorFixture=1 \

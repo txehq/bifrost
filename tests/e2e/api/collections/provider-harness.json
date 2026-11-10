@@ -293148,11 +293148,11 @@
       ]
     },
     {
-      "name": "330. Azure AI Speech: SSML speech, streamed speech and fast transcription (azure speech provider) [SERIAL]",
+      "name": "400. Azure AI Speech: SSML speech, streamed speech and fast transcription (azure speech provider) [SERIAL]",
       "description": "TXE-6542 (contract C3, C4, C5, C6, C10, C12; Microsoft vendor sheet TTS · Azure AI Speech B1, B2 and STT · Azure AI Speech B1), local fixture regression with no live provider calls. Start provider-error-fixture.mjs and an isolated gateway using provider-error-fixture.config.json, whose azurespeech key carries the fixture as its resource endpoint (azure_key_config.endpoint), and enable providerErrorFixture=1 (README: Azure AI Speech). Every case is skipped otherwise. The fixture serves the text to speech API on /tts/cognitiveservices/v1 and fast transcription on /speechtotext/transcriptions:transcribe, and keeps every call in /__wire; each case resets the fixture first and reads back what reached it. Speech: the request reaches the vendor once, as SSML (voice name as given, speed as prosody rate, input escaped) with X-Microsoft-OutputFormat, and the audio bytes come back, on /v1 and on the OpenAI-compatible route. Streamed speech: the fixture writes three audio chunks 600ms apart and /__probe/stream-gaps times each speech.audio.delta, so each chunk must reach the client before the vendor writes the next one. Transcription: the multipart audio + definition (enhancedMode model, locales, an extra field merged in through x-bf-passthrough-extra-params) reaches the vendor once and text, usage{type: duration, seconds} and raw_response come back, on both routes. Refusals: instructions, an out-of-range speed and response_format srt return 400 caller_unsupported_parameter with nothing sent. Errors: a vendor 429 (also before the first frame of a stream) and a vendor 422 keep their status and carry error_type after exactly one upstream call, and a 200 with no audio is 502 provider_empty_result.",
       "item": [
         {
-          "name": "330.1 azurespeech /v1/audio/speech azurespeech/mai-voice-2.1-flash voice, speed and response_format mp3 reach Azure AI Speech as SSML and X-Microsoft-OutputFormat, once, and the audio comes back (azure speech provider)",
+          "name": "400.1 azurespeech /v1/audio/speech azurespeech/mai-voice-2.1-flash voice, speed and response_format mp3 reach Azure AI Speech as SSML and X-Microsoft-OutputFormat, once, and the audio comes back (azure speech provider)",
           "event": [
             {
               "listen": "prerequest",
@@ -293251,7 +293251,7 @@
           }
         },
         {
-          "name": "330.2 azurespeech /openai/v1/audio/speech azurespeech/mai-voice-2.1-flash voice, speed and response_format wav reach Azure AI Speech as SSML and X-Microsoft-OutputFormat, once, and the audio comes back (azure speech provider)",
+          "name": "400.2 azurespeech /openai/v1/audio/speech azurespeech/mai-voice-2.1-flash voice, speed and response_format wav reach Azure AI Speech as SSML and X-Microsoft-OutputFormat, once, and the audio comes back (azure speech provider)",
           "event": [
             {
               "listen": "prerequest",
@@ -293351,7 +293351,7 @@
           }
         },
         {
-          "name": "330.3 azurespeech /v1/audio/speech stream_format sse azurespeech/mai-voice-2.1-flash audio chunks arriving with gaps are forwarded on arrival as speech.audio.delta, then speech.audio.done (azure speech provider)",
+          "name": "400.3 azurespeech /v1/audio/speech stream_format sse azurespeech/mai-voice-2.1-flash audio chunks arriving with gaps are forwarded on arrival as speech.audio.delta, then speech.audio.done (azure speech provider)",
           "event": [
             {
               "listen": "prerequest",
@@ -293430,7 +293430,7 @@
           }
         },
         {
-          "name": "330.4 azurespeech /v1/audio/transcriptions azurespeech/mai-transcribe-2 language and extra fields reach fast transcription as the multipart audio + definition, once, and text and usage.seconds come back from durationMilliseconds (azure speech provider)",
+          "name": "400.4 azurespeech /v1/audio/transcriptions azurespeech/mai-transcribe-2 language and extra fields reach fast transcription as the multipart audio + definition, once, and text and usage.seconds come back from durationMilliseconds (azure speech provider)",
           "event": [
             {
               "listen": "prerequest",
@@ -293556,7 +293556,7 @@
           }
         },
         {
-          "name": "330.5 azurespeech /openai/v1/audio/transcriptions azurespeech/mai-transcribe-2 language and extra fields reach fast transcription as the multipart audio + definition, once, and text and usage.seconds come back from durationMilliseconds (azure speech provider)",
+          "name": "400.5 azurespeech /openai/v1/audio/transcriptions azurespeech/mai-transcribe-2 language and extra fields reach fast transcription as the multipart audio + definition, once, and text and usage.seconds come back from durationMilliseconds (azure speech provider)",
           "event": [
             {
               "listen": "prerequest",
@@ -293683,7 +293683,7 @@
           }
         },
         {
-          "name": "[EXPECT-400] 330.6 azurespeech /v1/audio/speech azurespeech/mai-voice-2.1-flash with instructions, a unified field Azure AI Speech has no place for, is refused with caller_unsupported_parameter before any upstream call (azure speech provider)",
+          "name": "[EXPECT-400] 400.6 azurespeech /v1/audio/speech azurespeech/mai-voice-2.1-flash with instructions, a unified field Azure AI Speech has no place for, is refused with caller_unsupported_parameter before any upstream call (azure speech provider)",
           "event": [
             {
               "listen": "prerequest",
@@ -293755,7 +293755,7 @@
           }
         },
         {
-          "name": "[EXPECT-400] 330.7 azurespeech /v1/audio/speech azurespeech/mai-voice-2.1-flash with speed 3, outside the prosody rate range and never clamped, is refused with caller_unsupported_parameter before any upstream call (azure speech provider)",
+          "name": "[EXPECT-400] 400.7 azurespeech /v1/audio/speech azurespeech/mai-voice-2.1-flash with speed 3, outside the prosody rate range and never clamped, is refused with caller_unsupported_parameter before any upstream call (azure speech provider)",
           "event": [
             {
               "listen": "prerequest",
@@ -293827,7 +293827,7 @@
           }
         },
         {
-          "name": "[EXPECT-400] 330.8 azurespeech /v1/audio/transcriptions azurespeech/mai-transcribe-2 with response_format srt, which the JSON-only API cannot produce, is refused with caller_unsupported_parameter before any upstream call (azure speech provider)",
+          "name": "[EXPECT-400] 400.8 azurespeech /v1/audio/transcriptions azurespeech/mai-transcribe-2 with response_format srt, which the JSON-only API cannot produce, is refused with caller_unsupported_parameter before any upstream call (azure speech provider)",
           "event": [
             {
               "listen": "prerequest",
@@ -293911,7 +293911,7 @@
           }
         },
         {
-          "name": "[EXPECT-429] 330.9 azurespeech /v1/audio/speech azurespeech/mai-voice-2.1-flash a vendor 429 keeps the vendor status 429 and carries error_type provider_rate_limited, after one upstream call (azure speech provider)",
+          "name": "[EXPECT-429] 400.9 azurespeech /v1/audio/speech azurespeech/mai-voice-2.1-flash a vendor 429 keeps the vendor status 429 and carries error_type provider_rate_limited, after one upstream call (azure speech provider)",
           "event": [
             {
               "listen": "prerequest",
@@ -293987,7 +293987,7 @@
           }
         },
         {
-          "name": "[EXPECT-429] 330.10 azurespeech /v1/audio/speech stream_format sse azurespeech/mai-voice-2.1-flash a vendor 429 before the first frame keeps the vendor status 429 and carries error_type provider_rate_limited, after one upstream call (azure speech provider)",
+          "name": "[EXPECT-429] 400.10 azurespeech /v1/audio/speech stream_format sse azurespeech/mai-voice-2.1-flash a vendor 429 before the first frame keeps the vendor status 429 and carries error_type provider_rate_limited, after one upstream call (azure speech provider)",
           "event": [
             {
               "listen": "prerequest",
@@ -294064,7 +294064,7 @@
           }
         },
         {
-          "name": "[EXPECT-422] 330.11 azurespeech /v1/audio/transcriptions azurespeech/azure-speech-422 a vendor 422 keeps the vendor status 422 and carries error_type caller_invalid_request, after one upstream call (azure speech provider)",
+          "name": "[EXPECT-422] 400.11 azurespeech /v1/audio/transcriptions azurespeech/azure-speech-422 a vendor 422 keeps the vendor status 422 and carries error_type caller_invalid_request, after one upstream call (azure speech provider)",
           "event": [
             {
               "listen": "prerequest",
@@ -294151,7 +294151,7 @@
           }
         },
         {
-          "name": "[EXPECT-502] 330.12 azurespeech /v1/audio/speech azurespeech/mai-voice-2.1-flash a vendor 200 with no audio and no error object is answered 502 and carries error_type provider_empty_result, after one upstream call (azure speech provider)",
+          "name": "[EXPECT-502] 400.12 azurespeech /v1/audio/speech azurespeech/mai-voice-2.1-flash a vendor 200 with no audio and no error object is answered 502 and carries error_type provider_empty_result, after one upstream call (azure speech provider)",
           "event": [
             {
               "listen": "prerequest",

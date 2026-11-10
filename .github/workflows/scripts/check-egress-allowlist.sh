@@ -169,7 +169,7 @@ NOT_DIALLED_HOSTS = {
     "upload.wikimedia.org": "Volcengine multimodal embedding image_url in the 277 rows - Volcengine fetches it server-side",
     "raw.githubusercontent.com": "Groq transcription audio url in the 310 rows - Groq fetches it server-side; Bifrost forwards the url and never downloads it, and the openai row is refused before any upstream call",
     "placeholder.search.windows.net": "Azure AI Search placeholder in a request body; never resolved",
-    "www.w3.org": "the SSML namespace (xmlns) in the expected request body of the 330 azure speech provider rows; an XML namespace name, never fetched",
+    "www.w3.org": "the SSML namespace (xmlns) in the expected request body of the 400 azure speech provider rows; an XML namespace name, never fetched",
     "client.example": "push callback URL the gateway stores in the 266 a2a-push-tenancy rows; the fixture agent never pushes, so no delivery dials it",
     "intruder.example": "another tenant's attempted push callback URL in the 266 a2a-push-tenancy rows; refused before anything is stored or dialled",
     # Deliberately unresolvable - negative tests assert the failure path.
