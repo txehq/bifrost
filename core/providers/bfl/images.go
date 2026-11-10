@@ -150,7 +150,7 @@ func toBFLImageBody(in imageTaskInput) (*bflImageBody, error) {
 		}
 		fields["webhook_url"] = *in.callbackURL
 		// The key's secret signs the webhook unless the request names its own (TXE-7062).
-		if _, own := in.extra["webhook_secret"]; !own && in.keyWebhookSecret != "" {
+		if !callerNamesWebhookSecret(in.extra) && in.keyWebhookSecret != "" {
 			fields["webhook_secret"] = in.keyWebhookSecret
 			injected = true
 		}
@@ -293,6 +293,20 @@ func redactInjectedSecret(body []byte) []byte {
 		return []byte(`{"webhook_secret":"` + redactedSecret + `"}`)
 	}
 	return redacted
+}
+
+// callerNamesWebhookSecret reports whether the caller's extra fields set webhook_secret, in any
+// spelling the extra-params merge treats as that field (case and underscores ignored). A caller
+// who names it keeps its own value and the key's secret is not written: writing it beside a
+// differently spelled copy would make the merge's conflict refusal reveal whether the caller's
+// value equals the secret.
+func callerNamesWebhookSecret(extra map[string]any) bool {
+	for name := range extra {
+		if providerUtils.ExtraParamNamesField(name, "webhook_secret") {
+			return true
+		}
+	}
+	return false
 }
 
 // keyWebhookSecret is the key's BFL webhook secret, or "" when the key configures none.

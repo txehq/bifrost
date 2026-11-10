@@ -1144,3 +1144,30 @@ func BenchmarkBFLImageTaskKeySecret(b *testing.B) {
 		})
 	}
 }
+
+// TXE-7062 security review: a caller who names webhook_secret in any spelling the merge folds to
+// it (Webhook_Secret, WebhookSecret) keeps its own value, and the key's secret is never written
+// beside it. Otherwise the merge would accept a matching guess and refuse any other.
+func TestBFLKeyWebhookSecretIsNotWrittenBesideACallerSpelling(t *testing.T) {
+	cb := schemas.Ptr("https://hooks.example.test/v/1")
+	for _, spelling := range []string{"webhook_secret", "Webhook_Secret", "WebhookSecret", "WEBHOOKSECRET"} {
+		body, err := toBFLImageBody(imageTaskInput{model: "flux-pro-1.1", prompt: "p", callbackURL: cb,
+			keyWebhookSecret: "key-secret-7062", extra: map[string]any{spelling: "caller-guess"}})
+		if err != nil {
+			t.Fatalf("%s: %v", spelling, err)
+		}
+		if body.injectedSecret {
+			t.Errorf("%s: the key's secret was written beside the caller's own", spelling)
+		}
+		if _, ok := body.fields["webhook_secret"]; ok {
+			t.Errorf("%s: fields carry the key's secret", spelling)
+		}
+		data, err := providerUtils.MarshalConvertedRequestBody(body, true)
+		if err != nil {
+			t.Fatalf("%s: the merge refused the caller's own field: %v", spelling, err)
+		}
+		if bytes.Contains(data, []byte("key-secret-7062")) {
+			t.Errorf("%s: the key's secret reached the body: %s", spelling, data)
+		}
+	}
+}
