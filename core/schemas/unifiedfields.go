@@ -125,9 +125,11 @@ func PriceAffectingUnifiedFields(requestType RequestType) []string {
 //
 // Three things are not refused:
 //
-//   - A field the request did send. The HTTP handlers also keep some unified fields in
-//     the extra params under the same name (UnifiedImageFields,
-//     UnifiedVideoGenerationFields), and converters read them there.
+//   - A field the request did send, with the same value. The HTTP handlers also keep some
+//     unified fields in the extra params under the same name (UnifiedImageFields,
+//     UnifiedVideoGenerationFields), and converters read them there. A string copy that
+//     differs from the string the request sent is refused: the converter would send the
+//     vendor the copy.
 //   - A value the unified field cannot hold. Those fields decode tolerantly (TolerantString):
 //     Runware 3D's numeric resolution leaves the typed field empty and travels as an extra
 //     param by design. Only a value the field would have taken is the field under another
@@ -188,7 +190,15 @@ func checkExtraParamPriceFields(req *BifrostRequest, table []string, params refl
 		if field == "" || value == nil {
 			continue
 		}
-		if unifiedFieldIsSet(req, params, field) || !unifiedFieldWouldHold(params, field, value) {
+		if sent, isSet := unifiedFieldSent(req, params, field); isSet {
+			// The request sent the field, and the handlers keep a copy among the extra
+			// params for the converters that read it there. A copy that says something
+			// else is not a copy: the converter would send the vendor a value the
+			// unified field does not show.
+			if planted, isString := value.(string); !isString || sent == "" || planted == sent {
+				continue
+			}
+		} else if !unifiedFieldWouldHold(params, field, value) {
 			continue
 		}
 		if refused == "" || key < refused {
@@ -203,21 +213,34 @@ func checkExtraParamPriceFields(req *BifrostRequest, table []string, params refl
 		refused, refusedField, refusedField))
 }
 
-// unifiedFieldIsSet reports whether the request sent the unified field named field: a
-// Params field that is set, or the one C4 field that lives on the request's input.
-func unifiedFieldIsSet(req *BifrostRequest, params reflect.Value, field string) bool {
+// unifiedFieldSent reports whether the request sent the unified field named field (a
+// Params field that is set, or the one C4 field that lives on the request's input), and
+// its value when that value is a string, "" otherwise.
+func unifiedFieldSent(req *BifrostRequest, params reflect.Value, field string) (value string, isSet bool) {
 	if field == "input_reference" && req.VideoGenerationRequest != nil {
 		input := req.VideoGenerationRequest.Input
-		return input != nil && input.InputReference != nil && *input.InputReference != ""
+		if input == nil || input.InputReference == nil || *input.InputReference == "" {
+			return "", false
+		}
+		return *input.InputReference, true
 	}
 	for _, f := range unifiedParamFields(params.Type()) {
 		if f.name != field {
 			continue
 		}
 		fv, ok := fieldByIndex(params, f.index)
-		return ok && !fieldIsUnset(fv)
+		if !ok || fieldIsUnset(fv) {
+			return "", false
+		}
+		if fv.Kind() == reflect.Pointer {
+			fv = fv.Elem()
+		}
+		if fv.Kind() == reflect.String {
+			return fv.String(), true
+		}
+		return "", true
 	}
-	return false
+	return "", false
 }
 
 // unifiedFieldWouldHold reports whether the unified field named field would have taken

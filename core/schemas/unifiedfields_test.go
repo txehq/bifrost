@@ -235,6 +235,9 @@ func TestCheckExtraParamPriceFieldsLeavesEverythingElseAlone(t *testing.T) {
 			VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p", InputReference: &inputReference},
 				Params: &VideoGenerationParameters{ExtraParams: map[string]interface{}{"input_reference": inputReference}}},
 		}},
+		{"the request sent a non-string field; its copy is not compared", imageReq(&ImageGenerationParameters{
+			N: Ptr(2), ExtraParams: map[string]interface{}{"n": 2},
+		})},
 		{"a nil value", imageReq(&ImageGenerationParameters{ExtraParams: map[string]interface{}{"size": nil}})},
 		{"an operation outside the C4 table", &BifrostRequest{
 			RequestType: ChatCompletionRequest,
@@ -263,6 +266,17 @@ func TestCheckExtraParamPriceFieldsSpecificRefusals(t *testing.T) {
 	}{
 		{"the first in sorted order is named", imageReq(&ImageGenerationParameters{ExtraParams: map[string]interface{}{"size": "x", "n": 4, "quality": "hd"}}), "n"},
 		{"another field is sent, this one is not", imageReq(&ImageGenerationParameters{Size: Ptr("1024x1024"), ExtraParams: map[string]interface{}{"size": "1024x1024", "n": 4}}), "n"},
+		{"a copy that differs from the unified field the request sent", imageReq(&ImageGenerationParameters{
+			Resolution: "1K", ExtraParams: map[string]interface{}{"resolution": "4K"},
+		}), "resolution"},
+		{"a copy that differs from a pointer field the request sent", imageReq(&ImageGenerationParameters{
+			Size: Ptr("1024x1024"), ExtraParams: map[string]interface{}{"Size": "4096x4096"},
+		}), "Size"},
+		{"an input_reference that differs from the one on the input", &BifrostRequest{
+			RequestType: VideoGenerationRequest,
+			VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p", InputReference: Ptr("https://example.invalid/first.png")},
+				Params: &VideoGenerationParameters{ExtraParams: map[string]interface{}{"input_reference": "https://example.invalid/other.png"}}},
+		}, "input_reference"},
 		{"a string the tolerant field would have held", &BifrostRequest{
 			RequestType: VideoGenerationRequest,
 			VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p"},
