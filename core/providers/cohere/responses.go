@@ -1083,24 +1083,8 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				response.StopReason = schemas.Ptr(ConvertCohereFinishReasonToBifrost(*chunk.Delta.FinishReason))
 			}
 			if chunk.Delta.Usage != nil {
-				usage := &schemas.ResponsesResponseUsage{}
-
-				if chunk.Delta.Usage.Tokens != nil {
-					if chunk.Delta.Usage.Tokens.InputTokens != nil {
-						usage.InputTokens = *chunk.Delta.Usage.Tokens.InputTokens
-					}
-					if chunk.Delta.Usage.Tokens.OutputTokens != nil {
-						usage.OutputTokens = *chunk.Delta.Usage.Tokens.OutputTokens
-					}
-					usage.TotalTokens = usage.InputTokens + usage.OutputTokens
-				}
-
-				if chunk.Delta.Usage.CachedTokens != nil {
-					usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
-						CachedReadTokens: *chunk.Delta.Usage.CachedTokens,
-					}
-				}
-				response.Usage = usage
+				// Same billed-first mapping as chat (TXE-6986).
+				response.Usage = chunk.Delta.Usage.ToBifrostResponsesUsage()
 			}
 		}
 
@@ -1389,25 +1373,9 @@ func (response *CohereChatResponse) ToBifrostResponsesResponse() *schemas.Bifros
 
 	// Convert usage information
 	if response.Usage != nil {
-		usage := &schemas.ResponsesResponseUsage{}
-
-		if response.Usage.Tokens != nil {
-			if response.Usage.Tokens.InputTokens != nil {
-				usage.InputTokens = *response.Usage.Tokens.InputTokens
-			}
-			if response.Usage.Tokens.OutputTokens != nil {
-				usage.OutputTokens = *response.Usage.Tokens.OutputTokens
-			}
-			usage.TotalTokens = usage.InputTokens + usage.OutputTokens
-		}
-
-		if response.Usage.CachedTokens != nil {
-			usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
-				CachedReadTokens: *response.Usage.CachedTokens,
-			}
-		}
-
-		bifrostResp.Usage = usage
+		// Same billed-first mapping as chat (TXE-6986): billed_units fill input/output
+		// tokens, processed usage.tokens go to processed_tokens.
+		bifrostResp.Usage = response.Usage.ToBifrostResponsesUsage()
 	}
 
 	// Convert output message to Responses format

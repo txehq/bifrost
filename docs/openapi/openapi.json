@@ -9370,6 +9370,18 @@
                         },
                         "cost": {
                           "$ref": "#/components/schemas/BifrostCost"
+                        },
+                        "processed_tokens": {
+                          "type": "object",
+                          "description": "Token counts the provider processed, present only when it reports them apart from the billed counts in prompt_tokens and completion_tokens (input_tokens and output_tokens on Responses usage). Today: Cohere chat and Responses, usage.tokens next to usage.billed_units.\n",
+                          "properties": {
+                            "prompt_tokens": {
+                              "type": "integer"
+                            },
+                            "completion_tokens": {
+                              "type": "integer"
+                            }
+                          }
                         }
                       }
                     },
@@ -20949,6 +20961,18 @@
                         },
                         "cost": {
                           "$ref": "#/components/schemas/BifrostCost"
+                        },
+                        "processed_tokens": {
+                          "type": "object",
+                          "description": "Token counts the provider processed, present only when it reports them apart from the billed counts in prompt_tokens and completion_tokens (input_tokens and output_tokens on Responses usage). Today: Cohere chat and Responses, usage.tokens next to usage.billed_units.\n",
+                          "properties": {
+                            "prompt_tokens": {
+                              "type": "integer"
+                            },
+                            "completion_tokens": {
+                              "type": "integer"
+                            }
+                          }
                         }
                       }
                     },
@@ -115230,7 +115254,7 @@
           },
           "processed_tokens": {
             "type": "object",
-            "description": "Token counts the provider processed, present only when it reports them apart from the billed counts in prompt_tokens and completion_tokens (Cohere chat: usage.tokens next to usage.billed_units).\n",
+            "description": "Token counts the provider processed, present only when it reports them apart from the billed counts in prompt_tokens and completion_tokens (input_tokens and output_tokens on Responses usage). Today: Cohere chat and Responses, usage.tokens next to usage.billed_units.\n",
             "properties": {
               "prompt_tokens": {
                 "type": "integer"
@@ -119516,6 +119540,18 @@
               },
               "cost": {
                 "$ref": "#/components/schemas/BifrostCost"
+              },
+              "processed_tokens": {
+                "type": "object",
+                "description": "Token counts the provider processed, present only when it reports them apart from the billed counts in prompt_tokens and completion_tokens (input_tokens and output_tokens on Responses usage). Today: Cohere chat and Responses, usage.tokens next to usage.billed_units.\n",
+                "properties": {
+                  "prompt_tokens": {
+                    "type": "integer"
+                  },
+                  "completion_tokens": {
+                    "type": "integer"
+                  }
+                }
               }
             }
           },

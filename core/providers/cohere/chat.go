@@ -372,43 +372,62 @@ func (req *CohereChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) 
 	return bifrostReq
 }
 
-// ToBifrostChatUsage converts Cohere chat usage to the unified usage, streamed and not.
-// Cohere bills billed_units, so when billed_units carries input and output tokens they
-// fill prompt_tokens/completion_tokens and the processed usage.tokens move to
-// processed_tokens (contract C5, TXE-6596). Without billed tokens the processed counts
-// stay in prompt_tokens/completion_tokens as before. cached_tokens is reported as is.
-func (u *CohereUsage) ToBifrostChatUsage() *schemas.BifrostLLMUsage {
-	usage := &schemas.BifrostLLMUsage{}
-	if u == nil {
-		return usage
-	}
-	billed := u.BilledUnits != nil && u.BilledUnits.InputTokens != nil && u.BilledUnits.OutputTokens != nil
-	switch {
-	case billed:
-		usage.PromptTokens = *u.BilledUnits.InputTokens
-		usage.CompletionTokens = *u.BilledUnits.OutputTokens
+// billedCounts is the one billed-first rule for Cohere chat and Responses usage (contract
+// C5, TXE-6596, TXE-6986). Cohere bills billed_units, so when billed_units carries input
+// and output tokens they are the input/output counts and the processed usage.tokens are
+// returned as processed. Without billed tokens the processed counts are the input/output
+// counts and processed is nil.
+func (u *CohereUsage) billedCounts() (input, output int, processed *schemas.ProcessedTokenUsage) {
+	if u.BilledUnits != nil && u.BilledUnits.InputTokens != nil && u.BilledUnits.OutputTokens != nil {
 		if u.Tokens != nil && (u.Tokens.InputTokens != nil || u.Tokens.OutputTokens != nil) {
-			processed := &schemas.ProcessedTokenUsage{}
+			processed = &schemas.ProcessedTokenUsage{}
 			if u.Tokens.InputTokens != nil {
 				processed.PromptTokens = *u.Tokens.InputTokens
 			}
 			if u.Tokens.OutputTokens != nil {
 				processed.CompletionTokens = *u.Tokens.OutputTokens
 			}
-			usage.ProcessedTokens = processed
 		}
-	case u.Tokens != nil:
+		return *u.BilledUnits.InputTokens, *u.BilledUnits.OutputTokens, processed
+	}
+	if u.Tokens != nil {
 		if u.Tokens.InputTokens != nil {
-			usage.PromptTokens = *u.Tokens.InputTokens
+			input = *u.Tokens.InputTokens
 		}
 		if u.Tokens.OutputTokens != nil {
-			usage.CompletionTokens = *u.Tokens.OutputTokens
+			output = *u.Tokens.OutputTokens
 		}
 	}
+	return input, output, nil
+}
+
+// ToBifrostChatUsage converts Cohere usage to the unified chat usage, streamed and not,
+// by billedCounts. cached_tokens is reported as is.
+func (u *CohereUsage) ToBifrostChatUsage() *schemas.BifrostLLMUsage {
+	usage := &schemas.BifrostLLMUsage{}
+	if u == nil {
+		return usage
+	}
+	usage.PromptTokens, usage.CompletionTokens, usage.ProcessedTokens = u.billedCounts()
 	if u.CachedTokens != nil {
 		usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{CachedReadTokens: *u.CachedTokens}
 	}
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	return usage
+}
+
+// ToBifrostResponsesUsage converts Cohere usage to the unified Responses usage, streamed
+// and not, by the same billedCounts rule as chat. cached_tokens is reported as is.
+func (u *CohereUsage) ToBifrostResponsesUsage() *schemas.ResponsesResponseUsage {
+	usage := &schemas.ResponsesResponseUsage{}
+	if u == nil {
+		return usage
+	}
+	usage.InputTokens, usage.OutputTokens, usage.ProcessedTokens = u.billedCounts()
+	if u.CachedTokens != nil {
+		usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{CachedReadTokens: *u.CachedTokens}
+	}
+	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 	return usage
 }
 

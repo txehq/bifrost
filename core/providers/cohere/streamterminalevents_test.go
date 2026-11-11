@@ -656,3 +656,63 @@ func BenchmarkCohereChatStreamEndUsage(b *testing.B) {
 		cohereUsageSink = r.Usage
 	}
 }
+
+// TestCohereResponsesUsage_BilledUnitsFillInputAndOutput pins TXE-6986: /v1/responses
+// settles Cohere on billed_units like chat, streamed and not, with the processed
+// counts in processed_tokens.
+func TestCohereResponsesUsage_BilledUnitsFillInputAndOutput(t *testing.T) {
+	var usage CohereUsage
+	require.NoError(t, json.Unmarshal([]byte(cohereBilledUsageSample), &usage))
+
+	nonStream := (&CohereChatResponse{ID: "c1", Usage: &usage}).ToBifrostResponsesResponse().Usage
+
+	state := acquireCohereResponsesStreamState()
+	defer releaseCohereResponsesStreamState(state)
+	end := cohereMessageEndEvent(FinishReasonComplete, 0, 0)
+	end.Delta.Usage = &usage
+	events := runCohereResponsesStream(t, state, []CohereStreamEvent{
+		cohereMessageStartEvent("msg-billed"),
+		cohereContentStartEvent(0, CohereContentBlockTypeText),
+		cohereContentEndEvent(0),
+		end,
+	})
+	streamed := completedResponse(t, events).Usage
+
+	for name, u := range map[string]*schemas.ResponsesResponseUsage{"non-stream": nonStream, "stream": streamed} {
+		require.NotNil(t, u, name)
+		assert.Equal(t, 5, u.InputTokens, name+" input_tokens = billed input")
+		assert.Equal(t, 418, u.OutputTokens, name+" output_tokens = billed output")
+		assert.Equal(t, 423, u.TotalTokens, name)
+		require.NotNil(t, u.ProcessedTokens, name+" processed_tokens")
+		assert.Equal(t, schemas.ProcessedTokenUsage{PromptTokens: 71, CompletionTokens: 418}, *u.ProcessedTokens, name)
+		require.NotNil(t, u.InputTokensDetails, name+" cached_tokens still reported")
+	}
+
+	in, out := 12, 7
+	plain := (&CohereChatResponse{ID: "c2", Usage: &CohereUsage{Tokens: &CohereTokenUsage{InputTokens: &in, OutputTokens: &out}}}).ToBifrostResponsesResponse().Usage
+	assert.Equal(t, 12, plain.InputTokens)
+	assert.Equal(t, 7, plain.OutputTokens)
+	assert.Nil(t, plain.ProcessedTokens, "without billed_units nothing changes")
+	assert.Nil(t, plain.InputTokensDetails, "no cached_tokens, no details")
+}
+
+// Request-path cost of Cohere Responses usage conversion (TXE-6986).
+var cohereResponsesUsageSink *schemas.ResponsesResponseUsage
+
+func BenchmarkCohereResponsesResponseUsage(b *testing.B) {
+	bi, bo, ti, to := 5, 418, 71, 418
+	resp := &CohereChatResponse{ID: "c1", Usage: &CohereUsage{BilledUnits: &CohereBilledUnits{InputTokens: &bi, OutputTokens: &bo}, Tokens: &CohereTokenUsage{InputTokens: &ti, OutputTokens: &to}}}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		cohereResponsesUsageSink = resp.ToBifrostResponsesResponse().Usage
+	}
+}
+
+func BenchmarkCohereResponsesResponseUsage_TokensOnly(b *testing.B) {
+	ti, to := 71, 418
+	resp := &CohereChatResponse{ID: "c1", Usage: &CohereUsage{Tokens: &CohereTokenUsage{InputTokens: &ti, OutputTokens: &to}}}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		cohereResponsesUsageSink = resp.ToBifrostResponsesResponse().Usage
+	}
+}

@@ -952,3 +952,18 @@ func BenchmarkBifrostLLMUsageNormalizeVendorSpellings(b *testing.B) {
 		})
 	}
 }
+
+func TestProcessedTokensSurviveChatResponsesConversion(t *testing.T) {
+	cu := &BifrostLLMUsage{PromptTokens: 5, CompletionTokens: 418, TotalTokens: 423, ProcessedTokens: &ProcessedTokenUsage{PromptTokens: 71, CompletionTokens: 418}}
+	ru := cu.ToResponsesResponseUsage()
+	if ru.ProcessedTokens == nil || ru.ProcessedTokens == cu.ProcessedTokens || *ru.ProcessedTokens != *cu.ProcessedTokens {
+		t.Fatalf("ToResponsesResponseUsage processed_tokens = %+v, want an owned copy of %+v", ru.ProcessedTokens, *cu.ProcessedTokens)
+	}
+	back := ru.ToBifrostLLMUsage()
+	if back.ProcessedTokens == nil || back.ProcessedTokens == ru.ProcessedTokens || *back.ProcessedTokens != *cu.ProcessedTokens {
+		t.Fatalf("ToBifrostLLMUsage processed_tokens = %+v", back.ProcessedTokens)
+	}
+	if (&BifrostLLMUsage{TotalTokens: 1}).ToResponsesResponseUsage().ProcessedTokens != nil {
+		t.Fatal("absent processed_tokens must stay absent")
+	}
+}

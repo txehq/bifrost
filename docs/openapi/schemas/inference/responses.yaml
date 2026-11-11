@@ -802,6 +802,8 @@ ResponsesResponseUsage:
         ("low", "medium" or "high"). Present only when the provider reports it.
     cost:
       $ref: "./usage.yaml#/BifrostCost"
+    processed_tokens:
+      $ref: "./usage.yaml#/BifrostLLMUsage/properties/processed_tokens"
 
 ResponsesResponseInputTokens:
   type: object
