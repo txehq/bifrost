@@ -102,9 +102,17 @@ func fetchVendorVideoURL(ctx *schemas.BifrostContext, f VideoContentFetch) (*sch
 		return SetErrorLatency(NewBifrostOperationError("failed to download video", err), latency)
 	}
 
+	// The file host's response headers replace the task lookup's on the context and travel on
+	// the response, as on the provider-client path.
+	responseHeaders := func(h http.Header) map[string]string {
+		headers := ExtractProviderResponseHeadersFromHTTP(&http.Response{Header: h})
+		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
+		return headers
+	}
+
 	start := time.Now()
 	if !f.Stream {
-		contentType, body, err := FetchMediaURLWithHeader(ctx, f.VendorURL, header)
+		contentType, body, respHeader, err := fetchMediaURLResponse(ctx, f.VendorURL, header)
 		latency := time.Since(start)
 		if err != nil {
 			return nil, failed(err, latency)
@@ -113,7 +121,7 @@ func fetchVendorVideoURL(ctx *schemas.BifrostContext, f VideoContentFetch) (*sch
 			VideoID:     f.VideoID,
 			Content:     body,
 			ContentType: contentTypeOf(contentType),
-			ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()},
+			ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds(), ProviderResponseHeaders: responseHeaders(respHeader)},
 		}, nil
 	}
 	SetStreamIdleTimeoutIfEmpty(ctx, f.StreamIdleTimeoutSeconds)
@@ -126,7 +134,7 @@ func fetchVendorVideoURL(ctx *schemas.BifrostContext, f VideoContentFetch) (*sch
 		VideoID:     f.VideoID,
 		ContentType: contentTypeOf(stream.ContentType),
 		Body:        stream.Body,
-		ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()},
+		ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds(), ProviderResponseHeaders: responseHeaders(stream.Header)},
 	}
 	if stream.ContentLength > 0 {
 		response.ContentLength = stream.ContentLength

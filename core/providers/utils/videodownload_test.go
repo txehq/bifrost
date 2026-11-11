@@ -569,6 +569,7 @@ func TestFetchVideoContentVendorURL(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", strconv.Itoa(len(file)))
+		w.Header().Set("X-Request-Id", "file-host-request-1")
 		_, _ = w.Write(file)
 	}
 	request := func() *fasthttp.Request {
@@ -596,6 +597,9 @@ func TestFetchVideoContentVendorURL(t *testing.T) {
 		if gotKey.Load() != "vendor-key" {
 			t.Fatalf("the vendor's host got key %q, want the request's header", gotKey.Load())
 		}
+		if got := resp.ExtraFields.ProviderResponseHeaders["X-Request-Id"]; got != "file-host-request-1" {
+			t.Fatalf("the file host's response headers were dropped: %v", resp.ExtraFields.ProviderResponseHeaders)
+		}
 	})
 
 	t.Run("held", func(t *testing.T) {
@@ -605,6 +609,9 @@ func TestFetchVideoContentVendorURL(t *testing.T) {
 		}
 		if resp.Body != nil || !bytes.Equal(resp.Content, file) || resp.ContentType != "application/octet-stream" {
 			t.Fatalf("body %v, %d bytes, type %q", resp.Body != nil, len(resp.Content), resp.ContentType)
+		}
+		if got := resp.ExtraFields.ProviderResponseHeaders["X-Request-Id"]; got != "file-host-request-1" {
+			t.Fatalf("the file host's response headers were dropped: %v", resp.ExtraFields.ProviderResponseHeaders)
 		}
 		if gotKey.Load() != "vendor-key" {
 			t.Fatalf("the vendor's host got key %q, want the request's header", gotKey.Load())

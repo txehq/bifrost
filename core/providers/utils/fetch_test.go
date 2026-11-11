@@ -903,14 +903,14 @@ func TestFetchMediaStreamBoundsAStalledVendor(t *testing.T) {
 // is not waited for, a gzip body is decoded, another encoding is refused, and a header the
 // caller supplied reaches the host the URL names and no host a redirect leads to.
 func TestFetchMediaStreamStatusEncodingAndCredentials(t *testing.T) {
-	type seenRequest struct{ host, path, apiKey, auth string }
+	type seenRequest struct{ host, path, apiKey, auth, referer string }
 	var mu sync.Mutex
 	var seen []seenRequest
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	proxy := proxytest.NewOriginTunnel(t, func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		seen = append(seen, seenRequest{r.Host, r.URL.Path, r.Header.Get("x-goog-api-key"), r.Header.Get("Authorization")})
+		seen = append(seen, seenRequest{r.Host, r.URL.Path, r.Header.Get("x-goog-api-key"), r.Header.Get("Authorization"), r.Header.Get("Referer")})
 		mu.Unlock()
 		switch r.URL.Path {
 		case "/gone.mp4":
@@ -999,7 +999,9 @@ func TestFetchMediaStreamStatusEncodingAndCredentials(t *testing.T) {
 				mu.Lock()
 				seen = nil
 				mu.Unlock()
-				got, err := fetch(ctx(t), "http://203.0.113.10"+path)
+				// The query is a credential too (Vertex sends its key as ?key=): net/http would
+				// hand it to the redirect hop as the Referer.
+				got, err := fetch(ctx(t), "http://203.0.113.10"+path+"?key=vendor-query-key")
 				if err != nil || got != "MP4DATA" {
 					t.Fatalf("got %q, %v", got, err)
 				}
@@ -1007,6 +1009,9 @@ func TestFetchMediaStreamStatusEncodingAndCredentials(t *testing.T) {
 				defer mu.Unlock()
 				if len(seen) != 2 {
 					t.Fatalf("saw %d requests, want the first hop and the redirect: %+v", len(seen), seen)
+				}
+				if seen[1].referer != "" {
+					t.Fatalf("redirect hop to %s was sent Referer %q, which carries the first URL's query", seen[1].host, seen[1].referer)
 				}
 				if seen[0].apiKey != "vendor-key" || seen[0].auth != "Bearer vendor-token" {
 					t.Fatalf("the host the URL names did not get the credential: %+v", seen[0])

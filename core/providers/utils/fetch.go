@@ -103,6 +103,11 @@ func FetchMediaURLWithHeader(ctx context.Context, resourceURL string, header htt
 	return fetchURL(ctx, resourceURL, mediaFetchLimits, header)
 }
 
+// fetchMediaURLResponse is FetchMediaURLWithHeader that also returns the host's response header.
+func fetchMediaURLResponse(ctx context.Context, resourceURL string, header http.Header) (mediaType string, body []byte, responseHeader http.Header, err error) {
+	return fetchURLResponse(ctx, resourceURL, mediaFetchLimits, header)
+}
+
 // MediaStream is a media file being downloaded by FetchMediaStream.
 type MediaStream struct {
 	// ContentType is the vendor's Content-Type without its parameters, "" when it sent none.
@@ -334,35 +339,41 @@ func openFetch(ctx context.Context, resourceURL string, limits fetchLimits, head
 
 // fetchURL is the shared body of FetchAndEncodeURL and FetchMediaURL.
 func fetchURL(ctx context.Context, resourceURL string, limits fetchLimits, header http.Header) (mediaType string, body []byte, err error) {
+	mediaType, body, _, err = fetchURLResponse(ctx, resourceURL, limits, header)
+	return mediaType, body, err
+}
+
+// fetchURLResponse is fetchURL that also returns the host's response header.
+func fetchURLResponse(ctx context.Context, resourceURL string, limits fetchLimits, header http.Header) (mediaType string, body []byte, responseHeader http.Header, err error) {
 	maxBytes := limits.maxBytes
 
 	resp, redacted, err := openFetch(ctx, resourceURL, limits, header)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	defer resp.Body.Close()
 
 	if n := resp.ContentLength; n > maxBytes {
-		return "", nil, fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, maxBytes)
+		return "", nil, nil, fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, maxBytes)
 	} else if n >= 0 {
 		// Fork: the body length is known (the fasthttp round tripper always sets it), so read
 		// into one exact-size buffer instead of letting io.ReadAll grow and copy it, which for
 		// a 256 MiB media file would hold several transient copies.
 		body = make([]byte, n)
 		if _, err = io.ReadFull(resp.Body, body); err != nil {
-			return "", nil, fmt.Errorf("failed to read body from %q: %w", redacted, sanitizeFetchError(err, redacted))
+			return "", nil, nil, fmt.Errorf("failed to read body from %q: %w", redacted, sanitizeFetchError(err, redacted))
 		}
 	} else {
 		body, err = io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 		if err != nil {
-			return "", nil, fmt.Errorf("failed to read body from %q: %w", redacted, sanitizeFetchError(err, redacted))
+			return "", nil, nil, fmt.Errorf("failed to read body from %q: %w", redacted, sanitizeFetchError(err, redacted))
 		}
 		if int64(len(body)) > maxBytes {
-			return "", nil, fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, maxBytes)
+			return "", nil, nil, fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, maxBytes)
 		}
 	}
 
-	return mediaTypeOf(resp.Header.Get("Content-Type")), body, nil
+	return mediaTypeOf(resp.Header.Get("Content-Type")), body, resp.Header, nil
 }
 
 // maxFetchBytes caps a fetched resource at 25 MiB.
@@ -542,7 +553,7 @@ func newFetchClientWithLimits(proxyConfig *schemas.ProxyConfig, limits fetchLimi
 }
 
 // fetchCheckRedirect is the redirect policy of every fetch client: http and https only, ten
-// hops at most, and the headers the caller supplied (a vendor credential) dropped from a hop
+// hops at most, no Referer, and the headers the caller supplied (a vendor credential) dropped from a hop
 // that leaves the first host. net/http drops Authorization and Cookie itself on such a hop;
 // a credential under another name, such as x-goog-api-key, is only known to the caller.
 func fetchCheckRedirect(req *http.Request, via []*http.Request) error {
@@ -552,6 +563,10 @@ func fetchCheckRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= 10 {
 		return fmt.Errorf("stopped after 10 redirects")
 	}
+	// net/http sets Referer to the previous hop's URL, query included, and the query of a
+	// fetched URL is its credential: a pre-signed signature, or a vendor key such as
+	// Vertex's ?key=. No hop is told where the fetch came from.
+	req.Header.Del("Referer")
 	if names, _ := req.Context().Value(fetchCredentialHeadersKey{}).([]string); len(names) > 0 && len(via) > 0 {
 		if first := via[0].URL; req.URL.Scheme != first.Scheme || req.URL.Host != first.Host {
 			for _, name := range names {
