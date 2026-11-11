@@ -648,6 +648,10 @@ req.Headers["X-Custom-Header"] = "value"
 The helper methods (`CaseInsensitiveHeaderLookup` and `CaseInsensitiveQueryLookup`) ensure your plugin works correctly regardless of how the client sends header/query parameter names.
 </Note>
 
+<Note>
+**Repeated Query Parameters**: `req.Query` holds one value per name: the first one sent, which is also the value Bifrost's handlers and routing rules read. When a caller sends a name more than once (`?status=a&status=b`), `req.RepeatedQuery["status"]` holds every value in the order sent (`["a", "b"]`); it is `nil` when no name repeats. A parameter Bifrost does not interpret is forwarded to the provider with every value, so a plugin that allows or refuses a request by a query value should check `req.RepeatedQuery` as well as `req.Query`. Setting `req.Query["status"]` replaces every value the caller sent with that one; changes to `req.RepeatedQuery` are ignored.
+</Note>
+
 <Warning>
 These functions are **only called** when using `bifrost-http`. They are **not invoked** when using Bifrost as a Go SDK.
 </Warning>

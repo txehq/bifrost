@@ -538,6 +538,24 @@ test("compatible chat requests are recorded, and the azure content filter answer
   assert.equal(sheet["oc-tiered"].provider, "moonshot");
 });
 
+// Folder 481 (TXE-7042): the Responses lifecycle reads are recorded with the query string as it arrived, every
+// value of a repeated parameter in the order sent.
+test("responses lifecycle reads are recorded with every value of a repeated query parameter", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}`;
+  const items = await fetch(`${base}/v1/responses/resp_1/input_items?include=a&include=b&order=asc`);
+  assert.equal(items.status, 200);
+  assert.deepEqual(await items.json(), { object: "list", data: [], first_id: null, last_id: null, has_more: false });
+  const retrieved = await fetch(`${base}/v1/responses/resp_1?include=b&include=a`);
+  assert.equal(retrieved.status, 200);
+  assert.equal((await retrieved.json()).id, "resp_1");
+  const { calls } = (await (await fetch(`${base}/__wire`)).json()).data[0];
+  assert.deepEqual(calls.map((c) => [c.method, c.path, c.query]), [
+    ["GET", "/v1/responses/resp_1/input_items", "?include=a&include=b&order=asc"],
+    ["GET", "/v1/responses/resp_1", "?include=b&include=a"],
+  ]);
+});
+
 // Folder 429 (TXE-7044): gpt-image-drop is read and recorded, then loses its connection unanswered.
 test("gpt-image-drop is recorded on the wire and its connection dropped without a response", async (t) => {
   const post = await startFixture(t);

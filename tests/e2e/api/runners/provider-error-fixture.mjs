@@ -1404,6 +1404,16 @@ const handleRequest = (req, res) => {
 	if (req.method === "GET" && path === "/__wire") {
 		return send(200, {}, JSON.stringify({ data: [{ calls: wireCalls }] }));
 	}
+	// OpenAI's Responses lifecycle reads (TXE-7042): retrieve and input items. Each call is kept in /__wire with
+	// the query string as it arrived, so a row can read back every value of a parameter it sent more than once.
+	const lifecycleRead = req.method === "GET" && /^\/v1\/responses\/([^/]+)(\/input_items)?$/.exec(path);
+	if (lifecycleRead) {
+		wireCalls.push({ method: req.method, path, query: new URL(req.url, "http://localhost").search, body: "" });
+		if (lifecycleRead[2]) {
+			return send(200, {}, JSON.stringify({ object: "list", data: [], first_id: null, last_id: null, has_more: false }));
+		}
+		return send(200, {}, JSON.stringify({ id: decodeURIComponent(lifecycleRead[1]), object: "response", created_at: 1, status: "completed", model: "upstream-ok", output: [] }));
+	}
 	if (path.startsWith("/pp/bigmodel/")) {
 		const body = [];
 		req.on("data", (c) => body.push(c));
