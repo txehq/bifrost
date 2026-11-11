@@ -85,7 +85,8 @@
       "base_url": "honours"
     },
     "huggingface": {
-      "base_url": "honours"
+      "base_url": "honours",
+      "fixture": "set network_config.base_url to the fixture; the model hub lookup (GET <base_url>/api/models/<model>) follows it too (TXE-7117), so the fixture must answer that route as well as the inference one"
     },
     "nebius": {
       "base_url": "honours"
