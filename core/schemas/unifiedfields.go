@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 )
 
 // A field that cannot be delivered is an error (contract C4, work item BF4). When a
@@ -257,64 +259,98 @@ type nestedPricePath struct {
 	names []string
 }
 
-// sameBodyFieldName reports whether two body field names are one field to a vendor that
-// takes camelCase and snake_case in any letter case: "duration_seconds", "durationSeconds"
-// and "DurationSeconds". It compares ASCII letters without case and skips "_" and "-".
-func sameBodyFieldName(a, b string) bool {
+// SameJSONFieldName reports whether a and b name the same field once case and
+// underscores are ignored: "max_tokens", "maxTokens" and "MaxTokens" are one field.
+// Case is folded the way the most permissive decoder folds it, Go's encoding/json,
+// which uses Unicode simple folding: "\u017ftream" (long s) and "tas\u212a" (Kelvin
+// sign) are read there as "stream" and "task", so they are the same field here too.
+// It allocates nothing.
+//
+// It is the one comparison for a caller-supplied field name against a body field: the
+// extra-params merge (core/providers/utils) and the nested price-field check below both use
+// it, so a spelling the merge would apply to a body object is a spelling the check reads.
+func SameJSONFieldName(a, b string) bool {
 	i, j := 0, 0
 	for {
-		for i < len(a) && (a[i] == '_' || a[i] == '-') {
+		for i < len(a) && a[i] == '_' {
 			i++
 		}
-		for j < len(b) && (b[j] == '_' || b[j] == '-') {
+		for j < len(b) && b[j] == '_' {
 			j++
 		}
 		if i == len(a) || j == len(b) {
 			return i == len(a) && j == len(b)
 		}
-		x, y := a[i], b[j]
-		if x >= 'A' && x <= 'Z' {
-			x += 'a' - 'A'
+		if ca, cb := a[i], b[j]; ca < utf8.RuneSelf && cb < utf8.RuneSelf {
+			// Both ASCII, the usual case: no decoding.
+			if ca != cb && foldJSONFieldRune(rune(ca)) != foldJSONFieldRune(rune(cb)) {
+				return false
+			}
+			i++
+			j++
+			continue
 		}
-		if y >= 'A' && y <= 'Z' {
-			y += 'a' - 'A'
-		}
-		if x != y {
+		ra, sizeA := utf8.DecodeRuneInString(a[i:])
+		rb, sizeB := utf8.DecodeRuneInString(b[j:])
+		if ra != rb && foldJSONFieldRune(ra) != foldJSONFieldRune(rb) {
 			return false
 		}
-		i++
-		j++
+		i += sizeA
+		j += sizeB
 	}
 }
 
-// nestedExtraParam returns what extraParams holds at a body path, following objects only
-// and reading each name as sameBodyFieldName does. keys receives the names as the caller
-// spelled them. ok is false when the path is not there.
-func nestedExtraParam(extraParams map[string]interface{}, names []string, keys []string) (value interface{}, ok bool) {
-	current := extraParams
-	for depth, name := range names {
-		found := false
-		// The first match in sorted order, so the same request is refused the same way.
-		var key string
-		for candidate := range current {
-			if sameBodyFieldName(candidate, name) && (!found || candidate < key) {
-				key, found = candidate, true
-			}
+// foldJSONFieldRune returns the smallest rune of r's simple case-folding orbit, so two
+// runes that fold together map to one value ('K', 'k' and the Kelvin sign all give 'K').
+func foldJSONFieldRune(r rune) rune {
+	if r < utf8.RuneSelf {
+		if 'a' <= r && r <= 'z' {
+			return r - ('a' - 'A')
 		}
-		if !found {
-			return nil, false
-		}
-		keys[depth] = key
-		if depth == len(names)-1 {
-			return current[key], true
-		}
-		next, isObject := current[key].(map[string]interface{})
-		if !isObject {
-			return nil, false
-		}
-		current = next
+		// 'K' and 'S' have non-ASCII members in their orbits, but they are the smallest.
+		return r
 	}
-	return nil, false
+	smallest := r
+	for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
+		if next < smallest {
+			smallest = next
+		}
+	}
+	return smallest
+}
+
+// nestedExtraParamSet reports whether extraParams sets a non-empty value at a body path,
+// following objects only and reading each name as SameJSONFieldName does, which is how the
+// merge reads it. Every spelling of
+// a name is followed, not only the first: the merge applies each of them to the same body
+// object, so {"Parameters": {}, "parameters": {"durationSeconds": 8}} sets the field. keys
+// receives the names of the first such path in sorted order, as the caller spelled them.
+func nestedExtraParamSet(current map[string]interface{}, names []string, keys []string) bool {
+	name, last := names[0], len(names) == 1
+	found := false
+	var best [8]string
+	for candidate, value := range current {
+		if !SameJSONFieldName(candidate, name) {
+			continue
+		}
+		// Not better than the path already found at this level: nothing under it is.
+		if found && candidate >= keys[0] {
+			continue
+		}
+		if last {
+			if extraParamIsEmpty(value) {
+				continue
+			}
+		} else {
+			next, isObject := value.(map[string]interface{})
+			if !isObject || !nestedExtraParamSet(next, names[1:], best[1:len(names)]) {
+				continue
+			}
+			copy(keys[1:], best[1:len(names)])
+		}
+		keys[0], found = candidate, true
+	}
+	return found
 }
 
 // nestedPriceFieldAmong returns the first nested price field of baseProvider and
@@ -343,8 +379,7 @@ func nestedPriceFieldAmong(baseProvider ModelProvider, requestType RequestType, 
 		if len(path.names) > len(keys) || !slices.Contains(path.field.Requests, requestType) {
 			continue
 		}
-		value, ok := nestedExtraParam(extraParams, path.names, keys[:])
-		if !ok || extraParamIsEmpty(value) {
+		if !nestedExtraParamSet(extraParams, path.names, keys[:len(path.names)]) {
 			continue
 		}
 		spelled := strings.Join(keys[:len(path.names)], ".")

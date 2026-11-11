@@ -636,6 +636,16 @@ func TestCheckExtraParamPriceFieldsForNestedBoundaries(t *testing.T) {
 		{"false is a value", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", object("generateAudio", false))}), "parameters.generateAudio"},
 		{"the first in sorted order is named", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", object("durationSeconds", 8, "aspectRatio", "9:16"))}), "parameters.aspectRatio"},
 		{"a custom provider is checked as its base", Replicate, video(&VideoGenerationParameters{ExtraParams: object("input", object("duration", 10))}), "input.duration"},
+		// The merge applies every spelling of a parent to the same body object, so an empty
+		// one must not hide a populated one, whichever sorts first.
+		{"an empty spelling of the parent before a populated one", Gemini, video(&VideoGenerationParameters{ExtraParams: object("Parameters", object(), "parameters", object("durationSeconds", 8))}), "parameters.durationSeconds"},
+		{"an empty spelling of the parent after a populated one", Gemini, video(&VideoGenerationParameters{ExtraParams: object("PARAMETERS", object("durationSeconds", 8), "parameters", object())}), "PARAMETERS.durationSeconds"},
+		{"an empty spelling of the field beside a set one", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", object("DurationSeconds", nil, "duration_seconds", 8))}), "parameters.duration_seconds"},
+		{"a parent that is not an object beside one that is", Gemini, video(&VideoGenerationParameters{ExtraParams: object("Parameters", "x", "parameters", object("durationSeconds", 8))}), "parameters.durationSeconds"},
+		// The merge folds names as Go's encoding/json does, so the long s is an s.
+		{"a parent spelled with a letter that folds to the same one", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameter\u017f", object("duration\u017feconds", 8))}), "parameter\u017f.duration\u017feconds"},
+		{"two populated spellings: the first in sorted order is named", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", object("durationSeconds", 8), "Parameters", object("durationSeconds", 4))}), "Parameters.durationSeconds"},
+		{"an empty middle object beside a populated one, three levels down", Gemini, extraOnlyRequest(t, ImageGenerationRequest, object("generationConfig", object("ImageConfig", object(), "imageConfig", object("imageSize", "4K")))), "generationConfig.imageConfig.imageSize"},
 	}
 	for _, tc := range refused {
 		t.Run("refused/"+tc.name, func(t *testing.T) {
