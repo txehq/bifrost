@@ -186,7 +186,11 @@ while IFS= read -r input; do
   case "$input" in
     .github/workflows/*) continue ;; # covered by the ".github/workflows/**" trigger
   esac
-  if grep -qF -- "- \"$input\"" "$lint_workflow"; then
+  # An input that is a directory (the per-folder harness, TXE-7136) is read file by file,
+  # so the trigger must name everything under it.
+  trigger="$input"
+  [[ -d "$repo_root/$input" ]] && trigger="$input/**"
+  if grep -qF -- "- \"$trigger\"" "$lint_workflow"; then
     echo "ok   trigger-covers-$input"
   else
     echo "FAIL trigger-covers-$input: workflow-lint.yml is not triggered by a change to $input, which check-egress-allowlist.sh reads"
