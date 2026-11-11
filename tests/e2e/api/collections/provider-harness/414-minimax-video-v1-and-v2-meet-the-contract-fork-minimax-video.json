@@ -7,7 +7,7 @@
       "request": {
         "method": "POST",
         "header": [],
-        "url": "http://127.0.0.1:8791/__reset"
+        "url": "{{providerErrorFixtureUrl}}/__reset"
       },
       "event": [
         {
@@ -925,7 +925,7 @@
       "request": {
         "method": "GET",
         "header": [],
-        "url": "http://127.0.0.1:8791/__mmv"
+        "url": "{{providerErrorFixtureUrl}}/__mmv"
       },
       "event": [
         {
