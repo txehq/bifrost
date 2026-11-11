@@ -963,6 +963,24 @@ All Gemini-compatible parameters are supported. Special handling includes:
 
 Refer to [Gemini documentation](/providers/supported-providers/gemini) for detailed conversion details.
 
+### Service tier
+
+Vertex takes the processing tier as the `X-Vertex-AI-LLM-Shared-Request-Type` request header, not in the body. Bifrost sets it from `service_tier`:
+
+| `service_tier` | What Bifrost sends |
+| -- | -- |
+| not set, `auto`, `default` | No header: Vertex's standard processing |
+| `priority`, `flex` on a key whose region is `global`, for a model that offers the tier | The header with that value |
+| `priority`, `flex` anywhere else, or any other value | Nothing: the request fails with `400`, `extra_fields.error_type: "caller_unsupported_parameter"` and `error.param: "service_tier"` |
+
+`service_tier` changes the price, so it is delivered or the request fails; it is never dropped. A header pinned in the provider's extra headers takes precedence over the request's `service_tier`.
+
+### Image and file URLs
+
+For Gemini and Gemma models, and tuned models addressed by a numeric ID, an `http(s)` or `gs://` URL is sent to Vertex unchanged as `fileData.fileUri`. Bifrost does not download it. Vertex fetches an HTTP URL itself: the file must be publicly readable and at most 15 MiB, and HTTP URLs are not supported when VPC Service Controls is enabled. When Vertex cannot fetch a URL, its error is returned as it is. Send a `data:` URL to pass bytes instead.
+
+Claude on Vertex accepts base64 sources only, so for Claude models Bifrost still downloads an `http(s)` URL and reads a `gs://` object with the key's credentials.
+
 ## Anthropic Models (Claude)
 
 When using Anthropic models through Vertex AI, Bifrost converts requests to Anthropic's message format.

@@ -498,6 +498,16 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 	if data.FinishReason == nil {
 		data.FinishReason = accumulator.getChatFinishReasonLocked()
 	}
+	// native_finish_reason (the vendor's own block reason, Gemini's blockReason or
+	// finishReason) rides the chunk that carries finish_reason, which need not be the
+	// highest-index one; keep the newest chunk's value, as for service_tier above.
+	nativeChunkIndex := -1
+	for _, streamChunk := range accumulator.ChatStreamChunks {
+		if streamChunk.NativeFinishReason != nil && streamChunk.ChunkIndex > nativeChunkIndex {
+			data.NativeFinishReason = streamChunk.NativeFinishReason
+			nativeChunkIndex = streamChunk.ChunkIndex
+		}
+	}
 	// Merge LogProbs from all chunks
 	if len(accumulator.ChatStreamChunks) > 0 {
 		var mergedLogProbs *schemas.BifrostLogProbs
@@ -598,6 +608,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 				// Deep copy delta to prevent shared data mutation between chunks
 				chunk.Delta = deepCopyChatStreamDelta(choice.ChatStreamResponseChoice.Delta)
 				chunk.FinishReason = choice.FinishReason
+				chunk.NativeFinishReason = choice.NativeFinishReason
 				chunk.LogProbs = choice.LogProbs
 			}
 		}

@@ -250,6 +250,9 @@ Tool definitions are restructured with these mappings:
 - `totalTokenCount` → `usage.total_tokens`
 - `cachedContentTokenCount` → `usage.prompt_tokens_details.cached_tokens`
 - `thoughtsTokenCount` → `usage.completion_tokens_details.reasoning_tokens`
+- `promptTokensDetails[]` by modality → `usage.prompt_tokens_details`: `TEXT` → `text_tokens`, `AUDIO` → `audio_tokens`, `IMAGE` → `image_tokens`, `VIDEO` → `video_tokens`, `DOCUMENT` → `document_tokens`
+- `toolUsePromptTokenCount` → `usage.tool_use_prompt_tokens`, and `toolUsePromptTokensDetails[]` → `usage.tool_use_prompt_tokens_details` with the same modality fields. Gemini reports these tokens next to `promptTokenCount`, so they are not part of `usage.prompt_tokens`; `usage.total_tokens` includes them
+- A blocked prompt (`promptFeedback.blockReason`, no candidates) or a blocked output (`finishReason` `SAFETY`, `RECITATION`, `PROHIBITED_CONTENT`, ...) still returns 200 with `finish_reason: "content_filter"`. Gemini's own reason is added verbatim as `choices[0].native_finish_reason`
 - Thought content (from `text` parts with `thought: true`) → `reasoning` field in stream deltas
 - Function call `args` (map) → JSON string `arguments`
 

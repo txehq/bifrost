@@ -1111,3 +1111,52 @@ func TestMergeBifrostLLMUsageSumsVendorCost(t *testing.T) {
 		t.Errorf("AddBillingTurn vendor_cost = %+v", total.VendorCost)
 	}
 }
+
+// TestUsageCarriesVideoDocumentAndToolUsePromptTokens pins the unified usage fields TXE-6535
+// adds (contract C5): video_tokens and document_tokens in the prompt and input token
+// details, and tool_use_prompt_tokens with its breakdown. They survive JSON both ways, the
+// chat and Responses conversions, summing across calls, and a deep copy that shares nothing.
+func TestUsageCarriesVideoDocumentAndToolUsePromptTokens(t *testing.T) {
+	const wire = `{"prompt_tokens":17500,"prompt_tokens_details":{"text_tokens":12,"audio_tokens":1500,"video_tokens":15480,"document_tokens":508,"cached_tokens":0,"cache_write_tokens":0},` +
+		`"completion_tokens":120,"total_tokens":18170,"tool_use_prompt_tokens":550,"tool_use_prompt_tokens_details":{"text_tokens":530,"image_tokens":20}}`
+	var usage BifrostLLMUsage
+	if err := json.Unmarshal([]byte(wire), &usage); err != nil {
+		t.Fatal(err)
+	}
+	if usage.PromptTokensDetails.VideoTokens != 15480 || usage.PromptTokensDetails.DocumentTokens != 508 {
+		t.Fatalf("decoded video/document tokens = %d/%d, want 15480/508", usage.PromptTokensDetails.VideoTokens, usage.PromptTokensDetails.DocumentTokens)
+	}
+	if got, _ := json.Marshal(&usage); string(got) != wire {
+		t.Fatalf("usage did not round-trip\n got: %s\nwant: %s", got, wire)
+	}
+
+	responsesUsage := usage.ToResponsesResponseUsage()
+	if responsesUsage.InputTokensDetails.VideoTokens != 15480 || responsesUsage.InputTokensDetails.DocumentTokens != 508 ||
+		responsesUsage.ToolUsePromptTokens != 550 || !reflect.DeepEqual(responsesUsage.ToolUsePromptTokensDetails, usage.ToolUsePromptTokensDetails) {
+		t.Fatalf("chat to Responses usage lost a field: %+v / %+v", responsesUsage.InputTokensDetails, responsesUsage)
+	}
+	responsesWire, _ := json.Marshal(responsesUsage)
+	var decoded ResponsesResponseUsage
+	if err := json.Unmarshal(responsesWire, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if back, _ := json.Marshal(decoded.ToBifrostLLMUsage()); string(back) != wire {
+		t.Fatalf("Responses usage did not convert back\n got: %s\nwant: %s", back, wire)
+	}
+
+	sum := MergeBifrostLLMUsage(&usage, &usage)
+	if sum.PromptTokensDetails.VideoTokens != 30960 || sum.PromptTokensDetails.DocumentTokens != 1016 || sum.ToolUsePromptTokens != 1100 ||
+		!reflect.DeepEqual(sum.ToolUsePromptTokensDetails, &ToolUsePromptTokensDetails{TextTokens: 1060, ImageTokens: 40}) {
+		t.Fatalf("summed usage = %+v / %+v / %d", sum.PromptTokensDetails, sum.ToolUsePromptTokensDetails, sum.ToolUsePromptTokens)
+	}
+	if merged := MergeBifrostLLMUsage(&BifrostLLMUsage{PromptTokens: 1}, &BifrostLLMUsage{PromptTokens: 2}); merged.ToolUsePromptTokensDetails != nil || merged.ToolUsePromptTokens != 0 {
+		t.Fatalf("a sum of usages without tool-use prompt tokens invented some: %+v", merged)
+	}
+
+	clone := usage.DeepCopy()
+	clone.ToolUsePromptTokensDetails.TextTokens = 1
+	clone.PromptTokensDetails.VideoTokens = 1
+	if usage.ToolUsePromptTokensDetails.TextTokens != 530 || usage.PromptTokensDetails.VideoTokens != 15480 {
+		t.Fatal("DeepCopy shares the token details with the original")
+	}
+}

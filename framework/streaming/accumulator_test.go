@@ -1043,6 +1043,74 @@ func TestChatStreamingFinishReasonOnTerminalChunk(t *testing.T) {
 	}
 }
 
+// TestChatStreamingKeepsNativeFinishReason: a provider that blocks the prompt or the output
+// sends the vendor's own reason as choices[].native_finish_reason next to finish_reason
+// content_filter (Gemini and Vertex, TXE-6535). The accumulated response that logging,
+// tracing and the plugins read must keep it, whether it rides the highest-index chunk or
+// an earlier one followed by a usage-only tail, and a stream without one must carry none.
+func TestChatStreamingKeepsNativeFinishReason(t *testing.T) {
+	filtered, safety := "content_filter", "SAFETY"
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12}
+	blocked := func(idx int, u *schemas.BifrostLLMUsage) *schemas.BifrostResponse {
+		response := newChatChunkResponse(idx, "", &filtered, u)
+		response.ChatResponse.Choices[0].NativeFinishReason = &safety
+		return response
+	}
+	run := func(t *testing.T, chunks ...*schemas.BifrostResponse) *ProcessedStreamResponse {
+		t.Helper()
+		accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "native-finish-"+t.Name())
+		var processed *ProcessedStreamResponse
+		for i, chunk := range chunks {
+			if i == len(chunks)-1 {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			}
+			var err error
+			if processed, err = accumulator.processChatStreamingResponse(ctx, chunk, nil); err != nil {
+				t.Fatalf("chunk %d: %v", i, err)
+			}
+		}
+		if processed == nil || processed.Data == nil {
+			t.Fatal("expected accumulated data on the final chunk")
+		}
+		return processed
+	}
+	check := func(t *testing.T, processed *ProcessedStreamResponse) {
+		t.Helper()
+		if got := processed.Data.NativeFinishReason; got == nil || *got != "SAFETY" {
+			t.Fatalf("accumulated native_finish_reason = %v, want SAFETY", got)
+		}
+		if got := processed.Data.FinishReason; got == nil || *got != "content_filter" {
+			t.Fatalf("accumulated finish_reason = %v, want content_filter unchanged", got)
+		}
+		rebuilt := processed.ToBifrostResponse()
+		if rebuilt == nil || rebuilt.ChatResponse == nil || len(rebuilt.ChatResponse.Choices) != 1 {
+			t.Fatalf("rebuilt response = %#v, want one chat choice", rebuilt)
+		}
+		if got := rebuilt.ChatResponse.Choices[0].NativeFinishReason; got == nil || *got != "SAFETY" {
+			t.Fatalf("rebuilt choices[0].native_finish_reason = %v, want SAFETY", got)
+		}
+	}
+
+	t.Run("on the terminal chunk", func(t *testing.T) {
+		check(t, run(t, blocked(0, usage)))
+	})
+	t.Run("before a usage-only tail chunk", func(t *testing.T) {
+		check(t, run(t, newChatChunkResponse(0, "Hel", nil, nil), blocked(1, nil), newChatChunkResponse(2, "", nil, usage)))
+	})
+	t.Run("absent when the vendor gave none", func(t *testing.T) {
+		stop := "stop"
+		processed := run(t, newChatChunkResponse(0, "Hello", nil, nil), newChatChunkResponse(1, "", &stop, usage))
+		if got := processed.Data.NativeFinishReason; got != nil {
+			t.Fatalf("accumulated native_finish_reason = %q, want none", *got)
+		}
+		if got := processed.ToBifrostResponse().ChatResponse.Choices[0].NativeFinishReason; got != nil {
+			t.Fatalf("rebuilt native_finish_reason = %q, want none", *got)
+		}
+	})
+}
+
 // A retried stream attempt reuses its request's accumulator, and its chunk indexes
 // restart at 0. Reset must drop the failed attempt's chunks so the retry's are not
 // discarded as duplicates, and keep the accumulator alive for the plugins that own it.

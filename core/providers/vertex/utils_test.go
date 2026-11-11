@@ -658,60 +658,86 @@ func TestVertexServiceTierHeaderValue_Gemini35FlashLiteFlex(t *testing.T) {
 }
 
 // TestClassifyURLSource pins the capability matrix this provider implements. Vertex
-// serves two model families with different source support -- Claude-on-Vertex takes
-// base64 only, Gemini-on-Vertex takes fileData.fileUri -- so the same URL is downloaded
-// for one and forwarded for the other. Getting this wrong is invisible until a live
-// request fails, which is how the gs:// regression shipped.
+// serves model families with different source support -- Claude-on-Vertex takes base64
+// only, Gemini-on-Vertex takes fileData.fileUri for gs:// and http(s) alike -- so the same
+// URL is downloaded for one and forwarded for the other. Getting this wrong is invisible
+// until a live request fails, which is how the gs:// regression shipped.
 func TestClassifyURLSource(t *testing.T) {
 	t.Parallel()
 
+	const (
+		geminiFamily = vertexURLSourceFamilyGemini
+		claudeFamily = vertexURLSourceFamilyAnthropic
+		otherFamily  = vertexURLSourceFamilyOther
+	)
 	tests := []struct {
-		name      string
-		url       string
-		anthropic bool
-		want      urlSourceDisposition
+		name   string
+		url    string
+		family vertexURLSourceFamily
+		want   urlSourceDisposition
 	}{
-		{name: "https to gemini is fetched", url: "https://example.com/a.pdf", want: urlSourceFetchHTTP},
-		{name: "http to gemini is fetched", url: "http://example.com/a.pdf", want: urlSourceFetchHTTP},
-		{name: "gcs to gemini is forwarded", url: "gs://bucket/clip.mp4", want: urlSourceForward},
-		{name: "data uri to gemini is forwarded", url: "data:image/png;base64,iVBORw0KGgo=", want: urlSourceForward},
+		// TXE-6535, contract C4 agreement four: a URL reaches the vendor as a URL.
+		{name: "https to gemini is forwarded", url: "https://example.com/a.pdf", family: geminiFamily, want: urlSourceForward},
+		{name: "http to gemini is forwarded", url: "http://example.com/a.pdf", family: geminiFamily, want: urlSourceForward},
+		{name: "gcs to gemini is forwarded", url: "gs://bucket/clip.mp4", family: geminiFamily, want: urlSourceForward},
+		{name: "data uri to gemini is forwarded", url: "data:image/png;base64,iVBORw0KGgo=", family: geminiFamily, want: urlSourceForward},
 
-		{name: "https to claude is fetched", url: "https://example.com/a.pdf", anthropic: true, want: urlSourceFetchHTTP},
-		{name: "http to claude is fetched", url: "http://example.com/a.pdf", anthropic: true, want: urlSourceFetchHTTP},
-		{name: "gcs to claude is fetched from storage", url: "gs://bucket/clip.mp4", anthropic: true, want: urlSourceFetchGCS},
-		{name: "data uri to claude is forwarded", url: "data:image/png;base64,iVBORw0KGgo=", anthropic: true, want: urlSourceForward},
+		{name: "https to claude is fetched", url: "https://example.com/a.pdf", family: claudeFamily, want: urlSourceFetchHTTP},
+		{name: "http to claude is fetched", url: "http://example.com/a.pdf", family: claudeFamily, want: urlSourceFetchHTTP},
+		{name: "gcs to claude is fetched from storage", url: "gs://bucket/clip.mp4", family: claudeFamily, want: urlSourceFetchGCS},
+		{name: "data uri to claude is forwarded", url: "data:image/png;base64,iVBORw0KGgo=", family: claudeFamily, want: urlSourceForward},
+
+		// Partner models on the OpenAI-compatible endpoint keep what they had.
+		{name: "https to a partner model is fetched", url: "https://example.com/a.png", family: otherFamily, want: urlSourceFetchHTTP},
+		{name: "gcs to a partner model is forwarded", url: "gs://bucket/a.png", family: otherFamily, want: urlSourceForward},
 
 		// Schemes bifrost cannot fetch are still handed to the provider rather than
 		// rejected here: bifrost does not decide what the provider accepts, and the
 		// provider's own answer is the authoritative one.
-		{name: "s3 is forwarded for gemini", url: "s3://bucket/a.pdf", want: urlSourceForward},
-		{name: "s3 is forwarded for claude", url: "s3://bucket/a.pdf", anthropic: true, want: urlSourceForward},
-		{name: "file scheme is forwarded", url: "file:///etc/passwd", want: urlSourceForward},
-		{name: "scheme-less value is forwarded", url: "bucket/a.pdf", want: urlSourceForward},
+		{name: "s3 is forwarded for gemini", url: "s3://bucket/a.pdf", family: geminiFamily, want: urlSourceForward},
+		{name: "s3 is forwarded for claude", url: "s3://bucket/a.pdf", family: claudeFamily, want: urlSourceForward},
+		{name: "file scheme is forwarded", url: "file:///etc/passwd", family: geminiFamily, want: urlSourceForward},
+		{name: "scheme-less value is forwarded", url: "bucket/a.pdf", family: geminiFamily, want: urlSourceForward},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if got := classifyURLSource(tt.url, tt.anthropic); got != tt.want {
-				t.Fatalf("classifyURLSource(%q, anthropic=%v) = %v, want %v", tt.url, tt.anthropic, got, tt.want)
+			if got := classifyURLSource(tt.url, tt.family); got != tt.want {
+				t.Fatalf("classifyURLSource(%q, family=%v) = %v, want %v", tt.url, tt.family, got, tt.want)
 			}
 		})
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for model, want := range map[string]vertexURLSourceFamily{
+		"gemini-3.8-flash":     geminiFamily,
+		"gemma-3-27b-it":       geminiFamily,
+		"1234567890":           geminiFamily, // tuned model or endpoint id
+		"claude-sonnet-4-6":    claudeFamily,
+		"mistral-large-2411":   otherFamily,
+		"llama-4-maverick-17b": otherFamily,
+	} {
+		if got := vertexURLSourceFamilyOf(ctx, model); got != want {
+			t.Errorf("vertexURLSourceFamilyOf(%q) = %v, want %v", model, got, want)
+		}
 	}
 }
 
 // forwardedGeminiURLs are the URL forms a Gemini-family request must reach Vertex with
-// intact. gs:// is the load-bearing case: downloading it fails outright today (the
-// reported bug) and forwarding keeps large media out of the 25 MiB inline path.
-// https is deliberately absent -- Vertex rejects a forwarded https fileUri, measured
-// against harness 47.10, so it stays on the fetch path. See classifyURLSource.
+// intact. gs:// keeps large media out of the 25 MiB inline path. http(s) is forwarded
+// since TXE-6535 (contract C4 agreement four): Vertex documents a public HTTP URL as a
+// fileData.fileUri and fetches it itself; Bifrost makes no download. The .invalid host
+// would fail the test with a DNS error if anything tried to fetch it.
 var forwardedGeminiURLs = []struct {
 	name string
 	url  string
 }{
 	{name: "gcs", url: "gs://my-bucket/video-eval/clip.mp4"},
 	{name: "data uri", url: "data:image/png;base64,iVBORw0KGgo="},
+	{name: "https", url: "https://media.invalid/video-eval/clip.mp4"},
+	{name: "http", url: "http://media.invalid/video-eval/clip.mp4"},
 }
 
 func TestInlineRemoteURLSourcesForwardsGeminiURLs(t *testing.T) {
@@ -1600,4 +1626,397 @@ func TestVertexGeminiImageSharedConverters(t *testing.T) {
 			t.Fatalf("usage.input_images = %d on Vertex, want it unset", *resp.Usage.InputImages)
 		}
 	})
+}
+
+// vertexGeminiFixture is a Vertex provider wired to a fake generateContent upstream that
+// records what each request carried, plus a media host that counts every fetch made to it.
+type vertexGeminiFixture struct {
+	provider  *VertexProvider
+	mediaURL  string
+	mediaHits *int
+	mu        *sync.Mutex
+	sent      *[]vertexGeminiSent
+}
+
+type vertexGeminiSent struct {
+	path, tierHeader, body string
+}
+
+func newVertexGeminiFixture(t *testing.T, responseBody string) *vertexGeminiFixture {
+	t.Helper()
+	var mu sync.Mutex
+	var sent []vertexGeminiSent
+	mediaHits := 0
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		sent = append(sent, vertexGeminiSent{r.URL.Path, r.Header.Get(VertexServiceTierHeader), string(body)})
+		mu.Unlock()
+		if strings.HasSuffix(r.URL.Path, ":streamGenerateContent") {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: " + responseBody + "\n\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(responseBody))
+	}))
+	t.Cleanup(upstream.Close)
+	media := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		mediaHits++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("\x89PNG\r\n\x1a\n"))
+	}))
+	t.Cleanup(media.Close)
+
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	for _, client := range []*fasthttp.Client{provider.client, provider.streamingClient} {
+		client.Dial = func(string) (net.Conn, error) { return net.Dial("tcp", upstream.Listener.Addr().String()) }
+		client.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	return &vertexGeminiFixture{provider: provider, mediaURL: media.URL, mediaHits: &mediaHits, mu: &mu, sent: &sent}
+}
+
+func (f *vertexGeminiFixture) key(region string) schemas.Key {
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{
+		ProjectID:       *schemas.NewSecretVar("proj"),
+		Region:          *schemas.NewSecretVar(region),
+		AuthCredentials: *schemas.NewSecretVar("test-credentials"),
+	}}
+	f.provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"}))
+	return key
+}
+
+// take returns the upstream requests recorded since the last call and the number of media
+// fetches so far.
+func (f *vertexGeminiFixture) take() ([]vertexGeminiSent, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	got := *f.sent
+	*f.sent = nil
+	return got, *f.mediaHits
+}
+
+// vertexGeminiRoutes are the four entry points that reach Vertex generateContent with a
+// unified request: chat and Responses, each unary and streamed. Each returns the error of
+// the call after draining any stream.
+func vertexGeminiRoutes(t *testing.T, provider *VertexProvider) map[string]func(key schemas.Key, model string, tier *schemas.BifrostServiceTier, imageURL string) *schemas.BifrostError {
+	t.Helper()
+	noHooks := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	drain := func(stream chan *schemas.BifrostStreamChunk, bifrostErr *schemas.BifrostError) *schemas.BifrostError {
+		if bifrostErr != nil {
+			return bifrostErr
+		}
+		for {
+			select {
+			case _, ok := <-stream:
+				if !ok {
+					return nil
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("stream did not finish")
+			}
+		}
+	}
+	newCtx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+	chat := func(model string, tier *schemas.BifrostServiceTier, imageURL string) *schemas.BifrostChatRequest {
+		blocks := []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeText, Text: new("hi")}}
+		if imageURL != "" {
+			blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: imageURL}})
+		}
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.Vertex,
+			Model:    model,
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: blocks}}},
+			Params:   &schemas.ChatParameters{ServiceTier: tier},
+		}
+	}
+	responses := func(model string, tier *schemas.BifrostServiceTier, imageURL string) *schemas.BifrostResponsesRequest {
+		blocks := []schemas.ResponsesMessageContentBlock{{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: new("hi")}}
+		if imageURL != "" {
+			blocks = append(blocks, schemas.ResponsesMessageContentBlock{
+				Type:                                   schemas.ResponsesInputMessageContentBlockTypeImage,
+				ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: &imageURL},
+			})
+		}
+		return &schemas.BifrostResponsesRequest{
+			Provider: schemas.Vertex,
+			Model:    model,
+			Input:    []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentBlocks: blocks}}},
+			Params:   &schemas.ResponsesParameters{ServiceTier: tier},
+		}
+	}
+	return map[string]func(schemas.Key, string, *schemas.BifrostServiceTier, string) *schemas.BifrostError{
+		"chat": func(key schemas.Key, model string, tier *schemas.BifrostServiceTier, imageURL string) *schemas.BifrostError {
+			_, bifrostErr := provider.ChatCompletion(newCtx(), key, chat(model, tier, imageURL))
+			return bifrostErr
+		},
+		"chat stream": func(key schemas.Key, model string, tier *schemas.BifrostServiceTier, imageURL string) *schemas.BifrostError {
+			return drain(provider.ChatCompletionStream(newCtx(), noHooks, nil, key, chat(model, tier, imageURL)))
+		},
+		"responses": func(key schemas.Key, model string, tier *schemas.BifrostServiceTier, imageURL string) *schemas.BifrostError {
+			_, bifrostErr := provider.Responses(newCtx(), key, responses(model, tier, imageURL))
+			return bifrostErr
+		},
+		"responses stream": func(key schemas.Key, model string, tier *schemas.BifrostServiceTier, imageURL string) *schemas.BifrostError {
+			return drain(provider.ResponsesStream(newCtx(), noHooks, nil, key, responses(model, tier, imageURL)))
+		},
+	}
+}
+
+const vertexGeminiOKResponse = `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`
+
+// TestVertexGeminiServiceTierIsDeliveredOrRefused pins TXE-6535 item 4 (contract C4,
+// agreement three): service_tier is price-affecting, so a Vertex Gemini request either
+// carries it as the X-Vertex-AI-LLM-Shared-Request-Type header or fails with
+// 400 caller_unsupported_parameter naming the field, before any upstream call. Before the
+// change every refused case below was sent upstream without the header, silently billed
+// at the standard tier.
+func TestVertexGeminiServiceTierIsDeliveredOrRefused(t *testing.T) {
+	fixture := newVertexGeminiFixture(t, vertexGeminiOKResponse)
+	routes := vertexGeminiRoutes(t, fixture.provider)
+	global, regional := fixture.key("global"), fixture.key("us-central1")
+
+	for _, tc := range []struct {
+		name       string
+		key        schemas.Key
+		model      string
+		tier       schemas.BifrostServiceTier
+		wantHeader string // sent upstream; "" with wantRefused false means sent without the header
+		wantReason string // non-empty: refused, and the message says why
+	}{
+		{name: "priority on global is sent", key: global, model: "gemini-2.5-pro", tier: schemas.BifrostServiceTierPriority, wantHeader: "priority"},
+		{name: "flex on global is sent", key: global, model: "gemini-3.5-flash-lite", tier: schemas.BifrostServiceTierFlex, wantHeader: "flex"},
+		{name: "default asks for standard processing", key: regional, model: "gemini-2.5-pro", tier: schemas.BifrostServiceTierDefault},
+		{name: "auto asks for standard processing", key: regional, model: "gemini-2.5-pro", tier: schemas.BifrostServiceTierAuto},
+		{name: "priority off the global endpoint is refused", key: regional, model: "gemini-2.5-pro", tier: schemas.BifrostServiceTierPriority, wantReason: "only on the global endpoint"},
+		{name: "a tier Vertex does not have is refused", key: global, model: "gemini-2.5-pro", tier: schemas.BifrostServiceTierUltrafast, wantReason: "only priority and flex"},
+		{name: "a model without the tier is refused", key: global, model: "gemma-3-27b-it", tier: schemas.BifrostServiceTierPriority, wantReason: "does not offer it"},
+	} {
+		for route, call := range routes {
+			t.Run(tc.name+"/"+route, func(t *testing.T) {
+				fixture.take()
+				tier := tc.tier
+				bifrostErr := call(tc.key, tc.model, &tier, "")
+				sent, _ := fixture.take()
+
+				if tc.wantReason != "" {
+					if bifrostErr == nil {
+						t.Fatalf("service_tier %q was accepted; upstream saw %+v", tc.tier, sent)
+					}
+					if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+						t.Errorf("status = %v, want 400", bifrostErr.StatusCode)
+					}
+					if bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter {
+						t.Errorf("error_type = %q, want %q", bifrostErr.ExtraFields.ErrorType, schemas.ErrorTypeCallerUnsupportedParameter)
+					}
+					if bifrostErr.Error == nil || bifrostErr.Error.Param != "service_tier" {
+						t.Errorf("error.param = %#v, want service_tier", bifrostErr.Error)
+					} else if !strings.Contains(bifrostErr.Error.Message, tc.wantReason) {
+						t.Errorf("error.message = %q, want it to say %q", bifrostErr.Error.Message, tc.wantReason)
+					}
+					if len(sent) != 0 {
+						t.Errorf("a refused request reached the upstream: %+v", sent)
+					}
+					return
+				}
+
+				if bifrostErr != nil {
+					t.Fatalf("call failed: %s", bifrostErr.GetErrorString())
+				}
+				if len(sent) != 1 {
+					t.Fatalf("upstream requests = %d, want 1", len(sent))
+				}
+				if sent[0].tierHeader != tc.wantHeader {
+					t.Errorf("%s = %q, want %q", VertexServiceTierHeader, sent[0].tierHeader, tc.wantHeader)
+				}
+				if gjson.Get(sent[0].body, "serviceTier").Exists() || gjson.Get(sent[0].body, "service_tier").Exists() {
+					t.Errorf("the tier leaked into the body, which Vertex rejects: %s", sent[0].body)
+				}
+			})
+		}
+	}
+
+	// An operator who pins the header in the provider's extra headers owns the tier: the
+	// pinned value is what is sent, and the request is not refused for its own value.
+	t.Run("an operator-pinned header wins", func(t *testing.T) {
+		// Header names are case-insensitive: the config keeps the operator's spelling.
+		for _, headerName := range []string{VertexServiceTierHeader, strings.ToLower(VertexServiceTierHeader)} {
+			pinned := newVertexGeminiFixture(t, vertexGeminiOKResponse)
+			pinned.provider.networkConfig.ExtraHeaders = map[string]schemas.SecretVar{headerName: *schemas.NewSecretVar("flex")}
+			for route, call := range vertexGeminiRoutes(t, pinned.provider) {
+				pinned.take()
+				tier := schemas.BifrostServiceTierPriority
+				if bifrostErr := call(pinned.key("us-central1"), "gemini-2.5-pro", &tier, ""); bifrostErr != nil {
+					t.Fatalf("%s pinned as %q: %s", route, headerName, bifrostErr.GetErrorString())
+				}
+				sent, _ := pinned.take()
+				if len(sent) != 1 || sent[0].tierHeader != "flex" {
+					t.Errorf("%s pinned as %q: upstream saw %+v, want one request with the pinned flex header", route, headerName, sent)
+				}
+			}
+		}
+	})
+}
+
+// TestVertexGeminiForwardsHTTPURLWithoutDownloading pins TXE-6535 item 5 (contract C4,
+// agreement four): an http(s) image URL on a Vertex Gemini request reaches Vertex as
+// fileData.fileUri and Bifrost fetches nothing. Before the change Bifrost downloaded the
+// URL and sent the bytes as inlineData. Claude on Vertex takes base64 only, so there the
+// download stays.
+func TestVertexGeminiForwardsHTTPURLWithoutDownloading(t *testing.T) {
+	fixture := newVertexGeminiFixture(t, vertexGeminiOKResponse)
+	imageURL := fixture.mediaURL + "/cat.png"
+	key := fixture.key("global")
+
+	for route, call := range vertexGeminiRoutes(t, fixture.provider) {
+		t.Run(route, func(t *testing.T) {
+			fixture.take()
+			if bifrostErr := call(key, "gemini-3.8-flash", nil, imageURL); bifrostErr != nil {
+				t.Fatalf("call failed: %s", bifrostErr.GetErrorString())
+			}
+			sent, mediaHits := fixture.take()
+			if mediaHits != 0 {
+				t.Fatalf("Bifrost fetched the image %d time(s); the URL must reach Vertex as a URL", mediaHits)
+			}
+			if len(sent) != 1 {
+				t.Fatalf("upstream requests = %d, want 1", len(sent))
+			}
+			fileData := gjson.Get(sent[0].body, "contents.0.parts.#.fileData|0")
+			if got := fileData.Get("fileUri").String(); got != imageURL {
+				t.Errorf("fileData.fileUri = %q, want %q; body: %s", got, imageURL, sent[0].body)
+			}
+			if got := fileData.Get("mimeType").String(); got != "image/png" {
+				t.Errorf("fileData.mimeType = %q, want image/png (Vertex rejects a fileData without one)", got)
+			}
+			if strings.Contains(sent[0].body, "inlineData") {
+				t.Errorf("the image was inlined: %s", sent[0].body)
+			}
+		})
+	}
+
+	// The download stays for Claude. The fetch helper refuses loopback hosts, so here it
+	// fails, and that failure is the proof a fetch was attempted; the Gemini calls above
+	// would have failed the same way had they tried one.
+	t.Run("claude on vertex still downloads", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		request := &schemas.BifrostChatRequest{
+			Model: "claude-sonnet-4-6",
+			Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: imageURL}},
+			}}}},
+		}
+		err := fixture.provider.inlineRemoteURLSources(ctx, key, request)
+		if err == nil || !strings.Contains(err.Error(), "failed to fetch") {
+			t.Fatalf("inlineRemoteURLSources = %v, want a fetch attempt: Claude on Vertex accepts base64 sources only", err)
+		}
+	})
+}
+
+// TestVertexGeminiChatCarriesNewUsageAndNativeFinishReason pins TXE-6535 items 1 to 3 on
+// the vertex provider, which reuses the Gemini converters: VIDEO and DOCUMENT prompt
+// tokens, tool-use prompt tokens, and the vendor's block reason next to content_filter.
+func TestVertexGeminiChatCarriesNewUsageAndNativeFinishReason(t *testing.T) {
+	const usage = `"usageMetadata":{"promptTokenCount":17500,"candidatesTokenCount":120,"totalTokenCount":18170,"toolUsePromptTokenCount":550,` +
+		`"promptTokensDetails":[{"modality":"TEXT","tokenCount":12},{"modality":"VIDEO","tokenCount":15480},{"modality":"AUDIO","tokenCount":1500},{"modality":"DOCUMENT","tokenCount":508}],` +
+		`"toolUsePromptTokensDetails":[{"modality":"TEXT","tokenCount":550}]}`
+	chat := func(t *testing.T, upstreamBody string) *schemas.BifrostChatResponse {
+		t.Helper()
+		fixture := newVertexGeminiFixture(t, upstreamBody)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		response, bifrostErr := fixture.provider.ChatCompletion(ctx, fixture.key("global"), &schemas.BifrostChatRequest{
+			Provider: schemas.Vertex,
+			Model:    "gemini-3.8-flash",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("ChatCompletion: %s", bifrostErr.GetErrorString())
+		}
+		return response
+	}
+	checkUsage := func(t *testing.T, got *schemas.BifrostLLMUsage) {
+		t.Helper()
+		if got == nil || got.PromptTokensDetails == nil {
+			t.Fatalf("usage = %#v, want prompt token details", got)
+		}
+		if got.PromptTokensDetails.VideoTokens != 15480 || got.PromptTokensDetails.DocumentTokens != 508 {
+			t.Errorf("video/document tokens = %d/%d, want 15480/508", got.PromptTokensDetails.VideoTokens, got.PromptTokensDetails.DocumentTokens)
+		}
+		if got.ToolUsePromptTokens != 550 || got.ToolUsePromptTokensDetails == nil || got.ToolUsePromptTokensDetails.TextTokens != 550 {
+			t.Errorf("tool-use prompt tokens = %d (%#v), want 550 with a 550 text breakdown", got.ToolUsePromptTokens, got.ToolUsePromptTokensDetails)
+		}
+	}
+
+	t.Run("answered", func(t *testing.T) {
+		response := chat(t, `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],`+usage+`}`)
+		checkUsage(t, response.Usage)
+		if got := response.Choices[0].NativeFinishReason; got != nil {
+			t.Errorf("native_finish_reason = %q on an unblocked answer, want none", *got)
+		}
+	})
+	for name, tc := range map[string]struct{ body, wantNative string }{
+		"blocked prompt": {`{"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"},` + usage + `}`, "PROHIBITED_CONTENT"},
+		"blocked output": {`{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"SAFETY"}],` + usage + `}`, "SAFETY"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := chat(t, tc.body)
+			checkUsage(t, response.Usage)
+			choice := response.Choices[0]
+			if choice.FinishReason == nil || *choice.FinishReason != "content_filter" {
+				t.Errorf("finish_reason = %v, want content_filter unchanged", choice.FinishReason)
+			}
+			if choice.NativeFinishReason == nil || *choice.NativeFinishReason != tc.wantNative {
+				t.Errorf("native_finish_reason = %v, want %q", choice.NativeFinishReason, tc.wantNative)
+			}
+		})
+	}
+}
+
+// BenchmarkResolveVertexServiceTierHeader measures what the service-tier resolution adds to
+// every Vertex Gemini request (TXE-6535): a request without service_tier, the common case,
+// one whose tier is sent as the header, and one that is refused.
+func BenchmarkResolveVertexServiceTierHeader(b *testing.B) {
+	provider := &VertexProvider{}
+	priority := schemas.BifrostServiceTierPriority
+	for name, tc := range map[string]struct {
+		region string
+		tier   *schemas.BifrostServiceTier
+	}{
+		"no-service-tier": {"global", nil},
+		"priority-sent":   {"global", &priority},
+		"refused":         {"us-central1", &priority},
+	} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = provider.resolveVertexServiceTierHeader(tc.region, "gemini-2.5-pro", tc.tier)
+			}
+		})
+	}
+}
+
+// BenchmarkClassifyURLSource measures the per-URL decision made for every image and file
+// block of a Vertex chat or Responses request (TXE-6535).
+func BenchmarkClassifyURLSource(b *testing.B) {
+	for name, family := range map[string]vertexURLSourceFamily{
+		"gemini-https": vertexURLSourceFamilyGemini,
+		"claude-https": vertexURLSourceFamilyAnthropic,
+	} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = classifyURLSource("https://example.com/video-eval/clip.mp4", family)
+			}
+		})
+	}
 }

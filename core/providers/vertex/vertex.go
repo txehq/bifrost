@@ -80,19 +80,57 @@ const (
 	urlSourceFetchGCS
 )
 
+// vertexURLSourceFamily is the model family a URL source is being prepared for; it
+// decides which URL forms the model can read for itself. See classifyURLSource.
+type vertexURLSourceFamily int
+
+const (
+	// vertexURLSourceFamilyOther is a partner model on the OpenAI-compatible endpoint.
+	vertexURLSourceFamilyOther vertexURLSourceFamily = iota
+	// vertexURLSourceFamilyGemini is every model sent through the Gemini conversion:
+	// Gemini, Gemma and all-digit (tuned or endpoint) ids.
+	vertexURLSourceFamilyGemini
+	// vertexURLSourceFamilyAnthropic is Claude on Vertex.
+	vertexURLSourceFamilyAnthropic
+)
+
+// usesVertexGeminiConversion reports whether model is sent through the Gemini conversion
+// (generateContent): Gemini, Gemma and all-digit (tuned or endpoint) ids.
+func usesVertexGeminiConversion(ctx *schemas.BifrostContext, model string) bool {
+	return schemas.IsGeminiModelFamily(ctx, model) || schemas.IsAllDigitsASCII(model) || schemas.IsGemmaModelFamily(ctx, model)
+}
+
+// vertexURLSourceFamilyOf returns the URL-source family of model, by the same tests the
+// request builders use to pick a conversion.
+func vertexURLSourceFamilyOf(ctx *schemas.BifrostContext, model string) vertexURLSourceFamily {
+	switch {
+	case schemas.IsAnthropicModelFamily(ctx, model):
+		return vertexURLSourceFamilyAnthropic
+	case usesVertexGeminiConversion(ctx, model):
+		return vertexURLSourceFamilyGemini
+	default:
+		return vertexURLSourceFamilyOther
+	}
+}
+
 // classifyURLSource decides how a single URL source reaches Vertex.
 //
 // The scheme alone is not enough: the two model families served by this provider accept
 // different source types, so the same URL is forwarded for one and downloaded for the
 // other.
 //
-// http(s) -- always fetched, for both families. Vertex's FileData is documented as Cloud
-// Storage only ("fileUri: Required. The URI of the file in Google Cloud Storage" -- the v1
-// aiplatform discovery document), so an https URI has no supported form here. Forwarding
-// one was measured against harness 47.10 and Vertex rejected all six endpoint shapes with
+// http(s) -- forwarded for Gemini/Gemma as fileData.fileUri (fork, TXE-6535, contract C4
+// agreement four: input given as a URL reaches the vendor as a URL; Bifrost does not
+// download it). Vertex documents the form in its generateContent reference: an HTTP URL
+// must be publicly readable, at most 15 MiB per file, and is not supported under VPC
+// Service Controls. Vertex fetches it with its own crawler, which can refuse a URL: a
+// forward measured against harness 47.10 on 2026-08-18 came back
 // "Cannot fetch content from the provided URL ... Status:
-// URL_REJECTED-REJECTED_FC_TOO_MANY_PENDING" after ~59s each: the server-side crawler is
-// undocumented best-effort and saturates. Inlining costs a download but is deterministic.
+// URL_REJECTED-REJECTED_FC_TOO_MANY_PENDING" after ~59s. That answer is the vendor's and
+// reaches the caller as the vendor's error; Bifrost no longer hides it behind a download.
+//
+// http(s) -- fetched for every other family. Claude-on-Vertex takes base64 only (below),
+// and the partner models on the OpenAI-compatible endpoint keep the behaviour they had.
 //
 // gs:// -- forwarded for Gemini/Gemma as fileData.fileUri. This is the documented form, it
 // resolves under the caller's own project IAM with no crawler involved, and it sidesteps
@@ -112,13 +150,17 @@ const (
 // Vertex cannot resolve it and Bifrost has no credentials to fetch it: AWS credentials
 // live only on BedrockKeyConfig, and core cannot reach framework/objectstore without a
 // module cycle. Callers should presign to https instead.
-func classifyURLSource(rawURL string, isAnthropicFamily bool) urlSourceDisposition {
+func classifyURLSource(rawURL string, family vertexURLSourceFamily) urlSourceDisposition {
+	isAnthropicFamily := family == vertexURLSourceFamilyAnthropic
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return urlSourceForward
 	}
 	switch parsed.Scheme {
 	case "http", "https":
+		if family == vertexURLSourceFamilyGemini {
+			return urlSourceForward
+		}
 		return urlSourceFetchHTTP
 	case "data":
 		return urlSourceForward
@@ -515,8 +557,8 @@ func (provider *VertexProvider) TextCompletionStream(ctx *schemas.BifrostContext
 // provider untouched. Otherwise the returned base64 payload replaces it; mediaType is
 // best-effort and may be empty (the GCS path never reports one), so callers must keep
 // their fallbacks to the declared file type or a sniffed value.
-func (provider *VertexProvider) resolveURLSource(ctx *schemas.BifrostContext, key schemas.Key, rawURL string, isAnthropicFamily bool) (mediaType string, encoded string, forward bool, err error) {
-	switch classifyURLSource(rawURL, isAnthropicFamily) {
+func (provider *VertexProvider) resolveURLSource(ctx *schemas.BifrostContext, key schemas.Key, rawURL string, family vertexURLSourceFamily) (mediaType string, encoded string, forward bool, err error) {
+	switch classifyURLSource(rawURL, family) {
 	case urlSourceFetchHTTP:
 		mediaType, encoded, err = providerUtils.FetchAndEncodeURL(ctx, rawURL)
 	case urlSourceFetchGCS:
@@ -558,9 +600,8 @@ func (provider *VertexProvider) fetchGCSObjectEncoded(ctx *schemas.BifrostContex
 // cancellation/deadlines abort in-flight downloads.
 //
 // classifyURLSource holds the per-scheme, per-family rules and cites the provider docs
-// behind each one; the short version is that http(s) is always fetched, gs:// is forwarded
-// to Gemini and fetched for Claude, and object-store URIs other than gs:// are resolvable
-// by neither side.
+// behind each one; the short version is that http(s) and gs:// are forwarded to Gemini and
+// fetched for Claude, and object-store URIs other than gs:// are resolvable by neither side.
 func (provider *VertexProvider) inlineRemoteURLSources(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) error {
 	if request == nil || request.Input == nil {
 		return nil
@@ -570,7 +611,7 @@ func (provider *VertexProvider) inlineRemoteURLSources(ctx *schemas.BifrostConte
 	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
 		return nil
 	}
-	isAnthropicFamily := schemas.IsAnthropicModelFamily(ctx, request.Model)
+	family := vertexURLSourceFamilyOf(ctx, request.Model)
 	for mi := range request.Input {
 		msg := &request.Input[mi]
 		if msg.Content == nil || msg.Content.ContentBlocks == nil {
@@ -581,7 +622,7 @@ func (provider *VertexProvider) inlineRemoteURLSources(ctx *schemas.BifrostConte
 
 			// Inline url-source documents.
 			if block.File != nil && block.File.FileURL != nil && *block.File.FileURL != "" {
-				mediaType, encoded, forward, err := provider.resolveURLSource(ctx, key, *block.File.FileURL, isAnthropicFamily)
+				mediaType, encoded, forward, err := provider.resolveURLSource(ctx, key, *block.File.FileURL, family)
 				if err != nil {
 					return err
 				}
@@ -597,7 +638,7 @@ func (provider *VertexProvider) inlineRemoteURLSources(ctx *schemas.BifrostConte
 			// Inline url-source images to a base64 data URI; Anthropic-on-Vertex
 			// accepts base64 image sources only.
 			if img := block.ImageURLStruct; img != nil && img.URL != "" {
-				mediaType, encoded, forward, err := provider.resolveURLSource(ctx, key, img.URL, isAnthropicFamily)
+				mediaType, encoded, forward, err := provider.resolveURLSource(ctx, key, img.URL, family)
 				if err != nil {
 					return err
 				}
@@ -633,7 +674,7 @@ func (provider *VertexProvider) inlineDocumentURLsResponses(ctx *schemas.Bifrost
 	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
 		return nil
 	}
-	isAnthropicFamily := schemas.IsAnthropicModelFamily(ctx, request.Model)
+	family := vertexURLSourceFamilyOf(ctx, request.Model)
 	for mi := range request.Input {
 		msg := &request.Input[mi]
 		if msg.Content == nil || msg.Content.ContentBlocks == nil {
@@ -644,7 +685,7 @@ func (provider *VertexProvider) inlineDocumentURLsResponses(ctx *schemas.Bifrost
 
 			// Inline url-source files.
 			if f := block.ResponsesInputMessageContentBlockFile; f != nil && f.FileURL != nil && *f.FileURL != "" {
-				mediaType, encoded, forward, err := provider.resolveURLSource(ctx, key, *f.FileURL, isAnthropicFamily)
+				mediaType, encoded, forward, err := provider.resolveURLSource(ctx, key, *f.FileURL, family)
 				if err != nil {
 					return err
 				}
@@ -660,7 +701,7 @@ func (provider *VertexProvider) inlineDocumentURLsResponses(ctx *schemas.Bifrost
 			// Inline url-source images to a base64 data URI; Anthropic-on-Vertex
 			// accepts base64 image sources only.
 			if img := block.ResponsesInputMessageContentBlockImage; img != nil && img.ImageURL != nil && *img.ImageURL != "" {
-				mediaType, encoded, forward, err := provider.resolveURLSource(ctx, key, *img.ImageURL, isAnthropicFamily)
+				mediaType, encoded, forward, err := provider.resolveURLSource(ctx, key, *img.ImageURL, family)
 				if err != nil {
 					return err
 				}
@@ -692,10 +733,10 @@ func (provider *VertexProvider) inlineDocumentURLsResponses(ctx *schemas.Bifrost
 func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	var jsonBody []byte
 	var bifrostErr *schemas.BifrostError
-	// Resolve URL sources the target model family cannot read for itself: http(s) is
-	// downloaded for both families (Vertex's own crawler rejects forwarded URLs), while a
-	// gs:// URI is forwarded to Gemini as fileData.fileUri and read from Cloud Storage for
-	// Claude, which accepts base64 sources only. See classifyURLSource.
+	// Resolve URL sources the target model family cannot read for itself: Gemini takes
+	// http(s) and gs:// as fileData.fileUri, so both are forwarded and nothing is downloaded;
+	// Claude accepts base64 sources only, so http(s) is downloaded and gs:// is read from
+	// Cloud Storage. See classifyURLSource.
 	if err := provider.inlineRemoteURLSources(ctx, key, request); err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to inline remote URL sources for vertex", err)
 	}
@@ -841,9 +882,14 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	if (schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model)) &&
-		request.Params != nil && request.Params.ServiceTier != nil {
-		if v := vertexServiceTierHeaderValue(region, request.Model, *request.Params.ServiceTier); v != "" {
+	// service_tier travels as a header on Vertex; it is sent or the request fails with
+	// caller_unsupported_parameter, never dropped. See resolveVertexServiceTierHeader.
+	if usesVertexGeminiConversion(ctx, request.Model) && request.Params != nil {
+		v, tierErr := provider.resolveVertexServiceTierHeader(region, request.Model, request.Params.ServiceTier)
+		if tierErr != nil {
+			return nil, tierErr
+		}
+		if v != "" {
 			req.Header.Set(VertexServiceTierHeader, v)
 		}
 	}
@@ -1001,10 +1047,10 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		return nil, providerUtils.NewConfigurationError("region is not set in key config")
 	}
 
-	// Resolve URL sources the target model family cannot read for itself: http(s) is
-	// downloaded for both families (Vertex's own crawler rejects forwarded URLs), while a
-	// gs:// URI is forwarded to Gemini as fileData.fileUri and read from Cloud Storage for
-	// Claude, which accepts base64 sources only. See classifyURLSource.
+	// Resolve URL sources the target model family cannot read for itself: Gemini takes
+	// http(s) and gs:// as fileData.fileUri, so both are forwarded and nothing is downloaded;
+	// Claude accepts base64 sources only, so http(s) is downloaded and gs:// is read from
+	// Cloud Storage. See classifyURLSource.
 	if err := provider.inlineRemoteURLSources(ctx, key, request); err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to inline remote URL sources for vertex", err)
 	}
@@ -1143,13 +1189,15 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			"Cache-Control": "no-cache",
 		}
 
-		if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) {
-			if _, overridden := provider.networkConfig.ExtraHeaders[VertexServiceTierHeader]; !overridden {
-				if request.Params != nil && request.Params.ServiceTier != nil {
-					if v := vertexServiceTierHeaderValue(region, request.Model, *request.Params.ServiceTier); v != "" {
-						headers[VertexServiceTierHeader] = v
-					}
-				}
+		// service_tier travels as a header on Vertex; it is sent or the request fails with
+		// caller_unsupported_parameter, never dropped. See resolveVertexServiceTierHeader.
+		if request.Params != nil {
+			v, tierErr := provider.resolveVertexServiceTierHeader(region, request.Model, request.Params.ServiceTier)
+			if tierErr != nil {
+				return nil, tierErr
+			}
+			if v != "" {
+				headers[VertexServiceTierHeader] = v
 			}
 		}
 
@@ -1245,10 +1293,10 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 // Responses performs a responses request to the Vertex API.
 func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	// Resolve URL sources the target model family cannot read for itself: http(s) is
-	// downloaded for both families (Vertex's own crawler rejects forwarded URLs), while a
-	// gs:// URI is forwarded to Gemini as fileData.fileUri and read from Cloud Storage for
-	// Claude, which accepts base64 sources only. See classifyURLSource.
+	// Resolve URL sources the target model family cannot read for itself: Gemini takes
+	// http(s) and gs:// as fileData.fileUri, so both are forwarded and nothing is downloaded;
+	// Claude accepts base64 sources only, so http(s) is downloaded and gs:// is read from
+	// Cloud Storage. See classifyURLSource.
 	if err := provider.inlineDocumentURLsResponses(ctx, key, request); err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex", err)
 	}
@@ -1447,9 +1495,14 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 
 		req.Header.SetMethod(http.MethodPost)
 		req.Header.SetContentType("application/json")
-		if (schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model)) &&
-			request.Params != nil && request.Params.ServiceTier != nil {
-			if v := vertexServiceTierHeaderValue(region, request.Model, *request.Params.ServiceTier); v != "" {
+		// service_tier travels as a header on Vertex; it is sent or the request fails with
+		// caller_unsupported_parameter, never dropped. See resolveVertexServiceTierHeader.
+		if usesVertexGeminiConversion(ctx, request.Model) && request.Params != nil {
+			v, tierErr := provider.resolveVertexServiceTierHeader(region, request.Model, request.Params.ServiceTier)
+			if tierErr != nil {
+				return nil, tierErr
+			}
+			if v != "" {
 				req.Header.Set(VertexServiceTierHeader, v)
 			}
 		}
@@ -1548,10 +1601,10 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 
 // ResponsesStream performs a streaming responses request to the Vertex API.
 func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	// Resolve URL sources the target model family cannot read for itself: http(s) is
-	// downloaded for both families (Vertex's own crawler rejects forwarded URLs), while a
-	// gs:// URI is forwarded to Gemini as fileData.fileUri and read from Cloud Storage for
-	// Claude, which accepts base64 sources only. See classifyURLSource.
+	// Resolve URL sources the target model family cannot read for itself: Gemini takes
+	// http(s) and gs:// as fileData.fileUri, so both are forwarded and nothing is downloaded;
+	// Claude accepts base64 sources only, so http(s) is downloaded and gs:// is read from
+	// Cloud Storage. See classifyURLSource.
 	if err := provider.inlineDocumentURLsResponses(ctx, key, request); err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex", err)
 	}
@@ -1685,13 +1738,15 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			"Cache-Control": "no-cache",
 		}
 
-		if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) {
-			if _, overridden := provider.networkConfig.ExtraHeaders[VertexServiceTierHeader]; !overridden {
-				if request.Params != nil && request.Params.ServiceTier != nil {
-					if v := vertexServiceTierHeaderValue(region, request.Model, *request.Params.ServiceTier); v != "" {
-						headers[VertexServiceTierHeader] = v
-					}
-				}
+		// service_tier travels as a header on Vertex; it is sent or the request fails with
+		// caller_unsupported_parameter, never dropped. See resolveVertexServiceTierHeader.
+		if request.Params != nil {
+			v, tierErr := provider.resolveVertexServiceTierHeader(region, request.Model, request.Params.ServiceTier)
+			if tierErr != nil {
+				return nil, tierErr
+			}
+			if v != "" {
+				headers[VertexServiceTierHeader] = v
 			}
 		}
 
@@ -2943,7 +2998,9 @@ func vertexGeminiImageGenerationRequestBody(request *schemas.BifrostImageGenerat
 }
 
 func stripVertexGeminiUnsupportedFields(requestBody *gemini.GeminiGenerationRequest) {
-	// Strip service tier — Vertex uses HTTP headers for this, not the request body.
+	// Strip service tier from the body: on Vertex it travels in the
+	// X-Vertex-AI-LLM-Shared-Request-Type header, which resolveVertexServiceTierHeader sets
+	// or refuses with caller_unsupported_parameter. The tier is never dropped.
 	requestBody.ServiceTier = ""
 	for _, content := range requestBody.Contents {
 		for _, part := range content.Parts {
@@ -4461,10 +4518,10 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		bifrostErr *schemas.BifrostError
 	)
 
-	// Resolve URL sources the target model family cannot read for itself: http(s) is
-	// downloaded for both families (Vertex's own crawler rejects forwarded URLs), while a
-	// gs:// URI is forwarded to Gemini as fileData.fileUri and read from Cloud Storage for
-	// Claude, which accepts base64 sources only. See classifyURLSource.
+	// Resolve URL sources the target model family cannot read for itself: Gemini takes
+	// http(s) and gs:// as fileData.fileUri, so both are forwarded and nothing is downloaded;
+	// Claude accepts base64 sources only, so http(s) is downloaded and gs:// is read from
+	// Cloud Storage. See classifyURLSource.
 	if err := provider.inlineDocumentURLsResponses(ctx, key, request); err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex", err)
 	}

@@ -1351,6 +1351,10 @@ type ResponsesResponseUsage struct {
 	// ProcessedTokens mirrors BifrostLLMUsage.ProcessedTokens: the vendor's processed counts when
 	// input_tokens/output_tokens hold its billed counts (Cohere). Same object as on chat usage.
 	ProcessedTokens *ProcessedTokenUsage `json:"processed_tokens,omitempty"`
+	// Tokens in tool-use prompts, reported by the vendor next to input_tokens, not inside
+	// it (Gemini's toolUsePromptTokenCount); mirrors BifrostLLMUsage.ToolUsePromptTokens.
+	ToolUsePromptTokens        int                         `json:"tool_use_prompt_tokens,omitempty"`
+	ToolUsePromptTokensDetails *ToolUsePromptTokensDetails `json:"tool_use_prompt_tokens_details,omitempty"`
 
 	// xAI-specific usage fields
 	NumSourcesUsed             *int                                 `json:"num_sources_used,omitempty"`
@@ -1394,9 +1398,11 @@ type ResponsesContextDetails struct {
 }
 
 type ResponsesResponseInputTokens struct {
-	TextTokens  int `json:"text_tokens,omitempty"`  // Tokens for text input
-	AudioTokens int `json:"audio_tokens,omitempty"` // Tokens for audio input
-	ImageTokens int `json:"image_tokens,omitempty"` // Tokens for image input
+	TextTokens     int `json:"text_tokens,omitempty"`     // Tokens for text input
+	AudioTokens    int `json:"audio_tokens,omitempty"`    // Tokens for audio input
+	ImageTokens    int `json:"image_tokens,omitempty"`    // Tokens for image input
+	VideoTokens    int `json:"video_tokens,omitempty"`    // Tokens for video input, when the vendor reports them apart
+	DocumentTokens int `json:"document_tokens,omitempty"` // Tokens for document (PDF) input, when the vendor reports them apart
 
 	// For Providers which don't separate between cache creation and cache read tokens (like Openai, Gemini, etc), this is the total number of cached tokens read.
 	CachedReadTokens        int                          `json:"cached_read_tokens"`
@@ -1410,6 +1416,8 @@ func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 		TextTokens              int                            `json:"text_tokens"`
 		AudioTokens             int                            `json:"audio_tokens"`
 		ImageTokens             int                            `json:"image_tokens"`
+		VideoTokens             int                            `json:"video_tokens"`
+		DocumentTokens          int                            `json:"document_tokens"`
 		CachedReadTokens        int                            `json:"cached_read_tokens"`
 		CachedWriteTokens       int                            `json:"cached_write_tokens"`
 		CachedWriteTokenDetails *ChatCachedWriteTokenDetails   `json:"cached_write_token_details"`
@@ -1423,6 +1431,8 @@ func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 	d.TextTokens = raw.TextTokens
 	d.AudioTokens = raw.AudioTokens
 	d.ImageTokens = raw.ImageTokens
+	d.VideoTokens = raw.VideoTokens
+	d.DocumentTokens = raw.DocumentTokens
 	d.CachedReadTokens = raw.CachedReadTokens
 	d.CachedWriteTokens = raw.CachedWriteTokens
 	d.CachedWriteTokenDetails = raw.CachedWriteTokenDetails
@@ -1447,6 +1457,8 @@ func (d ResponsesResponseInputTokens) MarshalJSON() ([]byte, error) {
 		TextTokens              int                          `json:"text_tokens,omitempty"`
 		AudioTokens             int                          `json:"audio_tokens,omitempty"`
 		ImageTokens             int                          `json:"image_tokens,omitempty"`
+		VideoTokens             int                          `json:"video_tokens,omitempty"`
+		DocumentTokens          int                          `json:"document_tokens,omitempty"`
 		CachedReadTokens        int                          `json:"cached_read_tokens"`
 		CachedWriteTokens       int                          `json:"cached_write_tokens"`
 		CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details,omitempty"`
@@ -1461,6 +1473,8 @@ func (d ResponsesResponseInputTokens) MarshalJSON() ([]byte, error) {
 		TextTokens:              d.TextTokens,
 		AudioTokens:             d.AudioTokens,
 		ImageTokens:             d.ImageTokens,
+		VideoTokens:             d.VideoTokens,
+		DocumentTokens:          d.DocumentTokens,
 		CachedReadTokens:        d.CachedReadTokens,
 		CachedWriteTokens:       d.CachedWriteTokens,
 		CachedWriteTokenDetails: d.CachedWriteTokenDetails,

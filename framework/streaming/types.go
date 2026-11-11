@@ -46,6 +46,7 @@ type AccumulatedData struct {
 	ImageGenerationOutput *schemas.BifrostImageGenerationResponse
 	PassthroughOutput     *schemas.BifrostPassthroughResponse // For passthrough streaming
 	FinishReason          *string
+	NativeFinishReason    *string // The vendor's own block or finish reason, verbatim (chat choices[].native_finish_reason)
 	LogProbs              *schemas.BifrostLogProbs
 	RawResponse           *string
 }
@@ -81,6 +82,7 @@ type ChatStreamChunk struct {
 	Timestamp          time.Time                              // When chunk was received
 	Delta              *schemas.ChatStreamResponseChoiceDelta // The actual delta content
 	FinishReason       *string                                // If this is the final chunk
+	NativeFinishReason *string                                // The vendor's own block or finish reason, if the chunk carries one
 	LogProbs           *schemas.BifrostLogProbs               // LogProbs if available
 	TokenUsage         *schemas.BifrostLLMUsage               // Token usage if available
 	ServiceTier        *schemas.BifrostServiceTier            // Served OpenAI tier if available
@@ -473,9 +475,10 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			Created: int(p.Data.StartTimestamp.Unix()),
 			Choices: []schemas.BifrostResponseChoice{
 				{
-					Index:        0,
-					FinishReason: p.Data.FinishReason,
-					LogProbs:     p.Data.LogProbs,
+					Index:              0,
+					FinishReason:       p.Data.FinishReason,
+					NativeFinishReason: p.Data.NativeFinishReason,
+					LogProbs:           p.Data.LogProbs,
 					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
 						Message: message,
 					},

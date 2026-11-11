@@ -1133,6 +1133,8 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 			TextTokens:              cu.PromptTokensDetails.TextTokens,
 			AudioTokens:             cu.PromptTokensDetails.AudioTokens,
 			ImageTokens:             cu.PromptTokensDetails.ImageTokens,
+			VideoTokens:             cu.PromptTokensDetails.VideoTokens,
+			DocumentTokens:          cu.PromptTokensDetails.DocumentTokens,
 			CachedReadTokens:        cu.PromptTokensDetails.CachedReadTokens,
 			CachedWriteTokens:       cu.PromptTokensDetails.CachedWriteTokens,
 			CachedWriteTokenDetails: cu.PromptTokensDetails.CachedWriteTokenDetails,
@@ -1152,6 +1154,8 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 	usage.ToolUsage = cu.ToolUsage.DeepCopy()
 	usage.SearchContextSize = cu.SearchContextSize
 	usage.ProcessedTokens = cu.ProcessedTokens.Add(nil)
+	usage.ToolUsePromptTokens = cu.ToolUsePromptTokens
+	usage.ToolUsePromptTokensDetails = cu.ToolUsePromptTokensDetails.DeepCopy()
 	usage.BillingTurns = cu.BillingTurns
 
 	return usage
@@ -1177,6 +1181,8 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 			TextTokens:              ru.InputTokensDetails.TextTokens,
 			AudioTokens:             ru.InputTokensDetails.AudioTokens,
 			ImageTokens:             ru.InputTokensDetails.ImageTokens,
+			VideoTokens:             ru.InputTokensDetails.VideoTokens,
+			DocumentTokens:          ru.InputTokensDetails.DocumentTokens,
 			CachedReadTokens:        ru.InputTokensDetails.CachedReadTokens,
 			CachedWriteTokens:       ru.InputTokensDetails.CachedWriteTokens,
 			CachedWriteTokenDetails: ru.InputTokensDetails.CachedWriteTokenDetails,
@@ -1197,6 +1203,8 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 	usage.ToolUsage = ru.ToolUsage.DeepCopy()
 	usage.SearchContextSize = ru.SearchContextSize
 	usage.ProcessedTokens = ru.ProcessedTokens.Add(nil)
+	usage.ToolUsePromptTokens = ru.ToolUsePromptTokens
+	usage.ToolUsePromptTokensDetails = ru.ToolUsePromptTokensDetails.DeepCopy()
 	usage.BillingTurns = ru.BillingTurns
 
 	return usage

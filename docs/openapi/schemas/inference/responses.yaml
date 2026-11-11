@@ -800,6 +800,13 @@ ResponsesResponseUsage:
       description: >
         Search context tier the provider reports it billed the request at
         ("low", "medium" or "high"). Present only when the provider reports it.
+    tool_use_prompt_tokens:
+      type: integer
+      description: >
+        Tokens in tool-use prompts (Gemini's toolUsePromptTokenCount). Reported next to
+        input_tokens, not included in it. Absent when the provider reports none.
+    tool_use_prompt_tokens_details:
+      $ref: "./usage.yaml#/ToolUsePromptTokensDetails"
     cost:
       $ref: "./usage.yaml#/BifrostCost"
     processed_tokens:
@@ -819,6 +826,16 @@ ResponsesResponseInputTokens:
       type: integer
     image_tokens:
       type: integer
+    video_tokens:
+      type: integer
+      description: >
+        Tokens for video input, when the provider reports them apart from the other
+        modalities (Gemini and Vertex). Already included in input_tokens.
+    document_tokens:
+      type: integer
+      description: >
+        Tokens for document (PDF) input, when the provider reports them apart from the
+        other modalities (Gemini and Vertex). Already included in input_tokens.
     cached_read_tokens:
       type: integer
       description: >
