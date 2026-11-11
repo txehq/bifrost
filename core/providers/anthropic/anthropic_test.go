@@ -266,6 +266,31 @@ func TestAnthropicBatchCreateConvertsOpenAIChatLinesLikeTheSyncRoute(t *testing.
 	require.JSONEq(t, string(nativeSent), string(batchSent.Requests[1].Params), "a native Messages line runs unchanged")
 }
 
+// A batch that names no model runs each converted line on its own model; a key alias there is
+// resolved to the model id it names before the line reaches Anthropic.
+func TestAnthropicBatchCreateResolvesLineModelAliasWithoutBatchModel(t *testing.T) {
+	t.Parallel()
+	vendor := newAnthropicBatchVendor(t, "")
+	key := schemas.Key{Value: *schemas.NewSecretVar("sk-ant-test"), Aliases: schemas.KeyAliases{"fast": {ModelID: "claude-haiku-4-5-20251001"}}}
+	_, bifrostErr := vendor.provider().BatchCreate(batchTestContext(), key, &schemas.BifrostBatchCreateRequest{
+		Provider: schemas.Anthropic,
+		Requests: []schemas.BatchRequestItem{{CustomID: "line-1", URL: "/v1/chat/completions", Body: map[string]any{
+			"model":      "anthropic/fast",
+			"max_tokens": 8,
+			"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
+		}}},
+	})
+	require.Nil(t, bifrostErr, "%+v", bifrostErr)
+	var sent struct {
+		Requests []struct {
+			Params map[string]any `json:"params"`
+		} `json:"requests"`
+	}
+	require.NoError(t, json.Unmarshal(vendor.body("/v1/messages/batches"), &sent))
+	require.Len(t, sent.Requests, 1)
+	require.Equal(t, "claude-haiku-4-5-20251001", sent.Requests[0].Params["model"])
+}
+
 // Lines and inputs the Messages batch cannot run are refused before any upstream call.
 func TestAnthropicBatchCreateRefusesBeforeAnyUpstreamCall(t *testing.T) {
 	t.Parallel()

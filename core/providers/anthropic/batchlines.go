@@ -228,6 +228,11 @@ func (provider *AnthropicProvider) anthropicBatchCreateRequest(ctx *schemas.Bifr
 		if err != nil {
 			return nil, false, providerUtils.NewBatchLineBadRequestError(i, err)
 		}
+		if request.Model == nil || strings.TrimSpace(*request.Model) == "" {
+			// Core resolves a key alias only for the batch's model. A model read from the line
+			// itself is resolved here, so an alias reaches Anthropic as the model id it names.
+			model = key.Aliases.Resolve(model)
+		}
 		if err := providerUtils.CheckBatchLineModel(item, providerName, model, key.Aliases.Resolve); err != nil {
 			return nil, false, providerUtils.NewBatchLineBadRequestError(i, err)
 		}
