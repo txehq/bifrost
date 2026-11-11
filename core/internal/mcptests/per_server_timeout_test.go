@@ -16,7 +16,8 @@ import (
 )
 
 // buildPerServerDelayServer creates an InProcess MCP server with a delay tool
-// that respects context cancellation so per-server timeouts are observable.
+// that respects context cancellation so per-server timeouts are observable. The delay
+// goes through testtime.Scale, so every timeout a test sets against it must too.
 func buildPerServerDelayServer(t *testing.T) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("delay-server", "1.0.0", server.WithToolCapabilities(true))
@@ -26,7 +27,7 @@ func buildPerServerDelayServer(t *testing.T) *server.MCPServer {
 	)
 	s.AddTool(delayTool, func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 		seconds, _ := req.GetArguments()["seconds"].(float64)
-		timer := time.NewTimer(time.Duration(seconds * float64(time.Second)))
+		timer := time.NewTimer(testtime.Scale(time.Duration(seconds * float64(time.Second))))
 		defer timer.Stop()
 		select {
 		case <-timer.C:
@@ -109,7 +110,7 @@ func TestPerServerTimeout_AllowsLongerThanGlobal(t *testing.T) {
 		ConnectionType:       schemas.MCPConnectionTypeInProcess,
 		InProcessServer:      buildPerServerDelayServer(t),
 		ToolsToExecute:       []string{"*"},
-		ToolExecutionTimeout: 3 * time.Second,
+		ToolExecutionTimeout: testtime.Scale(3 * time.Second),
 	}
 
 	manager := setupMCPManager(t)
@@ -118,7 +119,7 @@ func TestPerServerTimeout_AllowsLongerThanGlobal(t *testing.T) {
 	bf := setupBifrost(t)
 	bf.SetMCPManager(manager)
 
-	ctx, cancel := createTestContextWithTimeout(10 * time.Second)
+	ctx, cancel := createTestContextWithTimeout(testtime.Scale(10 * time.Second))
 	defer cancel()
 
 	toolCall := makeDelayToolCall(clientName, 2.0) // 2s delay < 3s timeout → must succeed

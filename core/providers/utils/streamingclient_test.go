@@ -89,7 +89,7 @@ func TestBuildStreamingClient_BaseUnchanged(t *testing.T) {
 // response headers and is lifted once they arrive, so it can never cut a
 // healthy body.
 func TestBuildStreamingClient_LongStreamSurvives(t *testing.T) {
-	const chunkInterval = 500 * time.Millisecond
+	chunkInterval := testtime.Scale(500 * time.Millisecond)
 	const totalChunks = 5 // 2.5s total, well past base ReadTimeout=1s
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -526,7 +526,7 @@ func TestBuildLargeResponseClient_SilentUpstreamTimesOutAtHeaderWait(t *testing.
 // longer than ReadTimeout to download must still be readable to the end.
 func TestBuildLargeResponseClient_HeaderDeadlineDoesNotCapBody(t *testing.T) {
 	const chunks = 5
-	const chunkInterval = 400 * time.Millisecond // 2s total, past the 1s ReadTimeout
+	chunkInterval := testtime.Scale(400 * time.Millisecond) // 2s total (scaled), past the 1s ReadTimeout (scaled)
 	payload := make([]byte, 2048)
 	for i := range payload {
 		payload[i] = 'x'

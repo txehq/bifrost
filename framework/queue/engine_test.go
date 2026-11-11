@@ -1012,7 +1012,7 @@ func engineContractScheduledOnTime(t *testing.T, backend engineBackend) {
 	topic := uniqueTopic(t)
 	got := make(chan *Delivery, 1)
 	ran := make(chan time.Time, 1)
-	const poll = 100 * time.Millisecond
+	poll := testtime.Scale(100 * time.Millisecond)
 	subscribe(t, q, topic, "w", func(ctx context.Context, d *Delivery) error {
 		ran <- time.Now()
 		got <- d
@@ -1109,7 +1109,7 @@ func (b blockingStore) Purge(ctx context.Context, policy PurgePolicy, batch int)
 // calls' internal timeouts.
 func TestCloseHonoursDeadlineWithStuckStoreCalls(t *testing.T) {
 	deadline := testtime.Scale(100 * time.Millisecond)
-	const slack = 400 * time.Millisecond
+	slack := testtime.Scale(400 * time.Millisecond)
 
 	t.Run("heartbeat", func(t *testing.T) {
 		q, err := NewStoreQueue(blockingStore{Store: newMemoryStore(), block: map[string]bool{"Extend": true}}, EngineConfig{}, nil)

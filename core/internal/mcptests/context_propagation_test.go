@@ -329,7 +329,7 @@ func TestContext_TimeoutPropagation(t *testing.T) {
 
 	for i, delayMs := range delays {
 		toolName := fmt.Sprintf("delay_tool_%d", i)
-		delay := time.Duration(delayMs) * time.Millisecond
+		delay := testtime.Scale(time.Duration(delayMs) * time.Millisecond) // the 100/200/300ms pattern scales with the 250ms deadline
 
 		delayHandler := func(args any) (string, error) {
 			time.Sleep(delay)
