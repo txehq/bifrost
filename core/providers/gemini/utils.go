@@ -11,10 +11,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/bytedance/sonic"
-	"github.com/capsohq/bifrost/core/network"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
@@ -3322,10 +3320,14 @@ func encodeBytesToBase64String(bytes []byte) string {
 
 // downloadImageFromURL downloads an image from a URL and returns the base64-encoded string
 func downloadImageFromURL(ctx context.Context, imageURL string) (string, error) {
-	client := fasthttp.Client{
-		ReadTimeout: time.Second * 30,
-		Dial:        network.GuardedFasthttpDial, // offline egress guard (TXE-7083)
+	// Fork: the address comes from an image provider's answer, so it is fetched on the
+	// SSRF-hardened client for the serving provider's proxy: public addresses only, and no
+	// origin is exempt, since this conversion has no provider base URL of its own (TXE-7090).
+	client, releaseClient, clientErr := providerUtils.ClientForVendorURL(ctx, imageURL, "", nil, false)
+	if clientErr != nil {
+		return "", fmt.Errorf("failed to download image: %w", clientErr)
 	}
+	defer releaseClient()
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
@@ -3334,7 +3336,7 @@ func downloadImageFromURL(ctx context.Context, imageURL string) (string, error) 
 	req.SetRequestURI(imageURL)
 	req.Header.SetMethod(http.MethodGet)
 
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, &client, req, resp)
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return "", fmt.Errorf("failed to download image: %v", bifrostErr)

@@ -162,6 +162,27 @@ last row reads `GET /__hits`. Run it as the content-length truncation folder abo
 `FEATURE="media fetcher stream"`; when the fixture is not on its default ports, point the two providers'
 `proxy_config` at the tunnel's port as well.
 
+## Addresses a vendor's response names
+
+Folder 490 pins TXE-7090. A vendor's answer names addresses the gateway then requests: Replicate's `urls.get`
+(the poll) and `urls.stream`, the `next` link of a deployments page, and the URL of an output image that the
+GenAI route fetches to inline. The gateway uses the provider's client only for an address on the origin of the
+provider's configured base URL; any other goes out on the SSRF-hardened client, which refuses a loopback or
+private address and reaches a public one through the provider's proxy.
+
+The fixture's `replicate` provider therefore has the media tunnel as `proxy_config` and two extra keys,
+`fixture-deploy-origin` and `fixture-deploy-loopback`, that use the deployments endpoint. A model's last path
+segment picks the case: `poll-origin`, `stream-origin` and `picture-public` name the address on the fixture's
+own origin (the picture at `http://203.0.113.10`, reached through the tunnel); `poll-loopback`,
+`stream-loopback` and `picture-loopback` name it on another loopback origin (the fixture by the host name
+`localhost`, or its loopback address for the picture). The rows expect the answer for the first kind and a
+refusal naming a non-public address for the second, and the last row reads `GET /__hits`: no request arrived
+at `localhost` or for the loopback picture. Run it as the content-length truncation folder above is run, with
+`FEATURE="vendor named address"`.
+
+HuggingFace speech has no row. Its model lookup goes to a fixed `https://huggingface.co`, not to the
+provider's base URL, so an offline gateway cannot get as far as the audio URL.
+
 ## Streamed frames timing
 
 Folder 308 pins contract C10 BF22 (TXE-6522) on chat (`stream: true`) and speech (`stream_format: "sse"`),

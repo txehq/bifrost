@@ -63,7 +63,12 @@ func sameOrigin(a, b string) bool {
 	if errA != nil || errB != nil || ua.Host == "" || ub.Host == "" {
 		return false
 	}
-	return strings.EqualFold(ua.Scheme, ub.Scheme) && strings.EqualFold(dialAddr(ua), dialAddr(ub))
+	return sameParsedOrigin(ua, ub)
+}
+
+// sameParsedOrigin is sameOrigin for URLs already parsed, each with a host.
+func sameParsedOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(dialAddr(a), dialAddr(b))
 }
 
 // fetchVendorVideoURL is FetchVideoContent for a file at an address the vendor named, off the

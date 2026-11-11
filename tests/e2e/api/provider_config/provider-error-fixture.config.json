@@ -549,12 +549,40 @@
             "*"
           ],
           "weight": 1
+        },
+        {
+          "name": "fixture-deploy-origin",
+          "value": "fixture-deploy-origin",
+          "models": [
+            "fixture/fixture-deploy-origin-page-1",
+            "fixture/fixture-deploy-origin-page-2"
+          ],
+          "weight": 1,
+          "replicate_key_config": {
+            "use_deployments_endpoint": true
+          }
+        },
+        {
+          "name": "fixture-deploy-loopback",
+          "value": "fixture-deploy-loopback",
+          "models": [
+            "fixture/fixture-deploy-loopback-page-1",
+            "fixture/fixture-deploy-loopback-page-2"
+          ],
+          "weight": 1,
+          "replicate_key_config": {
+            "use_deployments_endpoint": true
+          }
         }
       ],
       "network_config": {
         "base_url": "http://127.0.0.1:8791/pp/replicate",
         "max_retries": 0,
         "default_request_timeout_in_seconds": 10
+      },
+      "proxy_config": {
+        "type": "http",
+        "url": "http://127.0.0.1:8788"
       }
     },
     "anthropic": {

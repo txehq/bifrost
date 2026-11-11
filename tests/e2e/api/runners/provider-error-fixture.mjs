@@ -867,6 +867,23 @@ const wireAnswer = (path, body, bytes) => {
 		if (body.stream === true) return { status: 200, stream: anthropicMessageStream(body.model) };
 		return { status: 200, body: JSON.stringify(anthropicMessage(body.model)) };
 	}
+	// Folder 490 (TXE-7090): predictions whose addresses are the vendor's to name. The model's last path
+	// segment is "<what>-<where>". poll-origin and poll-loopback name urls.get on the provider's own origin
+	// and on another loopback origin (the same fixture by the name localhost). stream-origin and
+	// stream-loopback do the same with urls.stream. picture-public and picture-loopback are polled on the
+	// provider's origin and answer with an output image at a public-looking address (reached through the
+	// media tunnel) and at the fixture's loopback address. A gateway follows the origin and public ones and
+	// must refuse the loopback ones without asking for them.
+	const replicateNamed = /^\/pp\/replicate\/.*\/(poll|stream|picture)-(origin|loopback|public)\/predictions$/.exec(path);
+	if (replicateNamed) {
+		const [, what, where] = replicateNamed;
+		const id = `pred_${what}_${where}`;
+		const named = `http://${where === "loopback" ? "localhost" : "127.0.0.1"}:${port}/pp/replicate/v1`;
+		const own = `http://127.0.0.1:${port}/pp/replicate/v1`;
+		const urls = { get: `${what === "poll" ? named : own}/predictions/${id}` };
+		if (what === "stream") urls.stream = `${named}/streams/${id}`;
+		return { status: 201, body: JSON.stringify({ id, status: "starting", urls }) };
+	}
 	// Replicate accepts a prediction (201) but the answer names no urls.get to poll it at (folder 456, TXE-7056).
 	if (path.startsWith("/pp/replicate/") && path.endsWith("/predictions")) return { status: 201, body: JSON.stringify({ id: "pred_fixture_no_urls", status: "starting" }) };
 	if (path.endsWith(":predict")) return { status: 200, body: JSON.stringify(imagenPartiallyBlocked) };
@@ -1434,6 +1451,40 @@ const handleRequest = (req, res) => {
 			res.end(VIDEO_HALF);
 		}, VIDEO_GAP_MS);
 		return undefined;
+	}
+	// The poll of a folder 490 prediction, counted under the Host it was asked at. A picture prediction's
+	// output is at the address its name says; any other prediction's is a delivery URL nobody fetches.
+	if (req.method === "GET" && path.startsWith("/pp/replicate/v1/predictions/pred_")) {
+		const id = path.slice(path.lastIndexOf("/") + 1);
+		countHit(`replicate.poll@${String(req.headers.host).split(":")[0]}`);
+		const output = id === "pred_picture_public" ? `http://${MEDIA_PUBLIC_HOST}/pp/media/image.png?X-Fixture-Signature=signed`
+			: id === "pred_picture_loopback" ? `http://127.0.0.1:${port}/pp/media/internal.png?X-Fixture-Signature=signed`
+				: "https://replicate.delivery/fixture/out.png";
+		return send(200, {}, JSON.stringify({ id, status: "succeeded", output }));
+	}
+	// The stream of a folder 490 prediction: one output event and the done event, in Replicate's SSE shape.
+	if (req.method === "GET" && path.startsWith("/pp/replicate/v1/streams/pred_")) {
+		countHit(`replicate.stream@${String(req.headers.host).split(":")[0]}`);
+		res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+		return res.end("event: output\nid: 1\ndata: fixture stream text\n\nevent: done\nid: 2\ndata: {}\n\n");
+	}
+	// Folder 490: Replicate's deployments list for a key that uses the deployments endpoint. The first page
+	// names the next one: on the provider's own origin for the key "fixture-deploy-origin", on another
+	// loopback origin for "fixture-deploy-loopback". Each page is counted by key, page and Host.
+	if (req.method === "GET" && path === "/pp/replicate/v1/deployments") {
+		const key = bearerOf(req);
+		const page = new URL(req.url, "http://localhost").searchParams.get("page") || "1";
+		countHit(`replicate.deployments@${key}?page=${page}@${String(req.headers.host).split(":")[0]}`);
+		const deployment = (name) => ({ owner: "fixture", name, current_release: null });
+		if (page === "2") return send(200, {}, JSON.stringify({ next: null, previous: null, results: [deployment(`${key}-page-2`)] }));
+		const host = key === "fixture-deploy-loopback" ? "localhost" : "127.0.0.1";
+		return send(200, {}, JSON.stringify({ next: `http://${host}:${port}/pp/replicate/v1/deployments?page=2`, previous: null, results: [deployment(`${key}-page-1`)] }));
+	}
+	// The image files a folder 490 prediction names, counted under the Host they were asked at.
+	if (req.method === "GET" && (path === "/pp/media/image.png" || path === "/pp/media/internal.png")) {
+		countHit(`media.${path === "/pp/media/image.png" ? "image" : "internal"}@${String(req.headers.host).split(":")[0]}`);
+		res.writeHead(200, { "Content-Type": "image/png" });
+		return res.end(Buffer.from("iVBORw0KGgo=", "base64"));
 	}
 	if (req.method === "GET" && path === "/pp/media/internal.mp4") {
 		countHit(`media.internal@${req.headers.host}`);

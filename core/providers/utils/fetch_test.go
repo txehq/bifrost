@@ -7,11 +7,15 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -22,6 +26,7 @@ import (
 
 	"github.com/capsohq/bifrost/core/network/proxytest"
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // TestRedactURLForError pins that nothing a caller could authenticate with survives into
@@ -1059,6 +1064,364 @@ func TestFetchMediaStreamReturnsItsConnections(t *testing.T) {
 	fetch(false)
 	fetch(true)
 	fetch(true)
+}
+
+// vendorNamedRequestSites lists the provider functions that send a request, on a provider
+// client, to an address they read off another value, and why that address is not the
+// vendor's to choose. The key is "<provider dir>/<file>:<function>".
+var vendorNamedRequestSites = map[string]string{
+	"azure/azure.go:BatchResults":                      "the blob URL is fetched by downloadBlobURL, which refuses any host but https://*.blob.core.windows.net or *.dfs.core.windows.net before sending",
+	"githubcopilot/token.go:exchangeInstallationToken": "the address is a field of the provider's own endpoint config, built from the configured GitHub API base",
+	"githubcopilot/token.go:exchangeCopilotToken":      "the address is a field of the provider's own endpoint config, built from the configured GitHub API base",
+}
+
+// addressOrigin says where a function got an address it sends a request to.
+type addressOrigin struct {
+	// handed: read off another value (a field, an element, a dereference), so a response may
+	// have named it. param >= 0: the function's own parameter at that index.
+	handed bool
+	param  int
+}
+
+var builtAddress = addressOrigin{param: -1}
+
+// originOfAddress classifies expr inside fn: built by the function (a call, a concatenation,
+// a literal, or a local assigned only from those), one of its parameters, or handed to it.
+func originOfAddress(fn *ast.FuncDecl, expr ast.Expr) addressOrigin {
+	switch e := expr.(type) {
+	case *ast.CallExpr, *ast.BinaryExpr, *ast.BasicLit:
+		return builtAddress
+	case *ast.ParenExpr:
+		return originOfAddress(fn, e.X)
+	case *ast.Ident:
+		index := 0
+		for _, field := range fn.Type.Params.List {
+			for _, name := range field.Names {
+				if name.Name == e.Name {
+					return addressOrigin{param: index}
+				}
+				index++
+			}
+		}
+		origin := builtAddress
+		merge := func(rhs ast.Expr) {
+			if ident, ok := rhs.(*ast.Ident); ok && ident.Name == e.Name {
+				return
+			}
+			if got := originOfAddress(fn, rhs); got.handed {
+				origin.handed = true
+			} else if got.param >= 0 && origin.param < 0 {
+				origin.param = got.param
+			}
+		}
+		ast.Inspect(fn.Body, func(node ast.Node) bool {
+			switch stmt := node.(type) {
+			case *ast.AssignStmt:
+				for i, lhs := range stmt.Lhs {
+					ident, ok := lhs.(*ast.Ident)
+					// x, err := f() assigns from a call; x += "..." extends the address.
+					if !ok || ident.Name != e.Name || len(stmt.Rhs) != len(stmt.Lhs) || stmt.Tok == token.ADD_ASSIGN {
+						continue
+					}
+					merge(stmt.Rhs[i])
+				}
+			case *ast.ValueSpec:
+				for i, name := range stmt.Names {
+					if name.Name == e.Name && i < len(stmt.Values) {
+						merge(stmt.Values[i])
+					}
+				}
+			}
+			return true
+		})
+		return origin
+	}
+	return addressOrigin{handed: true, param: -1}
+}
+
+// TestRequestsToVendorNamedAddressesUseTheHardenedClient is the check that keeps TXE-7090 a
+// property of every provider. A provider client's dialer admits loopback and private
+// addresses, which is right for the base URL the operator configured and wrong for an address
+// a vendor's response names: a task's poll or stream URL, a next-page link, a result file.
+//
+// The check parses every provider source and follows each address given to SetRequestURI back
+// to where it came from, through the parameters of the functions it is passed along (by
+// function name). An address the code built (a call such as buildRequestURL, a
+// concatenation) is the provider's own. One read off another value (a field, an element, a
+// dereference) may be a response's, and the function that reads it must pick its client
+// with ClientForVendorURL, hand the fetch to FetchVideoContent, or be listed in
+// vendorNamedRequestSites with the reason the address is not the vendor's to choose. A
+// function that picks its client is trusted with whatever address reaches it.
+func TestRequestsToVendorNamedAddressesUseTheHardenedClient(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("..", "*", "*.go"))
+	if err != nil || len(files) < 50 {
+		t.Fatalf("provider sources not found: %d files, %v", len(files), err)
+	}
+	type function struct {
+		site string
+		decl *ast.FuncDecl
+		// picksClient: the function chooses its client by the address, or leaves the fetch
+		// to the shared download helper.
+		picksClient bool
+	}
+	var functions []*function
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") || filepath.Base(filepath.Dir(file)) == "utils" {
+			continue
+		}
+		name := filepath.ToSlash(strings.TrimPrefix(file, ".."+string(filepath.Separator)))
+		parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("%s: %v", file, err)
+		}
+		for _, decl := range parsed.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
+				f := &function{site: name + ":" + fn.Name.Name, decl: fn}
+				ast.Inspect(fn.Body, func(node ast.Node) bool {
+					if call, ok := node.(*ast.CallExpr); ok {
+						if selector, ok := call.Fun.(*ast.SelectorExpr); ok && (selector.Sel.Name == "ClientForVendorURL" || selector.Sel.Name == "FetchVideoContent") {
+							f.picksClient = true
+						}
+					}
+					return true
+				})
+				functions = append(functions, f)
+			}
+		}
+	}
+
+	// sinks: function name -> parameter indexes whose value is sent a request. SetRequestURI
+	// is the root; a function that passes its own parameter on to a sink becomes one.
+	sinks := map[string]map[int]bool{"SetRequestURI": {0: true}}
+	flagged := map[string]bool{}
+	for changed := true; changed; {
+		changed = false
+		for _, f := range functions {
+			if f.picksClient {
+				continue
+			}
+			ast.Inspect(f.decl.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				callee := ""
+				switch fun := call.Fun.(type) {
+				case *ast.SelectorExpr:
+					callee = fun.Sel.Name
+				case *ast.Ident:
+					callee = fun.Name
+				}
+				for index := range sinks[callee] {
+					if index >= len(call.Args) {
+						continue
+					}
+					origin := originOfAddress(f.decl, call.Args[index])
+					if origin.handed {
+						flagged[f.site] = true
+					}
+					if origin.param >= 0 {
+						if sinks[f.decl.Name.Name] == nil {
+							sinks[f.decl.Name.Name] = map[int]bool{}
+						}
+						if !sinks[f.decl.Name.Name][origin.param] {
+							sinks[f.decl.Name.Name][origin.param] = true
+							changed = true
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+
+	for site := range flagged {
+		if _, listed := vendorNamedRequestSites[site]; !listed {
+			t.Errorf("%s sends a request, on a provider client, to an address it read off another value. If a vendor's response can name that address, pick the client with providerUtils.ClientForVendorURL; if it cannot, list the function in vendorNamedRequestSites with the reason", site)
+		}
+	}
+	for site, reason := range vendorNamedRequestSites {
+		if !flagged[site] {
+			t.Errorf("vendorNamedRequestSites lists %s (%s) and the scan no longer flags it; keep the list exact", site, reason)
+		}
+	}
+	guarded := 0
+	for _, f := range functions {
+		if f.picksClient {
+			guarded++
+		}
+	}
+	if guarded < 12 || len(sinks) < 20 {
+		t.Fatalf("found %d functions that pick their client and %d that pass an address on; the scan is not seeing the provider sources", guarded, len(sinks))
+	}
+}
+
+// TestClientForVendorURL: an address on the provider's configured origin keeps the provider's
+// client, any other gets the SSRF-hardened one for the provider's proxy, which refuses a
+// loopback or private address at dial time and reaches a public one, held or streamed.
+func TestClientForVendorURL(t *testing.T) {
+	providerClient := &fasthttp.Client{}
+	ctx := t.Context()
+	if got, _, err := ClientForVendorURL(ctx, "https://API.vendor.example/v1/predictions/p1", "https://api.vendor.example/v1", providerClient, false); err != nil || got != providerClient {
+		t.Fatalf("an address on the provider's origin must keep the provider's client: %p, %v", got, err)
+	}
+	for _, target := range []string{"https://stream.vendor.example/s/1", "http://127.0.0.1:9/x", "https://api.vendor.example:8443/v1"} {
+		got, release, err := ClientForVendorURL(ctx, target, "https://api.vendor.example/v1", providerClient, false)
+		release()
+		if err != nil || got == nil || got == providerClient {
+			t.Fatalf("%s is off the provider's origin and must not get the provider's client: %p, %v", target, got, err)
+		}
+	}
+	if got, release, err := ClientForVendorURL(ctx, "https://api.vendor.example/v1", "", providerClient, false); err != nil || got == providerClient {
+		t.Fatalf("an empty base URL exempts nothing: %p, %v", got, err)
+	} else {
+		release()
+	}
+	if got, _, err := ClientForVendorURL(ctx, "https://api.vendor.example/v1", "not a url", providerClient, false); err != nil || got == providerClient {
+		t.Fatalf("an empty base URL exempts nothing: %p, %v", got, err)
+	}
+	for _, target := range []string{"file:///etc/passwd", "gopher://203.0.113.10/x", "not a url", "/relative"} {
+		_, release, err := ClientForVendorURL(ctx, target+"?sig=deadbeefcafe", "", providerClient, false)
+		if err == nil || strings.Contains(err.Error(), "deadbeefcafe") {
+			t.Fatalf("%s: want an error that does not carry the query, got %v", target, err)
+		}
+		release() // never nil, on an error too
+	}
+
+	var internalHits atomic.Int32
+	internal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { internalHits.Add(1) }))
+	t.Cleanup(internal.Close)
+	tunnel := proxytest.NewOriginTunnel(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("PUBLIC"))
+	})
+	proxied := mediaStreamProxyCtx(t, tunnel.URL, 10*time.Second)
+	do := func(ctx context.Context, target string, stream bool) (string, error) {
+		client, release, err := ClientForVendorURL(ctx, target, "https://api.vendor.example/v1", providerClient, stream)
+		if err != nil {
+			return "", err
+		}
+		defer release()
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+		defer fasthttp.ReleaseRequest(req)
+		req.SetRequestURI(target)
+		if stream {
+			resp.StreamBody = true
+			if err := DoStreamingRequest(ctx, client, req, resp); err != nil {
+				fasthttp.ReleaseResponse(resp)
+				return "", err
+			}
+			body, readErr := io.ReadAll(resp.BodyStream())
+			fasthttp.ReleaseResponse(resp)
+			return string(body), readErr
+		}
+		defer fasthttp.ReleaseResponse(resp)
+		_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
+		wait()
+		if bifrostErr != nil {
+			return "", bifrostErr.Error.Error
+		}
+		return string(resp.Body()), nil
+	}
+	for _, stream := range []bool{false, true} {
+		for _, target := range []string{internal.URL + "/x", "http://10.0.0.5/x", "http://169.254.169.254/latest/meta-data/"} {
+			for name, ctx := range map[string]context.Context{"direct": t.Context(), "proxied": proxied} {
+				if body, err := do(ctx, target, stream); err == nil || !strings.Contains(err.Error(), "non-public address") {
+					t.Fatalf("stream=%v %s %s: want a non-public address refusal, got %q, %v", stream, name, target, body, err)
+				}
+			}
+		}
+		if body, err := do(proxied, "http://203.0.113.10/x", stream); err != nil || body != "PUBLIC" {
+			t.Fatalf("stream=%v: a public address through the provider's proxy: %q, %v", stream, body, err)
+		}
+	}
+	if got := internalHits.Load(); got != 0 {
+		t.Fatalf("the loopback address was dialed %d times", got)
+	}
+	if got := tunnel.Connects(); got < 1 {
+		t.Fatalf("the public address did not leave through the provider's proxy")
+	}
+}
+
+// TestClientForVendorURLChoosesTheEnvironmentProxyByScheme: the hardened client is handed out
+// without the round tripper that records each request's scheme, so ClientForVendorURL holds
+// the scheme itself until release. An https address on a port other than 443 then leaves
+// through HTTPS_PROXY, not HTTP_PROXY and not directly, and nothing is kept once released.
+func TestClientForVendorURLChoosesTheEnvironmentProxyByScheme(t *testing.T) {
+	prev := fetchResolveTarget
+	fetchResolveTarget = func(_ context.Context, host string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("203.0.113.10")}, nil
+	}
+	t.Cleanup(func() { fetchResolveTarget = prev })
+
+	plain := proxytest.NewHTTPRecorder(t, "http-proxy", "tcp4")
+	secure := proxytest.NewHTTPRecorder(t, "https-proxy", "tcp4")
+	for _, name := range []string{"http_proxy", "https_proxy", "no_proxy", "NO_PROXY", "ALL_PROXY", "all_proxy"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:"+plain.Port())
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:"+secure.Port())
+
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{Type: schemas.EnvProxy})
+	for i, stream := range []bool{false, true} {
+		const target = "https://files.vendor.example:8443/image.png"
+		client, release, err := ClientForVendorURL(ctx, target, "https://api.vendor.example/v1", &fasthttp.Client{}, stream)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+		req.SetRequestURI(target)
+		_, _, wait := MakeRequestWithContext(ctx, client, req, resp)
+		wait()
+		release()
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+
+		if seen := plain.Seen(); len(seen) != 0 {
+			t.Fatalf("stream=%v: HTTP_PROXY carried the https request: %+v", stream, seen)
+		}
+		if seen := secure.Seen(); len(seen) != i+1 || seen[i].Target != "203.0.113.10:8443" {
+			t.Fatalf("stream=%v: HTTPS_PROXY saw %+v, want a CONNECT to 203.0.113.10:8443", stream, seen)
+		}
+		limits := mediaFetchLimits
+		if stream {
+			limits = mediaStreamLimits
+		}
+		fetchClient, err := fetchClientForLimits(ctx, limits)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := fetchClient.Transport.(*fasthttpRoundTripper).schemes.size(); n != 0 {
+			t.Fatalf("stream=%v: %d scheme entries are still held after release", stream, n)
+		}
+	}
+}
+
+// BenchmarkClientForVendorURL is the client selection every Replicate poll, stream and page
+// now pays (TXE-7090). Before the change there was none: the request went straight out on the
+// provider's client. Same origin is the ordinary case (urls.get on api.replicate.com); off
+// origin also looks up the cached hardened client and holds the scheme until release.
+func BenchmarkClientForVendorURL(b *testing.B) {
+	providerClient := &fasthttp.Client{}
+	ctx := b.Context()
+	for name, target := range map[string]string{
+		"same-origin": "https://api.replicate.com/v1/predictions/gm3qorzdhgbfurvjtvhg6dckhu",
+		"off-origin":  "https://stream.replicate.com/v1/files/gm3qorzdhgbfurvjtvhg6dckhu",
+	} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				client, release, err := ClientForVendorURL(ctx, target, "https://api.replicate.com", providerClient, false)
+				if err != nil || client == nil {
+					b.Fatal(err)
+				}
+				release()
+			}
+		})
+	}
 }
 
 // BenchmarkFetchMediaStream is the streamed media download through a proxy (fork, TXE-7036):

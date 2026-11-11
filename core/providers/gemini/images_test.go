@@ -13,6 +13,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/core/network"
+	"github.com/capsohq/bifrost/core/network/proxytest"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -986,21 +987,44 @@ func BenchmarkGeminiImageToBifrostResponse(b *testing.B) {
 }
 
 // TestDownloadImageFromURLHonoursTheOfflineGuard: the image a GenAI response names by URL is
-// downloaded on its own fasthttp client, which carries the offline egress guard (TXE-7083): a
-// non-loopback URL is refused before connecting, naming the address, and a loopback one works.
+// downloaded on the SSRF-hardened fetch client, which carries the offline egress guard
+// (TXE-7083): a non-loopback URL is refused before connecting, naming the address.
 func TestDownloadImageFromURLHonoursTheOfflineGuard(t *testing.T) {
 	defer network.SetOfflineEgressGuard(true)()
 	_, err := downloadImageFromURL(context.Background(), "http://203.0.113.10/image.png")
 	if err == nil || !strings.Contains(err.Error(), network.OfflineEgressMarker) || !strings.Contains(err.Error(), "203.0.113.10:80") {
 		t.Fatalf("want the offline refusal naming 203.0.113.10:80, got %v", err)
 	}
-	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+}
+
+// TestDownloadImageFromURLRefusesNonPublicAddresses (TXE-7090): the address comes from an image
+// provider's answer, so a loopback, private or metadata address is refused without being
+// dialed and a scheme other than http or https is refused outright; a public address is
+// fetched through the serving provider's proxy.
+func TestDownloadImageFromURLRefusesNonPublicAddresses(t *testing.T) {
+	var internalHits atomic.Int32
+	internal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		internalHits.Add(1)
+		_, _ = w.Write([]byte("internal secret"))
+	}))
+	defer internal.Close()
+	for _, target := range []string{internal.URL + "/image.png?sig=deadbeefcafe", "http://10.0.0.5/image.png", "http://169.254.169.254/latest/meta-data/", "file:///etc/passwd"} {
+		encoded, err := downloadImageFromURL(context.Background(), target)
+		if err == nil {
+			t.Fatalf("%s was fetched: %q", target, encoded)
+		}
+	}
+	if got := internalHits.Load(); got != 0 {
+		t.Fatalf("the loopback address was dialed %d times", got)
+	}
+
+	tunnel := proxytest.NewOriginTunnel(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write([]byte("png"))
-	}))
-	defer fixture.Close()
-	encoded, err := downloadImageFromURL(context.Background(), fixture.URL+"/image.png")
+	})
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(tunnel.URL)})
+	encoded, err := downloadImageFromURL(ctx, "http://203.0.113.10/image.png")
 	if err != nil || encoded != "cG5n" {
-		t.Fatalf("loopback image: %q, %v", encoded, err)
+		t.Fatalf("public image through the provider's proxy: %q, %v", encoded, err)
 	}
 }
