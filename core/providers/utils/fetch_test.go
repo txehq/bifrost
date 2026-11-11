@@ -1262,22 +1262,30 @@ func TestRequestsToVendorNamedAddressesUseTheHardenedClient(t *testing.T) {
 func TestClientForVendorURL(t *testing.T) {
 	providerClient := &fasthttp.Client{}
 	ctx := t.Context()
-	if got, err := ClientForVendorURL(ctx, "https://API.vendor.example/v1/predictions/p1", "https://api.vendor.example/v1", providerClient, false); err != nil || got != providerClient {
+	if got, _, err := ClientForVendorURL(ctx, "https://API.vendor.example/v1/predictions/p1", "https://api.vendor.example/v1", providerClient, false); err != nil || got != providerClient {
 		t.Fatalf("an address on the provider's origin must keep the provider's client: %p, %v", got, err)
 	}
 	for _, target := range []string{"https://stream.vendor.example/s/1", "http://127.0.0.1:9/x", "https://api.vendor.example:8443/v1"} {
-		got, err := ClientForVendorURL(ctx, target, "https://api.vendor.example/v1", providerClient, false)
+		got, release, err := ClientForVendorURL(ctx, target, "https://api.vendor.example/v1", providerClient, false)
+		release()
 		if err != nil || got == nil || got == providerClient {
 			t.Fatalf("%s is off the provider's origin and must not get the provider's client: %p, %v", target, got, err)
 		}
 	}
-	if got, err := ClientForVendorURL(ctx, "https://api.vendor.example/v1", "", providerClient, false); err != nil || got == providerClient {
+	if got, release, err := ClientForVendorURL(ctx, "https://api.vendor.example/v1", "", providerClient, false); err != nil || got == providerClient {
+		t.Fatalf("an empty base URL exempts nothing: %p, %v", got, err)
+	} else {
+		release()
+	}
+	if got, _, err := ClientForVendorURL(ctx, "https://api.vendor.example/v1", "not a url", providerClient, false); err != nil || got == providerClient {
 		t.Fatalf("an empty base URL exempts nothing: %p, %v", got, err)
 	}
 	for _, target := range []string{"file:///etc/passwd", "gopher://203.0.113.10/x", "not a url", "/relative"} {
-		if _, err := ClientForVendorURL(ctx, target+"?sig=deadbeefcafe", "", providerClient, false); err == nil || strings.Contains(err.Error(), "deadbeefcafe") {
+		_, release, err := ClientForVendorURL(ctx, target+"?sig=deadbeefcafe", "", providerClient, false)
+		if err == nil || strings.Contains(err.Error(), "deadbeefcafe") {
 			t.Fatalf("%s: want an error that does not carry the query, got %v", target, err)
 		}
+		release() // never nil, on an error too
 	}
 
 	var internalHits atomic.Int32
@@ -1288,10 +1296,11 @@ func TestClientForVendorURL(t *testing.T) {
 	})
 	proxied := mediaStreamProxyCtx(t, tunnel.URL, 10*time.Second)
 	do := func(ctx context.Context, target string, stream bool) (string, error) {
-		client, err := ClientForVendorURL(ctx, target, "https://api.vendor.example/v1", providerClient, stream)
+		client, release, err := ClientForVendorURL(ctx, target, "https://api.vendor.example/v1", providerClient, stream)
 		if err != nil {
 			return "", err
 		}
+		defer release()
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 		defer fasthttp.ReleaseRequest(req)
@@ -1331,6 +1340,87 @@ func TestClientForVendorURL(t *testing.T) {
 	}
 	if got := tunnel.Connects(); got < 1 {
 		t.Fatalf("the public address did not leave through the provider's proxy")
+	}
+}
+
+// TestClientForVendorURLChoosesTheEnvironmentProxyByScheme: the hardened client is handed out
+// without the round tripper that records each request's scheme, so ClientForVendorURL holds
+// the scheme itself until release. An https address on a port other than 443 then leaves
+// through HTTPS_PROXY, not HTTP_PROXY and not directly, and nothing is kept once released.
+func TestClientForVendorURLChoosesTheEnvironmentProxyByScheme(t *testing.T) {
+	prev := fetchResolveTarget
+	fetchResolveTarget = func(_ context.Context, host string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("203.0.113.10")}, nil
+	}
+	t.Cleanup(func() { fetchResolveTarget = prev })
+
+	plain := proxytest.NewHTTPRecorder(t, "http-proxy", "tcp4")
+	secure := proxytest.NewHTTPRecorder(t, "https-proxy", "tcp4")
+	for _, name := range []string{"http_proxy", "https_proxy", "no_proxy", "NO_PROXY", "ALL_PROXY", "all_proxy"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:"+plain.Port())
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:"+secure.Port())
+
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{Type: schemas.EnvProxy})
+	for i, stream := range []bool{false, true} {
+		const target = "https://files.vendor.example:8443/image.png"
+		client, release, err := ClientForVendorURL(ctx, target, "https://api.vendor.example/v1", &fasthttp.Client{}, stream)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+		req.SetRequestURI(target)
+		_, _, wait := MakeRequestWithContext(ctx, client, req, resp)
+		wait()
+		release()
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+
+		if seen := plain.Seen(); len(seen) != 0 {
+			t.Fatalf("stream=%v: HTTP_PROXY carried the https request: %+v", stream, seen)
+		}
+		if seen := secure.Seen(); len(seen) != i+1 || seen[i].Target != "203.0.113.10:8443" {
+			t.Fatalf("stream=%v: HTTPS_PROXY saw %+v, want a CONNECT to 203.0.113.10:8443", stream, seen)
+		}
+		limits := mediaFetchLimits
+		if stream {
+			limits = mediaStreamLimits
+		}
+		fetchClient, err := fetchClientForLimits(ctx, limits)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := fetchClient.Transport.(*fasthttpRoundTripper).schemes.size(); n != 0 {
+			t.Fatalf("stream=%v: %d scheme entries are still held after release", stream, n)
+		}
+	}
+}
+
+// BenchmarkClientForVendorURL is the client selection every Replicate poll, stream and page
+// now pays (TXE-7090). Before the change there was none: the request went straight out on the
+// provider's client. Same origin is the ordinary case (urls.get on api.replicate.com); off
+// origin also looks up the cached hardened client and holds the scheme until release.
+func BenchmarkClientForVendorURL(b *testing.B) {
+	providerClient := &fasthttp.Client{}
+	ctx := b.Context()
+	for name, target := range map[string]string{
+		"same-origin": "https://api.replicate.com/v1/predictions/gm3qorzdhgbfurvjtvhg6dckhu",
+		"off-origin":  "https://stream.replicate.com/v1/files/gm3qorzdhgbfurvjtvhg6dckhu",
+	} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				client, release, err := ClientForVendorURL(ctx, target, "https://api.replicate.com", providerClient, false)
+				if err != nil || client == nil {
+					b.Fatal(err)
+				}
+				release()
+			}
+		})
 	}
 }
 

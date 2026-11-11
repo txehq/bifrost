@@ -3323,10 +3323,11 @@ func downloadImageFromURL(ctx context.Context, imageURL string) (string, error) 
 	// Fork: the address comes from an image provider's answer, so it is fetched on the
 	// SSRF-hardened client for the serving provider's proxy: public addresses only, and no
 	// origin is exempt, since this conversion has no provider base URL of its own (TXE-7090).
-	client, clientErr := providerUtils.ClientForVendorURL(ctx, imageURL, "", nil, false)
+	client, releaseClient, clientErr := providerUtils.ClientForVendorURL(ctx, imageURL, "", nil, false)
 	if clientErr != nil {
 		return "", fmt.Errorf("failed to download image: %w", clientErr)
 	}
+	defer releaseClient()
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)

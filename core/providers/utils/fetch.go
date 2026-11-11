@@ -118,29 +118,44 @@ func fetchMediaURLResponse(ctx context.Context, resourceURL string, header http.
 // (MakeRequestWithContext, DoStreamingRequest) and must not follow redirects on it, since a
 // redirect hop is not this function's to check (fork, TXE-7090).
 //
+// The caller runs release once its request has been sent (a defer after the call does it).
+// Until then the hardened client knows the address's scheme, so an environment proxy is
+// chosen by it and not guessed from the port: an https address on port 8443 leaves through
+// HTTPS_PROXY. release is never nil, and does nothing for the provider's client.
+//
 // An address that is not http or https is an error, on either client. providerClient is
 // returned for an address on baseURL's origin; an empty baseURL never matches.
-func ClientForVendorURL(ctx context.Context, vendorURL, baseURL string, providerClient *fasthttp.Client, stream bool) (*fasthttp.Client, error) {
+func ClientForVendorURL(ctx context.Context, vendorURL, baseURL string, providerClient *fasthttp.Client, stream bool) (client *fasthttp.Client, release func(), err error) {
 	parsed, err := url.Parse(vendorURL)
 	if err != nil || parsed.Host == "" {
-		return nil, fmt.Errorf("invalid address %q in the provider's response", RedactURLForError(vendorURL))
+		return nil, noRelease, fmt.Errorf("invalid address %q in the provider's response", RedactURLForError(vendorURL))
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return nil, fmt.Errorf("unsupported URL scheme %q in the provider's response (only http/https allowed)", parsed.Scheme)
+		return nil, noRelease, fmt.Errorf("unsupported URL scheme %q in the provider's response (only http/https allowed)", parsed.Scheme)
 	}
-	if baseURL != "" && providerClient != nil && sameOrigin(vendorURL, baseURL) {
-		return providerClient, nil
+	if baseURL != "" && providerClient != nil {
+		if base, baseErr := url.Parse(baseURL); baseErr == nil && base.Host != "" && sameParsedOrigin(parsed, base) {
+			return providerClient, noRelease, nil
+		}
 	}
 	limits := mediaFetchLimits
 	if stream {
 		limits = mediaStreamLimits
 	}
-	client, err := fetchClientForLimits(ctx, limits)
+	fetchClient, err := fetchClientForLimits(ctx, limits)
 	if err != nil {
-		return nil, err
+		return nil, noRelease, err
 	}
-	return client.Transport.(*fasthttpRoundTripper).client, nil
+	rt := fetchClient.Transport.(*fasthttpRoundTripper)
+	release = noRelease
+	if rt.schemes != nil {
+		release = rt.schemes.hold(dialAddr(parsed), parsed.Scheme)
+	}
+	return rt.client, release, nil
 }
+
+// noRelease is ClientForVendorURL's release when there is nothing to release.
+func noRelease() {}
 
 // MediaStream is a media file being downloaded by FetchMediaStream.
 type MediaStream struct {

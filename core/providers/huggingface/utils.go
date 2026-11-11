@@ -306,10 +306,11 @@ func (provider *HuggingFaceProvider) getValidatedProviderModelID(ctx context.Con
 func (provider *HuggingFaceProvider) downloadAudioFromURL(ctx context.Context, audioURL string) ([]byte, error) {
 	// Fork: the inference provider's answer names this address, so off the provider's own
 	// origin the file is fetched on the SSRF-hardened client (TXE-7090).
-	client, err := providerUtils.ClientForVendorURL(ctx, audioURL, provider.networkConfig.BaseURL, provider.client, false)
+	client, releaseClient, err := providerUtils.ClientForVendorURL(ctx, audioURL, provider.networkConfig.BaseURL, provider.client, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download audio: %w", err)
 	}
+	defer releaseClient()
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)

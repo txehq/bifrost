@@ -206,10 +206,11 @@ func getPrediction(
 
 	// Fork: urls.get comes from Replicate's answer, so off the provider's own origin the poll
 	// goes out on the SSRF-hardened client (TXE-7090).
-	client, clientErr := providerUtils.ClientForVendorURL(ctx, predictionURL, baseURL, client, false)
+	client, releaseClient, clientErr := providerUtils.ClientForVendorURL(ctx, predictionURL, baseURL, client, false)
 	if clientErr != nil {
 		return nil, nil, nil, providerUtils.NewBifrostOperationError("replicate named a prediction address that cannot be fetched", clientErr)
 	}
+	defer releaseClient()
 
 	// Set URL
 	req.SetRequestURI(predictionURL)
@@ -360,7 +361,7 @@ func (provider *ReplicateProvider) listDeploymentsByKey(ctx *schemas.BifrostCont
 
 		// Fork: every page after the first is at the address Replicate's "next" names, so off
 		// the provider's own origin it goes out on the SSRF-hardened client (TXE-7090).
-		pageClient, clientErr := providerUtils.ClientForVendorURL(ctx, currentURL, provider.networkConfig.BaseURL, client, false)
+		pageClient, releaseClient, clientErr := providerUtils.ClientForVendorURL(ctx, currentURL, provider.networkConfig.BaseURL, client, false)
 		if clientErr != nil {
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -385,6 +386,7 @@ func (provider *ReplicateProvider) listDeploymentsByKey(ctx *schemas.BifrostCont
 
 		// Release resources
 		wait()
+		releaseClient()
 		fasthttp.ReleaseRequest(req)
 
 		if bifrostErr != nil {
@@ -1353,11 +1355,12 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 
 	// Fork: urls.stream comes from Replicate's answer, so off the provider's own origin the
 	// stream is read on the SSRF-hardened client (TXE-7090).
-	streamClient, clientErr := providerUtils.ClientForVendorURL(ctx, streamURL, provider.networkConfig.BaseURL, provider.streamingClient, true)
+	streamClient, releaseClient, clientErr := providerUtils.ClientForVendorURL(ctx, streamURL, provider.networkConfig.BaseURL, provider.streamingClient, true)
 	if clientErr != nil {
 		fasthttp.ReleaseResponse(resp)
 		return nil, providerUtils.NewBifrostOperationError("replicate named a stream address that cannot be fetched", clientErr)
 	}
+	defer releaseClient()
 
 	// Make the streaming request
 	startTime = time.Now()

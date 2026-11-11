@@ -94,10 +94,11 @@ func listenToReplicateStreamURL(
 ) (io.Reader, *fasthttp.Response, *schemas.BifrostError) {
 	// Fork: urls.stream comes from Replicate's answer, so off the provider's own origin the
 	// stream is read on the SSRF-hardened client (TXE-7090).
-	client, clientErr := providerUtils.ClientForVendorURL(ctx, streamURL, baseURL, client, true)
+	client, releaseClient, clientErr := providerUtils.ClientForVendorURL(ctx, streamURL, baseURL, client, true)
 	if clientErr != nil {
 		return nil, nil, providerUtils.NewBifrostOperationError("replicate named a stream address that cannot be fetched", clientErr)
 	}
+	defer releaseClient()
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
