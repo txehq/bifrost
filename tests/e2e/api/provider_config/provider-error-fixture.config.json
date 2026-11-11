@@ -295,6 +295,34 @@
         "default_request_timeout_in_seconds": 10
       }
     },
+    "minimax_video": {
+      "keys": [
+        {
+          "name": "mmv-key-a",
+          "value": "mmv-secret-a",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        },
+        {
+          "name": "mmv-key-b",
+          "value": "mmv-secret-b",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "minimax"
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/mmv",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
     "openai_turns": {
       "keys": [
         {

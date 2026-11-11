@@ -1849,6 +1849,14 @@ func (req *OpenAIVideoGenerationRequest) GetExtraParams() map[string]interface{}
 	return req.ExtraParams
 }
 
+// SetExtraParams takes the request body's extra_params when x-bf-passthrough-extra-params is
+// set, as every other OpenAI route request does, so a vendor's own video fields (MiniMax's
+// prompt_optimizer, extra.prompt_expansion_mode) reach it through /openai/v1/videos (TXE-6428).
+func (req *OpenAIVideoGenerationRequest) SetExtraParams(params map[string]interface{}) {
+	req.ExtraParams = params
+	req.VideoGenerationParameters.ExtraParams = params
+}
+
 // OpenAIVideoEditRequest is the request body for OpenAI video edits. The source video is either an
 // uploaded file, sent as multipart, or a reference to a completed video, sent as JSON.
 type OpenAIVideoEditRequest struct {

@@ -296209,6 +296209,1183 @@
       ]
     },
     {
+      "name": "414. MiniMax video v1 and v2 meet the contract (fork minimax video contract)",
+      "description": "Pins TXE-6428 (contract C3, C4, C5, C6, C7, C9) for MiniMax video. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. minimax_video is a custom provider on base_provider_type minimax with two keys (mmv-key-a, mmv-key-b) whose base URL is the fixture's /mmv, which answers with MiniMax's documented v1 and v2 responses and records every call at /__mmv. Row 2: a MiniMax-H3 create sends seconds, resolution, aspect_ratio (as ratio) and callback_url in MiniMax's v2 fields and merges extra.prompt_expansion_mode. Rows 3 to 9: out-of-range seconds, an inexact size, seed, audio and the three task control fields MiniMax does not take are refused with 400 caller_unsupported_parameter before any call; before the change seconds were clamped, size was rounded to the nearest tier and the others were dropped. Row 10: a succeeded v2 query returns usage (output_seconds, input_seconds, input_images, output_tokens), provider_status and a url video; before the change usage and provider_status were absent. Rows 11 and 12: a Hailuo 2.3 create goes to /v1/video_generation and its query retrieves the file, with expires_at one hour after the file; before the change v1 did not exist. Row 13: a v1 create answered with base_resp 1026 inside a 200 is a 400 carrying the code. Rows 14 to 17: cancel queries first and sends DELETE only for the queued task, with the key x-bf-api-key names; running and succeeded tasks and v1 tasks are 400 provider_cancel_unsupported. Row 18: the list reads /v2/query/video_generation. Row 19 reads the fixture's call log.",
+      "item": [
+        {
+          "name": "414.1 reset the fixture's call log (fork minimax video contract)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{providerErrorFixtureUrl}}/__reset"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the fixture reset its call log', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.json().data[0].reset).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.2 minimax_video/MiniMax-H3 POST /v1/videos sends seconds, resolution, aspect_ratio and callback_url in MiniMax's v2 fields and merges extra (fork minimax video contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax_video/MiniMax-H3\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"seconds\": \"6\",\n  \"resolution\": \"768P\",\n  \"aspect_ratio\": \"16:9\",\n  \"callback_url\": \"https://hooks.example.test/v/task_414\",\n  \"extra\": {\n    \"prompt_expansion_mode\": \"quality\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the v2 task is queued under a provider-scoped id', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('mm-queued:minimax_video');",
+                  "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('queued');",
+                  "  pm.expect(j.seconds, 'seconds: ' + pm.response.text()).to.eql('6');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.3 [EXPECT-400] minimax_video POST /v1/videos refuses seconds outside 4 to 15 instead of clamping (fork minimax video contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax_video/MiniMax-H3\",\n  \"prompt\": \"a paper boat\",\n  \"seconds\": \"20\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('seconds is refused as caller_unsupported_parameter naming the field', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('seconds');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.4 [EXPECT-400] minimax_video POST /v1/videos refuses a size that is not exactly one tier and ratio (fork minimax video contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax_video/MiniMax-H3\",\n  \"prompt\": \"a paper boat\",\n  \"size\": \"480x854\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('size is refused as caller_unsupported_parameter naming the field', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('size');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.5 [EXPECT-400] minimax_video POST /v1/videos refuses seed, which MiniMax has no field for (fork minimax video contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax_video/MiniMax-H3\",\n  \"prompt\": \"a paper boat\",\n  \"seed\": 7\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('seed is refused as caller_unsupported_parameter naming the field', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('seed');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.6 [EXPECT-400] minimax_video POST /v1/videos refuses audio (fork minimax video contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax_video/MiniMax-H3\",\n  \"prompt\": \"a paper boat\",\n  \"audio\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('audio is refused as caller_unsupported_parameter naming the field', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('audio');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.7 [EXPECT-400] minimax_video POST /v1/videos refuses client_reference_id (fork minimax video contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax_video/MiniMax-H3\",\n  \"prompt\": \"a paper boat\",\n  \"client_reference_id\": \"task_414\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('client_reference_id is refused as caller_unsupported_parameter naming the field', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('client_reference_id');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.8 [EXPECT-400] minimax_video POST /v1/videos refuses expires_after_seconds (fork minimax video contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax_video/MiniMax-H3\",\n  \"prompt\": \"a paper boat\",\n  \"expires_after_seconds\": 7200\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('expires_after_seconds is refused as caller_unsupported_parameter naming the field', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('expires_after_seconds');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.9 [EXPECT-400] minimax_video POST /v1/videos refuses output_storage_uri (fork minimax video contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax_video/MiniMax-H3\",\n  \"prompt\": \"a paper boat\",\n  \"output_storage_uri\": \"gs://harness-bucket/task_414/\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('output_storage_uri is refused as caller_unsupported_parameter naming the field', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('output_storage_uri');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.10 minimax_video GET /v1/videos/{id} returns a succeeded v2 task with usage, provider_status and a url video (fork minimax video contract)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/mm-done:minimax_video",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "mm-done:minimax_video"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the task object carries what MiniMax reported', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('completed');",
+                  "  pm.expect(j.provider_status, 'provider_status: ' + pm.response.text()).to.eql('succeeded');",
+                  "  pm.expect(j.usage, 'usage: ' + pm.response.text()).to.include({ output_seconds: 6, input_seconds: 2, input_images: 1, output_tokens: 100 });",
+                  "  pm.expect(j.videos[0].type, 'videos: ' + pm.response.text()).to.eql('url');",
+                  "  pm.expect(j.videos[0].url, 'videos: ' + pm.response.text()).to.eql('https://cdn.minimax.example/mm-done.mp4?sig=fixture');",
+                  "  pm.expect(j.expires_at, 'expires_at: MiniMax states no v2 link lifetime').to.eql(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.11 minimax_video/MiniMax-Hailuo-2.3 POST /v1/videos creates a v1 task on /v1/video_generation (fork minimax video contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax_video/MiniMax-Hailuo-2.3\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"seconds\": \"10\",\n  \"resolution\": \"768P\",\n  \"input_reference\": \"https://example.com/first.png\",\n  \"callback_url\": \"https://hooks.example.test/v/task_414_v1\",\n  \"prompt_optimizer\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the v1 task id carries the v1 mark', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('v1-106916112212032:minimax_video');",
+                  "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('queued');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.12 minimax_video GET /v1/videos/{id} on a v1 task queries it and retrieves the file link that lives one hour (fork minimax video contract)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/v1-106916112212032:minimax_video",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "v1-106916112212032:minimax_video"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the v1 task object has the download_url and expires_at one hour after the file', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('v1-106916112212032:minimax_video');",
+                  "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('completed');",
+                  "  pm.expect(j.provider_status, 'provider_status: ' + pm.response.text()).to.eql('Success');",
+                  "  pm.expect(j.videos[0].type, 'videos: ' + pm.response.text()).to.eql('url');",
+                  "  pm.expect(j.videos[0].url, 'videos: ' + pm.response.text()).to.eql('https://cdn.minimax.example/output.mp4?sig=fixture');",
+                  "  pm.expect(j.completed_at, 'completed_at: ' + pm.response.text()).to.eql(1762700300);",
+                  "  pm.expect(j.expires_at, 'expires_at: ' + pm.response.text()).to.eql(1762700300 + 3600);",
+                  "  pm.expect(j.size, 'size: ' + pm.response.text()).to.eql('1920x1080');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.13 [EXPECT-400] minimax_video/MiniMax-Hailuo-2.3 POST /v1/videos answered with base_resp 1026 inside a 200 is a 400 carrying the code (fork minimax video contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax_video/MiniMax-Hailuo-2.3\",\n  \"prompt\": \"a blocked prompt\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the content block is a 400 caller_content_filtered with MiniMax code 1026', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.error && j.error.code, 'error.code: ' + pm.response.text()).to.eql('1026');",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_content_filtered');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.14 minimax_video POST /v1/videos/{id}/cancel on a queued v2 task queries it, then cancels it with the named key (fork minimax video contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "mmv-key-b"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/mm-queued:minimax_video/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "mm-queued:minimax_video",
+                "cancel"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the queued task is cancelled', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('mm-queued:minimax_video');",
+                  "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('cancelled');",
+                  "  pm.expect(j.provider_status, 'provider_status: ' + pm.response.text()).to.eql('queued');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.15 [EXPECT-400] minimax_video POST /v1/videos/{id}/cancel on a running v2 task is provider_cancel_unsupported without a DELETE (fork minimax video contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "mmv-key-b"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/mm-running:minimax_video/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "mm-running:minimax_video",
+                "cancel"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the cancel is refused as provider_cancel_unsupported', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_cancel_unsupported');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.16 [EXPECT-400] minimax_video POST /v1/videos/{id}/cancel on a succeeded v2 task is provider_cancel_unsupported, so the DELETE never removes it (fork minimax video contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "mmv-key-b"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/mm-done:minimax_video/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "mm-done:minimax_video",
+                "cancel"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the cancel is refused as provider_cancel_unsupported', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_cancel_unsupported');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.17 [EXPECT-400] minimax_video POST /v1/videos/{id}/cancel on a v1 task is provider_cancel_unsupported: MiniMax v1 has no cancel API (fork minimax video contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "mmv-key-b"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/v1-106916112212032:minimax_video/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "v1-106916112212032:minimax_video",
+                "cancel"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the cancel is refused as provider_cancel_unsupported', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_cancel_unsupported');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.18 minimax_video GET /v1/videos lists v2 tasks from /v2/query/video_generation (fork minimax video contract)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos?provider=minimax_video&limit=2",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "minimax_video"
+                },
+                {
+                  "key": "limit",
+                  "value": "2"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the list carries both tasks with mapped statuses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.data.map(function (v) { return v.id + ' ' + v.status; }), pm.response.text()).to.eql(['mm-done:minimax_video completed', 'mm-queued:minimax_video queued']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.19 fixture call log proves the request bodies, one DELETE only for the queued task, and the named key on cancel (fork minimax video contract)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{providerErrorFixtureUrl}}/__mmv"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var calls = pm.response.json().data[0].calls;",
+                  "var lines = calls.map(function (c) { return c.method + ' ' + c.path + c.query; });",
+                  "pm.test('every MiniMax call, in order; refused requests made none', function () {",
+                  "  pm.expect(lines, JSON.stringify(calls)).to.eql([",
+                  "    'POST /mmv/v2/video_generation',",
+                  "    'GET /mmv/v2/query/video_generation/mm-done',",
+                  "    'POST /mmv/v1/video_generation',",
+                  "    'GET /mmv/v1/query/video_generation?task_id=106916112212032',",
+                  "    'GET /mmv/v1/files/retrieve?file_id=176844028768320',",
+                  "    'POST /mmv/v1/video_generation',",
+                  "    'GET /mmv/v2/query/video_generation/mm-queued',",
+                  "    'DELETE /mmv/v2/video_generation/mm-queued',",
+                  "    'GET /mmv/v2/query/video_generation/mm-running',",
+                  "    'GET /mmv/v2/query/video_generation/mm-done',",
+                  "    'GET /mmv/v2/query/video_generation?page_num=1&page_size=2'",
+                  "  ]);",
+                  "});",
+                  "pm.test('the v2 body carries MiniMax field names, no default ratio, and the merged extra', function () {",
+                  "  var b = JSON.parse(calls[0].body);",
+                  "  pm.expect(b, calls[0].body).to.include({ model: 'MiniMax-H3', duration: 6, resolution: '768P', ratio: '16:9', callback_url: 'https://hooks.example.test/v/task_414' });",
+                  "  pm.expect(b.extra, calls[0].body).to.eql({ prompt_expansion_mode: 'quality' });",
+                  "  pm.expect(b, calls[0].body).to.not.have.property('aspect_ratio');",
+                  "});",
+                  "pm.test('the v1 body carries the flat v1 fields', function () {",
+                  "  var b = JSON.parse(calls[2].body);",
+                  "  pm.expect(b, calls[2].body).to.include({ model: 'MiniMax-Hailuo-2.3', prompt: 'a paper boat on a pond', first_frame_image: 'https://example.com/first.png', duration: 10, resolution: '768P', callback_url: 'https://hooks.example.test/v/task_414_v1', prompt_optimizer: false });",
+                  "  pm.expect(b, calls[2].body).to.not.have.property('content');",
+                  "});",
+                  "pm.test('the cancel queried and deleted with the named key mmv-key-b', function () {",
+                  "  pm.expect(calls.slice(6, 10).map(function (c) { return c.bearer; }), JSON.stringify(calls)).to.eql(['mmv-secret-b', 'mmv-secret-b', 'mmv-secret-b', 'mmv-secret-b']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.20 reset the fixture's call log before the OpenAI SDK route rows (fork minimax video contract)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{providerErrorFixtureUrl}}/__reset"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the fixture reset its call log', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.json().data[0].reset).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.21 minimax_video/MiniMax-H3 POST /openai/v1/videos (OpenAI SDK route) creates a v2 task with the unified fields, callback_url and extra_params (fork minimax video contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax_video/MiniMax-H3\",\n  \"prompt\": \"a paper boat\",\n  \"seconds\": \"6\",\n  \"resolution\": \"768P\",\n  \"aspect_ratio\": \"9:16\",\n  \"callback_url\": \"https://hooks.example.test/v/task_414_sdk\",\n  \"extra_params\": {\n    \"extra\": {\n      \"prompt_expansion_mode\": \"quality\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "videos"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the OpenAI SDK route creates the v2 task', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(String(j.id), pm.response.text()).to.include('mm-queued');",
+                  "  pm.expect(j.status, pm.response.text()).to.eql('queued');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.22 minimax_video/MiniMax-Hailuo-2.3 POST /openai/v1/videos (OpenAI SDK route) creates a v1 task with last_frame and a vendor field under extra_params (fork minimax video contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax_video/MiniMax-Hailuo-2.3\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"seconds\": \"10\",\n  \"resolution\": \"768P\",\n  \"last_frame\": \"https://example.com/last.png\",\n  \"callback_url\": \"https://hooks.example.test/v/task_414_sdk_v1\",\n  \"extra_params\": {\n    \"prompt_optimizer\": false\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "videos"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the OpenAI SDK route creates the v1 task under a v1- id', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(String(pm.response.json().id), pm.response.text()).to.include('v1-106916112212032');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.23 fixture call log proves the OpenAI SDK route sent MiniMax's own v2 and v1 fields (fork minimax video contract)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{providerErrorFixtureUrl}}/__mmv"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var calls = pm.response.json().data[0].calls;",
+                  "pm.test('one create per row, in order', function () {",
+                  "  pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['POST /mmv/v2/video_generation', 'POST /mmv/v1/video_generation']);",
+                  "});",
+                  "pm.test('the v2 body carries MiniMax field names and the extra from extra_params', function () {",
+                  "  var b = JSON.parse(calls[0].body);",
+                  "  pm.expect(b, calls[0].body).to.include({ model: 'MiniMax-H3', duration: 6, resolution: '768P', ratio: '9:16', callback_url: 'https://hooks.example.test/v/task_414_sdk' });",
+                  "  pm.expect(b.extra, calls[0].body).to.eql({ prompt_expansion_mode: 'quality' });",
+                  "  pm.expect(b, calls[0].body).to.not.have.property('aspect_ratio');",
+                  "  pm.expect(b, calls[0].body).to.not.have.property('seconds');",
+                  "});",
+                  "pm.test('the v1 body carries the flat v1 fields and prompt_optimizer from extra_params', function () {",
+                  "  var b = JSON.parse(calls[1].body);",
+                  "  pm.expect(b, calls[1].body).to.include({ model: 'MiniMax-Hailuo-2.3', prompt: 'a paper boat on a pond', last_frame_image: 'https://example.com/last.png', duration: 10, resolution: '768P', callback_url: 'https://hooks.example.test/v/task_414_sdk_v1', prompt_optimizer: false });",
+                  "  pm.expect(b, calls[1].body).to.not.have.property('last_frame');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "287. BytePlus provider (byteplus provider)",
       "description": "BytePlus ModelArk is reached through Ark's OpenAI-compatible /api/v3/chat/completions, its native /api/v3/responses, /api/v3/embeddings/multimodal for embeddings and /api/v3/images/generations for Seedream generation and editing. Bifrost maps reasoning_effort none to thinking disabled and clamps xhigh/max to high, since Ark rejects both. The multimodal embedding endpoint fuses a request into one vector, so Bifrost sends one call per input entry. Seedance video generation is billed per clip, so it is covered by Go tests and not by a live case here. Every model used here must be activated on the account, or Ark answers 404 ModelNotOpen.",
       "item": [

@@ -93,6 +93,7 @@ type capturedRequest struct {
 	auth   string
 	header http.Header
 	body   []byte
+	query  string
 }
 
 // newMockMiniMax starts a server that records each request and replies with the response registered for its path.
@@ -103,7 +104,7 @@ func newMockMiniMax(t *testing.T, responses map[string]func(w http.ResponseWrite
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		mu.Lock()
-		captured = append(captured, capturedRequest{method: r.Method, path: r.URL.Path, auth: r.Header.Get("Authorization"), header: r.Header.Clone(), body: body})
+		captured = append(captured, capturedRequest{method: r.Method, path: r.URL.Path, auth: r.Header.Get("Authorization"), header: r.Header.Clone(), body: body, query: r.URL.RawQuery})
 		mu.Unlock()
 		if respond, ok := responses[r.Method+" "+r.URL.Path]; ok {
 			respond(w)
@@ -408,6 +409,8 @@ func TestMiniMaxImageGenerationBaseRespError(t *testing.T) {
 	}
 }
 
+// v2 conversion: price-affecting fields reach MiniMax as given (contract C4). No ratio is written
+// when the caller gave none, so MiniMax applies adaptive; an exact size picks its tier and ratio.
 func TestToMiniMaxVideoGenerationRequest(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -416,30 +419,42 @@ func TestToMiniMaxVideoGenerationRequest(t *testing.T) {
 		params         *schemas.VideoGenerationParameters
 		wantDuration   int
 		wantResolution string
-		wantRatio      string
+		wantRatio      string // "" means no ratio sent
 		wantContent    int
 	}{
 		{
-			name:  "text to video defaults",
+			name:  "text to video sends no ratio",
 			model: "MiniMax-H3", input: &schemas.VideoGenerationInput{Prompt: "a dog"},
-			wantDuration: 6, wantResolution: "768P", wantRatio: "16:9", wantContent: 1,
+			wantDuration: 6, wantResolution: "768P", wantContent: 1,
 		},
 		{
-			name:  "image to video uses adaptive ratio",
+			name:  "image to video sends no ratio",
 			model: "MiniMax-H3", input: &schemas.VideoGenerationInput{Prompt: "a dog", InputReference: schemas.Ptr("https://example.com/a.png")},
-			wantDuration: 6, wantResolution: "768P", wantRatio: "adaptive", wantContent: 2,
+			wantDuration: 6, wantResolution: "768P", wantContent: 2,
 		},
 		{
-			name:  "size and seconds map with clamping on H3-Max",
+			name:  "exact size on H3-Max picks 480P 9:16",
 			model: "MiniMax-H3-Max", input: &schemas.VideoGenerationInput{Prompt: "a dog"},
-			params:       &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("4"), Size: "480x854"},
+			params:       &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("5"), Size: "480x853"},
 			wantDuration: 5, wantResolution: "480P", wantRatio: "9:16", wantContent: 1,
 		},
 		{
-			name:  "large size on H3 picks 2K",
+			name:  "exact size on H3 picks 2K 16:9",
 			model: "MiniMax-H3", input: &schemas.VideoGenerationInput{Prompt: "a dog"},
-			params:       &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("20"), Size: "2560x1440"},
+			params:       &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("15"), Size: "2560x1440"},
 			wantDuration: 15, wantResolution: "2K", wantRatio: "16:9", wantContent: 1,
+		},
+		{
+			name:  "unified resolution, aspect_ratio and last_frame",
+			model: "MiniMax-H3", input: &schemas.VideoGenerationInput{Prompt: "a dog", InputReference: schemas.Ptr("https://example.com/a.png")},
+			params:       &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("4"), Resolution: "2k", AspectRatio: "1:1", LastFrame: "https://example.com/b.png"},
+			wantDuration: 4, wantResolution: "2K", wantRatio: "1:1", wantContent: 3,
+		},
+		{
+			name:  "reference images",
+			model: "MiniMax-H3", input: &schemas.VideoGenerationInput{Prompt: "a dog"},
+			params:       &schemas.VideoGenerationParameters{ReferenceImages: schemas.VideoReferenceImages{"https://example.com/a.png", "https://example.com/b.png"}},
+			wantDuration: 6, wantResolution: "768P", wantContent: 3,
 		},
 	}
 	for _, tt := range tests {
@@ -454,13 +469,416 @@ func TestToMiniMaxVideoGenerationRequest(t *testing.T) {
 			if req.Resolution != tt.wantResolution {
 				t.Errorf("resolution = %s, want %s", req.Resolution, tt.wantResolution)
 			}
-			if req.Ratio == nil || *req.Ratio != tt.wantRatio {
+			switch {
+			case tt.wantRatio == "" && req.Ratio != nil:
+				t.Errorf("ratio = %q, want none", *req.Ratio)
+			case tt.wantRatio != "" && (req.Ratio == nil || *req.Ratio != tt.wantRatio):
 				t.Errorf("ratio = %v, want %s", req.Ratio, tt.wantRatio)
 			}
 			if len(req.Content) != tt.wantContent {
 				t.Errorf("content items = %d, want %d", len(req.Content), tt.wantContent)
 			}
 		})
+	}
+}
+
+func videoReq(model string, params *schemas.VideoGenerationParameters) *schemas.BifrostVideoGenerationRequest {
+	return &schemas.BifrostVideoGenerationRequest{Provider: schemas.MiniMax, Model: model, Input: &schemas.VideoGenerationInput{Prompt: "a dog"}, Params: params}
+}
+
+// A field MiniMax cannot take, or a value it does not offer, is refused with 400
+// caller_unsupported_parameter naming the field, and nothing is sent (contract C4, items B6, B8).
+func TestMiniMaxVideoRefusesUndeliverableFields(t *testing.T) {
+	provider, captured := newMockMiniMax(t, map[string]func(http.ResponseWriter){})
+	ctx := testContext(t)
+	cases := []struct {
+		name, model, param string
+		params             *schemas.VideoGenerationParameters
+	}{
+		{"seconds above range", "MiniMax-H3", "seconds", &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("20")}},
+		{"seconds below the H3-Max range", "MiniMax-H3-Max", "seconds", &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("4")}},
+		{"fractional seconds", "MiniMax-H3", "seconds", &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("6.5")}},
+		{"inexact size", "MiniMax-H3", "size", &schemas.VideoGenerationParameters{Size: "480x854"}},
+		{"size off every tier", "MiniMax-H3", "size", &schemas.VideoGenerationParameters{Size: "1920x1080"}},
+		{"size disagrees with resolution", "MiniMax-H3", "size", &schemas.VideoGenerationParameters{Size: "2560x1440", Resolution: "768P"}},
+		{"seed", "MiniMax-H3", "seed", &schemas.VideoGenerationParameters{Seed: schemas.Ptr(7)}},
+		{"audio", "MiniMax-H3", "audio", &schemas.VideoGenerationParameters{Audio: schemas.Ptr(true)}},
+		{"client_reference_id", "MiniMax-H3", "client_reference_id", &schemas.VideoGenerationParameters{TaskControlParameters: schemas.TaskControlParameters{ClientReferenceID: schemas.Ptr("t1")}}},
+		{"expires_after_seconds", "MiniMax-H3", "expires_after_seconds", &schemas.VideoGenerationParameters{TaskControlParameters: schemas.TaskControlParameters{ExpiresAfterSeconds: schemas.Ptr(3600)}}},
+		{"output_storage_uri", "MiniMax-H3", "output_storage_uri", &schemas.VideoGenerationParameters{TaskControlParameters: schemas.TaskControlParameters{OutputStorageURI: schemas.Ptr("gs://b/o")}}},
+		{"v1 seconds not 6 or 10", "MiniMax-Hailuo-2.3", "seconds", &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("8")}},
+		{"v1 size", "MiniMax-Hailuo-2.3", "size", &schemas.VideoGenerationParameters{Size: "1366x768"}},
+		{"v1 aspect_ratio", "MiniMax-Hailuo-02", "aspect_ratio", &schemas.VideoGenerationParameters{AspectRatio: "16:9"}},
+		{"v1 reference_images", "MiniMax-Hailuo-2.3", "reference_images", &schemas.VideoGenerationParameters{ReferenceImages: schemas.VideoReferenceImages{"https://example.com/a.png"}}},
+		{"v1 seed", "MiniMax-Hailuo-2.3-Fast", "seed", &schemas.VideoGenerationParameters{Seed: schemas.Ptr(1)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, bifrostErr := provider.VideoGeneration(ctx, testKey(), videoReq(tc.model, tc.params))
+			if bifrostErr == nil {
+				t.Fatal("expected an error")
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+				t.Errorf("status = %v, want 400", bifrostErr.StatusCode)
+			}
+			if bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error == nil || bifrostErr.Error.Param != tc.param {
+				t.Errorf("error_type = %q param = %v, want caller_unsupported_parameter %q", bifrostErr.ExtraFields.ErrorType, bifrostErr.Error, tc.param)
+			}
+		})
+	}
+	if reqs := captured(); len(reqs) != 0 {
+		t.Errorf("refused requests reached MiniMax: %d", len(reqs))
+	}
+}
+
+// Core checks the declaration before a key is chosen: callback_url is the one task control field
+// MiniMax forwards; the other three are refused.
+func TestMiniMaxDeclaresVideoFields(t *testing.T) {
+	provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){})
+	request := func(control schemas.TaskControlParameters) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: videoReq("MiniMax-H3", &schemas.VideoGenerationParameters{Size: "1365x768", Resolution: "768P", AspectRatio: "16:9", TaskControlParameters: control})}
+	}
+	ok := request(schemas.TaskControlParameters{CallbackURL: schemas.Ptr("https://hooks.example/v/1")})
+	if e := schemas.CheckTaskControlFields(provider, ok); e != nil {
+		t.Errorf("callback_url refused: %+v", e.Error)
+	}
+	if e := schemas.CheckDeclaredUnifiedFields(provider, ok); e != nil {
+		t.Errorf("declared fields refused: %+v", e.Error)
+	}
+	for _, control := range []schemas.TaskControlParameters{
+		{ClientReferenceID: schemas.Ptr("t1")},
+		{ExpiresAfterSeconds: schemas.Ptr(60)},
+		{OutputStorageURI: schemas.Ptr("s3://b/o")},
+	} {
+		if e := schemas.CheckTaskControlFields(provider, request(control)); e == nil || e.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter {
+			t.Errorf("%v: want caller_unsupported_parameter, got %+v", control.Present(), e)
+		}
+	}
+	audio := &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: videoReq("MiniMax-H3", &schemas.VideoGenerationParameters{Audio: schemas.Ptr(true)})}
+	if e := schemas.CheckDeclaredUnifiedFields(provider, audio); e == nil || e.Error.Param != "audio" {
+		t.Errorf("audio: want caller_unsupported_parameter, got %+v", e)
+	}
+}
+
+// The v2 body carries callback_url from the typed field, merges vendor switches from the extra-field
+// channel (extra.prompt_expansion_mode), and sends each unified field once, in MiniMax's own field.
+func TestMiniMaxVideoV2Body(t *testing.T) {
+	provider, captured := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+		"POST /v2/video_generation": jsonResponse(http.StatusOK, `{"task_id":"424010985738629"}`),
+	})
+	params := &schemas.VideoGenerationParameters{
+		Seconds:               schemas.Ptr("10"),
+		Resolution:            "768P",
+		AspectRatio:           "9:16",
+		TaskControlParameters: schemas.TaskControlParameters{CallbackURL: schemas.Ptr("https://hooks.example/v/42")},
+		// The HTTP handler keeps unified fields in ExtraParams under their own names too.
+		ExtraParams: map[string]any{"resolution": "768P", "aspect_ratio": "9:16", "extra": map[string]any{"prompt_expansion_mode": "quality"}},
+	}
+	if _, bifrostErr := provider.VideoGeneration(testContext(t), testKey(), videoReq("MiniMax-H3-Max", params)); bifrostErr != nil {
+		t.Fatalf("VideoGeneration: %+v", bifrostErr.Error)
+	}
+	reqs := captured()
+	if len(reqs) != 1 {
+		t.Fatalf("upstream calls = %d, want 1", len(reqs))
+	}
+	body := gjson.ParseBytes(reqs[0].body)
+	for path, want := range map[string]string{
+		"model":                       "MiniMax-H3-Max",
+		"duration":                    "10",
+		"resolution":                  "768P",
+		"ratio":                       "9:16",
+		"callback_url":                "https://hooks.example/v/42",
+		"extra.prompt_expansion_mode": "quality",
+	} {
+		if got := body.Get(path).String(); got != want {
+			t.Errorf("%s = %q, want %q", path, got, want)
+		}
+	}
+	if body.Get("aspect_ratio").Exists() {
+		t.Errorf("aspect_ratio was sent as well as ratio: %s", reqs[0].body)
+	}
+
+	if _, bifrostErr := provider.VideoGeneration(testContext(t), testKey(), videoReq("MiniMax-H3", &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"model": "other"}})); bifrostErr == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("extra model overwrite: want 400, got %+v", bifrostErr)
+	}
+}
+
+// A Hailuo model goes to /v1/video_generation; the query and the file retrieval return the task
+// object with videos[].url and expires_at one hour after the file was created (items B9, B12).
+func TestMiniMaxVideoV1Lifecycle(t *testing.T) {
+	provider, captured := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+		"POST /v1/video_generation":      jsonResponse(http.StatusOK, `{"task_id":"106916112212032","base_resp":{"status_code":0,"status_msg":"success"}}`),
+		"GET /v1/query/video_generation": jsonResponse(http.StatusOK, `{"task_id":"106916112212032","status":"Success","file_id":"176844028768320","video_width":1920,"video_height":1080,"base_resp":{"status_code":0,"status_msg":"success"}}`),
+		"GET /v1/files/retrieve":         jsonResponse(http.StatusOK, `{"file":{"file_id":176844028768320,"bytes":5896337,"created_at":1700469398,"filename":"output.mp4","purpose":"video_generation","download_url":"https://cdn.example/output.mp4?sig=x"},"base_resp":{"status_code":0,"status_msg":"success"}}`),
+	})
+	ctx := testContext(t)
+	params := &schemas.VideoGenerationParameters{
+		Seconds:               schemas.Ptr("10"),
+		Resolution:            "768p",
+		LastFrame:             "https://example.com/last.png",
+		TaskControlParameters: schemas.TaskControlParameters{CallbackURL: schemas.Ptr("https://hooks.example/v/7")},
+		ExtraParams:           map[string]any{"resolution": "768p", "last_frame": "https://example.com/last.png", "prompt_optimizer": false, "fast_pretreatment": true},
+	}
+	req := videoReq("MiniMax-Hailuo-2.3", params)
+	req.Input.InputReference = schemas.Ptr("https://example.com/first.png")
+	created, bifrostErr := provider.VideoGeneration(ctx, testKey(), req)
+	if bifrostErr != nil {
+		t.Fatalf("VideoGeneration: %+v", bifrostErr.Error)
+	}
+	if want := providerUtils.AddVideoIDProviderSuffix("v1-106916112212032", schemas.MiniMax); created.ID != want || created.Status != schemas.VideoStatusQueued {
+		t.Errorf("created id = %q status = %s, want %q queued", created.ID, created.Status, want)
+	}
+
+	retrieved, bifrostErr := provider.VideoRetrieve(ctx, testKey(), &schemas.BifrostVideoRetrieveRequest{Provider: schemas.MiniMax, ID: created.ID})
+	if bifrostErr != nil {
+		t.Fatalf("VideoRetrieve: %+v", bifrostErr.Error)
+	}
+	if retrieved.ID != created.ID || retrieved.Status != schemas.VideoStatusCompleted || retrieved.ProviderStatus != "Success" {
+		t.Errorf("retrieved id = %q status = %s provider_status = %q", retrieved.ID, retrieved.Status, retrieved.ProviderStatus)
+	}
+	if len(retrieved.Videos) != 1 || retrieved.Videos[0].Type != schemas.VideoOutputTypeURL || retrieved.Videos[0].URL == nil || *retrieved.Videos[0].URL != "https://cdn.example/output.mp4?sig=x" {
+		t.Errorf("videos = %+v", retrieved.Videos)
+	}
+	if retrieved.CompletedAt == nil || *retrieved.CompletedAt != 1700469398 || retrieved.ExpiresAt == nil || *retrieved.ExpiresAt != 1700469398+3600 {
+		t.Errorf("completed_at = %v expires_at = %v, want 1700469398 and +3600", retrieved.CompletedAt, retrieved.ExpiresAt)
+	}
+	if retrieved.Size != "1920x1080" || retrieved.Usage != nil {
+		t.Errorf("size = %q usage = %+v, want 1920x1080 and no usage (v1 reports none)", retrieved.Size, retrieved.Usage)
+	}
+
+	reqs := captured()
+	if len(reqs) != 3 {
+		t.Fatalf("upstream calls = %d, want 3", len(reqs))
+	}
+	body := gjson.ParseBytes(reqs[0].body)
+	for path, want := range map[string]string{
+		"model":             "MiniMax-Hailuo-2.3",
+		"prompt":            "a dog",
+		"first_frame_image": "https://example.com/first.png",
+		"last_frame_image":  "https://example.com/last.png",
+		"duration":          "10",
+		"resolution":        "768P",
+		"callback_url":      "https://hooks.example/v/7",
+		"prompt_optimizer":  "false",
+		"fast_pretreatment": "true",
+	} {
+		if got := body.Get(path).String(); got != want {
+			t.Errorf("v1 body %s = %q, want %q", path, got, want)
+		}
+	}
+	for _, absent := range []string{"content", "ratio", "last_frame"} {
+		if body.Get(absent).Exists() {
+			t.Errorf("v1 body carries %q: %s", absent, reqs[0].body)
+		}
+	}
+	if reqs[1].query != "task_id=106916112212032" || reqs[2].query != "file_id=176844028768320" {
+		t.Errorf("queries = %q, %q", reqs[1].query, reqs[2].query)
+	}
+}
+
+// v1 statuses map one to one, keep MiniMax's word in provider_status, and a task blocked for its
+// content is a failed task with content_filter and the vendor's code (contract C6 agreement four).
+func TestMiniMaxVideoV1QueryStatuses(t *testing.T) {
+	for _, tc := range []struct {
+		body       string
+		wantStatus schemas.VideoStatus
+		wantCode   string
+		filtered   bool
+	}{
+		{`{"task_id":"1","status":"Preparing","base_resp":{"status_code":0}}`, schemas.VideoStatusQueued, "", false},
+		{`{"task_id":"1","status":"Queueing","base_resp":{"status_code":0}}`, schemas.VideoStatusQueued, "", false},
+		{`{"task_id":"1","status":"Processing","base_resp":{"status_code":0}}`, schemas.VideoStatusInProgress, "", false},
+		{`{"task_id":"1","status":"Fail","base_resp":{"status_code":0,"status_msg":"success"}}`, schemas.VideoStatusFailed, "Fail", false},
+		{`{"task_id":"1","status":"Fail","base_resp":{"status_code":1027,"status_msg":"output video sensitive"}}`, schemas.VideoStatusFailed, "1027", true},
+	} {
+		provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){"GET /v1/query/video_generation": jsonResponse(http.StatusOK, tc.body)})
+		resp, bifrostErr := provider.VideoRetrieve(testContext(t), testKey(), &schemas.BifrostVideoRetrieveRequest{Provider: schemas.MiniMax, ID: "v1-1:minimax"})
+		if bifrostErr != nil {
+			t.Fatalf("%s: %+v", tc.body, bifrostErr.Error)
+		}
+		wantProviderStatus := gjson.Get(tc.body, "status").String()
+		if resp.Status != tc.wantStatus || resp.ProviderStatus != wantProviderStatus {
+			t.Errorf("%s: status = %s provider_status = %q", tc.body, resp.Status, resp.ProviderStatus)
+		}
+		if tc.wantCode != "" && (resp.Error == nil || resp.Error.Code != tc.wantCode) {
+			t.Errorf("%s: error = %+v, want code %s", tc.body, resp.Error, tc.wantCode)
+		}
+		if tc.filtered != (resp.ContentFilter != nil) || (tc.filtered && (resp.ContentFilter.FilteredCount != 1 || resp.ContentFilter.Reasons[0] != "1027")) {
+			t.Errorf("%s: content_filter = %+v", tc.body, resp.ContentFilter)
+		}
+		if resp.ExpiresAt != nil {
+			t.Errorf("%s: expires_at set on an unfinished task", tc.body)
+		}
+	}
+
+	provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){"GET /v1/query/video_generation": jsonResponse(http.StatusOK, `{"base_resp":{"status_code":1004,"status_msg":"login fail"}}`)})
+	if _, bifrostErr := provider.VideoRetrieve(testContext(t), testKey(), &schemas.BifrostVideoRetrieveRequest{Provider: schemas.MiniMax, ID: "v1-1:minimax"}); bifrostErr == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "1004" {
+		t.Errorf("a query's own base_resp error must be returned as an error, got %+v", bifrostErr)
+	}
+}
+
+// A Hailuo create without seconds reports MiniMax's v1 default (6), so the task can be priced; no
+// duration is sent, so MiniMax applies that default itself.
+func TestMiniMaxVideoV1DefaultSeconds(t *testing.T) {
+	provider, captured := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+		"POST /v1/video_generation": jsonResponse(http.StatusOK, `{"task_id":"106916112212032","base_resp":{"status_code":0,"status_msg":"success"}}`),
+	})
+	created, bifrostErr := provider.VideoGeneration(testContext(t), testKey(), videoReq("MiniMax-Hailuo-2.3", nil))
+	if bifrostErr != nil {
+		t.Fatalf("VideoGeneration: %+v", bifrostErr.Error)
+	}
+	if created.Seconds == nil || *created.Seconds != "6" {
+		t.Errorf("seconds = %v, want 6", created.Seconds)
+	}
+	if reqs := captured(); len(reqs) != 1 || gjson.GetBytes(reqs[0].body, "duration").Exists() {
+		t.Errorf("v1 body should carry no duration: %+v", reqs)
+	}
+}
+
+// A v1 create answered with a 200 carrying base_resp 1026 is a content block: 400
+// caller_content_filtered with the vendor's code.
+func TestMiniMaxVideoV1CreateContentBlock(t *testing.T) {
+	provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+		"POST /v1/video_generation": jsonResponse(http.StatusOK, `{"task_id":"","base_resp":{"status_code":1026,"status_msg":"input new_sensitive"}}`),
+	})
+	_, bifrostErr := provider.VideoGeneration(testContext(t), testKey(), videoReq("MiniMax-Hailuo-02", nil))
+	if bifrostErr == nil {
+		t.Fatal("expected an error")
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "1026" {
+		t.Errorf("status = %v code = %v, want 400 and 1026", bifrostErr.StatusCode, bifrostErr.Error.Code)
+	}
+	if bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerContentFiltered {
+		t.Errorf("error_type = %q, want %q", bifrostErr.ExtraFields.ErrorType, schemas.ErrorTypeCallerContentFiltered)
+	}
+}
+
+// A recorded v2 query: usage maps to the unified fields, provider_status keeps MiniMax's word, and
+// cancelled is not failed (items B5, B13).
+func TestToBifrostVideoGenerationResponseV2UsageAndStatus(t *testing.T) {
+	const recorded = `{"task":{"id":"424010985738629","model":"MiniMax-H3","status":"succeeded","created_at":100,"updated_at":200,"content":{"url":"https://cdn.example/v.mp4"},"resolution":"768P","duration":6,"ratio":"16:9","usage":{"total_seconds":8,"input_seconds":2,"output_seconds":6,"input_image_count":1,"total_tokens":120,"prompt_tokens":20,"completion_tokens":100}}}`
+	var queried minimax.MiniMaxVideoTaskResponse
+	if err := schemas.Unmarshal([]byte(recorded), &queried); err != nil {
+		t.Fatal(err)
+	}
+	resp, bifrostErr := minimax.ToBifrostVideoGenerationResponse(queried.Task)
+	if bifrostErr != nil {
+		t.Fatal(bifrostErr.Error)
+	}
+	if resp.Status != schemas.VideoStatusCompleted || resp.ProviderStatus != "succeeded" || resp.CompletedAt == nil || *resp.CompletedAt != 200 {
+		t.Errorf("status = %s provider_status = %q completed_at = %v", resp.Status, resp.ProviderStatus, resp.CompletedAt)
+	}
+	u := resp.Usage
+	if u == nil || u.OutputSeconds == nil || *u.OutputSeconds != 6 || u.InputSeconds == nil || *u.InputSeconds != 2 || u.InputImages == nil || *u.InputImages != 1 || u.OutputTokens == nil || *u.OutputTokens != 100 {
+		t.Errorf("usage = %+v", u)
+	}
+	if resp.ExpiresAt != nil {
+		t.Errorf("expires_at = %d, want none: MiniMax states no v2 link lifetime", *resp.ExpiresAt)
+	}
+
+	cancelled, _ := minimax.ToBifrostVideoGenerationResponse(&minimax.MiniMaxVideoTask{ID: "t1", Status: minimax.MiniMaxVideoTaskStatusCancelled})
+	if cancelled.Status != schemas.VideoStatusCancelled || cancelled.ProviderStatus != "cancelled" || cancelled.Error != nil {
+		t.Errorf("cancelled task = %+v", cancelled)
+	}
+	running, _ := minimax.ToBifrostVideoGenerationResponse(&minimax.MiniMaxVideoTask{ID: "t1", Status: minimax.MiniMaxVideoTaskStatusRunning})
+	if running.Status != schemas.VideoStatusInProgress || running.Usage != nil {
+		t.Errorf("running task = %+v", running)
+	}
+	blocked, _ := minimax.ToBifrostVideoGenerationResponse(&minimax.MiniMaxVideoTask{ID: "t1", Status: minimax.MiniMaxVideoTaskStatusFailed, Error: &minimax.MiniMaxTaskError{Code: "1027", Message: "output sensitive"}})
+	if blocked.Status != schemas.VideoStatusFailed || blocked.ContentFilter == nil || blocked.ContentFilter.Reasons[0] != "1027" || blocked.Error.Code != "1027" {
+		t.Errorf("blocked task = %+v", blocked)
+	}
+}
+
+// Cancel queries first and sends DELETE only for a queued task; any other state is
+// provider_cancel_unsupported with no DELETE; a v1 task has no cancel API (item B11).
+func TestMiniMaxVideoCancel(t *testing.T) {
+	task := func(status string) func(http.ResponseWriter) {
+		return jsonResponse(http.StatusOK, `{"task":{"id":"424010985738629","model":"MiniMax-H3","status":"`+status+`","created_at":100,"updated_at":150}}`)
+	}
+	const query = "GET /v2/query/video_generation/424010985738629"
+	const del = "DELETE /v2/video_generation/424010985738629"
+	cancelResp := jsonResponse(http.StatusOK, `{"task_id":"424010985738629","action":"cancelled","status":"cancelled"}`)
+	id := providerUtils.AddVideoIDProviderSuffix("424010985738629", schemas.MiniMax)
+
+	provider, captured := newMockMiniMax(t, map[string]func(http.ResponseWriter){query: task("queued"), del: cancelResp})
+	resp, bifrostErr := provider.VideoCancel(testContext(t), testKey(), &schemas.BifrostVideoCancelRequest{Provider: schemas.MiniMax, ID: id})
+	if bifrostErr != nil {
+		t.Fatalf("cancel queued: %+v", bifrostErr.Error)
+	}
+	if resp.Status != schemas.VideoStatusCancelled || resp.ID != id {
+		t.Errorf("cancel queued: id = %q status = %s", resp.ID, resp.Status)
+	}
+	if reqs := captured(); len(reqs) != 2 || reqs[0].method != http.MethodGet || reqs[1].method != http.MethodDelete {
+		t.Errorf("cancel queued: upstream calls = %+v, want GET then DELETE", reqs)
+	}
+
+	for _, status := range []string{"running", "succeeded", "failed", "cancelled"} {
+		provider, captured := newMockMiniMax(t, map[string]func(http.ResponseWriter){query: task(status), del: cancelResp})
+		_, bifrostErr := provider.VideoCancel(testContext(t), testKey(), &schemas.BifrostVideoCancelRequest{Provider: schemas.MiniMax, ID: id})
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != string(schemas.ErrorTypeProviderCancelUnsupported) {
+			t.Errorf("cancel %s: want 400 provider_cancel_unsupported, got %+v", status, bifrostErr)
+		}
+		if reqs := captured(); len(reqs) != 1 || reqs[0].method != http.MethodGet {
+			t.Errorf("cancel %s: upstream calls = %d, want the query only", status, len(reqs))
+		}
+	}
+
+	provider, captured = newMockMiniMax(t, map[string]func(http.ResponseWriter){})
+	_, bifrostErr = provider.VideoCancel(testContext(t), testKey(), &schemas.BifrostVideoCancelRequest{Provider: schemas.MiniMax, ID: "v1-106916112212032:minimax"})
+	if bifrostErr == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != string(schemas.ErrorTypeProviderCancelUnsupported) {
+		t.Errorf("cancel v1: want provider_cancel_unsupported, got %+v", bifrostErr)
+	}
+	if _, delErr := provider.VideoDelete(testContext(t), testKey(), &schemas.BifrostVideoDeleteRequest{Provider: schemas.MiniMax, ID: "v1-106916112212032:minimax"}); delErr == nil || *delErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("delete v1: want 400, got %+v", delErr)
+	}
+	if reqs := captured(); len(reqs) != 0 {
+		t.Errorf("v1 cancel and delete reached MiniMax %d times", len(reqs))
+	}
+}
+
+// VideoList reads GET /v2/query/video_generation page 1, limit as page_size (item B10).
+func TestMiniMaxVideoList(t *testing.T) {
+	provider, captured := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+		"GET /v2/query/video_generation": jsonResponse(http.StatusOK, `{"items":[{"id":"1","model":"MiniMax-H3","status":"succeeded","created_at":100,"updated_at":200,"resolution":"768P","ratio":"16:9","duration":6,"content":{"url":"https://cdn.example/1.mp4"}},{"id":"2","model":"MiniMax-H3","status":"cancelled","created_at":110}],"total":2}`),
+	})
+	resp, bifrostErr := provider.VideoList(testContext(t), testKey(), &schemas.BifrostVideoListRequest{Provider: schemas.MiniMax, Limit: schemas.Ptr(20)})
+	if bifrostErr != nil {
+		t.Fatalf("VideoList: %+v", bifrostErr.Error)
+	}
+	if len(resp.Data) != 2 || resp.Data[0].ID != "1:minimax" || resp.Data[0].Status != schemas.VideoStatusCompleted || resp.Data[0].Size != "1365x768" || resp.Data[1].Status != schemas.VideoStatusCancelled {
+		t.Errorf("data = %+v", resp.Data)
+	}
+	if reqs := captured(); len(reqs) != 1 || reqs[0].query != "page_num=1&page_size=20" {
+		t.Errorf("upstream = %+v", reqs)
+	}
+	if resp.HasMore == nil || *resp.HasMore {
+		t.Errorf("has_more = %v, want false: both of the 2 tasks are on page 1", resp.HasMore)
+	}
+	if _, e := provider.VideoList(testContext(t), testKey(), &schemas.BifrostVideoListRequest{Provider: schemas.MiniMax, After: schemas.Ptr("1:minimax")}); e == nil || *e.StatusCode != http.StatusBadRequest {
+		t.Errorf("after cursor: want 400, got %+v", e)
+	}
+}
+
+// MiniMax's own list query reaches MiniMax as sent (never a silent page 1), limit keeps
+// page_size, and has_more follows MiniMax's total.
+func TestMiniMaxVideoListForwardsFilters(t *testing.T) {
+	provider, captured := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+		"GET /v2/query/video_generation": jsonResponse(http.StatusOK, `{"items":[{"id":"3","model":"MiniMax-H3","status":"queued","created_at":120}],"total":5}`),
+	})
+	resp, bifrostErr := provider.VideoList(testContext(t), testKey(), &schemas.BifrostVideoListRequest{
+		Provider: schemas.MiniMax,
+		Limit:    schemas.Ptr(1),
+		Filters:  map[string][]string{"page_num": {"3"}, "page_size": {"50"}, "filter.status": {"queued"}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("VideoList: %+v", bifrostErr.Error)
+	}
+	if reqs := captured(); len(reqs) != 1 || reqs[0].query != "filter.status=queued&page_num=3&page_size=1" {
+		t.Errorf("upstream = %+v, want page 3 of size 1 with the status filter", reqs)
+	}
+	if resp.HasMore == nil || !*resp.HasMore {
+		t.Errorf("has_more = %v, want true: page 3 of size 1 ends at task 3 of 5", resp.HasMore)
 	}
 }
 
@@ -1390,6 +1808,56 @@ func BenchmarkMiniMaxChatBaseRespError(b *testing.B) {
 	}
 }
 
+// benchMiniMaxVideo runs one provider call per iteration against a local server answering every path
+// with body, so the benchmark measures conversion, validation and decoding on the video request path.
+func benchMiniMaxVideo(b *testing.B, body string, call func(*minimax.MiniMaxProvider, *schemas.BifrostContext) *schemas.BifrostError) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		jsonResponse(http.StatusOK, body)(w)
+	}))
+	b.Cleanup(server.Close)
+	provider, err := minimax.NewMiniMaxProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		b.Fatalf("NewMiniMaxProvider: %v", err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if bifrostErr := call(provider, ctx); bifrostErr != nil {
+			b.Fatalf("call: %+v", bifrostErr.Error)
+		}
+		ctx.Cancel()
+	}
+}
+
+// BenchmarkMiniMaxVideoGenerationV2 is an H3 create with seconds, size and an image reference.
+func BenchmarkMiniMaxVideoGenerationV2(b *testing.B) {
+	req := &schemas.BifrostVideoGenerationRequest{Provider: schemas.MiniMax, Model: "MiniMax-H3", Input: &schemas.VideoGenerationInput{Prompt: "a dog", InputReference: schemas.Ptr("https://example.com/a.png")}, Params: &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("6"), Size: "1365x768"}}
+	benchMiniMaxVideo(b, `{"task_id":"424010985738629"}`, func(p *minimax.MiniMaxProvider, ctx *schemas.BifrostContext) *schemas.BifrostError {
+		_, e := p.VideoGeneration(ctx, testKey(), req)
+		return e
+	})
+}
+
+// BenchmarkMiniMaxVideoGenerationV1 is a Hailuo create (new in TXE-6428; no before figure).
+func BenchmarkMiniMaxVideoGenerationV1(b *testing.B) {
+	req := &schemas.BifrostVideoGenerationRequest{Provider: schemas.MiniMax, Model: "MiniMax-Hailuo-2.3", Input: &schemas.VideoGenerationInput{Prompt: "a dog", InputReference: schemas.Ptr("https://example.com/a.png")}, Params: &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("6"), Resolution: "768P"}}
+	benchMiniMaxVideo(b, `{"task_id":"106916112212032","base_resp":{"status_code":0,"status_msg":"success"}}`, func(p *minimax.MiniMaxProvider, ctx *schemas.BifrostContext) *schemas.BifrostError {
+		_, e := p.VideoGeneration(ctx, testKey(), req)
+		return e
+	})
+}
+
+// BenchmarkMiniMaxVideoRetrieveV2 is a query of a succeeded H3 task.
+func BenchmarkMiniMaxVideoRetrieveV2(b *testing.B) {
+	benchMiniMaxVideo(b, `{"task":{"id":"424010985738629","model":"MiniMax-H3","status":"succeeded","created_at":100,"updated_at":200,"content":{"url":"https://cdn.example/v.mp4"},"resolution":"768P","duration":6,"ratio":"16:9","usage":{"total_seconds":6,"output_seconds":6,"input_image_count":1,"completion_tokens":100}}}`, func(p *minimax.MiniMaxProvider, ctx *schemas.BifrostContext) *schemas.BifrostError {
+		_, e := p.VideoRetrieve(ctx, testKey(), &schemas.BifrostVideoRetrieveRequest{Provider: schemas.MiniMax, ID: "424010985738629:minimax"})
+		return e
+	})
+}
+
 // BenchmarkMiniMaxTextCompletion is the fork's text completion round trip against a local server.
 func BenchmarkMiniMaxTextCompletion(b *testing.B) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1743,6 +2211,14 @@ func TestMiniMaxCustomProviderAllowedRequestsGateEveryOperation(t *testing.T) {
 		},
 		schemas.VideoDeleteRequest: func() *schemas.BifrostError {
 			_, e := provider.VideoDelete(ctx, key, &schemas.BifrostVideoDeleteRequest{Provider: schemas.MiniMax, ID: "t1"})
+			return e
+		},
+		schemas.VideoCancelRequest: func() *schemas.BifrostError {
+			_, e := provider.VideoCancel(ctx, key, &schemas.BifrostVideoCancelRequest{Provider: schemas.MiniMax, ID: "t1"})
+			return e
+		},
+		schemas.VideoListRequest: func() *schemas.BifrostError {
+			_, e := provider.VideoList(ctx, key, &schemas.BifrostVideoListRequest{Provider: schemas.MiniMax})
 			return e
 		},
 		schemas.SpeechRequest: func() *schemas.BifrostError {
@@ -2119,20 +2595,21 @@ func assertMiniMaxError(t *testing.T, bifrostErr *schemas.BifrostError, wantStat
 	}
 }
 
-// TXE-7065: the unified aspect_ratio is delivered as MiniMax's ratio, overrides the ratio
-// derived from size, and its copy among the extra params is not sent as a second field.
+// TXE-7065: the unified aspect_ratio is delivered as MiniMax's ratio, and its copy among the
+// extra params is not sent as a second field. A size that disagrees with it is refused, not
+// overridden (TXE-6428, contract C4).
 func TestMiniMaxVideoDeliversTheUnifiedAspectRatio(t *testing.T) {
 	extra := map[string]interface{}{"aspect_ratio": "9:16", "prompt_optimizer": true}
 	req, err := minimax.ToMiniMaxVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
 		Provider: schemas.MiniMax, Model: "MiniMax-H3",
 		Input:  &schemas.VideoGenerationInput{Prompt: "a dog"},
-		Params: &schemas.VideoGenerationParameters{Size: "1280x720", AspectRatio: "9:16", ExtraParams: extra},
+		Params: &schemas.VideoGenerationParameters{AspectRatio: "9:16", ExtraParams: extra},
 	})
 	if err != nil {
 		t.Fatalf("ToMiniMaxVideoGenerationRequest: %v", err)
 	}
 	if req.Ratio == nil || *req.Ratio != "9:16" {
-		t.Fatalf("ratio = %v, want the unified aspect_ratio 9:16, not the 16:9 derived from size", req.Ratio)
+		t.Fatalf("ratio = %v, want the unified aspect_ratio 9:16", req.Ratio)
 	}
 	if _, sent := req.GetExtraParams()["aspect_ratio"]; sent {
 		t.Errorf("the copy of aspect_ratio would be sent to MiniMax as an unknown field: %v", req.GetExtraParams())
@@ -2142,13 +2619,23 @@ func TestMiniMaxVideoDeliversTheUnifiedAspectRatio(t *testing.T) {
 	sdk, err := minimax.ToMiniMaxVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
 		Provider: schemas.MiniMax, Model: "MiniMax-H3",
 		Input:  &schemas.VideoGenerationInput{Prompt: "a dog"},
-		Params: &schemas.VideoGenerationParameters{Size: "1280x720", AspectRatio: "9:16"},
+		Params: &schemas.VideoGenerationParameters{AspectRatio: "9:16"},
 	})
 	if err != nil {
 		t.Fatalf("without extra params: %v", err)
 	}
 	if sdk.Ratio == nil || *sdk.Ratio != "9:16" {
 		t.Fatalf("without extra params: ratio = %v, want the unified aspect_ratio 9:16", sdk.Ratio)
+	}
+
+	// A 16:9 size with aspect_ratio 9:16 is a conflict the caller must resolve.
+	_, conflict := minimax.ToMiniMaxVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Provider: schemas.MiniMax, Model: "MiniMax-H3",
+		Input:  &schemas.VideoGenerationInput{Prompt: "a dog"},
+		Params: &schemas.VideoGenerationParameters{Size: "2560x1440", AspectRatio: "9:16"},
+	})
+	if conflict == nil || !strings.Contains(conflict.Error(), "ratio 16:9 but aspect_ratio is 9:16") {
+		t.Errorf("size 2560x1440 with aspect_ratio 9:16: err = %v, want the size refused", conflict)
 	}
 }
 

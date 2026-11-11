@@ -11,7 +11,6 @@ import (
 	"maps"
 	"mime/multipart"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -240,7 +239,22 @@ func miniMaxChatResponseHandler(body []byte, response *schemas.BifrostChatRespon
 }
 
 // doMiniMaxRequest sends a JSON request to MiniMax and returns a copy of the decoded body of a 2xx response.
+// A 2xx whose base_resp carries a non-zero status_code is returned as an error.
 func (provider *MiniMaxProvider) doMiniMaxRequest(ctx *schemas.BifrostContext, key schemas.Key, method, path string, jsonData []byte, sendBackRawRequest, sendBackRawResponse bool) ([]byte, time.Duration, *schemas.BifrostError) {
+	body, latency, bifrostErr := provider.doMiniMaxRequestKeepBaseResp(ctx, key, method, path, jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, latency, bifrostErr
+	}
+	if bifrostErr := miniMaxBaseRespErrorFromBody(body); bifrostErr != nil {
+		return nil, latency, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+	return body, latency, nil
+}
+
+// doMiniMaxRequestKeepBaseResp is doMiniMaxRequest without the base_resp check, for a response whose
+// base_resp describes the resource rather than the call (a v1 video query reports a task blocked for
+// sensitive content as base_resp 1026/1027 next to status Fail; TXE-6428).
+func (provider *MiniMaxProvider) doMiniMaxRequestKeepBaseResp(ctx *schemas.BifrostContext, key schemas.Key, method, path string, jsonData []byte, sendBackRawRequest, sendBackRawResponse bool) ([]byte, time.Duration, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
@@ -279,11 +293,7 @@ func (provider *MiniMaxProvider) doMiniMaxRequest(ctx *schemas.BifrostContext, k
 		rawErrBody := append([]byte(nil), resp.Body()...)
 		return nil, latency, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
 	}
-	body = append([]byte(nil), body...)
-	if bifrostErr := miniMaxBaseRespErrorFromBody(body); bifrostErr != nil {
-		return nil, latency, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
-	}
-	return body, latency, nil
+	return append([]byte(nil), body...), latency, nil
 }
 
 // ImageGeneration performs an image generation request to MiniMax's /v1/image_generation API.
@@ -323,97 +333,6 @@ func (provider *MiniMaxProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 	if sendBackRawRequest {
 		bifrostResp.ExtraFields.RawRequest = rawRequest
 	}
-	if sendBackRawResponse {
-		bifrostResp.ExtraFields.RawResponse = rawResponse
-	}
-	return bifrostResp, nil
-}
-
-// VideoGeneration creates a MiniMax H3 video generation task.
-func (provider *MiniMaxProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
-	if bifrostErr := provider.checkAllowed(schemas.VideoGenerationRequest); bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	providerName := provider.GetProviderKey()
-	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToMiniMaxVideoGenerationRequest(request)
-		})
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
-	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-
-	body, latency, bifrostErr := provider.doMiniMaxRequest(ctx, key, http.MethodPost, "/v2/video_generation", jsonData, sendBackRawRequest, sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	var taskResp MiniMaxVideoTaskCreationResponse
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &taskResp, jsonData, sendBackRawRequest, sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
-	}
-	if taskResp.TaskID == "" {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("minimax returned no task_id", nil), jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
-	}
-
-	bifrostResp := &schemas.BifrostVideoGenerationResponse{
-		ID:        providerUtils.AddVideoIDProviderSuffix(taskResp.TaskID, providerName),
-		Model:     request.Model,
-		Object:    "video",
-		Status:    schemas.VideoStatusQueued,
-		CreatedAt: time.Now().Unix(),
-	}
-	if duration := providerUtils.GetJSONField(jsonData, "duration").Int(); duration > 0 {
-		bifrostResp.Seconds = schemas.Ptr(strconv.FormatInt(duration, 10))
-	}
-	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
-	if sendBackRawRequest {
-		bifrostResp.ExtraFields.RawRequest = rawRequest
-	}
-	if sendBackRawResponse {
-		bifrostResp.ExtraFields.RawResponse = rawResponse
-	}
-	return bifrostResp, nil
-}
-
-// VideoRetrieve queries the status of a MiniMax video generation task.
-func (provider *MiniMaxProvider) videoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
-	providerName := provider.GetProviderKey()
-	taskID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
-	escapedTaskID, idErr := providerUtils.EscapeResourceID(taskID, "video_id")
-	if idErr != nil {
-		return nil, idErr
-	}
-
-	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
-	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-
-	body, latency, bifrostErr := provider.doMiniMaxRequest(ctx, key, http.MethodGet, "/v2/query/video_generation/"+escapedTaskID, nil, sendBackRawRequest, sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	var taskResp MiniMaxVideoTaskResponse
-	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &taskResp, nil, false, sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
-	}
-
-	bifrostResp, bifrostErr := ToBifrostVideoGenerationResponse(taskResp.Task)
-	if bifrostErr != nil {
-		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
-	}
-	if bifrostResp.ID == "" {
-		bifrostResp.ID = taskID
-	}
-	bifrostResp.ID = providerUtils.AddVideoIDProviderSuffix(bifrostResp.ID, providerName)
-	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
 	if sendBackRawResponse {
 		bifrostResp.ExtraFields.RawResponse = rawResponse
 	}
@@ -466,6 +385,9 @@ func (provider *MiniMaxProvider) VideoDelete(ctx *schemas.BifrostContext, key sc
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
 	}
 	taskID := providerUtils.StripVideoIDProviderSuffix(request.ID, provider.GetProviderKey())
+	if _, isV1 := miniMaxV1TaskID(taskID); isV1 {
+		return nil, providerUtils.NewBifrostBadRequestError("minimax has no API to delete a v1 (Hailuo) video task")
+	}
 	escapedTaskID, idErr := providerUtils.EscapeResourceID(taskID, "video_id")
 	if idErr != nil {
 		return nil, idErr
@@ -606,11 +528,6 @@ func (provider *MiniMaxProvider) ImageEditStream(ctx *schemas.BifrostContext, po
 // ImageVariation is not supported by the MiniMax provider.
 func (provider *MiniMaxProvider) ImageVariation(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
-}
-
-// VideoList is not supported by MiniMax provider.
-func (provider *MiniMaxProvider) VideoList(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
 }
 
 // VideoEdit is not supported by the MiniMax provider.
