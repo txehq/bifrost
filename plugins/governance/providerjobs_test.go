@@ -434,6 +434,22 @@ func TestProviderObjectOwnershipFollowsTheClientSetting(t *testing.T) {
 	require.NoError(t, plugin.filterProviderObjectList(listCtx(), "openai", list))
 	require.Len(t, list.FileListResponse.Data, 1, "the list is narrowed once the setting is on")
 	assert.Equal(t, "file-unbound", list.FileListResponse.Data[0].ID)
+
+	// A stored file is listed under the name it is recorded under (TXE-7105): another key's
+	// upload is hidden, an unrecorded file and one that only shares a folder with it are not,
+	// and a name that cannot be resolved to one object is not shown.
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "s3://list-bucket/uploads/other.jsonl", "vk-other")
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "s3://list-bucket/uploads/own.jsonl", "vk-mcp-stamp")
+	stored := &schemas.BifrostResponse{FileListResponse: &schemas.BifrostFileListResponse{Data: []schemas.FileObject{
+		{ID: "s3://list-bucket/uploads/other.jsonl"}, {ID: "s3://list-bucket/uploads/own.jsonl"}, {ID: "s3://list-bucket/uploads/nobody.jsonl"},
+		{ID: "s3://list-bucket/uploads/../uploads/other.jsonl"},
+	}}}
+	require.NoError(t, plugin.filterProviderObjectList(listCtx(), "openai", stored))
+	var shown []string
+	for _, item := range stored.FileListResponse.Data {
+		shown = append(shown, item.ID)
+	}
+	assert.Equal(t, []string{"s3://list-bucket/uploads/own.jsonl", "s3://list-bucket/uploads/nobody.jsonl"}, shown)
 }
 
 // A provider list page can hold more items than one SQL statement binds: the OpenAI files list
@@ -1101,6 +1117,116 @@ func TestPreLLMHookBindsObjectsReferencedInsideRequests(t *testing.T) {
 				})
 			}
 		}
+	})
+	// A request also names storage it writes to, and can name a stored object by an https URL
+	// or an ARN instead of its gs:// or s3:// URI (TXE-7105). Every form resolves to the one id
+	// the object is recorded under, and a location recorded for another key is refused as an
+	// output like it is as an input: the provider writes a batch's or a task's output there, and
+	// reads a file from there, with the shared credential. All of it is refused in the pre-hook,
+	// before any upstream call.
+	t.Run("storage locations", func(t *testing.T) {
+		for _, tc := range []struct {
+			provider schemas.ModelProvider
+			scheme   string
+			https    func(bucket, object string) []string
+		}{
+			{schemas.Vertex, "gs", func(bucket, object string) []string {
+				return []string{
+					"https://storage.googleapis.com/" + bucket + "/" + object,
+					"https://" + bucket + ".storage.googleapis.com/" + object,
+					"https://storage.cloud.google.com/" + bucket + "/" + object,
+					"https://storage.googleapis.com/storage/v1/b/" + bucket + "/o/" + strings.ReplaceAll(object, "/", "%2F"),
+					"https://storage.googleapis.com/" + bucket + "/" + object + "?X-Goog-Signature=abc",
+				}
+			}},
+			{schemas.Bedrock, "s3", func(bucket, object string) []string {
+				return []string{
+					"https://" + bucket + ".s3.us-east-1.amazonaws.com/" + object,
+					"https://" + bucket + ".s3.amazonaws.com/" + object,
+					"https://s3.us-east-1.amazonaws.com/" + bucket + "/" + object,
+					"arn:aws:s3:::" + bucket + "/" + object,
+				}
+			}},
+		} {
+			provider := tc.provider
+			bucket := "location-bucket-" + tc.scheme
+			root := tc.scheme + "://" + bucket + "/"
+			// The other key's upload and the output folder its batch was recorded with; the
+			// key's own upload and output folder.
+			seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, string(provider), root+"uploads/other.pdf", other)
+			seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, string(provider), root+"out-other/", other)
+			seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, string(provider), root+"uploads/own.pdf", own)
+			seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, string(provider), root+"out-own/", own)
+
+			batchInto := func(folder string) *schemas.BifrostRequest {
+				return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: provider, Model: str("m"),
+					InputFileID: root + "uploads/nobody.jsonl", OutputFolder: &schemas.BatchOutputFolder{URL: folder}}}
+			}
+			batchIntoExtra := func(folder string) *schemas.BifrostRequest {
+				return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: provider, Model: str("m"),
+					InputFileID: root + "uploads/nobody.jsonl", ExtraParams: map[string]any{"output_s3_uri": folder}}}
+			}
+			videoInto := func(location string) *schemas.BifrostRequest {
+				return &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{Provider: provider, Model: "m",
+					Input: &schemas.VideoGenerationInput{Prompt: "pan left"}, Params: &schemas.VideoGenerationParameters{TaskControlParameters: schemas.TaskControlParameters{OutputStorageURI: str(location)}}}}
+			}
+			chatFile := func(uri string) *schemas.BifrostRequest {
+				return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: provider, Model: "m", Input: []schemas.ChatMessage{{
+					Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileURL: str(uri)}}}}}}}}
+			}
+			fileContent := func(id string) *schemas.BifrostRequest {
+				return &schemas.BifrostRequest{RequestType: schemas.FileContentRequest, FileContentRequest: &schemas.BifrostFileContentRequest{Provider: provider, FileID: id}}
+			}
+			surfaces := map[string]func(string) *schemas.BifrostRequest{
+				"batch output folder": batchInto, "batch output extra param": batchIntoExtra, "video output storage uri": videoInto, "chat file": chatFile, "file content": fileContent,
+			}
+			for name, build := range surfaces {
+				t.Run(string(provider)+" "+name, func(t *testing.T) {
+					refused(t, build(root+"out-other/"), "out-other/")
+					refused(t, build(root+"uploads/other.pdf"), "uploads/other.pdf")
+					// An id is echoed as the caller wrote it, so the https forms are matched on the
+					// refusal alone.
+					for _, object := range []string{"uploads/other.pdf", "out-other/"} {
+						for _, form := range tc.https(bucket, object) {
+							refused(t, build(form), "not found")
+						}
+					}
+					allowed(t, presentCtx(mcpTestVKValue), build(root+"out-own/"), "the key's own output folder")
+					allowed(t, presentCtx(mcpTestVKValue), build(root+"uploads/own.pdf"), "the key's own upload")
+					for _, form := range tc.https(bucket, "uploads/own.pdf") {
+						allowed(t, presentCtx(mcpTestVKValue), build(form), "the key's own upload by an https form")
+					}
+					allowed(t, presentCtx(mcpTestVKValue), build(root+"out-nobody/"), "a location nobody recorded is unrestricted")
+					allowed(t, presentCtx(mcpTestVKValue), build(root+"out-other-2/"), "a location that only shares a name prefix with another key's")
+					allowed(t, presentCtx(mcpTestVKValue), build("https://example.com/"+bucket+"/out-other/"), "a URL on another host is no stored object")
+					allowed(t, emptyCtx(), build(root+"out-other/"), "a request that presented no key is unrestricted")
+					// A name that cannot be resolved to one object is refused as unverifiable.
+					for _, unclear := range []string{root + "uploads/*", root + "mine/../uploads/other.pdf"} {
+						_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), build(unclear))
+						require.NoError(t, err)
+						require.NotNil(t, shortCircuit, unclear)
+						assert.Equal(t, 400, *shortCircuit.Error.StatusCode, unclear)
+					}
+				})
+			}
+		}
+		// A Bedrock file upload names the object it writes in pieces; writing over another key's
+		// file is refused, the key's own file and a free name are not. A Vertex upload writes
+		// under a fresh folder and names nothing.
+		t.Run("bedrock file upload", func(t *testing.T) {
+			uploadTo := func(prefix, filename string) *schemas.BifrostRequest {
+				return &schemas.BifrostRequest{RequestType: schemas.FileUploadRequest, FileUploadRequest: &schemas.BifrostFileUploadRequest{Provider: schemas.Bedrock, Filename: filename, File: []byte("{}"),
+					StorageConfig: &schemas.FileStorageConfig{S3: &schemas.S3StorageConfig{Bucket: "location-bucket-s3", Prefix: prefix}}}}
+			}
+			refused(t, uploadTo("uploads", "other.pdf"), "uploads/other.pdf")
+			refused(t, uploadTo("/uploads/", "other.pdf"), "uploads/other.pdf")
+			allowed(t, presentCtx(mcpTestVKValue), uploadTo("uploads", "own.pdf"), "an upload over the key's own file")
+			allowed(t, presentCtx(mcpTestVKValue), uploadTo("uploads", "new.pdf"), "an upload under a name nobody recorded")
+			allowed(t, emptyCtx(), uploadTo("uploads", "other.pdf"), "a request that presented no key is unrestricted")
+			vertexUpload := &schemas.BifrostRequest{RequestType: schemas.FileUploadRequest, FileUploadRequest: &schemas.BifrostFileUploadRequest{Provider: schemas.Vertex, Filename: "other.pdf", File: []byte("{}"),
+				StorageConfig: &schemas.FileStorageConfig{GCS: &schemas.GCSStorageConfig{Bucket: "location-bucket-gs", Prefix: "uploads"}}}}
+			allowed(t, presentCtx(mcpTestVKValue), vertexUpload, "a Vertex upload writes under a fresh folder and replaces nothing")
+		})
 	})
 	// A passthrough request carries the provider's raw body and path, forwarded under the shared
 	// key. The objects its body names and the object its path addresses are checked like the same

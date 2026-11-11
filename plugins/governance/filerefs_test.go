@@ -13,11 +13,12 @@ import (
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
-// fileReferenceLikeName matches the names a field that can name a file goes by. A string field
+// fileReferenceLikeName matches the names a field that can name a file goes by, as something
+// the provider reads or as the place it writes its output (TXE-7105). A string field
 // of any request type whose name matches must be classified: walked (fileReferenceFields),
 // read by the request's own rule (fileReferenceFieldsReadElsewhere), or excused with the reason
 // (fileReferenceFieldsExcused).
-var fileReferenceLikeName = regexp.MustCompile(`(?i)url|uri|file_?ids?$|fileid|reference|lastframe|inputimages|bucket|location|source$|^path$|^image$|^video$|^audio$|^document$`)
+var fileReferenceLikeName = regexp.MustCompile(`(?i)url|uri|file_?ids?$|fileid|reference|lastframe|inputimages|bucket|location|source$|^path$|^image$|^video$|^audio$|^document$|output|folder|blob|storage|destination|prefix`)
 
 // fileReferenceFieldsReadElsewhere are the fields namedProviderObjects reads: the object a
 // request addresses, and the files a container or batch create copies or runs on.
@@ -48,12 +49,22 @@ var fileReferenceFieldsExcused = map[string]string{
 	"TaskControlParameters.CallbackURL":       "the caller's webhook, which the provider posts to",
 	"ChatMCPServer.URL":                       "an MCP server address",
 	"ResponsesToolMCP.ServerURL":              "an MCP server address",
-	"GCSStorageConfig.Bucket":                 "the bucket a file operation runs in; the file it addresses is checked by its id",
-	"S3StorageConfig.Bucket":                  "the bucket a file operation runs in; the file it addresses is checked by its id",
-	// Where output is written, not a file that is read. Writing over another key's upload is a
-	// different question from reading it and is not decided here (TXE-7032 covers reads).
-	"BatchOutputFolder.URL":                  "where a batch writes its output",
-	"TaskControlParameters.OutputStorageURI": "where a task writes its output",
+	// The bucket and folder of a file operation. A Bedrock upload writes the object they name
+	// with the filename, and uploadLocations composes the three into the object that is checked
+	// (TestUploadLocationIsChecked); a Vertex upload writes under a fresh folder and replaces
+	// nothing; a list is narrowed item by item; the other file operations address a file by id.
+	"GCSStorageConfig.Bucket": "the bucket a Vertex file operation runs in; its upload writes under a fresh folder",
+	"S3StorageConfig.Bucket":  "a piece of the object a Bedrock upload writes, read by uploadLocations",
+	"GCSStorageConfig.Prefix": "the folder a Vertex file operation runs in; its upload writes under a fresh folder",
+	"S3StorageConfig.Prefix":  "a piece of the object a Bedrock upload writes, read by uploadLocations",
+	// Output in name only.
+	"ImageEditParameters.OutputFormat":                            "an image format",
+	"ImageGenerationParameters.OutputFormat":                      "an image format",
+	"ResponsesImageGenerationCall.OutputFormat":                   "an image format",
+	"ResponsesToolImageGeneration.OutputFormat":                   "an image format",
+	"VideoEditParameters.OutputFormat":                            "a video format",
+	"VideoGenerationParameters.OutputFormat":                      "a video format",
+	"ResponsesToolMessageOutputStruct.ResponsesToolCallOutputStr": "the text a tool call returned, replayed as history",
 	// Web addresses in conversation history: a citation in an earlier answer, or a page the
 	// provider's own search or fetch tool read from the public web. None is read with the
 	// shared credential.
@@ -257,6 +268,39 @@ var recordedFileForms = []struct {
 	{"s3 uri in upper case", "S3://vk-guard-bucket/uploads/a.pdf", "s3://vk-guard-bucket/uploads/a.pdf"},
 	{"gemini file uri", "https://generativelanguage.googleapis.com/v1beta/files/vk-guard", "files/vk-guard"},
 	{"gemini file uri, host in upper case", "https://GenerativeLanguage.GoogleAPIs.com/v1beta/files/vk-guard", "files/vk-guard"},
+	// The https forms of a stored object are that object (TXE-7105).
+	{"gcs path-style url", "https://storage.googleapis.com/vk-guard-bucket/uploads/a.pdf", "gs://vk-guard-bucket/uploads/a.pdf"},
+	{"gcs url, host in upper case", "HTTPS://Storage.GoogleAPIs.com/vk-guard-bucket/uploads/a.pdf", "gs://vk-guard-bucket/uploads/a.pdf"},
+	{"gcs signed url", "https://storage.googleapis.com/vk-guard-bucket/uploads/a.pdf?X-Goog-Signature=abc&X-Goog-Expires=60", "gs://vk-guard-bucket/uploads/a.pdf"},
+	{"gcs bucket-host url", "https://vk-guard-bucket.storage.googleapis.com/uploads/a.pdf", "gs://vk-guard-bucket/uploads/a.pdf"},
+	{"gcs browser url", "https://storage.cloud.google.com/vk-guard-bucket/uploads/a.pdf", "gs://vk-guard-bucket/uploads/a.pdf"},
+	{"gcs json api url", "https://storage.googleapis.com/storage/v1/b/vk-guard-bucket/o/uploads%2Fa.pdf", "gs://vk-guard-bucket/uploads/a.pdf"},
+	{"gcs json api download url", "https://storage.googleapis.com/download/storage/v1/b/vk-guard-bucket/o/uploads%2Fa.pdf?alt=media", "gs://vk-guard-bucket/uploads/a.pdf"},
+	{"gcs json api on www.googleapis.com", "https://www.googleapis.com/storage/v1/b/vk-guard-bucket/o/uploads%2Fa.pdf", "gs://vk-guard-bucket/uploads/a.pdf"},
+	{"gcs regional endpoint", "https://storage.europe-west3.rep.googleapis.com/vk-guard-bucket/uploads/a.pdf", "gs://vk-guard-bucket/uploads/a.pdf"},
+	{"gcs url, fully qualified host", "https://storage.googleapis.com./vk-guard-bucket/uploads/a.pdf", "gs://vk-guard-bucket/uploads/a.pdf"},
+	{"gcs legacy host", "https://commondatastorage.googleapis.com/vk-guard-bucket/uploads/a.pdf", "gs://vk-guard-bucket/uploads/a.pdf"},
+	{"gcs legacy bucket host", "https://vk-guard-bucket.commondatastorage.googleapis.com/uploads/a.pdf", "gs://vk-guard-bucket/uploads/a.pdf"},
+	{"gcs download host", "https://storage-download.googleapis.com/vk-guard-bucket/uploads/a.pdf", "gs://vk-guard-bucket/uploads/a.pdf"},
+	{"firebase storage url", "https://firebasestorage.googleapis.com/v0/b/vk-guard-bucket/o/uploads%2Fa.pdf?alt=media", "gs://vk-guard-bucket/uploads/a.pdf"},
+	{"s3 url, fully qualified host", "https://vk-guard-bucket.s3.us-east-1.amazonaws.com./uploads/a.pdf", "s3://vk-guard-bucket/uploads/a.pdf"},
+	{"gcs url with an encoded name", "https://storage.googleapis.com/vk-guard-bucket/uploads/a%20b.pdf", "gs://vk-guard-bucket/uploads/a b.pdf"},
+	{"s3 bucket-host url", "https://vk-guard-bucket.s3.us-east-1.amazonaws.com/uploads/a.pdf", "s3://vk-guard-bucket/uploads/a.pdf"},
+	{"s3 bucket-host url, no region", "https://vk-guard-bucket.s3.amazonaws.com/uploads/a.pdf", "s3://vk-guard-bucket/uploads/a.pdf"},
+	{"s3 bucket-host url, dashed region", "https://vk-guard-bucket.s3-us-west-2.amazonaws.com/uploads/a.pdf", "s3://vk-guard-bucket/uploads/a.pdf"},
+	{"s3 dualstack url", "https://vk-guard-bucket.s3.dualstack.eu-west-1.amazonaws.com/uploads/a.pdf", "s3://vk-guard-bucket/uploads/a.pdf"},
+	{"s3 accelerate url", "https://vk-guard-bucket.s3-accelerate.amazonaws.com/uploads/a.pdf", "s3://vk-guard-bucket/uploads/a.pdf"},
+	{"s3 url of a dotted bucket", "https://vk.guard.bucket.s3.us-east-1.amazonaws.com/uploads/a.pdf", "s3://vk.guard.bucket/uploads/a.pdf"},
+	{"s3 path-style url", "https://s3.us-east-1.amazonaws.com/vk-guard-bucket/uploads/a.pdf", "s3://vk-guard-bucket/uploads/a.pdf"},
+	{"s3 path-style url, no region", "https://s3.amazonaws.com/vk-guard-bucket/uploads/a.pdf", "s3://vk-guard-bucket/uploads/a.pdf"},
+	{"s3 url in china", "https://vk-guard-bucket.s3.cn-north-1.amazonaws.com.cn/uploads/a.pdf", "s3://vk-guard-bucket/uploads/a.pdf"},
+	{"s3 presigned url", "https://vk-guard-bucket.s3.us-east-1.amazonaws.com/uploads/a.pdf?X-Amz-Signature=abc", "s3://vk-guard-bucket/uploads/a.pdf"},
+	{"s3 arn", "arn:aws:s3:::vk-guard-bucket/uploads/a.pdf", "s3://vk-guard-bucket/uploads/a.pdf"},
+	// A bucket may carry the name of an endpoint kind; only the host's S3 label says what the endpoint is.
+	{"s3 url of a bucket named accesspoint", "https://accesspoint.s3.us-east-1.amazonaws.com/uploads/a.pdf", "s3://accesspoint/uploads/a.pdf"},
+	{"s3 url of a bucket named s3-control", "https://s3-control.s3.us-east-1.amazonaws.com/uploads/a.pdf", "s3://s3-control/uploads/a.pdf"},
+	{"s3 url of a bucket with an s3-global label", "https://data.s3-global.s3.amazonaws.com/uploads/a.pdf", "s3://data.s3-global/uploads/a.pdf"},
+	{"s3 arn in another partition", "arn:aws-cn:s3:::vk-guard-bucket/uploads/a.pdf", "s3://vk-guard-bucket/uploads/a.pdf"},
 }
 
 // Every field that can name a file is read by the ownership check on every request type it can
@@ -294,7 +338,7 @@ func TestEveryFileReferenceIsChecked(t *testing.T) {
 					}
 				}
 				// A URL in no recorded form names no file, and must not be looked up.
-				for _, plain := range []string{"https://example.com/files/vk-guard", "data:image/png;base64,aGVsbG8=", "gs:/not-a-uri", "files/vk-guard"} {
+				for _, plain := range []string{"https://example.com/files/vk-guard", "data:image/png;base64,aGVsbG8=", "gs:/not-a-uri", "files/vk-guard", "https://storage.example.com/vk-guard-bucket/a.pdf", "https://bedrock-runtime.us-east-1.amazonaws.com/model/m/invoke"} {
 					req, _ := plantInRequest(root, target, plain)
 					if refs := requestFileRefs(req); len(refs) != 0 {
 						t.Errorf("%s in %s: %q is not a recorded file form but was read as %+v", target, root, plain, refs)
@@ -324,7 +368,7 @@ func TestEveryFileReferenceIsChecked(t *testing.T) {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		t.Run(name, func(t *testing.T) { check(t, name, fileReferenceFields[name] == fileRefURL) })
+		t.Run(name, func(t *testing.T) { check(t, name, fileReferenceFields[name] != fileRefID) })
 	}
 	elsewhere := make([]string, 0, len(fileReferenceFieldsReadElsewhere))
 	for name := range fileReferenceFieldsReadElsewhere {
@@ -455,7 +499,7 @@ func plantOpenValue(rt, owner reflect.Type, index int, value any, onPath map[ref
 
 func TestRecordedFileID(t *testing.T) {
 	for _, form := range recordedFileForms {
-		if got, ok := recordedFileID(form.written); !ok || got != form.recorded {
+		if got, ok, unverifiable := recordedFileID(form.written); !ok || unverifiable || got != form.recorded {
 			t.Errorf("%s: recordedFileID(%q) = %q, %v; want %q", form.name, form.written, got, ok, form.recorded)
 		}
 	}
@@ -464,10 +508,142 @@ func TestRecordedFileID(t *testing.T) {
 		"https://example.com/v1beta/files/abc", "https://generativelanguage.googleapis.com/v1beta/models/m",
 		"https://generativelanguage.googleapis.com.example.com/v1beta/files/abc",
 		"data:application/pdf;base64," + strings.Repeat("A", 4096), "file-abc", "files/abc",
+		// Hosts that only look like storage, and AWS and Google hosts that are not storage.
+		"https://storage.googleapis.com.example.com/bucket/object", "https://example.com/storage.googleapis.com/bucket/object",
+		"https://storage.googleapis.com/", "https://www.googleapis.com/drive/v3/files/abc",
+		"https://bedrock-runtime.us-east-1.amazonaws.com/model/m/invoke", "https://s3.amazonaws.com/", "https://bucket.s3.amazonaws.com.example.com/key",
+		"storage.googleapis.com/bucket/object", "arn:aws:iam::123456789012:role/r", "arn:aws:s3:::",
 	} {
-		if got, ok := recordedFileID(raw); ok {
-			t.Errorf("recordedFileID(%.60q) = %q, want none", raw, got)
+		if got, ok, unverifiable := recordedFileID(raw); ok || unverifiable {
+			t.Errorf("recordedFileID(%.60q) = %q, %v, %v, want none", raw, got, ok, unverifiable)
 		}
+	}
+	// A name that reaches S3 by a route that cannot be followed to a bucket refuses the request.
+	chat := func(uri string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.Bedrock, Model: "m",
+			Params: &schemas.ChatParameters{ExtraParams: map[string]interface{}{"document": uri}}}}
+	}
+	for _, raw := range []string{
+		"arn:aws:s3:us-east-1:123456789012:accesspoint/ap/object/uploads/a.pdf", "arn:aws:s3::123456789012:accesspoint/m.mrap",
+		"arn:aws:s3-object-lambda:us-east-1:123456789012:accesspoint/ol", "arn:aws:s3-outposts:us-east-1:123456789012:outpost/op/bucket/b",
+		"https://ap-123456789012.s3-accesspoint.us-east-1.amazonaws.com/uploads/a.pdf", "https://ol-123456789012.s3-object-lambda.us-east-1.amazonaws.com/a.pdf",
+		"https://m.mrap.accesspoint.s3-global.amazonaws.com/uploads/a.pdf", "https://123456789012.s3-control.us-east-1.amazonaws.com/v20180820/accesspoint/ap",
+		"https://accesspoint.s3-accesspoint.us-east-1.amazonaws.com/uploads/a.pdf",
+		// A googleapis.com host that looks like storage and is not one this resolver knows.
+		"https://storage-other.googleapis.com/bucket/uploads/a.pdf", "https://bucket.storage-x.googleapis.com/uploads/a.pdf",
+	} {
+		if got, ok, unverifiable := recordedFileID(raw); ok || !unverifiable {
+			t.Errorf("recordedFileID(%q) = %q, %v, %v, want unverifiable", raw, got, ok, unverifiable)
+		}
+		if _, unreadable := requestFileIDs(chat(raw)); !unreadable {
+			t.Errorf("a request naming %q in an extra param is let through", raw)
+		}
+		if _, verifiable := distinctObjectRefs(jsonObjectRefs(schemas.Bedrock, map[string]any{"document": raw})); verifiable {
+			t.Errorf("a raw body naming %q is let through", raw)
+		}
+		if ref, _ := objectRef("file", schemas.Bedrock, raw); !ref.unreadable {
+			t.Errorf("a file addressed as %q is let through", raw)
+		}
+	}
+}
+
+// A stored object's name that cannot be resolved to the one name it is recorded under refuses
+// the request: the object it reaches may be another key's.
+func TestUnresolvableStorageNamesRefuseTheRequest(t *testing.T) {
+	for _, name := range []string{
+		// A "." or ".." segment is literal to the storage and resolved by an https client, so
+		// which object is read depends on who reads it.
+		"gs://bucket/mine/../out-other/a.jsonl", "s3://bucket/./out-other/a.jsonl", "gs://bucket/out/..",
+		"https://storage.googleapis.com/bucket/mine/../out-other/a.jsonl", "https://storage.googleapis.com/bucket/mine/%2e%2e/out-other/a.jsonl",
+		"https://bucket.s3.us-east-1.amazonaws.com/mine/../out-other/a.jsonl",
+		// The bucket position: an https client resolves "/../bucket/a" to "/bucket/a".
+		"https://storage.googleapis.com/../bucket/out-other/a.jsonl", "https://s3.amazonaws.com/./bucket/out-other/a.jsonl", "gs://../bucket/a.jsonl",
+		// An S3 access point's alias, or an ARN, where the bucket goes: the same objects under
+		// a name nothing is recorded under.
+		"s3://ap-abcdefgh1234567890-s3alias/out-other/a.jsonl", "S3://AP-abcdefgh1234567890-S3Alias/out-other/a.jsonl", "s3://ol-abcdefgh--ol-s3/a.jsonl", "s3://op-abcdefgh--op-s3/a.jsonl",
+		"s3://mfzwi23gnjvgw.mrap/out-other/a.jsonl", "s3://arn:aws:s3:us-east-1:123456789012:accesspoint/ap/out-other/a.jsonl",
+		"https://ap-abcdefgh1234567890-s3alias.s3.us-east-1.amazonaws.com/out-other/a.jsonl", "https://s3.us-east-1.amazonaws.com/ap-abcdefgh1234567890-s3alias/out-other/a.jsonl",
+		"arn:aws:s3:::ap-abcdefgh1234567890-s3alias/out-other/a.jsonl",
+		// A wildcard names every object it matches.
+		"gs://bucket/uploads/*", "gs://bucket/uploads/*.jsonl", "gs://bucket/up*/a.jsonl", "s3://bucket/uploads/a?.jsonl", "gs://bucket/uploads/[ab].jsonl",
+		"https://storage.googleapis.com/bucket/uploads/*",
+	} {
+		ref, _ := objectRef("file", schemas.Vertex, name)
+		if !ref.unreadable {
+			t.Errorf("a file named %q is not refused", name)
+		}
+		if _, verifiable := distinctObjectRefs([]providerObjectRef{ref}); verifiable {
+			t.Errorf("a request naming %q can be verified", name)
+		}
+	}
+	for _, plain := range []string{
+		"gs://bucket/out/a..b/c.jsonl", "gs://bucket/out/.hidden/c.jsonl", "s3://bucket/out/v1.2/c.jsonl", "s3://my-s3alias-data/c.jsonl", "gs://bucket-s3alias/c.jsonl", "s3://bucket--x-s3/c.jsonl",
+		"s3://bucket/out//c.jsonl", "gs://bucket", "file-abc", "files/abc", "https://example.com/a/../b",
+	} {
+		if ref, _ := objectRef("file", schemas.Vertex, plain); ref.unreadable {
+			t.Errorf("a file named %q is refused", plain)
+		}
+	}
+	// An object is looked up under the name it is recorded under, whatever form named it, and
+	// under the id as written.
+	for written, recorded := range map[string]string{
+		"https://storage.googleapis.com/bucket/out/a.jsonl":    "gs://bucket/out/a.jsonl",
+		"GS://bucket/out/a.jsonl ":                             "gs://bucket/out/a.jsonl",
+		"arn:aws:s3:::bucket/out/a.jsonl":                      "s3://bucket/out/a.jsonl",
+		"https://generativelanguage.googleapis.com/v1/files/x": "files/x",
+	} {
+		ref, _ := objectRef("file", schemas.Vertex, written)
+		if !slices.Contains(ref.ids, recorded) || !slices.Contains(ref.ids, written) || ref.unreadable {
+			t.Errorf("a file named %q is looked up under %q, want %q among them", written, ref.ids, recorded)
+		}
+	}
+}
+
+// A Bedrock file upload names the object it writes in pieces: a bucket, a folder and a
+// filename. The object they compose is checked like any other the request names.
+func TestUploadLocationIsChecked(t *testing.T) {
+	upload := func(config *schemas.FileStorageConfig, extra map[string]interface{}, filename string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.FileUploadRequest, FileUploadRequest: &schemas.BifrostFileUploadRequest{Provider: schemas.Bedrock, Filename: filename, StorageConfig: config, ExtraParams: extra}}
+	}
+	s3 := func(bucket, prefix string) *schemas.FileStorageConfig {
+		return &schemas.FileStorageConfig{S3: &schemas.S3StorageConfig{Bucket: bucket, Prefix: prefix}}
+	}
+	for name, tc := range map[string]struct {
+		req  *schemas.BifrostRequest
+		want string
+	}{
+		"s3 bucket, prefix and filename":       {upload(s3("bucket", "uploads/"), nil, "a.jsonl"), "s3://bucket/uploads/a.jsonl"},
+		"s3 prefix with slashes around it":     {upload(s3("bucket", "/uploads/in/"), nil, "a.jsonl"), "s3://bucket/uploads/in/a.jsonl"},
+		"s3 bucket and filename":               {upload(s3("bucket", ""), nil, "a.jsonl"), "s3://bucket/a.jsonl"},
+		"s3 bucket written as a uri":           {upload(s3("s3://bucket/tenant/", "uploads"), nil, "a.jsonl"), "s3://bucket/tenant/uploads/a.jsonl"},
+		"s3 bucket and prefix in extra params": {upload(nil, map[string]interface{}{"s3_bucket": "bucket", "s3_prefix": "uploads"}, "a.jsonl"), "s3://bucket/uploads/a.jsonl"},
+	} {
+		if !namesFile(tc.req, tc.want) {
+			t.Errorf("%s: the upload is not checked at %q; references: %+v", name, tc.want, providerObjectReferences(tc.req))
+		}
+	}
+	// Both S3 sources are checked when both are present: which one the provider reads is its
+	// choice.
+	both := upload(s3("bucket", "uploads"), map[string]interface{}{"s3_bucket": "s3://other-bucket/in/", "s3_prefix": "x"}, "a.jsonl")
+	for _, want := range []string{"s3://bucket/uploads/a.jsonl", "s3://other-bucket/in/x/a.jsonl"} {
+		if !namesFile(both, want) {
+			t.Errorf("an upload carrying an S3 config and extra params is not checked at %q; references: %+v", want, providerObjectReferences(both))
+		}
+	}
+	// A Vertex upload writes under a fresh folder and replaces nothing, and an upload with no
+	// bucket or no filename names no object.
+	for name, req := range map[string]*schemas.BifrostRequest{
+		"a gcs config": upload(&schemas.FileStorageConfig{GCS: &schemas.GCSStorageConfig{Bucket: "bucket", Prefix: "uploads"}}, nil, "a.jsonl"),
+		"no bucket":    upload(nil, nil, "a.jsonl"),
+		"no filename":  upload(s3("bucket", "uploads"), nil, ""),
+	} {
+		if refs := requestFileRefs(req); len(refs) != 0 {
+			t.Errorf("an upload with %s was read as %+v", name, refs)
+		}
+	}
+	// A filename that climbs out of the folder cannot be verified.
+	if _, verifiable := distinctObjectRefs(providerObjectReferences(upload(s3("bucket", "mine"), nil, "../out-other/a.jsonl"))); verifiable {
+		t.Errorf("an upload named ../out-other/a.jsonl is let through")
 	}
 }
 
@@ -504,7 +680,7 @@ func TestFileReferencesCannotHideInOpenFields(t *testing.T) {
 
 	t.Run("a long url is still read", func(t *testing.T) {
 		padded := "https://generativelanguage.googleapis.com/v1beta/files/vk-guard?pad=" + strings.Repeat("x", 8192)
-		if id, ok := recordedFileID(padded); !ok || id != "files/vk-guard" {
+		if id, ok, _ := recordedFileID(padded); !ok || id != "files/vk-guard" {
 			t.Errorf("a padded Gemini file URI resolved to %q, %v", id, ok)
 		}
 		if req := chatWith(map[string]interface{}{"video": padded}); !namesFile(req, "files/vk-guard") {
@@ -604,6 +780,8 @@ func TestMayNameProviderObjectsSeesRecordedFileForms(t *testing.T) {
 		`{"image":{"gcsUri":"gs://b/o"}}`, `{"image":{"gcsUri":"GS://b/o"}}`, `{"image":{"gcsUri":"gs:\/\/b\/o"}}`,
 		`{"source":{"s3Location":{"uri":"s3://b/k"}}}`, `{"source":{"s3Location":{"uri":"S3://b/k"}}}`,
 		`{"video":"https://GENERATIVELANGUAGE.googleapis.com/v1beta/files/x"}`,
+		`{"image":"https://Storage.GoogleAPIs.com/b/o"}`, `{"image":"https:\/\/storage.cloud.google.com\/b\/o"}`,
+		`{"image":"https://b.s3.us-east-1.AmazonAWS.com/k"}`, `{"document":"ARN:aws:s3:::b/k"}`,
 	} {
 		if !mayNameProviderObjects([]byte(body)) {
 			t.Errorf("body %s would be forwarded without a look", body)
@@ -615,6 +793,8 @@ func TestMayNameProviderObjectsSeesRecordedFileForms(t *testing.T) {
 	for body, want := range map[string]string{
 		`{"instances":[{"image":{"gcsUri":"gs:\/\/b\/o"}}]}`:                                     "gs://b/o",
 		`{"messages":[{"content":[{"document":{"source":{"s3Location":{"uri":"S3://b/k"}}}}]}]}`: "s3://b/k",
+		`{"instances":[{"image":"https:\/\/storage.googleapis.com\/b\/o"}]}`:                     "gs://b/o",
+		`{"parameters":{"storageUri":"https://b.s3.us-east-1.amazonaws.com/out/"}}`:              "s3://b/out/",
 	} {
 		var ids []string
 		for _, ref := range passthroughObjectRefs(&schemas.BifrostPassthroughRequest{Provider: schemas.Vertex, Method: "POST", Path: "/v1/x", Body: []byte(body)}) {

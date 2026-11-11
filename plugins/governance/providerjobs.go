@@ -31,6 +31,10 @@ import (
 // its kind was recorded) cannot be bound to anyone and stays reachable. Only a row that names a
 // different virtual key is refused, and it is refused as not found, so the other tenant's object
 // is not confirmed to exist.
+//
+// A file in object storage is recorded under its gs:// or s3:// URI and may be named by any https
+// or ARN form of it; every form is resolved to that URI before the lookup (TXE-7105; see
+// recordedFileID).
 
 // providerObjectRef names the provider object a request addresses, or the kind a list request
 // pages through.
@@ -43,7 +47,7 @@ type providerObjectRef struct {
 	indirect  bool // named inside a request that creates or runs something else, not addressed by id
 	// passthroughList is a list through a passthrough route: its raw page cannot be narrowed.
 	passthroughList bool
-	unreadable      bool // names no object: the request's files could not all be read (requestFileIDs), so it is refused
+	unreadable      bool // the request's files could not all be read (requestFileIDs), or this id cannot be resolved to one recorded name, so it is refused
 }
 
 // governanceAutoContainerContextKey marks a request whose code_interpreter tool asked the provider
@@ -149,11 +153,35 @@ func providerObjectIDForms(kind string, provider schemas.ModelProvider, id strin
 	return forms
 }
 
+// providerObjectLookupForms returns the ids an object named by id is looked up under. For
+// every kind but a file these are providerObjectIDForms. A file can be named by any URL form of
+// the id it is recorded under, so the id is resolved first (recordedFileID) and looked up under
+// the recorded id as well as the id as written. unverifiable is true when the id names storage
+// in a way that cannot be resolved to one recorded name (an S3 access point, a wildcard, a "."
+// or ".." in the path; see unresolvableStorageURI), so the forms are not the whole answer.
+func providerObjectLookupForms(kind string, provider schemas.ModelProvider, id string) (forms []string, unverifiable bool) {
+	forms = providerObjectIDForms(kind, provider, id)
+	if kind != configstoreTables.ProviderObjectKindFile {
+		return forms, false
+	}
+	recorded, ok, unverifiable := recordedFileID(id)
+	if !ok {
+		return forms, unverifiable
+	}
+	for _, form := range providerObjectIDForms(kind, provider, recorded) {
+		if !slices.Contains(forms, form) {
+			forms = append(forms, form)
+		}
+	}
+	return forms, unresolvableStorageURI(recorded)
+}
+
 func objectRef(kind string, provider schemas.ModelProvider, id string) (providerObjectRef, bool) {
 	if id == "" {
 		return providerObjectRef{}, false
 	}
-	return providerObjectRef{kind: kind, provider: string(provider), requestID: id, ids: providerObjectIDForms(kind, provider, id)}, true
+	forms, unverifiable := providerObjectLookupForms(kind, provider, id)
+	return providerObjectRef{kind: kind, provider: string(provider), requestID: id, ids: forms, unreadable: unverifiable}, true
 }
 
 func listRef(kind string, provider schemas.ModelProvider) (providerObjectRef, bool) {
@@ -629,21 +657,31 @@ func mayNameProviderObjects(body []byte) bool {
 }
 
 // mayNameRecordedFile reports whether a raw body could hold a URL in a form uploads are recorded
-// under (see recordedFileID): "gs:" or "s3:" or the Gemini file host, in any case. The slashes
-// are not required, since JSON may write them escaped ("gs:\/\/"). It over-matches (prose that
-// ends a word in "gs:"), which only costs the parse.
+// under (see recordedFileID): "gs:" or "s3:", an S3 ARN, or one of the hosts a stored object is
+// addressed under, in any case. The slashes are not required, since JSON may write them escaped
+// ("gs:\/\/"). It over-matches (prose that ends a word in "gs:"), which only costs the parse.
 func mayNameRecordedFile(body []byte) bool {
+	startsWith := func(at int, marker string) bool {
+		return len(body)-at >= len(marker) && strings.EqualFold(string(body[at:at+len(marker)]), marker)
+	}
 	for i := 0; i+2 < len(body); i++ {
 		switch body[i] | 0x20 {
 		case 'g':
 			if body[i+1]|0x20 == 's' && body[i+2] == ':' {
 				return true
 			}
-			if len(body)-i >= len(geminiFileHost) && strings.EqualFold(string(body[i:i+len(geminiFileHost)]), geminiFileHost) {
+			if startsWith(i, googleAPIsDomain) {
 				return true
 			}
 		case 's':
 			if body[i+1] == '3' && body[i+2] == ':' {
+				return true
+			}
+			if startsWith(i, gcsBrowserHost) {
+				return true
+			}
+		case 'a':
+			if startsWith(i, awsDomain) || startsWith(i, s3ARNPrefix+"aws") {
 				return true
 			}
 		}
@@ -733,7 +771,12 @@ func jsonObjectRefs(provider schemas.ModelProvider, body any) []providerObjectRe
 			// A location is read under a different key by each provider and operation
 			// (fileUri, gcsUri, uri, url), so the key is not consulted: a string in a form
 			// uploads are recorded under names that file wherever it sits.
-			if id, ok := recordedFileID(v); ok {
+			id, ok, unverifiable := recordedFileID(v)
+			if unverifiable && !full {
+				full = true
+				refs = append(refs, providerObjectRef{kind: configstoreTables.ProviderObjectKindFile, provider: string(provider), indirect: true, unreadable: true})
+			}
+			if ok {
 				add(configstoreTables.ProviderObjectKindFile, id)
 			}
 		}
@@ -1151,7 +1194,7 @@ func (p *GovernancePlugin) enforceProviderObjectOwnership(ctx *schemas.BifrostCo
 		return &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
 			Type:       bifrost.Ptr(string(DecisionAccessBlocked)),
 			StatusCode: bifrost.Ptr(400),
-			Error:      &schemas.ErrorField{Message: fmt.Sprintf("the objects this request names cannot be verified for this virtual key: it names more than %d files, containers or caches, or its provider-specific fields could not be read (raw JSON that does not parse, or data nested more than %d levels deep)", maxFileReferences, openValueDepth)},
+			Error:      &schemas.ErrorField{Message: fmt.Sprintf("the objects this request names cannot be verified for this virtual key: it names more than %d files, containers or caches, its provider-specific fields could not be read (raw JSON that does not parse, or data nested more than %d levels deep), or it names a stored object that cannot be resolved to one name (a wildcard or a '.' or '..' in its path, or an S3 access point or its alias in place of the bucket)", maxFileReferences, openValueDepth)},
 		}}
 	}
 	for _, ref := range refs {
@@ -1278,8 +1321,11 @@ func (p *GovernancePlugin) refuseForeignProviderObject(ctx *schemas.BifrostConte
 // of its forms is another key's. The predicate is nil when nothing on the page is hidden.
 func (p *GovernancePlugin) hiddenProviderObjects(ctx *schemas.BifrostContext, kind, provider, vkID string, ids []string) (func(id string) bool, error) {
 	forms := make([]string, 0, len(ids)*2)
+	unverifiable := false
 	for _, id := range ids {
-		forms = append(forms, providerObjectIDForms(kind, schemas.ModelProvider(provider), id)...)
+		lookup, unclear := providerObjectLookupForms(kind, schemas.ModelProvider(provider), id)
+		forms = append(forms, lookup...)
+		unverifiable = unverifiable || unclear
 	}
 	owners, ambiguous, err := p.providerObjectOwners(ctx, kind, provider, forms)
 	if err != nil {
@@ -1295,11 +1341,15 @@ func (p *GovernancePlugin) hiddenProviderObjects(ctx *schemas.BifrostContext, ki
 	for id := range ambiguous {
 		hidden[id] = struct{}{}
 	}
-	if len(hidden) == 0 {
+	if len(hidden) == 0 && !unverifiable {
 		return nil, nil
 	}
 	return func(id string) bool {
-		for _, form := range providerObjectIDForms(kind, schemas.ModelProvider(provider), id) {
+		lookup, unclear := providerObjectLookupForms(kind, schemas.ModelProvider(provider), id)
+		if unclear {
+			return true
+		}
+		for _, form := range lookup {
 			if _, ok := hidden[form]; ok {
 				return true
 			}
