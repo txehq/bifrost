@@ -245,7 +245,7 @@ func TestVirtualKeyPubSubTopicAllowlist(t *testing.T) {
 			Input: &schemas.VideoGenerationInput{Prompt: "p"}, Params: &schemas.VideoGenerationParameters{ExtraParams: extra}}}
 	}
 	passthrough := func(body string) *schemas.BifrostRequest {
-		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.OpenAI, Method: "POST", Path: "/v1/models/veo:predictLongRunning", Body: []byte(body)}}
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.OpenAI, Method: "POST", Path: "/v1/models/m:generateContent", Body: []byte(body)}}
 	}
 	for name, tc := range map[string]struct {
 		req     *schemas.BifrostRequest

@@ -429,7 +429,9 @@ a request writes (TXE-7105): the upload named by its https URL, and a video task
 same provider for the task rule: `/pp/storage` also serves a batch create, retrieve and list, and its list always holds
 one batch no gateway request created (`batch_storage_made_elsewhere`). A batch created under one virtual key is reached
 by that key only; the batch made elsewhere is neither retrieved, cancelled nor listed for a virtual key, while a request
-with no virtual key is forwarded for it. Its rows use the management API, so run the augmented collection with
+with no virtual key is forwarded for it. Folder 496 (TXE-7088) uses it for a virtual key's storage and Pub/Sub topic
+allowlists: a key limited to one folder is served inside it and refused outside it, as an input, by an https URL, as
+a task's or a batch's output location and for another topic, while a key with no lists is not restricted. Its rows use the management API, so run the augmented collection with
 `--env-var setupToken=<the config's setup_token>`.
 
 The same fixture and gateway serve folder 416 (Kling video on the contract). The config's built-in
