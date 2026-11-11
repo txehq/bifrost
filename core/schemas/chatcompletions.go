@@ -1980,14 +1980,11 @@ type BifrostLLMUsage struct {
 	// ProcessedTokens carries the token counts the vendor processed when it reports them
 	// apart from the billed counts in PromptTokens/CompletionTokens (Cohere's usage.tokens
 	// next to usage.billed_units). Absent when the vendor reports only one set (contract C5).
-	ProcessedTokens *ProcessedTokenUsage `json:"processed_tokens,omitempty"`
-	// BilledCharacters is the character count the vendor billed (Vertex text embeddings'
-	// metadata.billableCharacterCount, and the Gemini API's when it reports one), contract
-	// C5. Set only from the vendor's report: nil means the vendor did not report it.
-	BilledCharacters  *int         `json:"billed_characters,omitempty"`
-	ToolUsage         *ToolUsage   `json:"tool_usage,omitempty"`
-	SearchContextSize *string      `json:"search_context_size,omitempty"` // Search context tier the vendor billed ("low" | "medium" | "high")
-	Cost              *BifrostCost `json:"cost,omitempty"`                // Only for the providers which support cost calculation
+	ProcessedTokens   *ProcessedTokenUsage `json:"processed_tokens,omitempty"`
+	BilledCharacters  *int                 `json:"billed_characters,omitempty"` // Vendor-billed character count; nil when unreported
+	ToolUsage         *ToolUsage           `json:"tool_usage,omitempty"`
+	SearchContextSize *string              `json:"search_context_size,omitempty"` // Search context tier the vendor billed ("low" | "medium" | "high")
+	Cost              *BifrostCost         `json:"cost,omitempty"`                // Only for the providers which support cost calculation
 	// xAI-specific usage field, normalized into Cost by NormalizeProviderCost.
 	CostInUsdTicks *int64 `json:"cost_in_usd_ticks,omitempty"`
 	// Laya decision usage: state token accounting and truncation, reported on /v1/decisions.

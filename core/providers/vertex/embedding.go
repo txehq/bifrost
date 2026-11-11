@@ -261,7 +261,9 @@ func ToVertexMultimodalEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequ
 
 // ToBifrostEmbeddingResponse converts a Vertex AI embedding response to Bifrost format.
 // Handles both text embedding responses (Embeddings.Values) and native multimodal
-// responses (TextEmbedding / ImageEmbedding / VideoEmbeddings).
+// responses (TextEmbedding / ImageEmbedding / VideoEmbeddings). Vertex text models bill by
+// character: metadata.billableCharacterCount goes to usage.billed_characters, set only from
+// Vertex's own report (contract C5) and never counted as tokens.
 func (response *VertexEmbeddingResponse) ToBifrostEmbeddingResponse() *schemas.BifrostEmbeddingResponse {
 	if response == nil || len(response.Predictions) == 0 {
 		return nil
