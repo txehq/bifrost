@@ -1,7 +1,11 @@
 package gemini
 
 import (
+	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
@@ -221,4 +225,138 @@ func TestGeminiBatchEmbeddingRequestReadsEmbedContentConfig(t *testing.T) {
 	body, err := providerUtils.MarshalSorted(out)
 	require.NoError(t, err)
 	require.True(t, gjson.GetBytes(body, "requests.0.embedContentConfig.documentOcr").Bool(), string(body))
+}
+
+func benchGeminiEmbeddingRequest() *schemas.BifrostEmbeddingRequest {
+	return &schemas.BifrostEmbeddingRequest{
+		Provider: schemas.Gemini,
+		Model:    "gemini-embedding-001",
+		Input: []schemas.EmbeddingInputItem{
+			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("alpha kestrel harbor")}}},
+		},
+		Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("RETRIEVAL_QUERY")},
+	}
+}
+
+// Request path cost of the Gemini embedding conversion (TXE-6636).
+func BenchmarkToGeminiEmbeddingRequest(b *testing.B) {
+	req := benchGeminiEmbeddingRequest()
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := ToGeminiEmbeddingRequest(req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// Response path cost of reading usage from what Google reports (TXE-6636): Vertex
+// :embedContent's shape, with per-embedding statistics and a billable character count.
+func BenchmarkGeminiEmbeddingResponseToBifrost(b *testing.B) {
+	var resp GeminiEmbeddingResponse
+	if err := schemas.Unmarshal([]byte(`{"embeddings":[{"values":[0.1,0.2,0.3],"statistics":{"tokenCount":5}}],"metadata":{"billableCharacterCount":18}}`), &resp); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if out := ToBifrostEmbeddingResponse(&resp, "gemini-embedding-001"); out == nil {
+			b.Fatal("nil response")
+		}
+	}
+}
+
+// Native /genai response cost: Gemini's shape rebuilt from unified usage (TXE-6636).
+func BenchmarkToGeminiEmbeddingResponse(b *testing.B) {
+	chars := 18
+	resp := &schemas.BifrostEmbeddingResponse{
+		Data:  []schemas.EmbeddingData{{Index: 0, Object: "embedding", Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.1, 0.2, 0.3}}}},
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 5, TotalTokens: 5, BilledCharacters: &chars},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if out := ToGeminiEmbeddingResponse(resp); out == nil {
+			b.Fatal("nil response")
+		}
+	}
+}
+
+// Request path cost of the encoding_format check (TXE-6636), run before every Gemini and
+// Vertex embedding conversion; there is no "before", the check is new.
+func BenchmarkRejectNonFloatEncodingFormat(b *testing.B) {
+	req := benchGeminiEmbeddingRequest()
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := RejectNonFloatEncodingFormat(req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func encodingFormatRequest(requestLevel, itemLevel *string) *schemas.BifrostEmbeddingRequest {
+	item := schemas.EmbeddingInputItem{
+		Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("hi")}},
+	}
+	if itemLevel != nil {
+		item.Params = &schemas.EmbeddingParameters{EncodingFormat: itemLevel}
+	}
+	req := &schemas.BifrostEmbeddingRequest{
+		Provider: schemas.Gemini,
+		Model:    "gemini-embedding-001",
+		Input:    []schemas.EmbeddingInputItem{item},
+	}
+	if requestLevel != nil {
+		req.Params = &schemas.EmbeddingParameters{EncodingFormat: requestLevel}
+	}
+	return req
+}
+
+// Google's embedding endpoints return float vectors only and take no output-format
+// parameter, so encoding_format base64 (or any other non-float value), on the request or
+// on one input item, is 400 caller_unsupported_parameter on encoding_format, and Gemini is
+// never called (contract C4). Before, the field was dropped and float vectors came back.
+func TestGeminiEmbeddingRefusesNonFloatEncodingFormat(t *testing.T) {
+	var calls atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"embeddings":[{"values":[0.1,0.2]}]}`))
+	}))
+	defer ts.Close()
+
+	provider := NewGeminiProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: ts.URL},
+	}, testNoopLogger{})
+	key := schemas.Key{Value: *schemas.NewSecretVar("dummy-key")}
+
+	cases := map[string]*schemas.BifrostEmbeddingRequest{
+		"request base64": encodingFormatRequest(schemas.Ptr(schemas.EmbeddingEncodingBase64), nil),
+		"request int8":   encodingFormatRequest(schemas.Ptr(schemas.EmbeddingEncodingInt8), nil),
+		"item base64":    encodingFormatRequest(nil, schemas.Ptr(schemas.EmbeddingEncodingBase64)),
+	}
+	for name, req := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := provider.Embedding(ctx, key, req)
+			require.NotNil(t, bifrostErr)
+			require.NotNil(t, bifrostErr.StatusCode)
+			require.Equal(t, 400, *bifrostErr.StatusCode)
+			require.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+			require.NotNil(t, bifrostErr.Error)
+			require.Equal(t, "encoding_format", bifrostErr.Error.Param)
+		})
+	}
+	require.Zero(t, calls.Load(), "a refused request must not reach Gemini")
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := provider.Embedding(ctx, key, encodingFormatRequest(schemas.Ptr(schemas.EmbeddingEncodingFloat), nil))
+	require.Nil(t, bifrostErr, "float is what Google returns and is accepted")
+	require.Equal(t, int32(1), calls.Load())
+}
+
+func TestRejectNonFloatEncodingFormatIsABadRequest(t *testing.T) {
+	require.NoError(t, RejectNonFloatEncodingFormat(encodingFormatRequest(nil, nil)))
+	require.NoError(t, RejectNonFloatEncodingFormat(encodingFormatRequest(schemas.Ptr(schemas.EmbeddingEncodingFloat), nil)))
+	err := RejectNonFloatEncodingFormat(encodingFormatRequest(schemas.Ptr(schemas.EmbeddingEncodingBase64), nil))
+	bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
+	require.True(t, ok)
+	require.Equal(t, "encoding_format", bifrostErr.Error.Param)
 }

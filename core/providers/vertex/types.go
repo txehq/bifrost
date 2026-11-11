@@ -218,7 +218,32 @@ type VertexEmbeddingPrediction struct {
 
 // VertexEmbeddingResponse represents the complete embedding response from Vertex AI
 type VertexEmbeddingResponse struct {
-	Predictions []VertexEmbeddingPrediction `json:"predictions"` // List of embedding predictions
+	Predictions []VertexEmbeddingPrediction `json:"predictions"`        // List of embedding predictions
+	Metadata    *VertexEmbeddingMetadata    `json:"metadata,omitempty"` // Response-level billing metadata (text models)
+}
+
+// VertexEmbeddingMetadata is the :predict response's metadata block. Vertex documents
+// the count as billableCharacterCount in REST JSON and billable_character_count in the
+// proto form; both are read.
+type VertexEmbeddingMetadata struct {
+	BillableCharacterCount      *int `json:"billableCharacterCount,omitempty"`
+	BillableCharacterCountProto *int `json:"billable_character_count,omitempty"`
+}
+
+// billableCharacters returns the reported billable character count, nil when absent.
+func (m *VertexEmbeddingMetadata) billableCharacters() *int {
+	if m == nil {
+		return nil
+	}
+	v := m.BillableCharacterCount
+	if v == nil {
+		v = m.BillableCharacterCountProto
+	}
+	if v == nil {
+		return nil
+	}
+	c := *v
+	return &c
 }
 
 // ================================ Model Types ================================

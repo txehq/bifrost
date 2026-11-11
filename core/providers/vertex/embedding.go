@@ -22,6 +22,23 @@ func isVertexGeminiEmbeddingModel(model string) bool {
 	return strings.Contains(model, "gemini-embedding-2")
 }
 
+// toVertexEmbeddingRequestBody builds the body for whichever Vertex embedding endpoint the
+// model uses: :embedContent for gemini-embedding-2, :predict for the native multimodal and
+// the text models. Every one of them returns float vectors only, so a non-float
+// encoding_format is refused first, whichever endpoint the model would reach.
+func toVertexEmbeddingRequestBody(request *schemas.BifrostEmbeddingRequest) (providerUtils.RequestBodyWithExtraParams, error) {
+	if err := gemini.RejectNonFloatEncodingFormat(request); err != nil {
+		return nil, err
+	}
+	if isVertexGeminiEmbeddingModel(request.Model) {
+		return ToVertexGeminiEmbeddingRequest(request)
+	}
+	if isVertexNativeMultimodalEmbeddingModel(request.Model) {
+		return ToVertexMultimodalEmbeddingRequest(request)
+	}
+	return ToVertexEmbeddingRequest(request)
+}
+
 // ToVertexEmbeddingRequest converts a Bifrost embedding request to Vertex AI text embedding format.
 func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*VertexEmbeddingRequest, error) {
 	if bifrostReq == nil || len(bifrostReq.Input) == 0 {
@@ -82,13 +99,13 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*Ver
 	vertexReq := &VertexEmbeddingRequest{Instances: instances}
 	if bifrostReq.Params != nil {
 		vertexReq.ExtraParams = extraParams
-		truncate := true
-		if autoTruncate != nil {
-			truncate = *autoTruncate
-		}
-		vertexReq.Parameters = &VertexEmbeddingParameters{
-			AutoTruncate:         &truncate,
-			OutputDimensionality: bifrostReq.Params.Dimensions,
+		// autoTruncate only when the caller sent one: Bifrost adds no value the caller did
+		// not send (contract C4), and Vertex applies its own default when it is absent.
+		if autoTruncate != nil || bifrostReq.Params.Dimensions != nil {
+			vertexReq.Parameters = &VertexEmbeddingParameters{
+				AutoTruncate:         autoTruncate,
+				OutputDimensionality: bifrostReq.Params.Dimensions,
+			}
 		}
 	}
 
@@ -244,7 +261,9 @@ func ToVertexMultimodalEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequ
 
 // ToBifrostEmbeddingResponse converts a Vertex AI embedding response to Bifrost format.
 // Handles both text embedding responses (Embeddings.Values) and native multimodal
-// responses (TextEmbedding / ImageEmbedding / VideoEmbeddings).
+// responses (TextEmbedding / ImageEmbedding / VideoEmbeddings). Vertex text models bill by
+// character: metadata.billableCharacterCount goes to usage.billed_characters, set only from
+// Vertex's own report (contract C5) and never counted as tokens.
 func (response *VertexEmbeddingResponse) ToBifrostEmbeddingResponse() *schemas.BifrostEmbeddingResponse {
 	if response == nil || len(response.Predictions) == 0 {
 		return nil
@@ -305,6 +324,17 @@ func (response *VertexEmbeddingResponse) ToBifrostEmbeddingResponse() *schemas.B
 				Index:     idx,
 			})
 			idx++
+		}
+	}
+
+	// Text embedding models bill per character and report the count once per response
+	// (contract C5); it is carried as billed_characters, never folded into token counts.
+	if response.Metadata != nil {
+		if count := response.Metadata.billableCharacters(); count != nil {
+			if usage == nil {
+				usage = &schemas.BifrostLLMUsage{}
+			}
+			usage.BilledCharacters = count
 		}
 	}
 

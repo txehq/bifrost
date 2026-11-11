@@ -1334,6 +1334,9 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			if err := RejectNonFloatEncodingFormat(request); err != nil {
+				return nil, err
+			}
 			return ToGeminiEmbeddingRequest(request)
 		})
 	if err != nil {

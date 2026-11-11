@@ -317259,6 +317259,390 @@
           }
         }
       ]
+    },
+    {
+      "name": "325. Google embeddings report only what Google bills (google embeddings usage)",
+      "description": "Fork contract C4/C5 for the gemini and vertex embedding converters. Before this, Vertex text embeddings always sent parameters.autoTruncate=true when the caller sent none and dropped metadata.billableCharacterCount, and the Gemini converter counted a billable character count as prompt_tokens when no token count was reported. Now autoTruncate is sent only when given, Vertex's billable character count reaches usage.billed_characters, and Gemini usage comes from what Google reports (usageMetadata, or Vertex :embedContent's per-embedding statistics), staying empty when Google reports nothing. Google's embedding endpoints return float vectors only, so encoding_format base64 (or any non-float value) is refused with 400 caller_unsupported_parameter on encoding_format before any upstream call, where it used to be dropped, on /v1/embeddings and on the OpenAI-shaped /openai/v1/embeddings alike. The native /genai route answers in Gemini's shape rebuilt from unified usage, so it repeats only what Google reported: metadata.billableCharacterCount is the billed character count, where it used to be the token count, and no statistics.tokenCount 0 is written when Google reported none.",
+      "item": [
+        {
+          "name": "325.1 vertex/text-embedding-005 - no autoTruncate unless given, billable characters in usage.billed_characters",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/text-embedding-005\",\n  \"input\": \"alpha kestrel harbor\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function asObj(v) { if (typeof v === 'string') { try { return JSON.parse(v); } catch (e) { return null; } } return v || null; }",
+                  "pm.test('200 with one vector', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+                  "  pm.expect((pm.response.json().data || []).length).to.eql(1);",
+                  "});",
+                  "var j = pm.response.json(); var ef = j.extra_fields || {}; var got = asObj(ef.raw_response) || {};",
+                  "pm.test('Bifrost sent no autoTruncate the caller did not send', function () {",
+                  "  var sent = asObj(ef.raw_request);",
+                  "  pm.expect(sent, 'no raw_request: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(JSON.stringify(sent)).to.not.include('autoTruncate');",
+                  "});",
+                  "pm.test('usage.billed_characters is Vertex metadata.billableCharacterCount', function () {",
+                  "  var md = got.metadata || {}; var count = md.billableCharacterCount !== undefined ? md.billableCharacterCount : md.billable_character_count;",
+                  "  if (count === undefined) { pm.expect(j.usage || {}, 'Bifrost filled a count Vertex did not report').to.not.have.property('billed_characters'); return; }",
+                  "  pm.expect(j.usage.billed_characters).to.eql(count);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "325.2 gemini/gemini-embedding-001 - usage only from usageMetadata, never from a character count",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-embedding-001\",\n  \"input\": \"alpha kestrel harbor\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function asObj(v) { if (typeof v === 'string') { try { return JSON.parse(v); } catch (e) { return null; } } return v || null; }",
+                  "pm.test('200 with one vector', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+                  "  pm.expect((pm.response.json().data || []).length).to.eql(1);",
+                  "});",
+                  "var j = pm.response.json(); var ef = j.extra_fields || {}; var got = asObj(ef.raw_response) || {};",
+                  "pm.test('prompt_tokens is what usageMetadata reports, or absent', function () {",
+                  "  var um = got.usageMetadata;",
+                  "  if (!um) { pm.expect((j.usage || {}).prompt_tokens || 0, 'Bifrost filled tokens Google did not report: ' + JSON.stringify(j.usage)).to.eql(0); return; }",
+                  "  pm.expect(j.usage.prompt_tokens).to.eql(um.promptTokenCount || um.totalTokenCount);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "325.3 [EXPECT-400] gemini/gemini-embedding-001 - encoding_format base64 is caller_unsupported_parameter with no upstream call",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-embedding-001\",\n  \"input\": \"alpha kestrel harbor\",\n  \"encoding_format\": \"base64\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 caller_unsupported_parameter on encoding_format', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 400)).to.eql(400);",
+                  "  var j = pm.response.json(); var ef = j.extra_fields || {};",
+                  "  pm.expect(ef.error_type).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect((j.error || {}).param).to.eql('encoding_format');",
+                  "  pm.expect(!!j.is_bifrost_error, 'the caller is at fault, not Bifrost').to.be.false;",
+                  "});",
+                  "pm.test('Gemini was never called', function () {",
+                  "  var ef = pm.response.json().extra_fields || {};",
+                  "  pm.expect(ef.raw_response, 'an upstream response came back').to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "325.4 [EXPECT-400] vertex/text-embedding-005 - encoding_format base64 is caller_unsupported_parameter with no upstream call",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/text-embedding-005\",\n  \"input\": \"alpha kestrel harbor\",\n  \"encoding_format\": \"base64\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 caller_unsupported_parameter on encoding_format', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 400)).to.eql(400);",
+                  "  var j = pm.response.json(); var ef = j.extra_fields || {};",
+                  "  pm.expect(ef.error_type).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect((j.error || {}).param).to.eql('encoding_format');",
+                  "  pm.expect(!!j.is_bifrost_error, 'the caller is at fault, not Bifrost').to.be.false;",
+                  "});",
+                  "pm.test('Vertex was never called', function () {",
+                  "  var ef = pm.response.json().extra_fields || {};",
+                  "  pm.expect(ef.raw_response, 'an upstream response came back').to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "325.5 /genai gemini/gemini-embedding-001:embedContent - no token count Google did not report",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": {\n    \"parts\": [\n      {\n        \"text\": \"alpha kestrel harbor\"\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-embedding-001:embedContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-embedding-001:embedContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 with a vector', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+                  "  pm.expect(((pm.response.json().embedding || {}).values || []).length).to.be.above(0);",
+                  "});",
+                  "pm.test('statistics.tokenCount is a reported count or absent, never an invented 0', function () {",
+                  "  var st = (pm.response.json().embedding || {}).statistics;",
+                  "  if (st === undefined) { return; }",
+                  "  pm.expect(st.tokenCount).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "325.6 /genai vertex/text-embedding-005:batchEmbedContents - billableCharacterCount is characters, not tokens",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requests\": [\n    {\n      \"model\": \"models/text-embedding-005\",\n      \"content\": {\n        \"parts\": [\n          {\n            \"text\": \"alpha kestrel harbor\"\n          }\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/text-embedding-005:batchEmbedContents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "text-embedding-005:batchEmbedContents"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 with one vector', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+                  "  pm.expect((pm.response.json().embeddings || []).length).to.eql(1);",
+                  "});",
+                  "pm.test('metadata.billableCharacterCount, when present, exceeds the token count for this input', function () {",
+                  "  var j = pm.response.json(); var md = j.metadata;",
+                  "  if (md === undefined) { return; }",
+                  "  var tokens = (((j.embeddings || [])[0] || {}).statistics || {}).tokenCount || 0;",
+                  "  pm.expect(md.billableCharacterCount, 'characters ' + JSON.stringify(md) + ' vs tokens ' + tokens).to.be.above(tokens);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "325.7 [EXPECT-400] /openai/v1/embeddings gemini/gemini-embedding-001 - encoding_format base64 is caller_unsupported_parameter with no upstream call",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-embedding-001\",\n  \"input\": \"alpha kestrel harbor\",\n  \"encoding_format\": \"base64\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 caller_unsupported_parameter on encoding_format', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 400)).to.eql(400);",
+                  "  var j = pm.response.json(); var ef = j.extra_fields || {};",
+                  "  pm.expect(ef.error_type).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect((j.error || {}).param).to.eql('encoding_format');",
+                  "  pm.expect(!!j.is_bifrost_error, 'the caller is at fault, not Bifrost').to.be.false;",
+                  "});",
+                  "pm.test('Gemini was never called', function () {",
+                  "  var ef = pm.response.json().extra_fields || {};",
+                  "  pm.expect(ef.raw_response, 'an upstream response came back').to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

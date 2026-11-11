@@ -312,7 +312,9 @@ func TestToBifrostEmbeddingResponseUsage(t *testing.T) {
 		assert.Equal(t, 9, resp.Usage.PromptTokens)
 	})
 
-	t.Run("statistics still drive usage when usageMetadata is absent", func(t *testing.T) {
+	// Vertex :embedContent reports statistics.tokenCount per embedding: a vendor count,
+	// so it is usage under contract C5 when usageMetadata is absent.
+	t.Run("statistics drive usage when usageMetadata is absent", func(t *testing.T) {
 		resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
 			Embeddings: []gemini.GeminiEmbedding{
 				{Values: []float64{0.1}, Statistics: &gemini.ContentEmbeddingStatistics{TokenCount: 2}},
@@ -322,6 +324,35 @@ func TestToBifrostEmbeddingResponseUsage(t *testing.T) {
 
 		require.NotNil(t, resp.Usage)
 		assert.Equal(t, 5, resp.Usage.PromptTokens)
+		assert.Equal(t, 5, resp.Usage.TotalTokens)
+		assert.Nil(t, resp.Usage.BilledCharacters)
+	})
+
+	t.Run("statistics and billable characters are reported side by side", func(t *testing.T) {
+		resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+			Embedding: &gemini.GeminiEmbedding{Values: []float64{0.1}, Statistics: &gemini.ContentEmbeddingStatistics{TokenCount: 4}},
+			Metadata:  &gemini.EmbedContentMetadata{BillableCharacterCount: 20},
+		}, "gemini-embedding-001")
+
+		require.NotNil(t, resp.Usage)
+		assert.Equal(t, 4, resp.Usage.PromptTokens, "tokens are not replaced by the character count")
+		require.NotNil(t, resp.Usage.BilledCharacters)
+		assert.Equal(t, 20, *resp.Usage.BilledCharacters)
+	})
+
+	// A billable character count is characters, never tokens: it lands in
+	// billed_characters and prompt_tokens stays unreported.
+	t.Run("billable character count is billed_characters, not prompt tokens", func(t *testing.T) {
+		resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+			Embedding: &gemini.GeminiEmbedding{Values: []float64{0.1}},
+			Metadata:  &gemini.EmbedContentMetadata{BillableCharacterCount: 42},
+		}, "gemini-embedding-001")
+
+		require.NotNil(t, resp.Usage)
+		require.NotNil(t, resp.Usage.BilledCharacters)
+		assert.Equal(t, 42, *resp.Usage.BilledCharacters)
+		assert.Equal(t, 0, resp.Usage.PromptTokens)
+		assert.Equal(t, 0, resp.Usage.TotalTokens)
 	})
 
 	t.Run("no usage reported leaves usage unset", func(t *testing.T) {

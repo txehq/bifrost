@@ -1981,6 +1981,7 @@ type BifrostLLMUsage struct {
 	// apart from the billed counts in PromptTokens/CompletionTokens (Cohere's usage.tokens
 	// next to usage.billed_units). Absent when the vendor reports only one set (contract C5).
 	ProcessedTokens   *ProcessedTokenUsage `json:"processed_tokens,omitempty"`
+	BilledCharacters  *int                 `json:"billed_characters,omitempty"` // Vendor-billed character count; nil when unreported
 	ToolUsage         *ToolUsage           `json:"tool_usage,omitempty"`
 	SearchContextSize *string              `json:"search_context_size,omitempty"` // Search context tier the vendor billed ("low" | "medium" | "high")
 	Cost              *BifrostCost         `json:"cost,omitempty"`                // Only for the providers which support cost calculation
@@ -2369,6 +2370,7 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 
 	merged.InputImages = sumOptionalInts(base.InputImages, add.InputImages)
 	merged.ProcessedTokens = base.ProcessedTokens.Add(add.ProcessedTokens)
+	merged.BilledCharacters = sumOptionalInts(base.BilledCharacters, add.BilledCharacters)
 	merged.ToolUsage = base.ToolUsage.Add(add.ToolUsage)
 	merged.Cost = base.Cost.Add(add.Cost)
 	// A tier is not a quantity: the later call's report stands, else the earlier one's.
@@ -2800,6 +2802,7 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 	}
 	c.InputImages = copyIntPtr(u.InputImages)
 	c.ProcessedTokens = u.ProcessedTokens.Add(nil)
+	c.BilledCharacters = copyIntPtr(u.BilledCharacters)
 	c.ToolUsage = u.ToolUsage.DeepCopy()
 	if u.SearchContextSize != nil {
 		scs := *u.SearchContextSize

@@ -434,3 +434,22 @@ func TestBifrostLLMUsageInputImagesMergeAndCopy(t *testing.T) {
 		t.Fatalf("copy shares the input_images pointer: %v", copied.InputImages)
 	}
 }
+
+// billed_characters is a vendor-reported count (contract C5): merging sums it, a side that
+// never reported it adds nothing, and a copy owns its pointer.
+func TestBifrostLLMUsageBilledCharactersMergeAndCopy(t *testing.T) {
+	two, three := 2, 3
+	merged := MergeBifrostLLMUsage(&BifrostLLMUsage{BilledCharacters: &two}, &BifrostLLMUsage{BilledCharacters: &three})
+	if merged.BilledCharacters == nil || *merged.BilledCharacters != 5 {
+		t.Fatalf("merged billed_characters = %v, want 5", merged.BilledCharacters)
+	}
+	if got := MergeBifrostLLMUsage(&BifrostLLMUsage{PromptTokens: 1}, &BifrostLLMUsage{PromptTokens: 2}); got.BilledCharacters != nil {
+		t.Fatalf("neither side reported characters, got %d", *got.BilledCharacters)
+	}
+	orig := &BifrostLLMUsage{BilledCharacters: &two}
+	copied := orig.DeepCopy()
+	*orig.BilledCharacters = 9
+	if copied.BilledCharacters == nil || *copied.BilledCharacters != 2 {
+		t.Fatalf("copy shares the billed_characters pointer: %v", copied.BilledCharacters)
+	}
+}

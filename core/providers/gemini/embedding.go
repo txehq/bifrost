@@ -182,6 +182,34 @@ func applyGeminiEmbeddingParams(req *GeminiEmbeddingRequest, params *schemas.Emb
 	}
 }
 
+// RejectNonFloatEncodingFormat refuses an embedding request whose encoding_format, on the
+// request or on any input item, is anything but float: Gemini's embedContent and
+// batchEmbedContents, and every Vertex embedding endpoint, return float vectors only and
+// take no output-format parameter. Contract C4: a field that cannot be delivered as given
+// is 400 caller_unsupported_parameter, before any upstream call; Bifrost does not encode
+// the floats itself. The error travels through CheckContextAndGetRequestBody intact.
+func RejectNonFloatEncodingFormat(req *schemas.BifrostEmbeddingRequest) error {
+	if req == nil {
+		return nil
+	}
+	check := func(params *schemas.EmbeddingParameters) error {
+		if params == nil || params.EncodingFormat == nil || *params.EncodingFormat == schemas.EmbeddingEncodingFloat {
+			return nil
+		}
+		return providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError("encoding_format",
+			fmt.Sprintf("encoding_format %q is not supported: Google embedding endpoints return float vectors only", *params.EncodingFormat)))
+	}
+	if err := check(req.Params); err != nil {
+		return err
+	}
+	for i := range req.Input {
+		if err := check(req.Input[i].Params); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ToGeminiEmbeddingRequest converts a Bifrost embedding request to Gemini request format.
 // Each element in Contents maps to one GeminiEmbeddingRequest (one output embedding).
 // Parts within a single content are aggregated into one embedding by Gemini.
@@ -228,7 +256,7 @@ func ToGeminiEmbedContentResponse(bifrostResp *schemas.BifrostEmbeddingResponse)
 	embedding := GeminiEmbedding{
 		Values: append([]float64(nil), values...),
 	}
-	if bifrostResp.Usage != nil {
+	if bifrostResp.Usage != nil && bifrostResp.Usage.PromptTokens > 0 {
 		embedding.Statistics = &ContentEmbeddingStatistics{
 			TokenCount: int32(bifrostResp.Usage.PromptTokens),
 		}
@@ -248,7 +276,7 @@ func ToGeminiEmbeddingResponse(bifrostResp *schemas.BifrostEmbeddingResponse) *G
 
 	for i, embedding := range bifrostResp.Data {
 		geminiEmbedding := GeminiEmbedding{Values: append([]float64(nil), embedding.Embedding.EmbeddingArray...)}
-		if bifrostResp.Usage != nil && len(bifrostResp.Data) == 1 {
+		if bifrostResp.Usage != nil && bifrostResp.Usage.PromptTokens > 0 && len(bifrostResp.Data) == 1 {
 			geminiEmbedding.Statistics = &ContentEmbeddingStatistics{
 				TokenCount: int32(bifrostResp.Usage.PromptTokens),
 			}
@@ -259,9 +287,12 @@ func ToGeminiEmbeddingResponse(bifrostResp *schemas.BifrostEmbeddingResponse) *G
 	if len(geminiResp.Embeddings) == 1 {
 		geminiResp.Embedding = &geminiResp.Embeddings[0]
 	}
-	if bifrostResp.Usage != nil {
+	// The native response repeats only what the vendor reported (contract C5): token counts
+	// go in statistics.tokenCount, and metadata.billableCharacterCount is the billed character
+	// count, never a token count standing in for one.
+	if bifrostResp.Usage != nil && bifrostResp.Usage.BilledCharacters != nil {
 		geminiResp.Metadata = &EmbedContentMetadata{
-			BillableCharacterCount: int32(bifrostResp.Usage.PromptTokens),
+			BillableCharacterCount: int32(*bifrostResp.Usage.BilledCharacters),
 		}
 	}
 	return geminiResp
@@ -278,6 +309,48 @@ func geminiResponseEmbeddings(resp *GeminiEmbeddingResponse) []GeminiEmbedding {
 		return []GeminiEmbedding{*resp.Embedding}
 	}
 	return nil
+}
+
+// geminiEmbeddingUsage reports what Google reported and nothing else (contract C5):
+// usageMetadata's token counts first; else the per-embedding statistics.tokenCount that
+// Vertex :embedContent reports (a vendor count, summed across embeddings); and a billable
+// character count as billed_characters, never as tokens. Bifrost counts nothing itself.
+// Nil when Google reported none of them.
+func geminiEmbeddingUsage(geminiResp *GeminiEmbeddingResponse) *schemas.BifrostLLMUsage {
+	statsTokens, hasStats := 0, false
+	for _, emb := range geminiResponseEmbeddings(geminiResp) {
+		if emb.Statistics != nil {
+			hasStats = true
+			statsTokens += int(emb.Statistics.TokenCount)
+		}
+	}
+
+	var usage *schemas.BifrostLLMUsage
+	if um := geminiResp.UsageMetadata; um != nil && (um.PromptTokenCount > 0 || um.TotalTokenCount > 0) {
+		prompt, total := int(um.PromptTokenCount), int(um.TotalTokenCount)
+		// An embedding has no output tokens, so either count is the input count; the
+		// per-embedding statistics are the finer report when only a total came back.
+		if prompt == 0 {
+			prompt = statsTokens
+			if prompt == 0 {
+				prompt = total
+			}
+		}
+		if total == 0 {
+			total = prompt
+		}
+		usage = &schemas.BifrostLLMUsage{PromptTokens: prompt, TotalTokens: total}
+	} else if hasStats {
+		usage = &schemas.BifrostLLMUsage{PromptTokens: statsTokens, TotalTokens: statsTokens}
+	}
+	if md := geminiResp.Metadata; md != nil && md.BillableCharacterCount > 0 {
+		if usage == nil {
+			usage = &schemas.BifrostLLMUsage{}
+		}
+		count := int(md.BillableCharacterCount)
+		usage.BilledCharacters = &count
+	}
+	return usage
 }
 
 // ToBifrostEmbeddingResponse converts a Gemini embedding response to BifrostEmbeddingResponse format
@@ -303,45 +376,7 @@ func ToBifrostEmbeddingResponse(geminiResp *GeminiEmbeddingResponse, model strin
 		}
 	}
 
-	hasStats := false
-	for _, emb := range embeddings {
-		if emb.Statistics != nil {
-			hasStats = true
-			break
-		}
-	}
-	if um := geminiResp.UsageMetadata; um != nil && (um.PromptTokenCount > 0 || um.TotalTokenCount > 0) {
-		prompt := int(um.PromptTokenCount)
-		total := int(um.TotalTokenCount)
-		if prompt == 0 {
-			for _, emb := range embeddings {
-				if emb.Statistics != nil {
-					prompt += int(emb.Statistics.TokenCount)
-				}
-			}
-			if prompt == 0 {
-				prompt = total
-			}
-		}
-		if total == 0 {
-			total = prompt
-		}
-		bifrostResp.Usage = &schemas.BifrostLLMUsage{PromptTokens: prompt, TotalTokens: total}
-	} else if geminiResp.Metadata != nil || hasStats {
-		bifrostResp.Usage = &schemas.BifrostLLMUsage{}
-		var totalTokens int
-		for _, emb := range embeddings {
-			if emb.Statistics != nil {
-				totalTokens += int(emb.Statistics.TokenCount)
-			}
-		}
-		if totalTokens > 0 {
-			bifrostResp.Usage.PromptTokens = totalTokens
-		} else if geminiResp.Metadata != nil {
-			bifrostResp.Usage.PromptTokens = int(geminiResp.Metadata.BillableCharacterCount)
-		}
-		bifrostResp.Usage.TotalTokens = bifrostResp.Usage.PromptTokens
-	}
+	bifrostResp.Usage = geminiEmbeddingUsage(geminiResp)
 
 	return bifrostResp
 }

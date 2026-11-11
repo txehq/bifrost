@@ -1753,19 +1753,12 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	}
 
 	isGeminiEmbedding2Request := isVertexGeminiEmbeddingModel(request.Model)
-	isNativeMultimodalRequest := isVertexNativeMultimodalEmbeddingModel(request.Model)
 
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			if isGeminiEmbedding2Request {
-				return ToVertexGeminiEmbeddingRequest(request)
-			}
-			if isNativeMultimodalRequest {
-				return ToVertexMultimodalEmbeddingRequest(request)
-			}
-			return ToVertexEmbeddingRequest(request)
+			return toVertexEmbeddingRequestBody(request)
 		},
 	)
 	if bifrostErr != nil {
