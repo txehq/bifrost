@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +21,46 @@ import (
 // updated 2026-10-20): create by name, POST /requests with batch_requests[].batch_request_id
 // and batch_request.chat_get_completion, results under results[].batch_result.response with
 // usage.cost_in_usd_ticks, and pagination_token paging (TXE-6664, contract C8).
+
+// pinnedNow is the instant every test in this package runs at. The vendor bodies here are
+// recorded around it (created 2026-11-10T04:00Z, expiring 2026-11-11T04:00Z), and the batch
+// status mapping compares a batch's expire_time with nowFunc, so under the real clock a
+// recorded in-progress batch reads as expired from the moment its recorded expiry passes
+// (TXE-7090: TestBatchCreateInlineChatLines failed on main from 2026-11-11T04:00Z). TestMain
+// pins nowFunc for the whole package; a test that needs another instant sets nowFunc itself
+// and restores it. TestXAIReadsTheClockOnlyThroughNowFunc keeps the pin effective.
+var pinnedNow = time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+
+func TestMain(m *testing.M) {
+	nowFunc = func() time.Time { return pinnedNow }
+	os.Exit(m.Run())
+}
+
+// TestXAIReadsTheClockOnlyThroughNowFunc fails when this package's code reads the real clock
+// other than through nowFunc: such a read would compare recorded vendor timestamps with
+// today's date again, and the tests would start failing on a date nobody chose.
+func TestXAIReadsTheClockOnlyThroughNowFunc(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clockRead := regexp.MustCompile(`\btime\.(Now|Since|Until)\b`)
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			if clockRead.MatchString(line) && strings.TrimSpace(line) != "var nowFunc = time.Now" {
+				t.Errorf("%s:%d reads the real clock: %s; read it through nowFunc so the tests run at pinnedNow", name, i+1, strings.TrimSpace(line))
+			}
+		}
+	}
+}
 
 type recordedRequest struct {
 	Method string
