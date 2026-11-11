@@ -239,7 +239,7 @@ func TestKlingVideoGenerationPathAndAudioByModel(t *testing.T) {
 		"kling-2.5-turbo image": {model: "kling-2.5-turbo", input: firstFrame, params: &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("5")}, wantPath: "/image-to-video/kling-2.5-turbo", contents: true},
 		"kling-3.0-omni text":   {model: "kling-3.0-omni", params: &schemas.VideoGenerationParameters{Audio: schemas.Ptr(true), AspectRatio: "16:9"}, wantPath: "/omni-video/kling-3.0-omni", wantAudio: "native", contents: true},
 		"kling-3.0-omni image":  {model: "kling-3.0-omni", input: firstFrame, params: &schemas.VideoGenerationParameters{Resolution: "4k", LastFrame: "https://example.com/last.png"}, wantPath: "/omni-video/kling-3.0-omni", contents: true},
-		"kling-o1 text":         {model: "Kling-O1", params: &schemas.VideoGenerationParameters{Audio: schemas.Ptr(true), Seconds: schemas.Ptr("3")}, wantPath: "/omni-video/kling-o1", wantAudio: "original", contents: true},
+		"kling-o1 text":         {model: "kling-o1", params: &schemas.VideoGenerationParameters{Audio: schemas.Ptr(true), Seconds: schemas.Ptr("3")}, wantPath: "/omni-video/kling-o1", wantAudio: "original", contents: true},
 		"kling-o1 audio off":    {model: "kling-o1", input: firstFrame, params: &schemas.VideoGenerationParameters{Audio: schemas.Ptr(false)}, wantPath: "/omni-video/kling-o1", wantAudio: "off", contents: true},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -366,9 +366,11 @@ func TestKlingVideoGenerationRefusesExtraParamsOverridingTheBody(t *testing.T) {
 }
 
 // A model with no tier table is refused: an out-of-tier value could not be recognised for it.
+// So is another spelling of a served name: governance and pricing read the name as written, so
+// a variant they do not know must not be folded onto a served model here.
 func TestKlingVideoGenerationUnknownModel(t *testing.T) {
 	provider, captured := newMockKling(t, nil, http.StatusOK, createBody)
-	for _, model := range []string{"kling-2.1", "kling-v3-pro", ""} {
+	for _, model := range []string{"kling-2.1", "kling-v3-pro", "", "Kling-3.0", "KLING-3.0", " kling-3.0", "kling-3.0 "} {
 		_, bifrostErr := provider.VideoGeneration(testContext(t), testKey(), videoRequest(model, nil, nil))
 		assertRefusal(t, bifrostErr, schemas.ErrorTypeCallerModelUnknown, "")
 	}

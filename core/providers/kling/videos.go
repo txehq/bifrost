@@ -110,7 +110,9 @@ func klingModelNames() []string {
 // klingEndpointFor picks the create path of a request: the omni path for an omni model, else
 // image-to-video when the request has a first frame and text-to-video when it has none.
 func klingEndpointFor(request *schemas.BifrostVideoGenerationRequest) (*klingEndpoint, *schemas.BifrostError) {
-	model, ok := klingModels[strings.ToLower(strings.TrimSpace(request.Model))]
+	// The name is matched exactly, not folded: governance and pricing read request.Model as the
+	// caller wrote it, so a spelling they do not know must not reach a model here.
+	model, ok := klingModels[request.Model]
 	if !ok {
 		bifrostErr := providerUtils.NewBifrostBadRequestError(fmt.Sprintf(
 			"kling: model %q is not served by this provider (served: %s)", request.Model, strings.Join(klingModelNames(), ", ")))
