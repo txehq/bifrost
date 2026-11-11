@@ -541,7 +541,8 @@ when `providerErrorFixture=1`. Start the fixture and the isolated gateway as in 
 newman run tests/e2e/api/collections/provider-harness.json \
   --folder "406. Gemini embedding batches run through asyncBatchEmbedContent (gemini embedding-batch)" \
   --env-var baseUrl=http://127.0.0.1:8790 \
-  --env-var providerErrorFixture=1
+  --env-var providerErrorFixture=1 \
+  --env-var providerErrorFixtureUrl=http://127.0.0.1:8791
 ```
 
 The fixture answers `POST /pp/gemini/models/{model}:asyncBatchEmbedContent` with a pending job,
