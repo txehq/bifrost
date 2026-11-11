@@ -110,10 +110,19 @@ function executionFailed(execution) {
 // What ran, from a newman report (single or merged). A request that ran in more than one process
 // (a retry, a chain producer shared by shards) appears once per run under the same id, which
 // assignStableIds gives it; the last one is the request's result, as in lib/newman-merge.jq.
+//
+// A script that throws outside pm.test (a pre-request script, or a test script that fails to
+// parse the response before any assertion runs) leaves no failed assertion on the execution:
+// newman records it only under run.failures, with the request as its source. Those requests
+// are failed too.
 export function countRun(report) {
   const last = new Map();
   let anonymous = 0;
   let anonymousFailed = 0;
+  const failedSources = new Set();
+  for (const failure of report?.run?.failures || []) {
+    if (failure?.source?.id) failedSources.add(failure.source.id);
+  }
   for (const execution of report?.run?.executions || []) {
     const id = execution.item?.id;
     if (id) last.set(id, execution);
@@ -123,7 +132,7 @@ export function countRun(report) {
     }
   }
   let failed = anonymousFailed;
-  for (const execution of last.values()) if (executionFailed(execution)) failed++;
+  for (const [id, execution] of last) if (executionFailed(execution) || failedSources.has(id)) failed++;
   return { run: last.size + anonymous, failed };
 }
 

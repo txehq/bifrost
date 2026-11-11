@@ -111,6 +111,11 @@ test("run counts: a retried request counts once, with its last attempt's result"
   assert.deepStrictEqual(counts, { run: 2, failed: 0 });
 });
 
+test("run counts: a request whose script threw outside pm.test is failed, from run.failures", () => {
+  const report = { run: { executions: [execution("a"), execution("b")], failures: [{ source: { id: "b", name: "b" }, error: { name: "TypeError" } }, { error: { name: "Error" } }] } };
+  assert.deepStrictEqual(countRun(report), { run: 2, failed: 1 });
+});
+
 test("the summary splits skipped rows into missing-key and other, and prints all four counts", () => {
   const selection = countSelection({ item: [guarded("a"), guarded("b"), plain("c"), plain("d"), plain("e")] });
   const s = summarize(selection, countRun({ run: { executions: [execution("c"), execution("d", { assertionError: true })] } }));
@@ -203,6 +208,19 @@ test("the augment step writes an id on every request of the real collection, all
   const ids = requests(wrongProfileAugmented).map((item) => item.id);
   assert.ok(ids.length > 1000 && ids.every(Boolean), "a request has no id");
   assert.strictEqual(new Set(ids).size, ids.length);
+});
+
+test("a real newman report: a test script that throws before its assertions counts as a failed request", () => {
+  const throwing = { info: { name: "throws", schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json" }, item: [{ name: "f", item: [
+    { name: "throws", request: { method: "GET", url: "{{baseUrl}}/x" }, event: [{ listen: "prerequest", script: { exec: ["undefinedFunctionCall();"] } }] },
+  ] }] };
+  assignStableIds(throwing);
+  const file = path.join(dir, "throws.json");
+  fs.writeFileSync(file, JSON.stringify(throwing));
+  const run = runNewman(file, "throws");
+  const report = JSON.parse(fs.readFileSync(run.report, "utf8"));
+  assert.ok(report.run.failures.length > 0, "newman recorded the script error");
+  assert.ok(countRun(report).failed >= 1, JSON.stringify(countRun(report)));
 });
 
 const wrongRun = runNewman(wrongProfile, "default-profile");
