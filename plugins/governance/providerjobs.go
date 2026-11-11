@@ -488,18 +488,19 @@ var passthroughCollections = map[string]string{
 	"cachedContents": configstoreTables.ProviderObjectKindCachedContent,
 }
 
-// passthroughTaskCollections are the collections a POST creates a task in,
-// passthroughTaskOperations the model operations that create one (Gemini's batch create is
-// "models/<m>:batchGenerateContent"), and passthroughVideoDerivations the routes under videos
+// passthroughTaskCollections are the collections a POST creates a task in (Vertex's batch
+// create posts to "batchPredictionJobs"), passthroughTaskOperations the model operations that
+// create one (Gemini's batch create is "models/<m>:batchGenerateContent", its and Vertex's
+// video create "models/<m>:predictLongRunning"), and passthroughVideoDerivations the routes under videos
 // that create a new video from an existing one or from an upload ("videos/<id>/remix",
 // "videos/edits", "videos/extensions"). The task such a request creates is addressed afterwards
-// under batches/<id> or videos/<id>, which fails closed (ownedOnlyByRecord), and a passthrough
+// through the gateway's batch or video routes, which fail closed (ownedOnlyByRecord), and a passthrough
 // answer is the provider's raw body, from which no creator is recorded. So a virtual key that
 // created a task this way could never reach it again; the create is refused and the key is sent
 // to the gateway's own route, which records it.
-var passthroughTaskCollections = [...]string{"batches", "videos"}
+var passthroughTaskCollections = [...]string{"batches", "videos", "batchPredictionJobs"}
 
-var passthroughTaskOperations = [...]string{"batchGenerateContent", "asyncBatchEmbedContent"}
+var passthroughTaskOperations = [...]string{"batchGenerateContent", "asyncBatchEmbedContent", "predictLongRunning"}
 
 var passthroughVideoDerivations = [...]string{"remix", "edits", "extensions"}
 
