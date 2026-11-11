@@ -62,6 +62,9 @@ var videoProviders = map[schemas.ModelProvider]struct{}{
 	schemas.MiniMax:   {},
 	schemas.BytePlus:  {},
 	schemas.Kling:     {},
+	// Fork: Wan video on DashScope (TXE-6432). Without this entry a create is recorded and never
+	// settled, so a budgeted virtual key is never charged for it.
+	schemas.DashScope: {},
 }
 
 // videoSettlementExemptions are the providers that implement video and are deliberately not
