@@ -58,6 +58,9 @@ func restrictedPlugin(t *testing.T, storagePrefixes, pubSubTopics []string) *Gov
 // input, as an output, as the object a route addresses, in an extra param and in a raw body.
 func storageRequests(provider schemas.ModelProvider, location string) map[string]*schemas.BifrostRequest {
 	str := func(s string) *string { return &s }
+	// A batch on Vertex or Bedrock runs on an input file; an inline one is refused for a key
+	// with a storage list (TestVirtualKeyStorageAllowlistRefusesInlineBatchesThatUploadTheirInput).
+	input := map[schemas.ModelProvider]string{schemas.Vertex: "gs://shared-bucket/tenant-a/in/input.jsonl", schemas.Bedrock: "s3://tenant-a-bucket/in/input.jsonl"}[provider]
 	return map[string]*schemas.BifrostRequest{
 		"chat file": {RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: provider, Model: "m", Input: []schemas.ChatMessage{{
 			Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileURL: str(location)}}}}}}}},
@@ -69,11 +72,9 @@ func storageRequests(provider schemas.ModelProvider, location string) map[string
 			Input: &schemas.VideoGenerationInput{Prompt: "p"}, Params: &schemas.VideoGenerationParameters{TaskControlParameters: schemas.TaskControlParameters{OutputStorageURI: str(location)}}}},
 		"batch input file": {RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: provider, Model: str("m"), InputFileID: location}},
 		"batch output folder": {RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: provider, Model: str("m"),
-			Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"model": "m"}}}, OutputFolder: &schemas.BatchOutputFolder{URL: location}}},
+			InputFileID: input, OutputFolder: &schemas.BatchOutputFolder{URL: location}}},
 		"batch output extra param": {RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: provider, Model: str("m"),
-			Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"model": "m"}}}, ExtraParams: map[string]any{"output_s3_uri": location}}},
-		"batch inline item": {RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: provider, Model: str("m"),
-			Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"contents": []any{map[string]any{"fileData": map[string]any{"fileUri": location}}}}}}}},
+			InputFileID: input, ExtraParams: map[string]any{"output_s3_uri": location}}},
 		"file content":  {RequestType: schemas.FileContentRequest, FileContentRequest: &schemas.BifrostFileContentRequest{Provider: provider, FileID: location}},
 		"file retrieve": {RequestType: schemas.FileRetrieveRequest, FileRetrieveRequest: &schemas.BifrostFileRetrieveRequest{Provider: provider, FileID: location}},
 		"file delete":   {RequestType: schemas.FileDeleteRequest, FileDeleteRequest: &schemas.BifrostFileDeleteRequest{Provider: provider, FileID: location}},
@@ -131,6 +132,20 @@ func TestVirtualKeyStorageAllowlist(t *testing.T) {
 			})
 		}
 	}
+
+	// The items of an inline batch are read like any raw body, on a provider that takes them in
+	// the request itself.
+	inlineItem := func(location string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.OpenAI,
+			Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"contents": []any{map[string]any{"fileData": map[string]any{"fileUri": location}}}}}}}}
+	}
+	_, inlineRefusal, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), inlineItem("gs://shared-bucket/tenant-b/in/a.jsonl"))
+	require.NoError(t, err)
+	require.NotNil(t, inlineRefusal, "an inline batch item naming storage outside the key's")
+	assert.Equal(t, 403, *inlineRefusal.Error.StatusCode)
+	_, inlineRefusal, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), inlineItem("gs://shared-bucket/tenant-a/in/a.jsonl"))
+	require.NoError(t, err)
+	assert.Nil(t, inlineRefusal, "an inline batch item naming storage inside the key's")
 
 	// A request that names no storage is untouched, and so is one naming a file by a provider id.
 	for name, req := range map[string]*schemas.BifrostRequest{
@@ -265,6 +280,8 @@ func TestVirtualKeyPubSubTopicAllowlist(t *testing.T) {
 		"another topic in a raw body":       {passthrough(`{"parameters":{"pubsubTopic":"` + other + `"}}`), true},
 		"the key's own topic in a raw body": {passthrough(`{"parameters":{"pubsubTopic":"` + own + `"}}`), false},
 		"no topic":                          {video(map[string]interface{}{"resolution": "720p"}), false},
+		"another topic in an inline batch item": {&schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.OpenAI,
+			Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"parameters": map[string]any{"pubsubTopic": other}}}}}}, true},
 		"a topic name in the prompt": {&schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{Provider: schemas.OpenAI, Model: "m",
 			Input: &schemas.VideoGenerationInput{Prompt: other}}}, false},
 	} {
@@ -323,6 +340,85 @@ func TestRawRequestBodyIsRead(t *testing.T) {
 		_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), upload)
 		require.NoError(t, err)
 		assert.Nil(t, shortCircuit, "uploaded content is not read as a request: %s", name)
+	}
+}
+
+// An inline batch on Vertex or Bedrock is uploaded by the provider as an input file, to a
+// location the gateway derives and the request does not name. A key limited to its storage
+// cannot be held to the list there, so the inline form is refused and the file form is not.
+func TestVirtualKeyStorageAllowlistRefusesInlineBatchesThatUploadTheirInput(t *testing.T) {
+	plugin := restrictedPlugin(t, []string{"gs://shared-bucket/tenant-a", "s3://shared-bucket/tenant-a"}, nil)
+	open := restrictedPlugin(t, nil, nil)
+	inline := func(provider schemas.ModelProvider, folder string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: provider, Model: schemas.Ptr("m"),
+			Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"model": "m"}}}, OutputFolder: &schemas.BatchOutputFolder{URL: folder}}}
+	}
+	for provider, folder := range map[schemas.ModelProvider]string{schemas.Vertex: "gs://shared-bucket/tenant-a/out/", schemas.Bedrock: "s3://shared-bucket/tenant-a/out/"} {
+		_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), inline(provider, folder))
+		require.NoError(t, err)
+		require.NotNil(t, shortCircuit, "%s: an inline batch uploads its input outside the key's storage", provider)
+		assert.Equal(t, 403, *shortCircuit.Error.StatusCode)
+		assert.Contains(t, shortCircuit.Error.Error.Message, "input_file_id")
+
+		byFile := inline(provider, folder)
+		byFile.BatchCreateRequest.Requests = nil
+		byFile.BatchCreateRequest.InputFileID = strings.TrimSuffix(folder, "out/") + "in/a.jsonl"
+		_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), byFile)
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit, "%s: a batch on an input file inside the key's storage", provider)
+
+		_, shortCircuit, err = open.PreLLMHook(presentCtx(mcpTestVKValue), inline(provider, folder))
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit, "%s: a key with no list creates inline batches as before", provider)
+	}
+	// A provider that takes inline items in the request itself uploads nothing.
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.OpenAI,
+		Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"model": "m"}}}}})
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "an inline batch on a provider with no storage upload")
+}
+
+// The allowlist check runs on every request of a key that has a list, and costs nothing for a
+// key that has none.
+func BenchmarkPreLLMHookCloudResourceAllowlists(b *testing.B) {
+	text := strings.Repeat("The quick brown fox. ", 40)
+	image := "https://example.com/images/cat.png"
+	messages := make([]schemas.ChatMessage, 0, 20)
+	for i := 0; i < 20; i++ {
+		messages = append(messages, schemas.ChatMessage{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeText, Text: &text},
+			{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: image}},
+		}}})
+	}
+	stored := "gs://shared-bucket/tenant-a/in/a.png"
+	requests := map[string]*schemas.BifrostRequest{
+		"chat_web_images": {RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "m", Input: messages}},
+		"chat_stored_image": {RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "m", Input: []schemas.ChatMessage{{
+			Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: stored}}}}}}}},
+	}
+	keys := map[string][2][]string{
+		"no_lists":           {nil, nil},
+		"storage_list":       {{"gs://shared-bucket/tenant-a"}, nil},
+		"storage_and_topics": {{"gs://shared-bucket/tenant-a"}, {"projects/p/topics/tenant-a"}},
+	}
+	for keyName, lists := range keys {
+		vk := buildVKForMCPStamping(nil)
+		vk.AllowedStoragePrefixes, vk.AllowedPubSubTopics = lists[0], lists[1]
+		plugin := newAccessTestPlugin(b, vk, nil)
+		plugin.objectOwnershipEnforcedFn = func() bool { return false }
+		for reqName, req := range requests {
+			b.Run(keyName+"/"+reqName, func(b *testing.B) {
+				ctx := presentCtx(mcpTestVKValue)
+				if _, shortCircuit, err := plugin.PreLLMHook(ctx, req); err != nil || shortCircuit != nil {
+					b.Fatalf("the request is refused: %v %v", err, shortCircuit)
+				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					_, _, _ = plugin.PreLLMHook(presentCtx(mcpTestVKValue), req)
+				}
+			})
+		}
 	}
 }
 

@@ -298,11 +298,65 @@ func (c *topicCollector) scanBytes(value reflect.Value, depth int) {
 }
 
 // requestPubSubTopics returns the Pub/Sub topics a request names in its untyped data, on
-// whatever request type is set. unreadable is true when part of the request could not be read.
+// whatever request type is set. It follows the plan the file extraction is built on
+// (requestFileRefPlan), which already leads to every field holding untyped data or a forwarded
+// body and skips the rest, so a chat's messages are not walked for it. A passthrough body and
+// the bodies of inline batch items, which that plan leaves to their own readers, are read here.
+// unreadable is true when part of the request could not be read.
 func requestPubSubTopics(req *schemas.BifrostRequest) (topics []string, unreadable bool) {
 	var collector topicCollector
-	collector.scan(reflect.ValueOf(req).Elem(), false, 0)
+	collector.walk(reflect.ValueOf(req).Elem(), requestFileRefPlan())
+	if r := req.PassthroughRequest; r != nil {
+		collector.scanBytes(reflect.ValueOf(r.Body), 0)
+	}
+	if r := req.BatchCreateRequest; r != nil {
+		for i := range r.Requests {
+			collector.scan(reflect.ValueOf(r.Requests[i].Body), true, 0)
+			collector.scan(reflect.ValueOf(r.Requests[i].Params), true, 0)
+		}
+	}
 	return collector.topics, collector.unreadable
+}
+
+// walk visits the planned fields of a struct value: untyped data and forwarded bodies are
+// scanned, typed fields that lead to them are followed, file reference fields are skipped.
+func (c *topicCollector) walk(value reflect.Value, plan *fileRefPlan) {
+	for i := range plan.steps {
+		step := &plan.steps[i]
+		field := value.Field(step.index)
+		switch {
+		case step.kind != 0:
+		case step.open:
+			if field.Kind() == reflect.Slice && field.Type().Elem().Kind() == reflect.Uint8 {
+				c.scanBytes(field, 0)
+			} else {
+				c.scan(field, true, 0)
+			}
+		default:
+			c.walkStructs(field, step.next)
+		}
+	}
+}
+
+// walkStructs follows a field down to the structs it holds.
+func (c *topicCollector) walkStructs(value reflect.Value, plan *fileRefPlan) {
+	switch value.Kind() {
+	case reflect.Pointer:
+		if !value.IsNil() {
+			c.walkStructs(value.Elem(), plan)
+		}
+	case reflect.Struct:
+		c.walk(value, plan)
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < value.Len(); i++ {
+			c.walkStructs(value.Index(i), plan)
+		}
+	case reflect.Map:
+		iter := value.MapRange()
+		for iter.Next() {
+			c.walkStructs(iter.Value(), plan)
+		}
+	}
 }
 
 // enforceCloudResourceAllowlists refuses a request that names storage or a Pub/Sub topic
@@ -335,6 +389,17 @@ func (p *GovernancePlugin) enforceCloudResourceAllowlists(ctx *schemas.BifrostCo
 		for _, location := range locations {
 			if !storageLocationAllowed(prefixes, location) {
 				return refuse(403, fmt.Sprintf("storage location '%s' is outside the storage this virtual key may use", location))
+			}
+		}
+		// An inline batch on Vertex or Bedrock is turned into an input file that the provider
+		// uploads to a location it derives itself (a sibling of the output folder on Vertex, a
+		// bucket-root folder on Bedrock), after this check and outside the key's storage. The
+		// request names no such location, so it cannot be held to the list; the key uploads its
+		// input inside its storage and names it instead.
+		if batch := req.BatchCreateRequest; batch != nil && len(batch.Requests) > 0 {
+			switch configuredBaseProvider(p.inMemoryStore, batch.Provider) {
+			case schemas.Vertex, schemas.Bedrock:
+				return refuse(403, "this virtual key is limited to its allowed storage, and an inline batch on this provider is uploaded as an input file to a location the gateway chooses, outside it; upload the input file inside the key's storage and create the batch with input_file_id")
 			}
 		}
 		for _, config := range storageConfigLocations(req) {
