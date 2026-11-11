@@ -280,8 +280,13 @@ function mergeKeyedList(base, current, theirs, keyOf, mergeEntry, where, conflic
     const now = c.get(key);
     if (was === undefined) {
       if (now === undefined) {
-        const after = previous === null ? -1 : position(previous);
-        const at = previous === null ? 0 : after === -1 ? result.length : after + 1;
+        // After the entry that precedes it on this branch; when main no longer has that
+        // one, before the next entry of this branch that main does have.
+        let at = previous === null ? 0 : position(previous) + 1;
+        if (previous !== null && at === 0) {
+          const following = theirs.slice(theirs.indexOf(entry) + 1).map(keyOf).find((k) => position(k) !== -1);
+          at = following === undefined ? result.length : position(following);
+        }
         result.splice(at, 0, clone(entry));
       } else if (!same(now, entry)) {
         conflicts.push(`${where} > ${key}: added on main and on this branch with different content`);
@@ -336,6 +341,16 @@ export function adoptCollectionChange({ base, theirs, dir = PROVIDER_HARNESS_DIR
   const baseByName = keyedIndex(base.item, (f) => f.name);
   const theirsByName = keyedIndex(theirs.item, (f) => f.name);
   if (!baseByName || !theirsByName) throw new Error("a folder name repeats in the collection: its folders cannot be matched by name");
+
+  // A folder keeps the place main gives it (the frozen order, then by number), so an order
+  // of folders this commit changed cannot be carried over. Say so rather than drop it.
+  const keptOrder = (list) => list.map((f) => f.name).filter((name) => baseByName.has(name) && theirsByName.has(name));
+  if (!same(keptOrder(base.item), keptOrder(theirs.item))) {
+    report.conflicts.push(
+      "the order of the top-level folders: this branch reordered them; the folder files keep main's order " +
+        "(a new folder is placed by its number, so renumber a folder that must run later)"
+    );
+  }
 
   for (const folder of theirs.item) {
     const was = baseByName.get(folder.name);

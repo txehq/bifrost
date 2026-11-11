@@ -202,6 +202,27 @@ test("adopt reports an order the branch changed in a folder main also changed", 
   assert.deepEqual(assembleProviderHarness(alone).item[0].item.map((r) => r.name), ["producer", "consumer"]);
 });
 
+test("adopt places a new row before the next row main still has when main removed the one before it", () => {
+  const base = collection(folder("1. One", row("anchor"), row("consumer")));
+  const dir = sourceOf(...base.item);
+  write(dir, "1-one.json", folder("1. One", row("consumer"), row("from main")));
+  const theirs = collection(folder("1. One", row("anchor"), row("producer"), row("consumer")));
+  const report = adoptCollectionChange({ base, theirs, dir });
+  assert.deepEqual(report.conflicts, []);
+  assert.deepEqual(assembleProviderHarness(dir).item[0].item.map((r) => r.name), ["producer", "consumer", "from main"]);
+});
+
+test("adopt reports top-level folders the branch reordered", () => {
+  const base = collection(folder("1. Consumer"), folder("2. Producer"));
+  const dir = sourceOf(...base.item);
+  const theirs = collection(folder("2. Producer"), folder("1. Consumer"), folder("3. New"));
+  const report = adoptCollectionChange({ base, theirs, dir });
+  assert.equal(report.conflicts.length, 1);
+  assert.match(report.conflicts[0], /^the order of the top-level folders: this branch reordered them/);
+  assert.deepEqual(report.added, ["3-new.json"]);
+  assert.deepEqual(names(dir), ["1. Consumer", "2. Producer", "3. New"]);
+});
+
 test("adopt moves a collection variable the branch added, and removes a folder it removed", () => {
   const base = collection(folder("1. One"), folder("2. Two"));
   const dir = sourceOf(...base.item);
