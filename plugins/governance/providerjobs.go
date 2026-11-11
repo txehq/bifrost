@@ -660,19 +660,32 @@ func mayNameRecordedFile(body []byte) bool {
 // written.
 func jsonObjectRefs(provider schemas.ModelProvider, body any) []providerObjectRef {
 	var refs []providerObjectRef
+	type named struct{ kind, id string }
+	var seen map[named]struct{}
 	full := false
 	add := func(kind, id string) {
-		if full {
+		id = strings.TrimSpace(id)
+		if full || id == "" {
 			return
 		}
-		// Each reference is an ownership lookup; a body naming more than the bound is refused
-		// rather than looked up (see maxFileReferences).
+		// An object named again is the same reference (a file_id that is a storage URI is
+		// reached under its key and again as a string).
+		key := named{kind, id}
+		if _, dup := seen[key]; dup {
+			return
+		}
+		// Each distinct object is an ownership lookup; a body naming more than the bound is
+		// refused rather than looked up (see maxFileReferences).
 		if len(refs) >= maxFileReferences {
 			full = true
 			refs = append(refs, providerObjectRef{kind: kind, provider: string(provider), indirect: true, unreadable: true})
 			return
 		}
-		if ref, ok := objectRef(kind, provider, strings.TrimSpace(id)); ok {
+		if seen == nil {
+			seen = make(map[named]struct{}, 4)
+		}
+		seen[key] = struct{}{}
+		if ref, ok := objectRef(kind, provider, id); ok {
 			ref.indirect = true
 			refs = append(refs, ref)
 		}

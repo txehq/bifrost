@@ -532,6 +532,14 @@ func TestFileReferencesCannotHideInOpenFields(t *testing.T) {
 		if len(bodyRefs) > maxFileReferences+1 || !bodyRefs[len(bodyRefs)-1].unreadable {
 			t.Errorf("a raw body naming 10000 files yields %d references and no refusal", len(bodyRefs))
 		}
+		// One file repeated in a raw body is one reference, under a file-id key or not.
+		var history []any
+		for i := 0; i < 500; i++ {
+			history = append(history, map[string]any{"file_id": uri}, map[string]any{"fileUri": uri})
+		}
+		if refs := jsonObjectRefs(schemas.Vertex, map[string]any{"contents": history}); len(refs) != 1 || refs[0].unreadable {
+			t.Errorf("one file named 1000 times in a raw body yields %d references", len(refs))
+		}
 		// The bound is over the whole request: a batch whose inline items each name a few files
 		// is counted across its items, and refused before any lookup.
 		items := make([]schemas.BatchRequestItem, 0, 400)
