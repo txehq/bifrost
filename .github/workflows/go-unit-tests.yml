@@ -114,10 +114,12 @@ jobs:
         with:
           node-version: "25"
 
-      # In the background as well; the wait step below fails the job if the build failed.
+      # In the background as well; the wait step below fails the job if the build failed. The
+      # if/else keeps errexit, which the step's bash -e passes to the subshell, from exiting
+      # before the status is written.
       - name: Build MCP test servers in the background
         run: |
-          (make setup-mcp-tests; echo "exit $?" > "$RUNNER_TEMP/mcp.status") > "$RUNNER_TEMP/mcp.log" 2>&1 &
+          (if make setup-mcp-tests; then echo "exit 0"; else echo "exit $?"; fi > "$RUNNER_TEMP/mcp.status") > "$RUNNER_TEMP/mcp.log" 2>&1 &
 
       # main.go's go:embed needs a nonempty ui directory; no UI build is needed for unit tests.
       - name: Stub the UI directory
@@ -127,8 +129,10 @@ jobs:
 
       - name: Wait for the MCP servers and the test services
         run: |
-          until [ -f "$RUNNER_TEMP/mcp.status" ]; do sleep 2; done
+          # Bounded, so a build that never reports fails here with its log, not at the job timeout.
+          for _ in $(seq 1 300); do [ -f "$RUNNER_TEMP/mcp.status" ] && break; sleep 2; done
           cat "$RUNNER_TEMP/mcp.log"
+          [ -f "$RUNNER_TEMP/mcp.status" ] || { echo "::error::make setup-mcp-tests did not finish within 600s"; exit 1; }
           grep -qx "exit 0" "$RUNNER_TEMP/mcp.status" || { echo "::error::make setup-mcp-tests failed"; exit 1; }
           while kill -0 "$(cat "$RUNNER_TEMP/compose.pid")" 2>/dev/null; do sleep 2; done
           cat "$RUNNER_TEMP/compose.log"

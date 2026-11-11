@@ -107,6 +107,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: ./.github/workflows/scripts/check-required-checks-never-cancel.test.sh
 
+      # go-unit-tests.yml's planner and runner against a fake module tree: every package and
+      # test planned exactly once, load-sensitive tests run alone, failures fail (TXE-7078).
+      - name: Check the Go unit test shard planner
+        if: ${{ !cancelled() }}
+        run: python3 .github/workflows/scripts/test-go-unit-shards.py
+
       # The chart renders config.json's client section key by key, so a client setting
       # without a chart value cannot be set through Helm and a later upgrade resets it
       # (TXE-7038). Python and the checked-in files only: no helm, no network.
