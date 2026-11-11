@@ -583,15 +583,21 @@ func (provider *DashScopeProvider) VideoDownload(ctx *schemas.BifrostContext, ke
 	}
 
 	// The URL comes from DashScope's task response, so it is fetched through the SSRF-hardened
-	// media fetcher (public addresses only, checked at dial time and on every redirect), not
-	// the provider client. No credentials are sent.
-	start := time.Now()
-	contentType, body, err := providerUtils.FetchMediaURL(ctx, *task.Videos[0].URL)
-	latency := time.Since(start)
-	if err != nil {
-		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("failed to download video", err), latency)
-	}
-	return providerUtils.NewVideoContentResponse(request, request.ID, body, providerUtils.VideoContentTypeOr(contentType, "video/mp4"), latency), nil
+	// media fetcher (public addresses only, checked at dial time and on every redirect, the
+	// provider's proxy honored), not the provider client. No BaseURL is given: the file is on a
+	// storage host, never the API's. No credentials are sent. A streamed request is forwarded
+	// as the file arrives, with no size cap; any other is held, within the fetcher's cap.
+	return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
+		VendorURL:                *task.Videos[0].URL,
+		Stream:                   request.Stream,
+		VideoID:                  request.ID,
+		StreamIdleTimeoutSeconds: provider.networkConfig.StreamIdleTimeoutInSeconds,
+		// /v1/videos/{id}/content serves these bytes on the gateway's own origin, so only a
+		// video/* type is passed on; anything else becomes video/mp4, which is what Wan writes.
+		ContentType: func(upstream string) string {
+			return providerUtils.VideoContentTypeOr(upstream, "video/mp4")
+		},
+	})
 }
 
 // ToBifrostVideoObject converts a listed DashScope task to a video list entry. A status the

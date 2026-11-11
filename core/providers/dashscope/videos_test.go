@@ -656,6 +656,31 @@ func TestDashScopeVideoDownload(t *testing.T) {
 		}
 	})
 
+	t.Run("a streamed request gets the file as a body, not held in memory", func(t *testing.T) {
+		proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "video/mp4")
+			w.Header().Set("Content-Length", "11")
+			_, _ = io.WriteString(w, "video bytes")
+		})
+		provider, _ := newMockDashScope(t, map[string]mockResponse{
+			"GET " + dashScopeTasksPath + "/" + taskID: {http.StatusOK, taskBody("SUCCEEDED", "http://203.0.113.10/xx.mp4?Signature=abc")},
+		})
+		ctx := videoTestContext(t)
+		ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(proxy.URL)})
+		resp, bifrostErr := provider.VideoDownload(ctx, videoTestKey(), &schemas.BifrostVideoDownloadRequest{Provider: schemas.DashScope, ID: taskID + ":dashscope", Stream: true})
+		if bifrostErr != nil {
+			t.Fatalf("VideoDownload: %+v", bifrostErr.Error)
+		}
+		if resp.Body == nil || resp.Content != nil {
+			t.Fatalf("a streamed download must return Body and no Content, got body=%v content=%d bytes", resp.Body != nil, len(resp.Content))
+		}
+		got, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil || string(got) != "video bytes" || resp.ContentType != "video/mp4" || resp.VideoID != taskID+":dashscope" {
+			t.Errorf("streamed %q (%v) as %q for %q", got, err, resp.ContentType, resp.VideoID)
+		}
+	})
+
 	t.Run("a task that is still running has nothing to download", func(t *testing.T) {
 		provider, _ := newMockDashScope(t, map[string]mockResponse{
 			"GET " + dashScopeTasksPath + "/" + taskID: {http.StatusOK, taskBody("RUNNING", "")},
