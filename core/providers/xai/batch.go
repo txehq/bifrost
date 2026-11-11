@@ -550,7 +550,8 @@ func batchRequestsURL(createURL, escapedID string) string {
 }
 
 // do sends one request to xAI with key's bearer token. requestURL is the full URL
-// (collectionURL, resourceURL); query is appended to whatever query it already carries.
+// (collectionURL, resourceURL); query is added to whatever query it already carries, before
+// any fragment.
 // A non-2xx answer is the vendor's error, parsed by ParseXAIError.
 func (provider *XAIProvider) do(ctx *schemas.BifrostContext, key schemas.Key, method, requestURL string, query url.Values, body []byte) (*xaiResponse, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
@@ -559,11 +560,16 @@ func (provider *XAIProvider) do(ctx *schemas.BifrostContext, key schemas.Key, me
 	defer fasthttp.ReleaseResponse(resp)
 
 	if encoded := query.Encode(); encoded != "" {
+		// The call's query goes into the URL's query, before any fragment an override carries.
+		fragment := ""
+		if i := strings.IndexByte(requestURL, '#'); i >= 0 {
+			requestURL, fragment = requestURL[:i], requestURL[i:]
+		}
 		separator := "?"
 		if strings.Contains(requestURL, "?") {
 			separator = "&"
 		}
-		requestURL += separator + encoded
+		requestURL += separator + encoded + fragment
 	}
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
