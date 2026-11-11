@@ -116,10 +116,15 @@ jobs:
 
       # In the background as well; the wait step below fails the job if the build failed. The
       # if/else keeps errexit, which the step's bash -e passes to the subshell, from exiting
-      # before the status is written.
+      # before the status is written, and the status appears by rename only once make has
+      # exited (a redirect would create the file while make still runs).
       - name: Build MCP test servers in the background
         run: |
-          (if make setup-mcp-tests; then echo "exit 0"; else echo "exit $?"; fi > "$RUNNER_TEMP/mcp.status") > "$RUNNER_TEMP/mcp.log" 2>&1 &
+          (
+            if make setup-mcp-tests; then status=0; else status=$?; fi
+            echo "exit $status" > "$RUNNER_TEMP/mcp.status.tmp"
+            mv "$RUNNER_TEMP/mcp.status.tmp" "$RUNNER_TEMP/mcp.status"
+          ) > "$RUNNER_TEMP/mcp.log" 2>&1 &
 
       # main.go's go:embed needs a nonempty ui directory; no UI build is needed for unit tests.
       - name: Stub the UI directory
