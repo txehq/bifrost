@@ -201102,7 +201102,7 @@
           ]
         },
         {
-          "name": "162.5 [EXPECT-403] bedrock passthrough refuses model invocation, which is not an allow-listed operation (bedrock passthrough allow-list)",
+          "name": "162.5 [EXPECT-400] bedrock passthrough refuses model invocation, which is not an allow-listed operation (bedrock passthrough allow-list)",
           "request": {
             "method": "POST",
             "header": [
@@ -201147,7 +201147,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('the refusal comes from the passthrough route policy, before key selection', function () { pm.expect(pm.response.text()).to.include('supported inference endpoint'); });",
+                  "pm.test('the refusal is the Bedrock passthrough allow-list, and names the three operations it forwards', function () { pm.expect(pm.response.text()).to.include('bedrock passthrough only forwards POST InvokeAgent, Retrieve and ApplyGuardrail requests'); });",
                   "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
                   "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
                   "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST'; });",
@@ -201159,7 +201159,7 @@
           ]
         },
         {
-          "name": "162.6 [EXPECT-403] bedrock passthrough refuses a traversal path, which normalizes outside the allow-list, before any request is built (bedrock passthrough allow-list)",
+          "name": "162.6 [EXPECT-400] bedrock passthrough refuses a traversal path, which normalizes outside the allow-list, before any request is built (bedrock passthrough allow-list)",
           "request": {
             "method": "POST",
             "header": [
@@ -201208,7 +201208,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('the refusal comes from the passthrough route policy, before key selection', function () { pm.expect(pm.response.text()).to.include('supported inference endpoint'); });",
+                  "pm.test('the refusal is the Bedrock passthrough allow-list, and names the three operations it forwards', function () { pm.expect(pm.response.text()).to.include('bedrock passthrough only forwards POST InvokeAgent, Retrieve and ApplyGuardrail requests'); });",
                   "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
                   "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
                   "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST'; });",
@@ -201220,7 +201220,7 @@
           ]
         },
         {
-          "name": "162.7 [EXPECT-403] bedrock passthrough refuses a GET on an allowed path, because only POST is forwarded (bedrock passthrough allow-list)",
+          "name": "162.7 [EXPECT-400] bedrock passthrough refuses a GET on an allowed path, because only POST is forwarded (bedrock passthrough allow-list)",
           "request": {
             "method": "GET",
             "header": [
@@ -201333,7 +201333,7 @@
           ]
         },
         {
-          "name": "162.9 [EXPECT-403] bedrock passthrough refuses a session id made only of dots, which the dotted-id rule must never let through (bedrock agents session id)",
+          "name": "162.9 [EXPECT-400] bedrock passthrough refuses a session id made only of dots, which the dotted-id rule must never let through (bedrock agents session id)",
           "request": {
             "method": "POST",
             "header": [

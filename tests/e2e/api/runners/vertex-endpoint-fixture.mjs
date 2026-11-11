@@ -1,7 +1,5 @@
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
-import { argValue, createInterceptProxy } from "./lib/tls-intercept-proxy.mjs";
+import { argValue, createInterceptProxy, writeFixtureGatewayConfig } from "./lib/tls-intercept-proxy.mjs";
 
 // Local stand-in for Vertex AI, used to observe which host, path and headers the gateway sends.
 //
@@ -98,8 +96,8 @@ const regions = {
 	"vertex-us-central1": { region: "us-central1" },
 	"vertex-us-central1-pinned": { region: "us-central1", force_single_region: true },
 };
-const config = {
-	framework: { pricing: { pricing_url: `http://127.0.0.1:${port}/pricing.json`, model_parameters_url: `http://127.0.0.1:${port}/model-parameters.json`, mcp_library_sync_interval: 0 } },
+const configPath = writeFixtureGatewayConfig(appDir, {
+	datasheetOrigin: `http://127.0.0.1:${port}`,
 	providers: {
 		vertex: {
 			keys: Object.entries(regions).map(([name, r]) => ({
@@ -113,10 +111,8 @@ const config = {
 			proxy_config: { type: "http", url: `http://127.0.0.1:${port}`, ca_cert_pem: proxy.caPem },
 		},
 	},
-};
-fs.mkdirSync(appDir, { recursive: true });
-fs.writeFileSync(path.join(appDir, "config.json"), JSON.stringify(config, null, 2));
+});
 
 proxy.listen(() => {
-	console.log(`vertex-endpoint-fixture listening on http://127.0.0.1:${port} (config written to ${path.join(appDir, "config.json")})`);
+	console.log(`vertex-endpoint-fixture listening on http://127.0.0.1:${port} (config written to ${configPath})`);
 });
