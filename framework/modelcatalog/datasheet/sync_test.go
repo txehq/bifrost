@@ -106,7 +106,7 @@ func TestLoadFromURLRefusesRedirectToLinkLocal(t *testing.T) {
 
 // Outside tests a catalog fetch is the guarded client, policy on every hop.
 func TestNewFetchClientIsTheGuardedClient(t *testing.T) {
-	guarded := network.NewPrivateNetworkHTTPClient(time.Second)
+	guarded := network.NewPrivateNetworkHTTPClient(testtime.Scale(time.Second))
 	client := NewFetchClient(testtime.Scale(time.Second))
 	if reflect.TypeOf(client.Transport) != reflect.TypeOf(guarded.Transport) {
 		t.Fatalf("transport = %T, want the guarded %T", client.Transport, guarded.Transport)

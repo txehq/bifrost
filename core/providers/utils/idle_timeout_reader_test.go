@@ -477,7 +477,7 @@ func TestIdleTimeoutReader_RecoversCloseStreamPanicOnTimerFire(t *testing.T) {
 	// passing the test without ever touching the recover.
 	select {
 	case <-body.called:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtime.Scale(2 * time.Second)):
 		t.Fatal("idle timer never fired CloseWithError within 2s")
 	}
 
@@ -502,7 +502,7 @@ func TestIdleTimeoutReader_LogsRecoveredTimerPanic(t *testing.T) {
 	_, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, body, testtime.Scale(10*time.Millisecond), nil)
 	select {
 	case <-body.called:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtime.Scale(2 * time.Second)):
 		t.Fatal("idle timer never fired CloseWithError within 2s")
 	}
 	cleanup() // blocks until the timer callback (recover + log) has returned
@@ -704,7 +704,7 @@ func TestStreamClose_ExactlyOnceAcrossOwners(t *testing.T) {
 
 		// Wait (bounded) until at least one owner has performed the close, rather
 		// than relying on a fixed sleep that can miss both close paths on slow CI.
-		deadline := time.Now().Add(2 * time.Second)
+		deadline := time.Now().Add(testtime.Scale(2 * time.Second))
 		for body.closeCount.Load() == 0 && time.Now().Before(deadline) {
 			time.Sleep(testtime.Scale(50 * time.Microsecond))
 		}
@@ -835,7 +835,7 @@ func TestSetupStreamCancellation_DisarmedDeadlineStillHonoursCtx(t *testing.T) {
 	goCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	bifrostCtx := schemas.NewBifrostContext(goCtx, time.Time{})
-	abort := NewAttemptAbort(50 * time.Millisecond)
+	abort := NewAttemptAbort(testtime.Scale(50 * time.Millisecond))
 	bifrostCtx.SetValue(schemas.BifrostContextKeyStreamAttemptAbort, abort)
 	body := &closeRecorder{closed: make(chan struct{})}
 
@@ -852,7 +852,7 @@ func TestSetupStreamCancellation_DisarmedDeadlineStillHonoursCtx(t *testing.T) {
 	cancel()
 	select {
 	case <-body.closed:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtime.Scale(2 * time.Second)):
 		t.Fatal("ctx cancellation no longer closes the body after disarm")
 	}
 }

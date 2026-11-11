@@ -569,7 +569,7 @@ func TestA2AExportWireProfiles(t *testing.T) {
 			select {
 			case request = <-httpRequests:
 			case request = <-grpcCollector.requests:
-			case <-time.After(3 * time.Second):
+			case <-time.After(testtime.Scale(3 * time.Second)):
 				t.Fatal("missing protobuf export")
 			}
 			require.Len(t, request.ResourceSpans, 1)
@@ -643,7 +643,7 @@ func TestA2AExportStatusMessageFollowsContentPolicy(t *testing.T) {
 			var request *collectorpb.ExportTraceServiceRequest
 			select {
 			case request = <-requests:
-			case <-time.After(3 * time.Second):
+			case <-time.After(testtime.Scale(3 * time.Second)):
 				t.Fatal("missing protobuf export")
 			}
 			rs := request.ResourceSpans[0]

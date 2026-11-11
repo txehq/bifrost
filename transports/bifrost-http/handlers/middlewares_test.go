@@ -5010,7 +5010,7 @@ func TestRecoveryMiddleware_PanicBecomesInternalServerErrorAndServerKeepsServing
 func TestTracingMiddleware_DeferredCompletionWaitsForWorker(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	store := tracing.NewTraceStore(5*time.Minute, nil)
+	store := tracing.NewTraceStore(testtime.Scale(5*time.Minute), nil)
 	defer store.Stop()
 	tracer := tracing.NewTracer(store, nil, nil)
 	defer tracer.Stop()
@@ -5046,7 +5046,7 @@ func TestTracingMiddleware_DeferredCompletionWaitsForWorker(t *testing.T) {
 
 	select {
 	case <-plugin.done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtime.Scale(2 * time.Second)):
 		t.Fatal("worker completion did not flush the trace")
 	}
 

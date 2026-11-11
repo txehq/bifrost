@@ -205,7 +205,7 @@ func TestWarpRunTurnStopsWhenSinkRefuses(t *testing.T) {
 		// mid-call" is the scenario under test rather than one of two schedules.
 		select {
 		case <-started:
-		case <-time.After(5 * time.Second):
+		case <-time.After(testtime.Scale(5 * time.Second)):
 			t.Error("the second model call never started")
 		}
 		return false

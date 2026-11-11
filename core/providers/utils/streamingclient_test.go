@@ -418,7 +418,7 @@ func TestDoStreamingRequest_SilentUpstreamTimesOutAtHeaderWait(t *testing.T) {
 		}
 		fasthttp.ReleaseRequest(req)
 		fasthttp.ReleaseResponse(resp)
-	case <-time.After(3 * time.Second):
+	case <-time.After(testtime.Scale(3 * time.Second)):
 		t.Fatalf("header wait is unbounded: DoStreamingRequest did not return within 3s while the upstream stayed silent (accepted %d conn(s)); issue #7034", upstream.accepted.Load())
 	}
 }
@@ -516,7 +516,7 @@ func TestBuildLargeResponseClient_SilentUpstreamTimesOutAtHeaderWait(t *testing.
 		}
 		fasthttp.ReleaseRequest(req)
 		fasthttp.ReleaseResponse(resp)
-	case <-time.After(3 * time.Second):
+	case <-time.After(testtime.Scale(3 * time.Second)):
 		t.Fatal("header wait is unbounded on the large-response client: MakeRequestWithContext did not return within 3s")
 	}
 }
@@ -666,7 +666,7 @@ func TestFinalizeResponseWithLargeDetection_StallDuringPrefetchReturnsError(t *t
 		if elapsed := time.Since(start); elapsed > testtime.Scale(2*time.Second) {
 			t.Fatalf("prefetch stall took %v to surface, want roughly the 300ms idle timeout", elapsed)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(testtime.Scale(3 * time.Second)):
 		t.Fatal("large-response prefetch has no idle bound: FinalizeResponseWithLargeDetection did not return within 3s on a stalled upstream")
 	}
 }
@@ -712,7 +712,7 @@ func TestFinalizeResponseWithLargeDetection_StallAfterPrefetchUnblocksReader(t *
 		if elapsed := time.Since(start); elapsed > testtime.Scale(2*time.Second) {
 			t.Fatalf("stall took %v to surface, want roughly the 300ms idle timeout", elapsed)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(testtime.Scale(3 * time.Second)):
 		t.Fatal("large-response reader has no idle bound: Read did not return within 3s on a stalled upstream")
 	}
 
@@ -723,7 +723,7 @@ func TestFinalizeResponseWithLargeDetection_StallAfterPrefetchUnblocksReader(t *
 	}()
 	select {
 	case <-closed:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtime.Scale(2 * time.Second)):
 		t.Fatal("LargeResponseReader.Close hung after the idle timeout closed the stream")
 	}
 }
@@ -859,7 +859,7 @@ func TestFinalizeResponseWithLargeDetection_StallInGzipHeaderReturnsError(t *tes
 		if elapsed := time.Since(start); elapsed > testtime.Scale(2*time.Second) {
 			t.Fatalf("gzip header stall took %v to surface, want roughly the 300ms idle timeout", elapsed)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(testtime.Scale(3 * time.Second)):
 		t.Fatal("gzip header read has no idle bound: FinalizeResponseWithLargeDetection did not return within 3s on a stalled upstream")
 	}
 }
@@ -1211,7 +1211,7 @@ func TestContextTransport_WriteOnceRequestIsNeverResent(t *testing.T) {
 				errs <- postOnce(writeOnceContext(t), client, up.target)
 			}()
 		}
-		deadline := time.Now().Add(10 * time.Second)
+		deadline := time.Now().Add(testtime.Scale(10 * time.Second))
 		for up.requests.Load() < burst && time.Now().Before(deadline) {
 			time.Sleep(testtime.Scale(10 * time.Millisecond))
 		}

@@ -456,7 +456,7 @@ func TestBedrockPassthroughStreamStalledUpstreamHitsTheIdleTimeout(t *testing.T)
 		select {
 		case <-done:
 		case <-r.Context().Done():
-		case <-time.After(5 * time.Second):
+		case <-time.After(testtime.Scale(5 * time.Second)):
 		}
 	})
 	t.Cleanup(func() { close(done) })

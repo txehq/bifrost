@@ -624,7 +624,7 @@ func TestCheckFirstStreamChunk_CtxCancelUnblocksPeek(t *testing.T) {
 	var got firstChunkResult
 	select {
 	case got = <-results:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtime.Scale(2 * time.Second)):
 		t.Fatal("CheckFirstStreamChunkForError did not return after ctx cancellation; worker stays pinned until the stream idle timeout")
 	}
 	if got.wrapped != nil || got.err == nil || got.err.Error == nil ||
@@ -666,7 +666,7 @@ func TestCheckFirstStreamChunk_DeadlineAllowsFallbacks(t *testing.T) {
 	var got firstChunkResult
 	select {
 	case got = <-peekAsync(ctx, src):
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtime.Scale(2 * time.Second)):
 		t.Fatal("CheckFirstStreamChunkForError did not return after the request deadline passed")
 	}
 	if got.wrapped != nil || got.err == nil || got.err.Error == nil ||

@@ -3,6 +3,7 @@ package postgresconn
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -81,8 +82,8 @@ func TestWaitForAdvisoryLockWaitsOutBusyHolder(t *testing.T) {
 	sleeper, err := holderPod.Conn(context.Background())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sleeper.Close() })
-	go func() { _, _ = sleeper.ExecContext(context.Background(), "SELECT pg_sleep(4)") }()
-	time.AfterFunc(3*time.Second, release)
+	go func() { _, _ = sleeper.ExecContext(context.Background(), pgSleep(testtime.Scale(4*time.Second))) }()
+	time.AfterFunc(testtime.Scale(3*time.Second), release)
 
 	conn := waiterConn(t)
 	start := time.Now()
@@ -123,7 +124,7 @@ func TestWaitForAdvisoryLockBusyErrorDescribesHolder(t *testing.T) {
 	sleeper, err := holderPod.Conn(context.Background())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sleeper.Close() })
-	go func() { _, _ = sleeper.ExecContext(context.Background(), "SELECT pg_sleep(5)") }()
+	go func() { _, _ = sleeper.ExecContext(context.Background(), pgSleep(testtime.Scale(5*time.Second))) }()
 	time.Sleep(testtime.Scale(200 * time.Millisecond))
 
 	conn := waiterConn(t)
@@ -156,9 +157,9 @@ func TestWaitForAdvisoryLockRetriesWhenHolderJustReleased(t *testing.T) {
 	sleeper, err := holderPod.Conn(context.Background())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sleeper.Close() })
-	go func() { _, _ = sleeper.ExecContext(context.Background(), "SELECT pg_sleep(2)") }()
+	go func() { _, _ = sleeper.ExecContext(context.Background(), pgSleep(testtime.Scale(2*time.Second))) }()
 	// Release right as the busy work ends, well past the 500ms idle budget.
-	time.AfterFunc(2*time.Second, release)
+	time.AfterFunc(testtime.Scale(2*time.Second), release)
 
 	conn := waiterConn(t)
 	err = WaitForAdvisoryLock(context.Background(), conn, nil, AdvisoryWaitOptions{
@@ -166,4 +167,10 @@ func TestWaitForAdvisoryLockRetriesWhenHolderJustReleased(t *testing.T) {
 		Timeout: testtime.Scale(500 * time.Millisecond), BusyTimeout: testtime.Scale(10 * time.Second), RecentActivityWindow: testtime.Scale(50 * time.Millisecond),
 	})
 	require.NoError(t, err, "the waiter must take the lock once it is released, not give up")
+}
+
+// pgSleep is a SELECT pg_sleep of d, so a holder's busy work scales with the waiter's
+// budgets (testtime, TXE-7128).
+func pgSleep(d time.Duration) string {
+	return fmt.Sprintf("SELECT pg_sleep(%g)", d.Seconds())
 }

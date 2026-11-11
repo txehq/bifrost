@@ -136,7 +136,7 @@ func TestCompleteAndFlushTrace_BoundsInjectsPerPlugin(t *testing.T) {
 // TestWaitForFlushes_TimesOutOnHungPlugin ensures a connector blocked on an unreachable
 // collector cannot hold up shutdown or a config reload.
 func TestWaitForFlushes_TimesOutOnHungPlugin(t *testing.T) {
-	store := NewTraceStore(5*time.Minute, nil)
+	store := NewTraceStore(testtime.Scale(5*time.Minute), nil)
 	defer store.Stop()
 
 	tracer := NewTracer(store, nil, nil)
@@ -145,7 +145,7 @@ func TestWaitForFlushes_TimesOutOnHungPlugin(t *testing.T) {
 	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{hung}, nil)
 	tracer.CompleteAndFlushTrace(tracer.CreateTrace(""))
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testtime.Scale(5 * time.Second))
 	for hung.started.Load() == 0 && time.Now().Before(deadline) {
 		time.Sleep(testtime.Scale(time.Millisecond))
 	}
@@ -278,7 +278,7 @@ func TestSetObservabilityPlugins_DefaultsWhenLimitsNotDeclared(t *testing.T) {
 // cancellation has its Inject call unblocked once the configured inject timeout elapses,
 // freeing the semaphore slot instead of holding it indefinitely.
 func TestCompleteAndFlushTrace_InjectTimeoutReleasesSlot(t *testing.T) {
-	store := NewTraceStore(5*time.Minute, nil)
+	store := NewTraceStore(testtime.Scale(5*time.Minute), nil)
 	defer store.Stop()
 
 	tracer := NewTracer(store, nil, nil)
@@ -302,7 +302,7 @@ func TestCompleteAndFlushTrace_InjectTimeoutReleasesSlot(t *testing.T) {
 	// acquire instead of proving the slot came free.
 	start := time.Now()
 	tracer.CompleteAndFlushTrace(tracer.CreateTrace(""))
-	if completed := tracer.waitForFlushes(2 * time.Second); !completed {
+	if completed := tracer.waitForFlushes(testtime.Scale(2 * time.Second)); !completed {
 		t.Fatal("expected the first flush to complete once its inject timeout elapsed")
 	}
 	if got := plugin.started.Load(); got != 1 {
@@ -310,7 +310,7 @@ func TestCompleteAndFlushTrace_InjectTimeoutReleasesSlot(t *testing.T) {
 	}
 
 	tracer.CompleteAndFlushTrace(tracer.CreateTrace(""))
-	if completed := tracer.waitForFlushes(2 * time.Second); !completed {
+	if completed := tracer.waitForFlushes(testtime.Scale(2 * time.Second)); !completed {
 		t.Fatal("expected the second flush to complete once its inject timeout elapsed")
 	}
 	if got := plugin.started.Load(); got != 2 {

@@ -58,7 +58,7 @@ func (p *testRealtimeObservabilityPlugin) Inject(_ context.Context, trace *schem
 }
 
 func TestTracer_CompleteAndFlushTraceInjectsObservabilityPlugins(t *testing.T) {
-	store := NewTraceStore(5*time.Minute, nil)
+	store := NewTraceStore(testtime.Scale(5*time.Minute), nil)
 	defer store.Stop()
 
 	tracer := NewTracer(store, nil, nil)
@@ -115,7 +115,7 @@ func TestTracer_TransformPausedStreamBufferForwardsToAccumulator(t *testing.T) {
 }
 
 func TestTracer_CompleteAndFlushTraceRedactsContentBeforeInject(t *testing.T) {
-	store := NewTraceStore(5*time.Minute, nil)
+	store := NewTraceStore(testtime.Scale(5*time.Minute), nil)
 	defer store.Stop()
 
 	tracer := NewTracer(store, nil, nil)
@@ -165,7 +165,7 @@ func TestTracer_CompleteAndFlushTraceRedactsContentBeforeInject(t *testing.T) {
 }
 
 func TestTracer_SetTraceRedactionReplacementsSurvivesLaterObservabilityPlugins(t *testing.T) {
-	store := NewTraceStore(5*time.Minute, nil)
+	store := NewTraceStore(testtime.Scale(5*time.Minute), nil)
 	defer store.Stop()
 
 	tracer := NewTracer(store, nil, nil)

@@ -1576,7 +1576,7 @@ var anthropicFallback = schemas.Fallback{Provider: schemas.Anthropic, Model: "cl
 // whole stream. The primary's socket is closed, not left to the idle timeout.
 func TestStreamTTFTCutsOffStartupOnlyPrimary(t *testing.T) {
 	primary, fallback := newTTFTUpstream(), newTTFTUpstream()
-	client := newTTFTTestClient(t, primary.slowOpenAIHandler(10*time.Second), fallback.slowAnthropicHandler(0))
+	client := newTTFTTestClient(t, primary.slowOpenAIHandler(testtime.Scale(10*time.Second)), fallback.slowAnthropicHandler(0))
 
 	ctx := ttftContext(testtime.Scale(300 * time.Millisecond))
 	start := time.Now()
@@ -1599,7 +1599,7 @@ func TestStreamTTFTCutsOffStartupOnlyPrimary(t *testing.T) {
 	}
 	select {
 	case <-primary.hangups:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testtime.Scale(3 * time.Second)):
 		t.Fatal("the cut-off primary's connection is still open")
 	}
 	found := false
@@ -1643,7 +1643,7 @@ func TestStreamTTFTCutsOffSilentPrimaryHeaderWait(t *testing.T) {
 	}
 	select {
 	case <-primary.hangups:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testtime.Scale(3 * time.Second)):
 		t.Fatal("the cut-off primary's socket is still open after the header wait was cut off")
 	}
 }
@@ -1653,7 +1653,7 @@ func TestStreamTTFTCutsOffSilentPrimaryHeaderWait(t *testing.T) {
 func TestStreamTTFTNeverCutsOffLastAttempt(t *testing.T) {
 	t.Run("last fallback", func(t *testing.T) {
 		primary, fallback := newTTFTUpstream(), newTTFTUpstream()
-		client := newTTFTTestClient(t, primary.slowOpenAIHandler(10*time.Second), fallback.slowAnthropicHandler(time.Second))
+		client := newTTFTTestClient(t, primary.slowOpenAIHandler(testtime.Scale(10*time.Second)), fallback.slowAnthropicHandler(testtime.Scale(time.Second)))
 		stream, bifrostErr := client.ChatCompletionStreamRequest(ttftContext(testtime.Scale(200*time.Millisecond)), ttftChatRequest(anthropicFallback))
 		if bifrostErr != nil {
 			t.Fatalf("the last fallback was cut off: %s", bifrostErr.Error.Message)
@@ -1664,7 +1664,7 @@ func TestStreamTTFTNeverCutsOffLastAttempt(t *testing.T) {
 	})
 	t.Run("primary without fallbacks", func(t *testing.T) {
 		primary, fallback := newTTFTUpstream(), newTTFTUpstream()
-		client := newTTFTTestClient(t, primary.slowOpenAIHandler(time.Second), fallback.slowAnthropicHandler(0))
+		client := newTTFTTestClient(t, primary.slowOpenAIHandler(testtime.Scale(time.Second)), fallback.slowAnthropicHandler(0))
 		stream, bifrostErr := client.ChatCompletionStreamRequest(ttftContext(testtime.Scale(200*time.Millisecond)), ttftChatRequest())
 		if bifrostErr != nil {
 			t.Fatalf("a primary with no fallbacks was cut off: %s", bifrostErr.Error.Message)

@@ -2803,7 +2803,7 @@ func shutdownWithProducerStopped(t *testing.T, plugin *LoggerPlugin, stopped <-c
 	t.Helper()
 	select {
 	case <-stopped:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testtime.Scale(3 * time.Second)):
 		t.Fatal("the producer never reached its seam")
 	}
 	cleaned := make(chan struct{})
@@ -2820,7 +2820,7 @@ func shutdownWithProducerStopped(t *testing.T, plugin *LoggerPlugin, stopped <-c
 	for name, done := range map[string]<-chan struct{}{"producer": produced, "Cleanup": cleaned} {
 		select {
 		case <-done:
-		case <-time.After(5 * time.Second):
+		case <-time.After(testtime.Scale(5 * time.Second)):
 			t.Fatalf("%s deadlocked during shutdown", name)
 		}
 	}

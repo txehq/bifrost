@@ -529,7 +529,7 @@ func TestRedisStore_ExecuteSearch_DisableScanFallbackOnQuerySyntaxError(t *testi
 		client: client,
 		logger: bifrost.NewDefaultLogger(schemas.LogLevelDebug),
 		config: RedisConfig{
-			ContextTimeout: schemas.Duration(time.Second),
+			ContextTimeout: schemas.Duration(testtime.Scale(time.Second)),
 		},
 		namespaceFieldTypes: make(map[string]map[string]VectorStoreProperties),
 	}

@@ -678,7 +678,7 @@ func TestEmitAggregateLogEmitsSettlementSpan(t *testing.T) {
 // safe no-op rather than a panic.
 func TestEmitAggregateLogSkipsSettlementSpanWithoutCost(t *testing.T) {
 	logger := testLogger{}
-	tracer := tracing.NewTracer(tracing.NewTraceStore(time.Minute, logger), nil, logger)
+	tracer := tracing.NewTracer(tracing.NewTraceStore(testtime.Scale(time.Minute), logger), nil, logger)
 	capture := &captureObsPlugin{spans: make(chan map[string]any, 1)}
 	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{capture}, nil)
 

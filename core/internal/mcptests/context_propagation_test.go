@@ -84,7 +84,7 @@ func TestContext_CancellationPropagation(t *testing.T) {
 	// Register long-running tool
 	longRunningHandler := func(args any) (string, error) {
 		// Simulate long operation
-		time.Sleep(3 * time.Second)
+		time.Sleep(testtime.Scale(3 * time.Second))
 		return `{"result": "should not reach here"}`, nil
 	}
 

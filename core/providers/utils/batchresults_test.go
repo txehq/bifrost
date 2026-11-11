@@ -450,7 +450,7 @@ func TestOpenResultStreamErrorBodyStallEndsOnContextCancel(t *testing.T) {
 		if !strings.Contains(got.err.Error.Message, "partial") {
 			t.Fatalf("error message %q lost the part of the body that did arrive", got.err.Error.Message)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testtime.Scale(5 * time.Second)):
 		t.Fatal("OpenResultStream did not return after the context was cancelled")
 	}
 }

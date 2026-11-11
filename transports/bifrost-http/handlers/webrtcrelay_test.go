@@ -74,7 +74,7 @@ func TestWebRTCRelayCloseDrainsBrowserMessages(t *testing.T) {
 	select {
 	case frame := <-received:
 		assert.Equal(t, terminal, frame)
-	case <-time.After(5 * time.Second):
+	case <-time.After(testtime.Scale(5 * time.Second)):
 		t.Fatal("browser did not receive the final frame after the network recovered")
 	}
 	waitSignal(t, done, "close after browser output drained")

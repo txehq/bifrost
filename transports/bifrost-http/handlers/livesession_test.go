@@ -1003,7 +1003,7 @@ func TestLiveSessionStopsReadingADrainAtTheBillingBound(t *testing.T) {
 	respond(liveMaxBillingSegments - 1)
 	select {
 	case <-io.abandoned:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtime.Scale(2 * time.Second)):
 		t.Fatal("the session kept reading past what its unit can hold")
 	}
 	respond(liveMaxBillingSegments)

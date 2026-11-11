@@ -75,7 +75,7 @@ func TestPerServerTimeout_OverridesGlobal(t *testing.T) {
 	bf := setupBifrost(t)
 	bf.SetMCPManager(manager)
 
-	ctx, cancel := createTestContextWithTimeout(10 * time.Second)
+	ctx, cancel := createTestContextWithTimeout(testtime.Scale(10 * time.Second))
 	defer cancel()
 
 	start := time.Now()

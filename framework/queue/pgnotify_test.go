@@ -78,7 +78,7 @@ func (p *pgTestInstance) awaitListening(t *testing.T) {
 	case <-p.store.probes: // a stale probe from an earlier session
 	default:
 	}
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(testtime.Scale(10 * time.Second))
 	for {
 		require.NoError(t, p.db.Exec("SELECT pg_notify(?, ?)", pgNotifyChannel, pgProbeTopic).Error)
 		select {
@@ -306,7 +306,7 @@ func TestCloseStopsWaitingForAStuckListener(t *testing.T) {
 	select {
 	case err := <-closed:
 		assert.ErrorIs(t, err, context.DeadlineExceeded)
-	case <-time.After(3 * time.Second):
+	case <-time.After(testtime.Scale(3 * time.Second)):
 		once.Do(func() { close(store.unblock) })
 		<-closed
 		t.Fatal("Close waited for the listener past its deadline")

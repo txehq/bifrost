@@ -1333,7 +1333,7 @@ func TestStartSSEHeartbeatCallsOnDisconnectAfterClose(t *testing.T) {
 	r.Close() // SendHeartbeat will return false on the very first tick
 
 	var onDisconnectCalls atomic.Int32
-	_, exited := StartSSEHeartbeat(5*time.Millisecond, r.SendHeartbeat, func() {
+	_, exited := StartSSEHeartbeat(testtime.Scale(5*time.Millisecond), r.SendHeartbeat, func() {
 		onDisconnectCalls.Add(1)
 	})
 

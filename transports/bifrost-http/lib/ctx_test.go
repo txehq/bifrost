@@ -1374,7 +1374,7 @@ func TestConvertToBifrostContextStaysAliveWhileClientConnected(t *testing.T) {
 		if !errors.Is(err, errBifrostContextStillLive) {
 			t.Fatalf("bifrost context was cancelled while the client was still connected: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testtime.Scale(5 * time.Second)):
 		t.Fatal("handler never reported an outcome")
 	}
 }

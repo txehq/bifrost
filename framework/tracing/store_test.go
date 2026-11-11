@@ -397,7 +397,7 @@ func TestCleanupOldTraces_ExportsExpiredTraceInsteadOfDropping(t *testing.T) {
 
 	select {
 	case <-plugin.done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtime.Scale(2 * time.Second)):
 		t.Fatal("expired trace was dropped instead of exported")
 	}
 

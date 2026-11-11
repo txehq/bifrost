@@ -86,7 +86,7 @@ func TestInject_GRPCExportHonoursTimeout(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testtime.Scale(10 * time.Second)):
 		t.Fatal("Inject never returned against a black-holed gRPC endpoint")
 	}
 
@@ -118,7 +118,7 @@ func TestInject_HTTPExportHonoursTimeout(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testtime.Scale(10 * time.Second)):
 		t.Fatal("Inject never returned against a black-holed HTTP endpoint")
 	}
 

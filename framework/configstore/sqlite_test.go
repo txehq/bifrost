@@ -92,7 +92,7 @@ func TestSQLiteTransactionsTakeTheWriteLockOnBegin(t *testing.T) {
 	select {
 	case err := <-otherWriter:
 		require.NoError(t, err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(testtime.Scale(5 * time.Second)):
 		t.Fatal("the other writer never completed")
 	}
 	var n int

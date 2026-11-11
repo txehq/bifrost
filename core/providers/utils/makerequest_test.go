@@ -300,7 +300,7 @@ func TestMakeRequestWithContext_ConcurrentRequestsWithCancellation(t *testing.T)
 	select {
 	case <-done:
 		// All requests completed
-	case <-time.After(10 * time.Second):
+	case <-time.After(testtime.Scale(10 * time.Second)):
 		t.Fatalf("timed out waiting for requests, only %d/%d completed", completed.Load(), numRequests)
 	}
 }
@@ -422,7 +422,7 @@ func TestMakeRequestWithContext_DeferOrderingPattern(t *testing.T) {
 
 	select {
 	case <-orderDone:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testtime.Scale(5 * time.Second)):
 		t.Fatal("timed out")
 	}
 
@@ -1121,7 +1121,7 @@ func TestContextTransport_CancelWhileWaitingForAConnection(t *testing.T) {
 		<-hold // never answers: the only connection stays busy
 	})
 	t.Cleanup(func() { close(hold) })
-	client := srv.client(10 * time.Second)
+	client := srv.client(testtime.Scale(10 * time.Second))
 	client.MaxConnsPerHost = 1
 	client.MaxConnWaitTimeout = testtime.Scale(10 * time.Second)
 
@@ -1136,7 +1136,7 @@ func TestContextTransport_CancelWhileWaitingForAConnection(t *testing.T) {
 		wait()
 		close(busyDone)
 	}()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(testtime.Scale(2 * time.Second))
 	for srv.accepted.Load() < 1 && time.Now().Before(deadline) {
 		time.Sleep(testtime.Scale(5 * time.Millisecond))
 	}
@@ -1165,7 +1165,7 @@ func TestContextTransport_CancelWhileWaitingForAConnection(t *testing.T) {
 	<-busyDone
 	fasthttp.ReleaseRequest(busyReq)
 	fasthttp.ReleaseResponse(busyResp)
-	settle := time.Now().Add(3 * time.Second)
+	settle := time.Now().Add(testtime.Scale(3 * time.Second))
 	for runtime.NumGoroutine() >= before && time.Now().Before(settle) {
 		time.Sleep(testtime.Scale(10 * time.Millisecond))
 	}
@@ -1235,7 +1235,7 @@ func TestContextTransport_AbandonedConnectionCloseAcquisitionIsClosed(t *testing
 	for i := 0; i < 2; i++ { // the busy request's hang-up, then the abandoned connection's
 		select {
 		case <-upstream.hangups:
-		case <-time.After(3 * time.Second):
+		case <-time.After(testtime.Scale(3 * time.Second)):
 			t.Fatalf("hang-up %d never arrived: the abandoned Connection: close acquisition was pooled", i+1)
 		}
 	}
@@ -1431,7 +1431,7 @@ func TestContextTransport_HonorsDoDeadline(t *testing.T) {
 		// Never answer: hold the connection until the client hangs up.
 		_, _ = br.ReadByte()
 	})
-	client := srv.client(10 * time.Second)
+	client := srv.client(testtime.Scale(10 * time.Second))
 
 	for name, do := range map[string]func(req *fasthttp.Request, resp *fasthttp.Response) error{
 		"DoDeadline": func(req *fasthttp.Request, resp *fasthttp.Response) error {
@@ -1460,7 +1460,7 @@ func TestContextTransport_HonorsDoDeadline(t *testing.T) {
 				}
 				fasthttp.ReleaseRequest(req)
 				fasthttp.ReleaseResponse(resp)
-			case <-time.After(3 * time.Second):
+			case <-time.After(testtime.Scale(3 * time.Second)):
 				t.Fatal("per-request deadline ignored: request still blocked 3s past a 200ms deadline, bounded only by the client's 10s ReadTimeout")
 			}
 		})

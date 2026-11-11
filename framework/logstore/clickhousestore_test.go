@@ -1685,7 +1685,7 @@ func TestClickHouseWarpWritesWaitForTheSharedOwnerLock(t *testing.T) {
 		select {
 		case err := <-done:
 			require.NoError(t, err)
-		case <-time.After(30 * time.Second):
+		case <-time.After(testtime.Scale(30 * time.Second)):
 			t.Fatal("write never finished after the lock was released")
 		}
 	}
@@ -1719,7 +1719,7 @@ func TestClickHouseWarpWritesWaitForTheSharedOwnerLock(t *testing.T) {
 		stale := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
 		seed(owner+"-stale", stale, 1)
 		waitsForLock(t, func() error {
-			_, err := replica.DeleteWarpConversationsOlderThan(ctx, stale.Add(time.Hour))
+			_, err := replica.DeleteWarpConversationsOlderThan(ctx, stale.Add(testtime.Scale(time.Hour)))
 			return err
 		})
 	})

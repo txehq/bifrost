@@ -54,7 +54,7 @@ func TestSubscribeOptionsApply(t *testing.T) {
 func TestSubscribeOptionsValidation(t *testing.T) {
 	cases := map[string][]SubscribeOption{
 		"lease too short":  {WithLeaseDuration(testtime.Scale(time.Millisecond))},
-		"backoff inverted": {WithBackoff(time.Minute, testtime.Scale(time.Second))},
+		"backoff inverted": {WithBackoff(testtime.Scale(time.Minute), testtime.Scale(time.Second))},
 		"bad start":        {WithStartFrom("middle")},
 		"bad dead letter":  {WithDeadLetterTopic("not valid")},
 	}

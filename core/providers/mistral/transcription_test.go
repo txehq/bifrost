@@ -1336,7 +1336,7 @@ func TestTranscriptionStreamContextCancellation(t *testing.T) {
 		flusher.Flush()
 
 		// Wait longer than the context timeout
-		time.Sleep(5 * time.Second)
+		time.Sleep(testtime.Scale(5 * time.Second))
 
 		// This should not be received
 		w.Write([]byte("event: transcription.done\ndata: {}\n\n"))

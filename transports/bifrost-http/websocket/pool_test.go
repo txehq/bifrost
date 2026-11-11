@@ -309,7 +309,7 @@ func TestPoolGetSkipsStaleIdleConnection(t *testing.T) {
 	// borrow attempt so the close is in the client's TCP receive buffer.
 	select {
 	case <-serverClosed:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtime.Scale(2 * time.Second)):
 		t.Fatal("server did not close the first connection in time")
 	}
 
@@ -323,7 +323,7 @@ func TestPoolGetSkipsStaleIdleConnection(t *testing.T) {
 	// Wait for that bookkeeping instead of racing it.
 	select {
 	case <-secondConnAccepted:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtime.Scale(2 * time.Second)):
 		t.Fatal("server did not accept the second connection in time")
 	}
 	assert.EqualValues(t, 2, connectionCount.Load())

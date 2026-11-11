@@ -25,9 +25,9 @@ import (
 // fastOpts keeps engine tests quick: tight polling and millisecond backoff.
 func fastOpts(extra ...SubscribeOption) []SubscribeOption {
 	return append([]SubscribeOption{
-		WithPollInterval(20 * time.Millisecond),
+		WithPollInterval(testtime.Scale(20 * time.Millisecond)),
 		WithLeaseDuration(testtime.Scale(400 * time.Millisecond)),
-		WithBackoff(time.Millisecond, testtime.Scale(5*time.Millisecond)),
+		WithBackoff(testtime.Scale(time.Millisecond), testtime.Scale(5*time.Millisecond)),
 	}, extra...)
 }
 
@@ -59,7 +59,7 @@ func waitStats(t *testing.T, q Queue, topic, group string, want Stats) {
 		st, err := q.Stats(context.Background(), topic, group)
 		assert.NoError(c, err)
 		assert.Equal(c, want, st)
-	}, testtime.Scale(5*time.Second), 10*time.Millisecond)
+	}, testtime.Scale(5*time.Second), testtime.Scale(10*time.Millisecond))
 }
 
 // engineBackend returns n stores that share one backend, one per simulated
@@ -305,7 +305,7 @@ func engineContractLeaseLossCancelsHandler(t *testing.T, backend engineBackend) 
 	select {
 	case err := <-cause:
 		assert.ErrorIs(t, err, errLeaseLost)
-	case <-time.After(10 * time.Second):
+	case <-time.After(testtime.Scale(10 * time.Second)):
 		t.Fatal("handler was not cancelled after losing its lease")
 	}
 	// The redelivery completes, and nothing is left behind.
@@ -376,7 +376,7 @@ func engineContractCloseDeadlineKeepsRunningLease(t *testing.T, backend engineBa
 		cause <- context.Cause(ctx)
 		<-stuck // ignores cancellation and keeps running
 		return nil
-	}, fastOpts(WithLeaseDuration(time.Minute))...)
+	}, fastOpts(WithLeaseDuration(testtime.Scale(time.Minute)))...)
 	require.NoError(t, err)
 	publish(t, q, &Message{Topic: topic})
 	<-started
@@ -617,7 +617,7 @@ func engineContractDeadLetterPublishFailureRetries(t *testing.T, backend engineB
 
 	select {
 	case <-dlq:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testtime.Scale(10 * time.Second)):
 		t.Fatal("dead-letter copy never published")
 	}
 	waitStats(t, q, topic, "w", Stats{Dead: 1})
@@ -696,7 +696,7 @@ func engineContractLapsedLeaseCancelsWithoutFreeSlots(t *testing.T, backend engi
 	case err := <-cause:
 		assert.ErrorIs(t, err, errLeaseLost)
 		assert.Less(t, time.Since(at), 2*lease, "cancelled soon after the lease lapsed")
-	case <-time.After(10 * time.Second):
+	case <-time.After(testtime.Scale(10 * time.Second)):
 		t.Fatal("handler kept running on a lapsed lease with no free slot to re-claim it")
 	}
 	f.inject("Extend", 0, nil)
@@ -755,7 +755,7 @@ func engineContractRepeatedHeartbeatErrorsLoseLease(t *testing.T, backend engine
 	select {
 	case err := <-cause:
 		assert.ErrorIs(t, err, errLeaseLost)
-	case <-time.After(10 * time.Second):
+	case <-time.After(testtime.Scale(10 * time.Second)):
 		t.Fatal("handler kept running on a lease that could not be renewed")
 	}
 	waitStats(t, q, topic, "w", Stats{})
@@ -1026,7 +1026,7 @@ func engineContractScheduledOnTime(t *testing.T, backend engineBackend) {
 		assert.False(t, when.Before(at), "ran %s early", at.Sub(when))
 		assert.Less(t, when.Sub(at), poll*3, "ran %s late", when.Sub(at))
 		assert.WithinDuration(t, at, d.DeliverAt, testtime.Scale(time.Millisecond))
-	case <-time.After(10 * time.Second):
+	case <-time.After(testtime.Scale(10 * time.Second)):
 		t.Fatal("scheduled message never ran")
 	}
 }
@@ -1120,7 +1120,7 @@ func TestCloseHonoursDeadlineWithStuckStoreCalls(t *testing.T) {
 			close(started)
 			<-ctx.Done()
 			return ctx.Err()
-		}, WithLeaseDuration(3*time.Second), WithPollInterval(20*time.Millisecond))
+		}, WithLeaseDuration(testtime.Scale(3*time.Second)), WithPollInterval(testtime.Scale(20*time.Millisecond)))
 		require.NoError(t, err)
 		require.NoError(t, q.Publish(context.Background(), &Message{Topic: "t"}))
 		<-started
@@ -1144,7 +1144,7 @@ func TestCloseHonoursDeadlineWithStuckStoreCalls(t *testing.T) {
 		s := newSubscription(sq, "t", "g", func(context.Context, *Delivery) error { return nil }, SubscribeOptions{}.WithDefaults(), ctx)
 		cs, err := store.Claim(ctx, ClaimRequest{Topic: "t", Group: "g", RunnerID: sq.runnerID, Max: 1, Lease: testtime.Scale(time.Minute)})
 		require.NoError(t, err)
-		require.True(t, s.track(cs[0], time.Now().Add(time.Minute)))
+		require.True(t, s.track(cs[0], time.Now().Add(testtime.Scale(time.Minute))))
 		close(s.claimerDone)
 		close(s.work)
 		go s.heartbeatLoop()
@@ -1547,7 +1547,7 @@ func engineContractSilentRedeliveryIsNotReportedLost(t *testing.T, backend engin
 	publish(t, q, &Message{Topic: topic})
 	select {
 	case <-twice:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testtime.Scale(10 * time.Second)):
 		t.Fatal("the delivery whose acknowledgement was dropped never ran again")
 	}
 	id, _ := deliveryID.Load().(string)

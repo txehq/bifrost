@@ -172,7 +172,7 @@ func TestGenerateEmbeddingTimeoutCancelsCall(t *testing.T) {
 		select {
 		case <-ctx.Done():
 			return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: ctx.Err().Error()}}
-		case <-time.After(5 * time.Second):
+		case <-time.After(testtime.Scale(5 * time.Second)):
 			return embeddingResponse(schemas.EmbeddingStruct{EmbeddingArray: []float64{1}}, 1), nil
 		}
 	})

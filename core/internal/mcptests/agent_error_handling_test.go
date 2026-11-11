@@ -111,7 +111,7 @@ func TestAgent_ErrorHandling_TimeoutInLoop(t *testing.T) {
 
 	// Register tool that takes too long
 	toolHandler := func(args any) (string, error) {
-		time.Sleep(5 * time.Second) // Longer than context timeout
+		time.Sleep(testtime.Scale(5 * time.Second)) // Longer than context timeout
 		return `{"result": "completed"}`, nil
 	}
 

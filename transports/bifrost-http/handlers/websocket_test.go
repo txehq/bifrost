@@ -53,7 +53,7 @@ func TestBroadcastNotificationTargetsMatchingRole(t *testing.T) {
 
 	h.BroadcastNotification(&schemas.Notification{
 		ID: "notification-1", Audience: schemas.NotificationAudienceRoles, RoleIDs: []uint{7}, Severity: schemas.NotificationSeverityInfo,
-		Title: "For role seven", Message: "message", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+		Title: "For role seven", Message: "message", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(testtime.Scale(time.Hour)),
 	})
 
 	requireReadDeadline := time.Now().Add(testtime.Scale(time.Second))

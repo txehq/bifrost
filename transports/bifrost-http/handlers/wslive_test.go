@@ -224,7 +224,7 @@ func TestLiveRelayWaitsForTheClientsCloseReply(t *testing.T) {
 	closed := `{"type":"session.closed","reason":"close_requested","usage":{"seconds":3}}`
 	sendFrame(t, f.openai, closed)
 	assert.Equal(t, closed, readFrame(t, f.app))
-	require.NoError(t, f.app.SetReadDeadline(time.Now().Add(5*time.Second)))
+	require.NoError(t, f.app.SetReadDeadline(time.Now().Add(testtime.Scale(5*time.Second))))
 	_, _, err := f.app.ReadMessage()
 	var closeErr *ws.CloseError
 	require.ErrorAs(t, err, &closeErr)
@@ -517,7 +517,7 @@ func TestLiveSidebandRelayReportsHowItEnded(t *testing.T) {
 		select {
 		case err := <-ended:
 			return err
-		case <-time.After(5 * time.Second):
+		case <-time.After(testtime.Scale(5 * time.Second)):
 			t.Fatal("sideband relay did not end")
 			return nil
 		}

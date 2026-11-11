@@ -657,7 +657,7 @@ func TestExecuteTool_AuthFailureRetry_Shared_FallsBackWhenReconnectExceedsBudget
 	// The reconnect itself must still have been triggered and left running.
 	select {
 	case <-reconnectSignal:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtime.Scale(2 * time.Second)):
 		t.Fatal("expected the background goroutine to call ReconnectClient, but it never did")
 	}
 }
