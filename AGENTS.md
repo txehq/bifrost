@@ -654,12 +654,10 @@ node tests/e2e/api/runners/provider-harness-folders.mjs format   # rewrite hand-
 A branch cut before the split that changed `provider-harness.json` stops on it at its next rebase (modify/delete). At each commit the rebase stops on:
 
 ```bash
-node tests/e2e/api/runners/provider-harness-folders.mjs adopt   # moves that commit's change into the folder files
-git rm -q tests/e2e/api/collections/provider-harness.json
-git add tests/e2e/api/collections/provider-harness && git rebase --continue
+node tests/e2e/api/runners/provider-harness-folders.mjs adopt && git rebase --continue
 ```
 
-`adopt` reads the commit being replayed (`REBASE_HEAD`) and its parent, writes each folder the commit added as a new file, and merges row by row a folder both the commit and main changed. It exits 1 and names what it could not merge; main's content is left in place for those.
+`adopt` reads the commit being replayed (`REBASE_HEAD`) and its parent, writes each folder the commit added as a new file, merges row by row a folder both the commit and main changed, removes the `provider-harness.json` the stopped rebase left in the tree, and stages the folder files. It exits 1 and names what it could not merge; main's content is left in place for those, so edit the folder file, `git add` it, and continue.
 
 Edit one folder file at a time, and keep the diff to the rows you add: the files are canonical JSON, so `JSON.parse` then `JSON.stringify(folder, null, 2) + "\n"` writes a file back unchanged.
 

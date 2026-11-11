@@ -10,13 +10,16 @@
 //   adopt [--commit <rev>]     Move a change a commit made to the old single file into the folder
 //         [--base <file> --theirs <file>]
 //                              files. During a rebase the commit is REBASE_HEAD, so plain `adopt`
-//                              is the whole step. Exits 1 when something needs a hand merge.
+//                              is the whole step: it also removes the single file the stopped
+//                              rebase left behind and stages the folder files. Exits 1 when
+//                              something needs a hand merge. With --base and --theirs it reads
+//                              two collection files and touches nothing in git.
 //   split --from <file>        Replace the folder files with a whole collection (an upstream sync).
 //
 // --dir <path> points every command at another source directory.
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -77,6 +80,7 @@ function collectionAt(rev) {
 function adopt() {
   let base;
   let theirs;
+  const fromGit = !(args.base || args.theirs);
   if (args.base || args.theirs) {
     if (!args.base || !args.theirs) fail("adopt takes --base and --theirs together");
     base = JSON.parse(readFileSync(args.base, "utf8"));
@@ -100,6 +104,13 @@ function adopt() {
   }
 
   const report = adoptCollectionChange({ base, theirs, dir });
+  if (fromGit) {
+    // The stopped rebase left the commit's copy of the single file in the tree, unmerged.
+    // Its change is in the folder files now, so the conflict is settled as "deleted".
+    git("rm", "-q", "-f", "--ignore-unmatch", "--", MONOLITH_IN_REPO);
+    rmSync(PROVIDER_HARNESS_MONOLITH, { force: true });
+    git("add", "-A", "--", relative(REPO, dir));
+  }
   for (const file of report.added) console.log(`  new folder file   ${file}`);
   for (const file of report.changed) console.log(`  merged into       ${file}`);
   for (const file of report.removed) console.log(`  removed           ${file}`);
@@ -115,7 +126,11 @@ function adopt() {
     );
   }
   const status = check();
-  return report.conflicts.length > 0 ? 1 : status;
+  if (report.conflicts.length > 0) return 1;
+  if (fromGit && status === 0) {
+    console.log(`[provider-harness-folders] ${MONOLITH_IN_REPO} is removed and the folder files are staged. Next: git rebase --continue`);
+  }
+  return status;
 }
 
 switch (command) {
