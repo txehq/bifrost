@@ -56,6 +56,11 @@ const (
 // holds, so the caller's other values would stay. A plugin that only reads a value, to
 // allow or refuse the request, must read RepeatedQuery as well as Query, because the
 // other values of a name no plugin set are forwarded.
+//
+// A query value set with SetQuery reaches the vendor on every route that forwards the
+// query string, the passthrough routes included (fork, TXE-7087). A request whose query no plugin
+// changed is forwarded with the caller's bytes; one a plugin changed is forwarded
+// re-encoded, with the names in the order sent and an added name last.
 type HTTPRequest struct {
 	Method        string              `json:"method"`
 	Path          string              `json:"path"`

@@ -1,6 +1,7 @@
 package lib
 
 import (
+	"bytes"
 	"strings"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -191,4 +192,37 @@ func QueryExtraParams(args *fasthttp.Args, skip func(name []byte) bool) map[stri
 		}
 	}
 	return extra
+}
+
+// ForwardedQueryString is the one place a route reads the query string it forwards to a
+// vendor as bytes: the passthrough routes, the native Anthropic Messages forward and the
+// Claude Code OAuth forward (fork, TXE-7087). It returns the query the transport plugins
+// left on the request, without the "?".
+//
+// fasthttp keeps two copies of a query: the string the caller sent (URI.QueryString) and
+// the parsed arguments (URI.QueryArgs), and it does not rebuild the string when the
+// arguments change. The transport writes a plugin's HTTPRequest.Query changes to the
+// arguments, so a route that forwarded URI.QueryString sent the vendor the caller's value
+// of a parameter a plugin had pinned, replaced or added, while every handler that reads
+// the arguments saw the plugin's.
+//
+// When nothing changed the arguments, the caller's string is returned byte for byte:
+// order, repeats, percent-encoding and a name without "=" all reach the vendor as sent.
+// When something did, the arguments are encoded: names keep their order and repeats, a
+// changed name carries the plugin's value, an added one comes last, and the encoding is
+// fasthttp's (a space is "+", a reserved byte is percent-encoded in upper case).
+//
+// A site that forwards URI.QueryString itself reintroduces the fault;
+// TestForwardedQueryStringIsReadInOnePlace fails on it.
+func ForwardedQueryString(ctx *fasthttp.RequestCtx) string {
+	uri := ctx.Request.URI()
+	sent := uri.QueryString()
+	current := uri.QueryArgs().QueryString()
+	asSent := fasthttp.AcquireArgs()
+	defer fasthttp.ReleaseArgs(asSent)
+	asSent.ParseBytes(sent)
+	if bytes.Equal(asSent.QueryString(), current) {
+		return string(sent)
+	}
+	return string(current)
 }
