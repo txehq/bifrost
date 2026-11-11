@@ -11,6 +11,7 @@ import { buildDirectCacheParityFolder } from "./lib/direct-cache-parity.mjs";
 import { injectChainedVarGuards } from "./lib/chained-vars.mjs";
 import { routeScriptCallsThroughSetupToken, setupTokenRowPrerequest } from "./lib/setup-token.mjs";
 import { describeKeylessSkips, findKeylessProviders, injectKeylessProviderSkips } from "./lib/keyless-providers.mjs";
+import { assignStableIds } from "./lib/harness-skips.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -422,6 +423,10 @@ collection.event.unshift({
 // is a separate request, so those scripts are routed through a helper that adds the token to
 // calls aimed at this gateway's /api. See lib/setup-token.mjs.
 const tokenRoutedScripts = routeScriptCallsThroughSetupToken(collection, SETUP_TOKEN_VAR);
+
+// Last, so generated rows get one too: an id per request that is the same in every newman process
+// this run starts (shards, retries), which is what lets the report count each request once.
+assignStableIds(collection);
 
 writeFileSync(out, `${JSON.stringify(collection, null, 2)}\n`);
 const generatedCount = generatedFolders.reduce((sum, folder) => sum + folder.item.length, 0) + cachingItems.length;

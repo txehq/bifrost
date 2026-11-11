@@ -14,6 +14,8 @@
 // the count comes from the collection that was selected: the rows carrying the guard are the
 // rows that will be skipped, before anything runs.
 
+import { createHash } from "node:crypto";
+
 import { GUARD_MARKER } from "./keyless-providers.mjs";
 
 function walk(items, out = []) {
@@ -22,6 +24,50 @@ function walk(items, out = []) {
     else if (item.request) out.push(item);
   }
   return out;
+}
+
+// Gives every request that has none an id that is the same in every newman process.
+//
+// The source collection carries no item ids, and newman then makes a fresh one each time it loads
+// a collection. A parallel run loads the same request more than once: a 429 retry replays it in a
+// new process, and a chained row's producer rides along in every shard that needs it. With fresh
+// ids each of those is a different request to the report, so a recovered failure stays failed, the
+// run counts more requests than were selected, and the surplus hides real skips in the
+// selected-minus-run subtraction. The id is a hash of the folder path, the request name and its
+// position among same-named siblings, so it is unique, and it is written into the augmented
+// collection, which every later step (filter, shards, retries) copies from. An id already present
+// is kept.
+export function assignStableIds(collection) {
+  const seen = new Map();
+  const taken = new Set();
+  let assigned = 0;
+  const visit = (items, folders) => {
+    for (const item of items || []) {
+      if (Array.isArray(item.item)) {
+        visit(item.item, [...folders, item.name || ""]);
+        continue;
+      }
+      if (!item.request) continue;
+      if (item.id) {
+        taken.add(item.id);
+        continue;
+      }
+      const key = JSON.stringify([...folders, item.name || ""]);
+      let id;
+      do {
+        const ordinal = seen.get(key) || 0;
+        seen.set(key, ordinal + 1);
+        id = `h-${createHash("sha1").update(`${key}#${ordinal}`).digest("hex").slice(0, 20)}`;
+      } while (taken.has(id));
+      taken.add(id);
+      item.id = id;
+      assigned++;
+    }
+  };
+  // Ids already present are reserved first, so a generated one never collides with a later item's.
+  for (const item of walk(collection?.item)) if (item.id) taken.add(item.id);
+  visit(collection?.item, []);
+  return assigned;
 }
 
 const SKIP_REASON_RE = /skipped: no key \(([^)]*) unset\)/;
@@ -61,8 +107,9 @@ function executionFailed(execution) {
   return (execution.assertions || []).some((a) => a.error) || Boolean(execution.requestError) || !execution.response;
 }
 
-// What ran, from a newman report (single or merged). A retried request appears once per attempt;
-// the last attempt is the request's result, as in lib/newman-merge.jq.
+// What ran, from a newman report (single or merged). A request that ran in more than one process
+// (a retry, a chain producer shared by shards) appears once per run under the same id, which
+// assignStableIds gives it; the last one is the request's result, as in lib/newman-merge.jq.
 export function countRun(report) {
   const last = new Map();
   let anonymous = 0;

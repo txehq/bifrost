@@ -14,7 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { countRun, countSelection, keylessGuardRefs, refusal, summarize, summaryLine } from "./lib/harness-skips.mjs";
+import { assignStableIds, countRun, countSelection, keylessGuardRefs, refusal, summarize, summaryLine } from "./lib/harness-skips.mjs";
 import { bodyModelProvider } from "./lib/keyless-providers.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -136,6 +136,7 @@ test("a fixture run in which nothing ran is refused even with no keyless row", (
 // ---- the real collection, the real steps ---------------------------------------------------
 
 const wrongProfile = selectFolder("default-profile", "");
+const wrongProfileAugmented = path.join(dir, "default-profile-augmented.json");
 const all = requests(wrongProfile);
 const aimedAtVertex = all.filter((item) => bodyModelProvider(item) === "vertex").length;
 assert.ok(all.length > 0 && aimedAtVertex > 0, `folder "${FOLDER}" no longer holds vertex rows: the test needs another fixture folder`);
@@ -167,6 +168,41 @@ test("a fixture run named by its environment file, outside the offline runner, i
   const envFile = path.join(dir, "fixture-env.json");
   fs.writeFileSync(envFile, JSON.stringify({ values: [{ key: "providerErrorFixture", value: "1", enabled: true }] }));
   assert.strictEqual(node(CHECK, ["--collection", wrongProfile, "--env-file", envFile]).status, 1);
+});
+
+test("stable ids: every request gets a unique one, the same on every call, and an existing id is kept", () => {
+  const build = () => ({ item: [{ name: "f", item: [{ name: "same", request: {} }, { name: "same", request: {} }, { id: "kept", name: "c", request: {} }] }, { name: "g", item: [{ name: "same", request: {} }] }] });
+  const a = build();
+  const b = build();
+  assert.strictEqual(assignStableIds(a), 3);
+  assignStableIds(b);
+  const ids = (c) => c.item.flatMap((f) => f.item.map((i) => i.id));
+  assert.deepStrictEqual(ids(a), ids(b));
+  assert.strictEqual(new Set(ids(a)).size, 4);
+  assert.strictEqual(a.item[0].item[2].id, "kept");
+  assert.strictEqual(assignStableIds(a), 0, "a second pass assigns nothing");
+});
+
+test("stable ids survive newman: the same request run in two processes is counted once, with its last result", () => {
+  const twice = { info: { name: "ids", schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json" }, item: [{ name: "f", item: [plain("a"), plain("b")] }] };
+  for (const item of twice.item[0].item) delete item.id;
+  assignStableIds(twice);
+  const file = path.join(dir, "ids.json");
+  fs.writeFileSync(file, JSON.stringify(twice));
+  const first = JSON.parse(fs.readFileSync(runNewman(file, "ids-first").report, "utf8"));
+  const second = JSON.parse(fs.readFileSync(runNewman(file, "ids-second").report, "utf8"));
+  assert.deepStrictEqual(first.run.executions.map((e) => e.item.id), twice.item[0].item.map((i) => i.id));
+  assert.deepStrictEqual(second.run.executions.map((e) => e.item.id), first.run.executions.map((e) => e.item.id));
+  // A shard plus a retry of it: four executions, two requests.
+  const merged = { run: { executions: [...first.run.executions, ...second.run.executions] } };
+  assert.strictEqual(countRun(merged).run, 2);
+  assert.strictEqual(summarize(countSelection(twice), countRun(merged)).skipped, 0);
+});
+
+test("the augment step writes an id on every request of the real collection, all different", () => {
+  const ids = requests(wrongProfileAugmented).map((item) => item.id);
+  assert.ok(ids.length > 1000 && ids.every(Boolean), "a request has no id");
+  assert.strictEqual(new Set(ids).size, ids.length);
 });
 
 const wrongRun = runNewman(wrongProfile, "default-profile");
