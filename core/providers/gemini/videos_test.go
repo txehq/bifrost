@@ -526,20 +526,26 @@ func TestGeminiVideoGenerationRequest_RoundTripsVertexFields(t *testing.T) {
 	}
 }
 
-// TXE-6537: an empty reference_images list names no image. The HTTP handler leaves it in the
-// extra params while the typed field is empty; the request is sent as if it were absent.
-func TestToGeminiVideoGenerationRequest_EmptyReferenceImagesIsAbsent(t *testing.T) {
+// TXE-6537: an empty reference_images list, last_frame, aspect_ratio or resolution names nothing.
+// The HTTP handler leaves it in the extra params while the typed field is empty; the request is
+// sent as if the field were absent.
+func TestToGeminiVideoGenerationRequest_EmptyOptionalFieldsAreAbsent(t *testing.T) {
 	for _, vertex := range []bool{false, true} {
 		body := veoBody(t, vertex, &schemas.BifrostVideoGenerationRequest{
 			Model: "veo-3.1-generate-001",
 			Input: &schemas.VideoGenerationInput{Prompt: "a fox"},
 			Params: &schemas.VideoGenerationParameters{
 				Seconds:     schemas.Ptr("8"),
-				ExtraParams: map[string]any{"reference_images": []any{}},
+				ExtraParams: map[string]any{"reference_images": []any{}, "last_frame": "", "aspect_ratio": "", "resolution": ""},
 			},
 		})
 		assert.False(t, providerUtils.GetJSONField(body, "instances.0.referenceImages").Exists(), "%s", body)
 		assert.False(t, providerUtils.GetJSONField(body, "reference_images").Exists(), "%s", body)
+		assert.False(t, providerUtils.GetJSONField(body, "instances.0.lastFrame").Exists(), "%s", body)
+		assert.False(t, providerUtils.GetJSONField(body, "last_frame").Exists(), "%s", body)
+		assert.False(t, providerUtils.GetJSONField(body, "aspect_ratio").Exists(), "%s", body)
+		assert.False(t, providerUtils.GetJSONField(body, "resolution").Exists(), "%s", body)
+		assert.False(t, providerUtils.GetJSONField(body, "parameters.aspectRatio").Exists(), "%s", body)
 		assert.Equal(t, float64(8), providerUtils.GetJSONField(body, "parameters.durationSeconds").Num, "%s", body)
 	}
 }

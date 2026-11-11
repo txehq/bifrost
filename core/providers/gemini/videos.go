@@ -522,6 +522,11 @@ func veoLastFrame(p *schemas.VideoGenerationParameters, extras veoExtras, vertex
 	}
 	// A last_frame the typed field could not hold (not a string) is still in the extra params.
 	if raw, ok := extras[param]; ok && raw != nil {
+		// An empty string names no frame: the request is the same without it.
+		if text, isString := raw.(string); isString && text == "" {
+			delete(extras, param)
+			return nil, nil
+		}
 		image, ok := videoImageDataFromExtraParam(raw)
 		if !ok {
 			return nil, unsupportedVideoParam(param, "last_frame must be a data URL, a URL, or the vendor's image object")
