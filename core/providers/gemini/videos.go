@@ -489,13 +489,11 @@ func toVeoVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationReque
 			if !ok {
 				return nil, unsupportedVideoParam("size", "size %q is not a size Veo renders (1280x720, 720x1280, 1920x1080, 1080x1920, 3840x2160, 2160x3840); give aspect_ratio and resolution for anything else", p.Size)
 			}
-			if params.AspectRatio != nil && *params.AspectRatio != size.aspectRatio {
-				return nil, unsupportedVideoParam("size", "size %q is %s, which contradicts aspect_ratio %q", p.Size, size.aspectRatio, *params.AspectRatio)
+			// An explicit aspect_ratio or resolution wins over the one the size names, as on
+			// the other video providers and on Gemini images (fork, TXE-7065).
+			if params.AspectRatio == nil {
+				params.AspectRatio = &size.aspectRatio
 			}
-			if params.Resolution != nil && !strings.EqualFold(*params.Resolution, size.resolution) {
-				return nil, unsupportedVideoParam("size", "size %q is %s, which contradicts resolution %q", p.Size, size.resolution, *params.Resolution)
-			}
-			params.AspectRatio = &size.aspectRatio
 			if params.Resolution == nil && size.resolution != veoDefaultResolution {
 				params.Resolution = &size.resolution
 			}

@@ -190,9 +190,8 @@ func TestGeminiVideoDeliversTheUnifiedAspectRatio(t *testing.T) {
 	for _, extra := range []map[string]interface{}{nil, {"personGeneration": "allow_adult"}, {"aspectRatio": "9:16"}} {
 		got, err := gemini.ToGeminiVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
 			Provider: schemas.Gemini, Model: "veo-3.1-generate-preview",
-			Input: &schemas.VideoGenerationInput{Prompt: "a paper boat"},
-			// The size agrees with the aspect ratio: one that contradicts it is refused (TXE-6537).
-			Params: &schemas.VideoGenerationParameters{Size: "720x1280", AspectRatio: "9:16", ExtraParams: extra},
+			Input:  &schemas.VideoGenerationInput{Prompt: "a paper boat"},
+			Params: &schemas.VideoGenerationParameters{Size: "1280x720", AspectRatio: "9:16", ExtraParams: extra},
 		})
 		require.NoError(t, err)
 		require.NotNil(t, got.Parameters)
@@ -375,12 +374,19 @@ func TestToGeminiVideoGenerationRequest_Size(t *testing.T) {
 	body := veoBody(t, true, request("1280x720", schemas.VideoGenerationParameters{AspectRatio: "16:9", Resolution: "720p"}))
 	assert.Equal(t, "720p", providerUtils.GetJSONField(body, "parameters.resolution").String(), "%s", body)
 
+	// An explicit aspect_ratio or resolution wins over the one the size names (TXE-7065); the
+	// size still gives the other.
+	body = veoBody(t, true, request("1920x1080", schemas.VideoGenerationParameters{AspectRatio: "9:16"}))
+	assert.Equal(t, "9:16", providerUtils.GetJSONField(body, "parameters.aspectRatio").String(), "%s", body)
+	assert.Equal(t, "1080p", providerUtils.GetJSONField(body, "parameters.resolution").String(), "%s", body)
+	body = veoBody(t, true, request("1280x720", schemas.VideoGenerationParameters{Resolution: "1080p"}))
+	assert.Equal(t, "16:9", providerUtils.GetJSONField(body, "parameters.aspectRatio").String(), "%s", body)
+	assert.Equal(t, "1080p", providerUtils.GetJSONField(body, "parameters.resolution").String(), "%s", body)
+
 	refused := map[string]schemas.VideoGenerationParameters{
 		"1024x1024": {},
 		"1792x1024": {}, // an OpenAI size: 7:4, not 16:9
 		"720p":      {},
-		"1920x1080": {AspectRatio: "9:16"},
-		"1280x720":  {Resolution: "1080p"},
 	}
 	for size, params := range refused {
 		for _, convert := range []func(*schemas.BifrostVideoGenerationRequest) (*gemini.GeminiVideoGenerationRequest, error){
