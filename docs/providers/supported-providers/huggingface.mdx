@@ -52,6 +52,10 @@ Usage metadata depends on the selected inference provider and model. In particul
 
 Configure Hugging Face as a provider.
 
+<Note>
+With the default base URL, inference goes to `https://router.huggingface.co` and the model lookup that precedes most requests goes to the model hub at `https://huggingface.co/api/models`. If you set `network_config.base_url` to anything else (a gateway in front of Hugging Face, for example), the model lookup and the model list go to `<base_url>/api/models` as well, so that host must serve the hub API alongside the inference routes. Before this, the lookup always went to `huggingface.co`, whatever the base URL was.
+</Note>
+
 <Tabs>
 <Tab title="Web UI">
 
