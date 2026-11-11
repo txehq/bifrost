@@ -145,6 +145,11 @@
     },
     "google-cloud-tts": {
       "base_url": "honours"
+    },
+    "azurespeech": {
+      "base_url": "fallback",
+      "host_from": "azure_key_config.endpoint on the key, else network_config.base_url; either may be a region name (eastus), which becomes the Azure Speech host for that region, or a resource endpoint URL",
+      "fixture": "set azure_key_config.endpoint (or network_config.base_url) to the fixture's full URL, e.g. \"http://127.0.0.1:8791\"; a bare region name always reaches Azure"
     }
   }
 }
