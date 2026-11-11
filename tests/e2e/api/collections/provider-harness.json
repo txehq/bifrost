@@ -293162,7 +293162,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('azure speech setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -293177,7 +293177,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var TTS = '/tts/cognitiveservices/v1';",
                   "var STT = '/speechtotext/transcriptions:transcribe';",
                   "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
@@ -293261,7 +293261,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('azure speech setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -293276,7 +293276,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var TTS = '/tts/cognitiveservices/v1';",
                   "var STT = '/speechtotext/transcriptions:transcribe';",
                   "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
@@ -293361,8 +293361,7 @@
                 "exec": [
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
-                  "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) { pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791'); }"
+                  "}"
                 ]
               }
             },
@@ -293441,7 +293440,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('azure speech setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -293456,7 +293455,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var TTS = '/tts/cognitiveservices/v1';",
                   "var STT = '/speechtotext/transcriptions:transcribe';",
                   "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
@@ -293567,7 +293566,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('azure speech setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -293582,7 +293581,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var TTS = '/tts/cognitiveservices/v1';",
                   "var STT = '/speechtotext/transcriptions:transcribe';",
                   "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
@@ -293694,7 +293693,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('azure speech setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -293709,7 +293708,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var TTS = '/tts/cognitiveservices/v1';",
                   "var STT = '/speechtotext/transcriptions:transcribe';",
                   "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
@@ -293766,7 +293765,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('azure speech setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -293781,7 +293780,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var TTS = '/tts/cognitiveservices/v1';",
                   "var STT = '/speechtotext/transcriptions:transcribe';",
                   "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
@@ -293838,7 +293837,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('azure speech setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -293853,7 +293852,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var TTS = '/tts/cognitiveservices/v1';",
                   "var STT = '/speechtotext/transcriptions:transcribe';",
                   "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
@@ -293922,7 +293921,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('azure speech setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -293937,7 +293936,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var TTS = '/tts/cognitiveservices/v1';",
                   "var STT = '/speechtotext/transcriptions:transcribe';",
                   "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
@@ -293998,7 +293997,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('azure speech setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -294013,7 +294012,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var TTS = '/tts/cognitiveservices/v1';",
                   "var STT = '/speechtotext/transcriptions:transcribe';",
                   "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
@@ -294075,7 +294074,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('azure speech setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -294090,7 +294089,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var TTS = '/tts/cognitiveservices/v1';",
                   "var STT = '/speechtotext/transcriptions:transcribe';",
                   "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
@@ -294162,7 +294161,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('azure speech setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -294177,7 +294176,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var TTS = '/tts/cognitiveservices/v1';",
                   "var STT = '/speechtotext/transcriptions:transcribe';",
                   "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
