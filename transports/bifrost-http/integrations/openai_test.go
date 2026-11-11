@@ -1740,3 +1740,52 @@ func TestOpenAIVideoMultipartDeliversEveryField(t *testing.T) {
 		})
 	}
 }
+
+// BenchmarkOpenAIVideoMultipartParse is the multipart /openai/v1/videos parser on its own (fork,
+// TXE-7126): an ordinary SDK create (model, prompt, seconds, size and an input_reference file),
+// and one that also carries unified fields, task control fields and vendor fields under
+// x-bf-passthrough-extra-params. Each iteration parses a fresh request, as the router does.
+func BenchmarkOpenAIVideoMultipartParse(b *testing.B) {
+	build := func(values [][2]string) ([]byte, string) {
+		var form bytes.Buffer
+		writer := multipart.NewWriter(&form)
+		for _, v := range values {
+			_ = writer.WriteField(v[0], v[1])
+		}
+		part, _ := writer.CreateFormFile("input_reference", "first.png")
+		_, _ = part.Write(bytes.Repeat([]byte("\x89PNG\r\n\x1a\n"), 512))
+		_ = writer.Close()
+		return form.Bytes(), writer.FormDataContentType()
+	}
+	ordinary := [][2]string{{"model", "openai/sora-2"}, {"prompt", "a paper boat"}, {"seconds", "8"}, {"size", "1280x720"}}
+	cases := []struct {
+		name        string
+		values      [][2]string
+		passthrough bool
+	}{
+		{name: "ordinary", values: ordinary},
+		{name: "unified, control and vendor fields", passthrough: true, values: append(append([][2]string{}, ordinary...),
+			[2]string{"aspect_ratio", "16:9"}, [2]string{"resolution", "720p"}, [2]string{"last_frame", "https://img.example.test/last.png"},
+			[2]string{"callback_url", "https://hooks.example.test/v"}, [2]string{"expires_after_seconds", "7200"},
+			[2]string{"watermark", "false"}, [2]string{"service_tier", "flex"})},
+	}
+	for _, c := range cases {
+		body, contentType := build(c.values)
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				var ctx fasthttp.RequestCtx
+				ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+				ctx.Request.Header.SetContentType(contentType)
+				if c.passthrough {
+					ctx.Request.Header.Set("x-bf-passthrough-extra-params", "true")
+				}
+				ctx.Request.SetBody(body)
+				var req openai.OpenAIVideoGenerationRequest
+				if err := parseOpenAIVideoGenerationMultipartRequest(&ctx, &req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

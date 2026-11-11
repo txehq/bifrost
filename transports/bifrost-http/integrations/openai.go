@@ -4283,11 +4283,15 @@ func parseOpenAIVideoGenerationFormFields(ctx *fasthttp.RequestCtx, form *multip
 		}
 		return &n, nil
 	}
+	// text copies the value only when the field is present: a pointer to a local the
+	// absent branch also declares would be moved to the heap on every call.
 	text := func(name string) *string {
-		if v, ok := value(name); ok {
-			return &v
+		values := form.Value[name]
+		if len(values) == 0 || values[0] == "" {
+			return nil
 		}
-		return nil
+		present := values[0]
+		return &present
 	}
 
 	params := &req.VideoGenerationParameters
@@ -4359,8 +4363,8 @@ func parseOpenAIVideoGenerationFormFields(ctx *fasthttp.RequestCtx, form *multip
 		}
 	}
 
-	if v, ok := value("video_uri"); ok {
-		req.VideoURI = &v
+	if videoURI := text("video_uri"); videoURI != nil {
+		req.VideoURI = videoURI
 	}
 	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
 		req.Fallbacks = fallbackValues
