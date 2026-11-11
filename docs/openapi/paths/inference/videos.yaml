@@ -37,8 +37,20 @@ video-generation:
     operationId: videoList
     summary: List video generation jobs
     description: |
-      Lists video generation jobs for a specific provider. Results are paginated
-      and can be filtered using query parameters.
+      Lists video generation jobs for a specific provider with one call to the vendor.
+
+      **Filters.** Every query parameter other than `provider`, `after`, `limit` and `order`
+      is the vendor's own filter (a time window, a status, a model, a page number or token).
+      Bifrost sends each name and value to the vendor unchanged, repeated values included,
+      and does not interpret them; which filters exist is the vendor's documentation.
+      `provider`, `after`, `limit` and `order` are each sent once: a repeated one is a 400.
+
+      **Paging.** A vendor that pages by cursor returns `has_more` and `last_id`: send
+      `last_id` back as `after`. A vendor that pages by a number or a token returns `next`:
+      send it back in the vendor's own filter parameter (BytePlus: `page_num`, together
+      with `limit` or `page_size`, which a page after the first requires).
+
+      With `x-bf-api-key` or `x-bf-api-key-id` the call is made with that key only.
     tags:
     - Videos
     parameters:
@@ -73,6 +85,19 @@ video-generation:
         - "desc"
         default: "desc"
       description: Sort order by creation time
+    - name: filters
+      in: query
+      required: false
+      style: form
+      explode: true
+      schema:
+        type: object
+        additionalProperties:
+          type: string
+      description: |
+        The vendor's own filter parameters, each sent as its own query parameter by the
+        vendor's name (for example `status=completed&created_after=1762700000`). They reach
+        the vendor unchanged.
     responses:
       '200':
         description: Successful response. Returns a paginated list of video generation jobs.
@@ -172,6 +197,15 @@ video-download:
       Downloads the binary content of a generated video.
       The video must have a status of "completed" to be downloadable.
       Returns the raw video file (typically MP4 format).
+
+      The file is streamed: Bifrost forwards the vendor's bytes as they arrive and never
+      holds the whole file, so its size is not limited by the gateway's memory. The
+      response carries `Content-Length` when the vendor states one and is chunked otherwise.
+      BytePlus and MiniMax files are fetched whole first (at most 256 MiB). A Vertex video
+      written to a Cloud Storage bucket (`gs://`) is read through the Cloud Storage API with
+      the key's Google credentials, which need `storage.objects.get` on the bucket.
+
+      With `x-bf-api-key` or `x-bf-api-key-id` the vendor is called with that key only.
     tags:
     - Videos
     parameters:

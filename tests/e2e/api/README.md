@@ -131,6 +131,21 @@ make run-provider-harness-test PROVIDER=openai FEATURE="content-length truncatio
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
 
+## Video list filters and streamed content
+
+Folder 405 pins contract C7 BF15 and C9 BF20 (TXE-6587) on `GET /v1/videos`, `GET /v1/videos/{id}/content`
+and `GET /openai/v1/videos/{id}/content`. It needs the fixture and an isolated gateway on
+`provider_config/provider-error-fixture.config.json`, whose `fixture_video_keys` provider has two keys, and
+makes no live provider call. The fixture's `GET /v1/videos` is an OpenAI-shaped list recorded in two pages;
+its `GET /v1/videos/video_gapped_*/content` sends a 512 KiB file in two halves 1.5 seconds apart; and it
+counts each call under the caller's bearer token (`video.list@<token>?<query>`, `video.content@<token>`).
+The list rows name key b, send a repeated `status` filter and follow `last_id` to the last page. The content
+rows call the fixture's `POST /__probe/download`, which fetches the file from the gateway itself and reports
+when the first byte arrived against when the fixture wrote the second half: a gateway that holds the file
+fails with both times in the message. The last row reads `GET /__hits`: one vendor call per request, with the
+named key and the filters unchanged. Run it as the content-length truncation folder above is run, with
+`FEATURE="video content stream"`.
+
 ## Streamed frames timing
 
 Folder 308 pins contract C10 BF22 (TXE-6522) on chat (`stream: true`) and speech (`stream_format: "sse"`),

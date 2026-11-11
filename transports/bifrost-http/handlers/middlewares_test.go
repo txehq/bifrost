@@ -5470,3 +5470,77 @@ func TestDecodeRequestBodyWithLimit_BoundaryEveryEncoding(t *testing.T) {
 		}
 	}
 }
+
+// TestApplyHTTPRequestToCtxKeepsRepeatedVideoListFilters pins the transport-plugin round trip of
+// the query string (TXE-6587, contract C7 / BF15). A plugin sees one value per parameter name,
+// the last of a repeated one, and every value is written back, which replaces the first of a
+// repeated parameter with the last. That is kept for every parameter the gateway reads, so a
+// handler and a plugin never read different values of one name; but it turned the video list's
+// status=completed&status=failed into status=failed&status=failed, so the vendor filters of
+// GET /v1/videos, which Bifrost does not interpret, now keep every value unless a plugin
+// changed them.
+func TestApplyHTTPRequestToCtxKeepsRepeatedVideoListFilters(t *testing.T) {
+	roundTrip := func(uri string, change func(query map[string]string)) string {
+		t.Helper()
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+		ctx.Request.SetRequestURI(uri)
+		req := schemas.AcquireHTTPRequest()
+		defer schemas.ReleaseHTTPRequest(req)
+		fasthttpToHTTPRequest(&ctx, req)
+		if change != nil {
+			change(req.Query)
+		}
+		if !applyHTTPRequestToCtx(&ctx, req) {
+			t.Fatalf("%s must apply", uri)
+		}
+		return ctx.Request.URI().QueryArgs().String()
+	}
+
+	// Vendor filters keep their repeated values; the parameters Bifrost reads are still made
+	// to read the same for the handler as for the plugins.
+	if got := roundTrip("/v1/videos?provider=azure&status=completed&status=failed&limit=2", nil); got != "provider=azure&status=completed&status=failed&limit=2" {
+		t.Fatalf("an untouched video list query changed in the round trip: %s", got)
+	}
+	if got := roundTrip("/v1/videos?provider=openai&provider=azure&limit=1&limit=2", nil); got != "provider=azure&provider=azure&limit=2&limit=2" {
+		t.Fatalf("a repeated reserved parameter must read as the value the plugins saw: %s", got)
+	}
+	// A plugin's own changes still reach the handler, filters included.
+	got := roundTrip("/v1/videos?provider=azure&status=completed&status=failed&limit=2", func(query map[string]string) {
+		query["limit"] = "5"
+		query["status"] = "queued"
+		query["added"] = "by-plugin"
+	})
+	if got != "provider=azure&status=queued&status=failed&limit=5&added=by-plugin" {
+		t.Fatalf("query after a plugin's change = %s", got)
+	}
+	// Every other route keeps the behaviour it had.
+	if got := roundTrip("/v1/batches?provider=openai&status=a&status=b", nil); got != "provider=openai&status=b&status=b" {
+		t.Fatalf("another route's query = %s", got)
+	}
+}
+
+// BenchmarkApplyHTTPRequestToCtx is the per-request cost of writing a plugin-visible request back
+// (it runs on every request once a transport plugin is loaded): a chat request with a query, which
+// the video list exception must not slow, and the video list with a repeated filter.
+func BenchmarkApplyHTTPRequestToCtx(b *testing.B) {
+	for name, uri := range map[string]string{
+		"chat":       "/v1/chat/completions?api-version=2025-04-01-preview&trace=1",
+		"video_list": "/v1/videos?provider=azure&status=completed&status=failed&limit=2",
+	} {
+		b.Run(name, func(b *testing.B) {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+			ctx.Request.SetRequestURI(uri)
+			req := schemas.AcquireHTTPRequest()
+			defer schemas.ReleaseHTTPRequest(req)
+			fasthttpToHTTPRequest(&ctx, req)
+			b.ReportAllocs()
+			for b.Loop() {
+				if !applyHTTPRequestToCtx(&ctx, req) {
+					b.Fatal("did not apply")
+				}
+			}
+		})
+	}
+}

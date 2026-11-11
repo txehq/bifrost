@@ -1146,6 +1146,12 @@ func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 	}
 }
 
+// isVideoListRequest reports whether the request is GET /v1/videos, the one route whose
+// other query parameters are vendor filters Bifrost does not read itself.
+func isVideoListRequest(ctx *fasthttp.RequestCtx) bool {
+	return ctx.IsGet() && string(ctx.Path()) == "/v1/videos"
+}
+
 // applyHTTPRequestToCtx applies modifications from HTTPRequest back to fasthttp context.
 // Reports false when a plugin rewrote the method or path: the request has already been
 // failed with 409 and the caller must stop.
@@ -1160,9 +1166,23 @@ func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) b
 	for key, value := range req.Headers {
 		ctx.Request.Header.Set(key, value)
 	}
-	// Apply query params
+	// Apply query params. req.Query holds one value per name, the last one of a repeated
+	// parameter, and writing it back makes a repeated parameter read the same for the handler
+	// (which takes the first value) as it did for the plugins (which saw the last): a caller
+	// cannot show a plugin one provider and the handler another. The vendor filters of the
+	// video list are the exception. Bifrost does not interpret them, and writing them back
+	// replaced the first of a repeated filter with the last (status=completed&status=failed
+	// reached the vendor as status=failed&status=failed), so a filter the plugins left as it
+	// was keeps every value (fork, TXE-6587, contract C7 / BF15).
+	args := ctx.Request.URI().QueryArgs()
+	videoList := isVideoListRequest(ctx)
 	for key, value := range req.Query {
-		ctx.Request.URI().QueryArgs().Set(key, value)
+		if videoList && !slices.Contains(schemas.VideoListReservedParams, key) {
+			if values := args.PeekMulti(key); len(values) > 0 && string(values[len(values)-1]) == value {
+				continue
+			}
+		}
+		args.Set(key, value)
 	}
 	// Apply body if set
 	if req.Body != nil {

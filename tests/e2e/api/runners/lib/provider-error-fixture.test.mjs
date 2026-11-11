@@ -267,6 +267,36 @@ test("the bigmodel upstream answers only under /api/paas/v4 and records method a
   assert.ok(!JSON.stringify(calls).includes("bm-fixture-key"), "no key value is kept");
 });
 
+// Folder 405 (TXE-6587): the paged video list and the gapped download count each call under the caller's key,
+// and the download probe reports when the first byte arrived against when the fixture wrote the second half.
+test("the video list pages, the gapped download pauses, and both count per caller key", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}`;
+  await fetch(`${base}/__reset`, { method: "POST" });
+  const asKey = (key) => ({ headers: { Authorization: `Bearer ${key}` } });
+  const first = await (await fetch(`${base}/v1/videos?limit=2&status=failed&status=completed`, asKey("key-b"))).json();
+  assert.deepEqual([first.data.map((v) => v.id), first.has_more, first.last_id], [["video_a", "video_b"], true, "video_b"]);
+  const last = await (await fetch(`${base}/v1/videos?after=video_b&limit=2`, asKey("key-b"))).json();
+  assert.deepEqual([last.data.map((v) => v.id), last.has_more], [["video_c"], false]);
+
+  // The probe is pointed at the fixture itself, standing in for a gateway that streams.
+  const probed = await (await post({ base_url: base, path: "/v1/videos/video_gapped_1/content", headers: { Authorization: "Bearer key-a" } }, "/__probe/download")).json();
+  const r = probed.data[0];
+  assert.equal(r.status, 200);
+  assert.equal(r.content_type, "video/mp4");
+  assert.equal(r.bytes, 2 * 256 * 1024);
+  assert.equal(r.sends.length, 2);
+  assert.ok(r.first_byte_ms < r.sends[1], `the first byte (${r.first_byte_ms}ms) precedes the second half (${r.sends[1]}ms)`);
+  assert.ok(r.end_ms >= r.gap_ms, `the file ends after the gap: ${JSON.stringify(r)}`);
+
+  const hits = (await (await fetch(`${base}/__hits`)).json()).data[0].hits;
+  assert.deepEqual(hits, {
+    "video.list@key-b?limit=2&status=failed&status=completed": 1,
+    "video.list@key-b?after=video_b&limit=2": 1,
+    "video.content@key-a": 1,
+  });
+});
+
 // upstream-idle-stream answers a streamed chat request in two writes with a 2.5 s gap, and /__sent keeps the
 // exact bytes, so a passthrough case can compare what the gateway relayed byte for byte.
 test("upstream-idle-stream pauses between its events and records the bytes it sent", async (t) => {

@@ -3651,22 +3651,32 @@ func (h *CompletionHandler) videoDownload(ctx *fasthttp.RequestCtx) {
 	variant := string(ctx.QueryArgs().Peek("variant"))
 
 	// Build Bifrost video download request
+	// Fork: the file is asked for as a stream and forwarded as it arrives, so it is never held
+	// whole (contract C9 / BF20). A provider that cannot stream answers with the bytes instead.
 	bifrostVideoReq := &schemas.BifrostVideoDownloadRequest{
 		Provider: schemas.ModelProvider(idParts[1]),
 		ID:       idParts[0],
+		Stream:   true,
 	}
 
 	if variant != "" {
 		bifrostVideoReq.Variant = schemas.Ptr(schemas.VideoDownloadVariant(variant))
 	}
 
-	// Convert context
+	// Convert context. A streamed body is read after this handler returns, so it takes over
+	// ending the request context; every other path ends it here.
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
-	defer cancel()
 	if bifrostCtx == nil {
+		cancel()
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
+	bodyOwnsCancel := false
+	defer func() {
+		if !bodyOwnsCancel {
+			cancel()
+		}
+	}()
 
 	resp, bifrostErr := h.client.VideoDownloadRequest(bifrostCtx, bifrostVideoReq)
 	if bifrostErr != nil {
@@ -3679,6 +3689,11 @@ func (h *CompletionHandler) videoDownload(ctx *fasthttp.RequestCtx) {
 		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
+	if resp.Body != nil {
+		lib.ServeStreamedBody(ctx, resp.Body, resp.ContentType, resp.ContentLength).OnClose(cancel)
+		bodyOwnsCancel = true
 		return
 	}
 
@@ -3695,6 +3710,15 @@ func (h *CompletionHandler) videoList(ctx *fasthttp.RequestCtx) {
 	if provider == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter is required")
 		return
+	}
+
+	// Fork: a parameter Bifrost reads is sent once. A repeated one would be read by its first
+	// value here and by its last in a plugin or a routing rule, so it is refused (TXE-6587).
+	for _, name := range schemas.VideoListReservedParams {
+		if len(ctx.QueryArgs().PeekMulti(name)) > 1 {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("%s query parameter must be sent once", name))
+			return
+		}
 	}
 
 	// Build Bifrost video list request
@@ -3722,6 +3746,10 @@ func (h *CompletionHandler) videoList(ctx *fasthttp.RequestCtx) {
 		bifrostVideoReq.Order = &order
 	}
 
+	// Fork: every other query parameter is the vendor's own filter (a time window, a status, a
+	// model, a page) and travels to the vendor unchanged (contract C7 / BF15).
+	bifrostVideoReq.Filters = videoListFilters(ctx.QueryArgs())
+
 	// Convert context
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	defer cancel()
@@ -3744,6 +3772,35 @@ func (h *CompletionHandler) videoList(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	SendJSON(ctx, resp)
+}
+
+// videoListFilters collects the query parameters of GET /v1/videos that Bifrost does not read
+// itself: names and values as sent, repeated values in order.
+func videoListFilters(args *fasthttp.Args) map[string][]string {
+	var filters map[string][]string
+	for name, value := range args.All() {
+		if isVideoListReservedParam(name) {
+			continue
+		}
+		if filters == nil {
+			filters = make(map[string][]string)
+		}
+		key := string(name)
+		filters[key] = append(filters[key], string(value))
+	}
+	return filters
+}
+
+// isVideoListReservedParam reports whether name is a query parameter of GET /v1/videos that
+// Bifrost reads itself. The comparison does not allocate, so a list request that sends no
+// vendor filter pays nothing for the pass-through.
+func isVideoListReservedParam(name []byte) bool {
+	for _, reserved := range schemas.VideoListReservedParams {
+		if string(name) == reserved {
+			return true
+		}
+	}
+	return false
 }
 
 // videoDelete handles DELETE /v1/videos/{video_id} - Delete a video generation job

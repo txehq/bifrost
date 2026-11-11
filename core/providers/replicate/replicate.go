@@ -2815,48 +2815,24 @@ func (provider *ReplicateProvider) VideoDownload(ctx *schemas.BifrostContext, ke
 		return nil, providerUtils.NewBifrostOperationError("invalid video output type", nil)
 	}
 	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
 	req.SetRequestURI(videoUrl)
 	req.Header.SetMethod(http.MethodGet)
 	// Some output URLs are signed and don't need auth, but keep auth if present.
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
-	defer wait()
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
-			fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
-			nil), latency)
-	}
-
-	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
-	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
-
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
-	}
-	contentType := string(resp.Header.ContentType())
-	if contentType == "" {
-		contentType = "video/mp4"
-	}
-	content := append([]byte(nil), body...)
-	bifrostResp := &schemas.BifrostVideoDownloadResponse{
-		VideoID:     request.ID,
-		Content:     content,
-		ContentType: contentType,
-	}
-
-	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
-	bifrostResp.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
-
-	return bifrostResp, nil
+	return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
+		Request:                  req,
+		Client:                   provider.client,
+		StreamingClient:          provider.streamingClient,
+		Stream:                   request.Stream,
+		VideoID:                  request.ID,
+		StreamIdleTimeoutSeconds: provider.networkConfig.StreamIdleTimeoutInSeconds,
+		ParseError: func(resp *fasthttp.Response) *schemas.BifrostError {
+			return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()), nil)
+		},
+	})
 }
 
 // VideoDelete is not supported by replicate provider.

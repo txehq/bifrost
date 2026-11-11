@@ -4604,9 +4604,7 @@ func (provider *OpenAIProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 
 	// Create request
 	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
 
 	// Set headers
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -4626,46 +4624,19 @@ func (provider *OpenAIProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
-	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
-	defer wait()
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	// Extract provider response headers early so they're available on error paths too
-	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
-	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
-
-	// Handle error response
-	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
-		return nil, providerUtils.SetErrorLatency(ParseOpenAIError(resp), latency)
-	}
-
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
-	}
-
-	// Get content type from response
-	contentType := string(resp.Header.ContentType())
-	if contentType == "" {
-		// Default to video/mp4 if not specified
-		contentType = "video/mp4"
-	}
-
-	// Copy the binary content
-	content := append([]byte(nil), body...)
-
-	return &schemas.BifrostVideoDownloadResponse{
-		VideoID:     providerUtils.AddVideoIDProviderSuffix(videoID, providerName),
-		Content:     content,
-		ContentType: contentType,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency:                 latency.Milliseconds(),
-			ProviderResponseHeaders: providerResponseHeaders,
+	// Fork: the file is streamed to a caller that asked for it (contract C9 / BF20).
+	return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
+		Request:                  req,
+		Client:                   provider.client,
+		StreamingClient:          provider.streamingClient,
+		Stream:                   request.Stream,
+		VideoID:                  providerUtils.AddVideoIDProviderSuffix(videoID, providerName),
+		StreamIdleTimeoutSeconds: provider.networkConfig.StreamIdleTimeoutInSeconds,
+		ParseError: func(resp *fasthttp.Response) *schemas.BifrostError {
+			provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
+			return ParseOpenAIError(resp)
 		},
-	}, nil
+	})
 }
 
 // VideoDelete deletes a video generation job from the OpenAI API.
@@ -5164,6 +5135,8 @@ func HandleOpenAIVideoListRequest(
 	if request.Order != nil && *request.Order != "" {
 		values.Set("order", *request.Order)
 	}
+	// Fork: the vendor's own filters travel unchanged (contract C7 / BF15).
+	providerUtils.AddVideoListFilters(values, request.Filters)
 	finalURL := baseURL
 	if encoded := values.Encode(); encoded != "" {
 		finalURL = baseURL + "?" + encoded

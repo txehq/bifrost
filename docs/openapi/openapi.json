@@ -6552,7 +6552,7 @@
       "get": {
         "operationId": "videoList",
         "summary": "List video generation jobs",
-        "description": "Lists video generation jobs for a specific provider. Results are paginated\nand can be filtered using query parameters.\n",
+        "description": "Lists video generation jobs for a specific provider with one call to the vendor.\n\n**Filters.** Every query parameter other than `provider`, `after`, `limit` and `order`\nis the vendor's own filter (a time window, a status, a model, a page number or token).\nBifrost sends each name and value to the vendor unchanged, repeated values included,\nand does not interpret them; which filters exist is the vendor's documentation.\n`provider`, `after`, `limit` and `order` are each sent once: a repeated one is a 400.\n\n**Paging.** A vendor that pages by cursor returns `has_more` and `last_id`: send\n`last_id` back as `after`. A vendor that pages by a number or a token returns `next`:\nsend it back in the vendor's own filter parameter (BytePlus: `page_num`, together\nwith `limit` or `page_size`, which a page after the first requires).\n\nWith `x-bf-api-key` or `x-bf-api-key-id` the call is made with that key only.\n",
         "tags": [
           "Videos"
         ],
@@ -6600,6 +6600,20 @@
               "default": "desc"
             },
             "description": "Sort order by creation time"
+          },
+          {
+            "name": "filters",
+            "in": "query",
+            "required": false,
+            "style": "form",
+            "explode": true,
+            "schema": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "description": "The vendor's own filter parameters, each sent as its own query parameter by the\nvendor's name (for example `status=completed&created_after=1762700000`). They reach\nthe vendor unchanged.\n"
           }
         ],
         "responses": {
@@ -6715,6 +6729,10 @@
                     "has_more": {
                       "type": "boolean",
                       "description": "Whether there are more results available"
+                    },
+                    "next": {
+                      "type": "string",
+                      "description": "The vendor's cursor for the following page, for vendors that page by a number or a\ntoken instead of by the last ID. Send it back in the vendor's own filter parameter\n(BytePlus: `page_num`). Absent on the last page and for vendors that page with\n`after` and `last_id`.\n"
                     },
                     "extra_fields": {
                       "$ref": "#/components/schemas/BifrostResponseExtraFields"
@@ -7116,7 +7134,7 @@
       "get": {
         "operationId": "videoDownload",
         "summary": "Download video content",
-        "description": "Downloads the binary content of a generated video.\nThe video must have a status of \"completed\" to be downloadable.\nReturns the raw video file (typically MP4 format).\n",
+        "description": "Downloads the binary content of a generated video.\nThe video must have a status of \"completed\" to be downloadable.\nReturns the raw video file (typically MP4 format).\n\nThe file is streamed: Bifrost forwards the vendor's bytes as they arrive and never\nholds the whole file, so its size is not limited by the gateway's memory. The\nresponse carries `Content-Length` when the vendor states one and is chunked otherwise.\nBytePlus and MiniMax files are fetched whole first (at most 256 MiB). A Vertex video\nwritten to a Cloud Storage bucket (`gs://`) is read through the Cloud Storage API with\nthe key's Google credentials, which need `storage.objects.get` on the bucket.\n\nWith `x-bf-api-key` or `x-bf-api-key-id` the vendor is called with that key only.\n",
         "tags": [
           "Videos"
         ],

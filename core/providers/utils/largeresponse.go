@@ -352,9 +352,35 @@ func ParseOpenAIUsageFromBytes(data []byte) *schemas.BifrostLLMUsage {
 // decompressed, failing after the stream idle timeout when the provider stalls, closed when the
 // request context ends, and releasing resp on Close. The caller must not release resp itself.
 func WrapStreamingResponseBody(ctx *schemas.BifrostContext, resp *fasthttp.Response) *LargeResponseReader {
-	reader, releaseGzip := DecompressStreamBody(resp)
-	reader, stopIdleTimeout := NewIdleTimeoutReader(reader, resp.BodyStream(), GetStreamIdleTimeout(ctx), ctx)
-	stopCancellation := SetupStreamCancellation(ctx, resp.BodyStream(), nil)
+	return wrapStreamingResponseBody(ctx, resp, true)
+}
+
+// WrapRawStreamingResponseBody is WrapStreamingResponseBody without the gzip decoding: the bytes
+// as the provider sent them, for a caller that decodes the whole body itself.
+func WrapRawStreamingResponseBody(ctx *schemas.BifrostContext, resp *fasthttp.Response) *LargeResponseReader {
+	return wrapStreamingResponseBody(ctx, resp, false)
+}
+
+// wrapStreamingResponseBody puts the idle timeout and the cancellation hook on the raw stream
+// before any decoder is built on it. Creating a gzip reader reads the gzip header from the
+// socket, whose deadline the transport lifted once the headers arrived, so a provider that
+// stalls there could be interrupted by neither if the decoder came first (fork, TXE-6587; the
+// same order FinalizeResponseWithLargeDetection uses).
+func wrapStreamingResponseBody(ctx *schemas.BifrostContext, resp *fasthttp.Response, decodeGzip bool) *LargeResponseReader {
+	bodyStream := resp.BodyStream()
+	if bodyStream == nil {
+		// Nothing to guard or decode: an empty reader, as DecompressStreamBody returns.
+		return &LargeResponseReader{Reader: bytes.NewReader(nil), Resp: resp, ctx: ctx}
+	}
+	reader, stopIdleTimeout := NewIdleTimeoutReader(bodyStream, bodyStream, GetStreamIdleTimeout(ctx), ctx)
+	stopCancellation := SetupStreamCancellation(ctx, bodyStream, nil)
+	releaseGzip := func() {}
+	if decodeGzip {
+		if gz, decoded, wasGzip := decompressBodyStreamIfGzip(resp, reader); wasGzip {
+			reader = decoded
+			releaseGzip = func() { ReleaseGzipReader(gz) }
+		}
+	}
 	return &LargeResponseReader{
 		Reader: reader,
 		Resp:   resp,

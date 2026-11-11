@@ -323551,6 +323551,380 @@
           }
         }
       ]
+    },
+    {
+      "name": "405. Video list forwards vendor filters and pages, /content streams, both on the named key only (video content stream, video list filters)",
+      "description": "Local fixture regression for TXE-6587 (Bifrost–Tokun contract C7 / BF15 and C9 / BF20), no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs and an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, whose fixture_video_keys provider is an OpenAI-based custom provider on the fixture with two keys (fixture-video-key-a, fixture-video-key-b), and run with providerErrorFixture=1; every case is skipped otherwise. The fixture's GET /v1/videos is an OpenAI-shaped list recorded in two pages, its GET /v1/videos/video_gapped_*/content sends a 512 KiB file in two halves 1.5 seconds apart, and it counts every call under the caller's bearer token and, for the list, the query it received. 405.2 and 405.3 list with x-bf-api-key naming key b, a repeated status filter and a created_after filter, and follow last_id as the after cursor to the last page. 405.4 and 405.5 download through GET /v1/videos/{id}/content and through the OpenAI SDK route GET /openai/v1/videos/{id}/content by way of the fixture's download probe, which reports when the first byte reached it against when the fixture wrote the second half. 405.6 reads the counters: each list call reached the vendor once with key b and with the filters unchanged, each download once with the key it named, and nothing else arrived. Red before the change: the filters never reached the vendor (the list query was limit=2 alone), and the first byte of a download arrived only after the vendor had sent the whole file. The Go tests cover the same on OpenAI, Azure, BytePlus and Vertex gs:// (Cloud Storage), which no fixture route stands in for.",
+      "item": [
+        {
+          "name": "405.1 fixture hit counters reset before the openai video list and content rows (video content stream)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('counters cleared', function () { pm.expect(j.data[0].reset, pm.response.text()).to.equal(true); });",
+                  "pm.collectionVariables.unset('videoListCursor');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{providerErrorFixtureUrl}}/__reset",
+              "host": [
+                "{{providerErrorFixtureUrl}}"
+              ],
+              "path": [
+                "__reset"
+              ]
+            }
+          }
+        },
+        {
+          "name": "405.2 openai-shaped /v1/videos list on fixture_video_keys forwards the vendor filters with the named key and reports a further page (video list filters)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the first page is the vendor\\'s, ids carrying the provider', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.data.map(function (v) { return v.id; }), pm.response.text()).to.eql(['video_a:fixture_video_keys', 'video_b:fixture_video_keys']);",
+                  "  pm.expect(j.has_more, pm.response.text()).to.equal(true);",
+                  "  pm.expect(j.last_id, pm.response.text()).to.equal('video_b:fixture_video_keys');",
+                  "  pm.collectionVariables.set('videoListCursor', j.last_id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "fixture-video-key-b"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos?provider=fixture_video_keys&limit=2&status=completed&status=failed&created_after=1762700000",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "fixture_video_keys"
+                },
+                {
+                  "key": "limit",
+                  "value": "2"
+                },
+                {
+                  "key": "status",
+                  "value": "completed"
+                },
+                {
+                  "key": "status",
+                  "value": "failed"
+                },
+                {
+                  "key": "created_after",
+                  "value": "1762700000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "405.3 openai-shaped /v1/videos list on fixture_video_keys follows last_id as the after cursor to the last page (video list filters)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the page after the cursor is the last one', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.data.map(function (v) { return v.id; }), pm.response.text()).to.eql(['video_c:fixture_video_keys']);",
+                  "  pm.expect(j.has_more, pm.response.text()).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "fixture-video-key-b"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos?provider=fixture_video_keys&limit=2&status=completed&status=failed&created_after=1762700000&after={{videoListCursor}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "fixture_video_keys"
+                },
+                {
+                  "key": "limit",
+                  "value": "2"
+                },
+                {
+                  "key": "status",
+                  "value": "completed"
+                },
+                {
+                  "key": "status",
+                  "value": "failed"
+                },
+                {
+                  "key": "created_after",
+                  "value": "1762700000"
+                },
+                {
+                  "key": "after",
+                  "value": "{{videoListCursor}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "405.4 openai-shaped /v1/videos/{id}/content on fixture_video_keys forwards the file while the vendor is still sending it (video content stream)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "// The probe calls the gateway itself, so it carries the gateway credential the harness would have sent.",
+                  "var auth = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header');",
+                  "var headers = { 'x-bf-api-key': 'fixture-video-key-a' };",
+                  "if (auth) { headers.Authorization = auth; }",
+                  "pm.variables.set('videoProbeHeaders', JSON.stringify(headers));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'probe failed: ' + pm.response.text()).to.equal(200);",
+                  "var r = pm.response.json().data[0];",
+                  "pm.test('/v1/videos/{id}/content answered 200 with the whole video/mp4 file', function () {",
+                  "  pm.expect(r.status, JSON.stringify(r)).to.equal(200);",
+                  "  pm.expect(r.content_type, JSON.stringify(r)).to.match(/^video\\//);",
+                  "  pm.expect(r.bytes, JSON.stringify(r)).to.equal(2 * 256 * 1024);",
+                  "  pm.expect(r.sends.length, 'the fixture wrote the file in ' + r.sends.length + ' halves: ' + JSON.stringify(r)).to.equal(2);",
+                  "});",
+                  "pm.test('the first bytes reach the caller before the vendor has sent the second half: the file is not held whole', function () {",
+                  "  pm.expect(r.first_byte_ms, 'the first byte arrived at ' + r.first_byte_ms + 'ms, after the vendor wrote the second half at ' + r.sends[1] + 'ms: ' + JSON.stringify(r)).to.be.below(r.sends[1]);",
+                  "});",
+                  "pm.test('the vendor\\'s pause is kept between the first byte and the last', function () {",
+                  "  pm.expect(r.end_ms - r.first_byte_ms, JSON.stringify(r)).to.be.at.least(r.gap_ms / 2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"base_url\": \"{{baseUrl}}\",\n  \"path\": \"/v1/videos/video_gapped_1:fixture_video_keys/content\",\n  \"headers\": {{videoProbeHeaders}}\n}"
+            },
+            "url": {
+              "raw": "{{providerErrorFixtureUrl}}/__probe/download",
+              "host": [
+                "{{providerErrorFixtureUrl}}"
+              ],
+              "path": [
+                "__probe",
+                "download"
+              ]
+            }
+          }
+        },
+        {
+          "name": "405.5 /openai/v1/videos/{id}/content on fixture_video_keys forwards the file while the vendor is still sending it (video content stream)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "// The probe calls the gateway itself, so it carries the gateway credential the harness would have sent.",
+                  "var auth = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header');",
+                  "var headers = { 'x-bf-api-key': 'fixture-video-key-b' };",
+                  "if (auth) { headers.Authorization = auth; }",
+                  "pm.variables.set('videoProbeHeaders', JSON.stringify(headers));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'probe failed: ' + pm.response.text()).to.equal(200);",
+                  "var r = pm.response.json().data[0];",
+                  "pm.test('/openai/v1/videos/{id}/content answered 200 with the whole video/mp4 file', function () {",
+                  "  pm.expect(r.status, JSON.stringify(r)).to.equal(200);",
+                  "  pm.expect(r.content_type, JSON.stringify(r)).to.match(/^video\\//);",
+                  "  pm.expect(r.bytes, JSON.stringify(r)).to.equal(2 * 256 * 1024);",
+                  "  pm.expect(r.sends.length, 'the fixture wrote the file in ' + r.sends.length + ' halves: ' + JSON.stringify(r)).to.equal(2);",
+                  "});",
+                  "pm.test('the first bytes reach the caller before the vendor has sent the second half: the file is not held whole', function () {",
+                  "  pm.expect(r.first_byte_ms, 'the first byte arrived at ' + r.first_byte_ms + 'ms, after the vendor wrote the second half at ' + r.sends[1] + 'ms: ' + JSON.stringify(r)).to.be.below(r.sends[1]);",
+                  "});",
+                  "pm.test('the vendor\\'s pause is kept between the first byte and the last', function () {",
+                  "  pm.expect(r.end_ms - r.first_byte_ms, JSON.stringify(r)).to.be.at.least(r.gap_ms / 2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"base_url\": \"{{baseUrl}}\",\n  \"path\": \"/openai/v1/videos/video_gapped_2:fixture_video_keys/content\",\n  \"headers\": {{videoProbeHeaders}}\n}"
+            },
+            "url": {
+              "raw": "{{providerErrorFixtureUrl}}/__probe/download",
+              "host": [
+                "{{providerErrorFixtureUrl}}"
+              ],
+              "path": [
+                "__probe",
+                "download"
+              ]
+            }
+          }
+        },
+        {
+          "name": "405.6 each openai video list and content call reached the fixture once, with the named key and the filters unchanged (video content stream, video list filters)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var h = pm.response.json().data[0].hits;",
+                  "var seen = {};",
+                  "Object.keys(h).forEach(function (k) { if (k.indexOf('video.list@') === 0 || k.indexOf('video.content@') === 0) { seen[k] = h[k]; } });",
+                  "pm.test('one vendor call per request, each with the key the caller named and the list filters as sent', function () {",
+                  "  pm.expect(seen, JSON.stringify(h)).to.eql({",
+                  "    'video.list@fixture-video-b?created_after=1762700000&limit=2&status=completed&status=failed': 1,",
+                  "    'video.list@fixture-video-b?after=video_b&created_after=1762700000&limit=2&status=completed&status=failed': 1,",
+                  "    'video.content@fixture-video-a': 1,",
+                  "    'video.content@fixture-video-b': 1",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{providerErrorFixtureUrl}}/__hits",
+              "host": [
+                "{{providerErrorFixtureUrl}}"
+              ],
+              "path": [
+                "__hits"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

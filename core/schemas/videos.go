@@ -1,6 +1,9 @@
 package schemas
 
-import "slices"
+import (
+	"io"
+	"slices"
+)
 
 // VideoStatus is the lifecycle status of a video job.
 type VideoStatus string
@@ -476,14 +479,27 @@ type BifrostVideoListRequest struct {
 	After    *string       `json:"after,omitempty"`
 	Limit    *int          `json:"limit,omitempty"`
 	Order    *string       `json:"order,omitempty"`
+	// Filters are the vendor's own list parameters (a time window, a status, a model, a page
+	// number or token), by the vendor's names. Bifrost sends each name and value to the vendor
+	// unchanged and does not interpret them (fork, contract C7 / BF15). After, Limit and Order
+	// are not repeated here.
+	Filters map[string][]string `json:"filters,omitempty"`
 }
 
+// VideoListReservedParams are the query parameters of GET /v1/videos that Bifrost reads itself;
+// every other one is a vendor filter and travels in BifrostVideoListRequest.Filters.
+var VideoListReservedParams = []string{"provider", "after", "limit", "order"}
+
 type BifrostVideoListResponse struct {
-	Object      string                     `json:"object"` // "list"
-	Data        []VideoObject              `json:"data"`
-	FirstID     *string                    `json:"first_id,omitempty"`
-	HasMore     *bool                      `json:"has_more,omitempty"`
-	LastID      *string                    `json:"last_id,omitempty"`
+	Object  string        `json:"object"` // "list"
+	Data    []VideoObject `json:"data"`
+	FirstID *string       `json:"first_id,omitempty"`
+	HasMore *bool         `json:"has_more,omitempty"`
+	LastID  *string       `json:"last_id,omitempty"`
+	// Next is the vendor's cursor for the following page, for vendors that page by a number or
+	// a token instead of by the last id: the caller sends it back in the vendor's own filter
+	// parameter. Absent on the last page and for vendors that page with after/last_id (fork).
+	Next        *string                    `json:"next,omitempty"`
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
@@ -566,6 +582,10 @@ type BifrostVideoDownloadRequest struct {
 	ID          string                `json:"id"`
 	Variant     *VideoDownloadVariant `json:"variant,omitempty"`
 	ExtraParams map[string]any        `json:"-"`
+	// Stream asks for the file as BifrostVideoDownloadResponse.Body instead of Content, so a
+	// caller that forwards it never holds the whole file (fork, contract C9 / BF20). A provider
+	// that cannot stream ignores it and fills Content; the caller handles both.
+	Stream bool `json:"-"`
 }
 
 type VideoDownloadVariant string
@@ -580,6 +600,12 @@ type BifrostVideoDownloadResponse struct {
 	VideoID     string `json:"video_id"`
 	Content     []byte `json:"-"`                      // Raw video content (not serialized)
 	ContentType string `json:"content_type,omitempty"` // MIME type (e.g., "video/mp4", "image/png" for thumbnails)
+	// Body is set instead of Content when the request asked for a stream and the provider can
+	// give one. It reads the file from the vendor as it arrives; the caller must Close it, which
+	// releases the upstream response. ContentLength is its size, or 0 when the vendor stated
+	// none (fork).
+	Body          io.ReadCloser `json:"-"`
+	ContentLength int64         `json:"content_length,omitempty"`
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }

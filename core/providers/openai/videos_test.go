@@ -2,11 +2,16 @@ package openai
 
 import (
 	"bytes"
+	"context"
+	"io"
 	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	schemas "github.com/capsohq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // An uploaded source is carried as bytes; a referenced one keeps only the ID, with the provider
@@ -200,5 +205,118 @@ func TestParseVideoGenerationFormDataBodyFromRequest_RefusesAModelAmongExtraPara
 		Model: "sora-2", Prompt: "a dog", ExtraParams: map[string]interface{}{"watermark": false},
 	}, schemas.OpenAI); bifrostErr != nil {
 		t.Fatalf("an ordinary extra param was refused: %+v", bifrostErr)
+	}
+}
+
+// twoPageVideoList serves an OpenAI-shaped video list recorded in two pages: the first page ends
+// at video_b and says more follow, and the page after video_b is the last. It records each query.
+func twoPageVideoList(t *testing.T, path string, queries *[]string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != path {
+			http.NotFound(w, r)
+			return
+		}
+		*queries = append(*queries, r.URL.Query().Encode())
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("after") {
+		case "":
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"video_a","object":"video","model":"sora-2","status":"completed","created_at":1762700000},{"id":"video_b","object":"video","model":"sora-2","status":"in_progress","created_at":1762700100}],"first_id":"video_a","last_id":"video_b","has_more":true}`))
+		case "video_b":
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"video_c","object":"video","model":"sora-2","status":"failed","created_at":1762700200}],"first_id":"video_c","last_id":"video_c","has_more":false}`))
+		default:
+			http.Error(w, `{"error":{"message":"unknown cursor"}}`, http.StatusBadRequest)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestVideoListForwardsFiltersAndPagesToTheEnd is contract C7 / BF15 on the OpenAI-shaped list
+// (OpenAI itself, and Azure and Volcengine through the same handler): the vendor's filters reach
+// it by their own names on every page, and following last_id as the after cursor walks the
+// recorded two pages to the end, with each id carrying the provider suffix Tokun stores.
+func TestVideoListForwardsFiltersAndPagesToTheEnd(t *testing.T) {
+	var queries []string
+	srv := twoPageVideoList(t, "/v1/videos", &queries)
+	provider := &OpenAIProvider{client: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: srv.URL}}
+	key := schemas.Key{Value: *schemas.NewSecretVar("sk-test")}
+
+	request := &schemas.BifrostVideoListRequest{
+		Provider: schemas.OpenAI,
+		Limit:    schemas.Ptr(2),
+		Order:    schemas.Ptr("asc"),
+		Filters:  map[string][]string{"status": {"completed", "failed"}, "created_after": {"1762700000"}},
+	}
+	var ids []string
+	for page := 1; ; page++ {
+		if page > 3 {
+			t.Fatal("paging did not end after the recorded two pages")
+		}
+		resp, bifrostErr := provider.VideoList(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, request)
+		if bifrostErr != nil {
+			t.Fatalf("page %d: %v", page, bifrostErr.Error)
+		}
+		for _, video := range resp.Data {
+			ids = append(ids, video.ID)
+		}
+		if resp.HasMore == nil || !*resp.HasMore {
+			break
+		}
+		request.After = resp.LastID
+	}
+
+	if got := strings.Join(ids, ","); got != "video_a:openai,video_b:openai,video_c:openai" {
+		t.Fatalf("ids = %s", got)
+	}
+	want := []string{
+		"created_after=1762700000&limit=2&order=asc&status=completed&status=failed",
+		"after=video_b&created_after=1762700000&limit=2&order=asc&status=completed&status=failed",
+	}
+	if strings.Join(queries, " | ") != strings.Join(want, " | ") {
+		t.Fatalf("vendor queries = %q, want %q", queries, want)
+	}
+}
+
+// TestVideoDownloadStreamsOnRequest is contract C9 / BF20 on OpenAI's /videos/{id}/content: a
+// request that asks for a stream gets the vendor's body to read, with the variant and the key's
+// credentials on the one upstream call; a request that does not still gets the bytes.
+func TestVideoDownloadStreamsOnRequest(t *testing.T) {
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.RequestURI()+" "+r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "image/webp")
+		_, _ = w.Write([]byte("THUMBNAIL"))
+	}))
+	t.Cleanup(srv.Close)
+	provider := &OpenAIProvider{client: &fasthttp.Client{}, streamingClient: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: srv.URL}}
+	key := schemas.Key{Value: *schemas.NewSecretVar("sk-test")}
+	variant := schemas.VideoDownloadVariantThumbnail
+
+	streamed, bifrostErr := provider.VideoDownload(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key,
+		&schemas.BifrostVideoDownloadRequest{Provider: schemas.OpenAI, ID: "video_a:openai", Variant: &variant, Stream: true})
+	if bifrostErr != nil {
+		t.Fatalf("streamed download: %v", bifrostErr.Error)
+	}
+	if streamed.Body == nil || streamed.Content != nil {
+		t.Fatalf("a streamed download returns Body only, got body=%v content=%q", streamed.Body != nil, streamed.Content)
+	}
+	body, err := io.ReadAll(streamed.Body)
+	if err != nil || streamed.Body.Close() != nil || string(body) != "THUMBNAIL" {
+		t.Fatalf("streamed body = %q, %v", body, err)
+	}
+	if streamed.ContentType != "image/webp" || streamed.ContentLength != int64(len("THUMBNAIL")) || streamed.VideoID != "video_a:openai" {
+		t.Fatalf("streamed response = %+v", streamed)
+	}
+
+	buffered, bifrostErr := provider.VideoDownload(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key,
+		&schemas.BifrostVideoDownloadRequest{Provider: schemas.OpenAI, ID: "video_a:openai"})
+	if bifrostErr != nil || string(buffered.Content) != "THUMBNAIL" || buffered.Body != nil {
+		t.Fatalf("buffered download = %+v, %v", buffered, bifrostErr)
+	}
+
+	want := "GET /v1/videos/video_a/content?variant=thumbnail Bearer sk-test"
+	if len(calls) != 2 || calls[0] != want || calls[1] != "GET /v1/videos/video_a/content Bearer sk-test" {
+		t.Fatalf("upstream calls = %q", calls)
 	}
 }

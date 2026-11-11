@@ -330,6 +330,34 @@
         "default_request_timeout_in_seconds": 10
       }
     },
+    "fixture_video_keys": {
+      "keys": [
+        {
+          "name": "fixture-video-key-a",
+          "value": "fixture-video-a",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        },
+        {
+          "name": "fixture-video-key-b",
+          "value": "fixture-video-b",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai"
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
     "tencent_tokenhub": {
       "keys": [
         {

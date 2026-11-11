@@ -890,3 +890,114 @@ func TestAzureImageGenerationRejectsUndeliverableFields(t *testing.T) {
 		t.Fatalf("upstream calls = %v, want one to /openai/v1/images/generations", paths)
 	}
 }
+
+// TestAzureVideoListForwardsFiltersAndPagesToTheEnd is contract C7 / BF15 for Azure Sora 2,
+// whose list Tokun matches lost submissions against (recovery method 4): after, limit and order
+// and any further filter reach /openai/v1/videos unchanged with the named key's api-key, and
+// following last_id walks a recorded two-page response to its end.
+func TestAzureVideoListForwardsFiltersAndPagesToTheEnd(t *testing.T) {
+	var mu sync.Mutex
+	var queries, apiKeys []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/openai/v1/videos" {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		queries = append(queries, r.URL.Query().Encode())
+		apiKeys = append(apiKeys, r.Header.Get("api-key"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("after") == "video_b" {
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"video_c","object":"video","model":"sora-2","status":"failed","created_at":1762700200}],"first_id":"video_c","last_id":"video_c","has_more":false}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"video_a","object":"video","model":"sora-2","status":"completed","created_at":1762700000},{"id":"video_b","object":"video","model":"sora-2","status":"in_progress","created_at":1762700100}],"first_id":"video_a","last_id":"video_b","has_more":true}`))
+	}))
+	defer srv.Close()
+
+	provider := newAzureDecisionProvider(t)
+	key := newAzureDecisionKey(srv.URL)
+	request := &schemas.BifrostVideoListRequest{
+		Provider: schemas.Azure,
+		Limit:    schemas.Ptr(2),
+		Order:    schemas.Ptr("desc"),
+		Filters:  map[string][]string{"status": {"completed"}},
+	}
+	var ids []string
+	for page := 1; ; page++ {
+		if page > 3 {
+			t.Fatal("paging did not end after the recorded two pages")
+		}
+		resp, bifrostErr := provider.VideoList(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, request)
+		if bifrostErr != nil {
+			t.Fatalf("page %d: %v", page, bifrostErr.Error)
+		}
+		for _, video := range resp.Data {
+			ids = append(ids, video.ID)
+		}
+		if resp.HasMore == nil || !*resp.HasMore {
+			break
+		}
+		request.After = resp.LastID
+	}
+
+	if got := strings.Join(ids, ","); got != "video_a:azure,video_b:azure,video_c:azure" {
+		t.Fatalf("ids = %s", got)
+	}
+	wantQueries := []string{"limit=2&order=desc&status=completed", "after=video_b&limit=2&order=desc&status=completed"}
+	if !reflect.DeepEqual(queries, wantQueries) {
+		t.Fatalf("vendor queries = %q, want %q", queries, wantQueries)
+	}
+	if !reflect.DeepEqual(apiKeys, []string{"test-key", "test-key"}) {
+		t.Fatalf("api-key headers = %q", apiKeys)
+	}
+}
+
+// TestAzureVideoDownloadStreamsOnRequest is contract C9 / BF20 for Azure Sora 2, whose file can
+// only be fetched with the resource's key: one call to /openai/v1/videos/{id}/content with that
+// key, and the body handed on as a stream.
+func TestAzureVideoDownloadStreamsOnRequest(t *testing.T) {
+	var mu sync.Mutex
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls = append(calls, r.Method+" "+r.URL.RequestURI()+" "+r.Header.Get("api-key"))
+		mu.Unlock()
+		if r.URL.Path == "/openai/v1/videos/video_gone/content" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"Video not found"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("SORA-MP4"))
+	}))
+	defer srv.Close()
+
+	provider := newAzureDecisionProvider(t)
+	key := newAzureDecisionKey(srv.URL)
+	resp, bifrostErr := provider.VideoDownload(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key,
+		&schemas.BifrostVideoDownloadRequest{Provider: schemas.Azure, ID: "video_a:azure", Stream: true})
+	if bifrostErr != nil {
+		t.Fatalf("VideoDownload: %v", bifrostErr.Error)
+	}
+	if resp.Body == nil || resp.Content != nil || resp.ContentType != "video/mp4" || resp.ContentLength != int64(len("SORA-MP4")) {
+		t.Fatalf("streamed response = %+v", resp)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || resp.Body.Close() != nil || string(body) != "SORA-MP4" {
+		t.Fatalf("body = %q, %v", body, err)
+	}
+
+	_, bifrostErr = provider.VideoDownload(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key,
+		&schemas.BifrostVideoDownloadRequest{Provider: schemas.Azure, ID: "video_gone:azure", Stream: true})
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusNotFound || bifrostErr.Error.Message != "Video not found" {
+		t.Fatalf("want Azure's 404, got %+v", bifrostErr)
+	}
+
+	want := []string{"GET /openai/v1/videos/video_a/content test-key", "GET /openai/v1/videos/video_gone/content test-key"}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("upstream calls = %q, want %q", calls, want)
+	}
+}

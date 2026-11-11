@@ -359,6 +359,13 @@ VideoListResponse:
     has_more:
       type: boolean
       description: Whether there are more results available
+    next:
+      type: string
+      description: |
+        The vendor's cursor for the following page, for vendors that page by a number or a
+        token instead of by the last ID. Send it back in the vendor's own filter parameter
+        (BytePlus: `page_num`). Absent on the last page and for vendors that page with
+        `after` and `last_id`.
     extra_fields:
       $ref: './common.yaml#/BifrostResponseExtraFields'
 

@@ -35,6 +35,7 @@ const (
 type VolcengineProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
 	client              *fasthttp.Client      // HTTP client for API requests
+	streamingClient     *fasthttp.Client      // HTTP client for streamed video downloads (fork)
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
@@ -76,6 +77,7 @@ func newVolcengineCompatibleProvider(config *schemas.ProviderConfig, logger sche
 	return &VolcengineProvider{
 		logger:              logger,
 		client:              client,
+		streamingClient:     providerUtils.BuildStreamingClient(client),
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
@@ -929,9 +931,7 @@ func (provider *VolcengineProvider) VideoDownload(ctx *schemas.BifrostContext, k
 		return nil, idErr
 	}
 	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, fmt.Sprintf("%s/%s/content", volcenginePathVideos, escapedVideoID)))
@@ -940,35 +940,21 @@ func (provider *VolcengineProvider) VideoDownload(ctx *schemas.BifrostContext, k
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
-	wait()
+	response, bifrostErr := providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
+		Request:                  req,
+		Client:                   provider.client,
+		StreamingClient:          provider.streamingClient,
+		Stream:                   request.Stream,
+		VideoID:                  providerUtils.AddVideoIDProviderSuffix(videoID, provider.GetProviderKey()),
+		StreamIdleTimeoutSeconds: provider.networkConfig.StreamIdleTimeoutInSeconds,
+		ParseError:               openai.ParseOpenAIError,
+	})
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, openai.ParseOpenAIError(resp)
-	}
-
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
-	}
-
-	contentType := string(resp.Header.ContentType())
-	if contentType == "" {
-		contentType = "video/mp4"
-	}
-
-	return &schemas.BifrostVideoDownloadResponse{
-		VideoID:     providerUtils.AddVideoIDProviderSuffix(videoID, provider.GetProviderKey()),
-		Content:     append([]byte(nil), body...),
-		ContentType: contentType,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.VideoDownloadRequest,
-			Provider:    provider.GetProviderKey(),
-			Latency:     latency.Milliseconds(),
-		},
-	}, nil
+	response.ExtraFields.RequestType = schemas.VideoDownloadRequest
+	response.ExtraFields.Provider = provider.GetProviderKey()
+	return response, nil
 }
 
 func (provider *VolcengineProvider) VideoDelete(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDeleteRequest) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
