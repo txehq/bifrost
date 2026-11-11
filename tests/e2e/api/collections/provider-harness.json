@@ -62,7 +62,7 @@
           "var __u = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
           "// Management API (/api/...) and OAuth (/oauth2/...) responses carry no inference content, so the shape check does not apply to them; those rows assert their own bodies.",
           "// Rows tagged [NO-CONTENT] expect an empty reply (a provider refusal) and assert their own bodies.",
-          "var __skipShape = __rn.indexOf('[NO-CONTENT]') !== -1 || __u.indexOf('/health') !== -1 || __u.indexOf('/.well-known/') !== -1 || __u.indexOf('/api/') !== -1 || __u.indexOf('/agents/a2a/') !== -1 || __u.indexOf('/push-sink/') !== -1 || __u.indexOf('/control/push') !== -1 || __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1) || (__u.indexOf('cachedContents') !== -1 && (pm.request.method !== 'GET' || __u.indexOf('/cachedContents/') !== -1)) || __u.indexOf('/v1/containers') !== -1 || __u.indexOf('/upload/v1beta/files') !== -1 || (__u.indexOf('/genai/v1beta/files/') !== -1 && pm.request.method === 'DELETE') || (__u.indexOf('/model-invocation-job/') !== -1 && __u.slice(-5) === '/stop') || (__u.indexOf('/messages/batches/') !== -1 && __u.indexOf('/results') !== -1) || __u.indexOf('/tunedModels') !== -1 || __u.indexOf('/bedrock_passthrough/') !== -1 || (__u.indexOf('/interactions/') !== -1 && pm.request.method === 'DELETE');",
+          "var __skipShape = __rn.indexOf('[NO-CONTENT]') !== -1 || __u.indexOf('/health') !== -1 || __u.indexOf('/.well-known/') !== -1 || __u.indexOf('/api/') !== -1 || __u.indexOf('/agents/a2a/') !== -1 || __u.indexOf('/push-sink/') !== -1 || __u.indexOf('/control/push') !== -1 || __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1) || (__u.indexOf('cachedContents') !== -1 && (pm.request.method !== 'GET' || __u.indexOf('/cachedContents/') !== -1)) || __u.indexOf('/v1/containers') !== -1 || __u.indexOf('/upload/v1beta/files') !== -1 || (__u.indexOf('/genai/v1beta/files/') !== -1 && pm.request.method === 'DELETE') || (__u.indexOf('/model-invocation-job/') !== -1 && __u.slice(-5) === '/stop') || (__u.indexOf('/messages/batches/') !== -1 && __u.indexOf('/results') !== -1) || (__u.indexOf('/v1/batches/') !== -1 && __u.indexOf('/results') !== -1) || __u.indexOf('/tunedModels') !== -1 || __u.indexOf('/bedrock_passthrough/') !== -1 || (__u.indexOf('/interactions/') !== -1 && pm.request.method === 'DELETE');",
           "if (pm.response.code < 400 && !__skipShape && (pm.response.headers.get('content-type') || '').indexOf('text/event-stream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('vnd.amazon.eventstream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('audio/') === -1) {",
           "  pm.test('Response has content (text or tool_use)', function () {",
           "    var j;",
@@ -319430,6 +319430,798 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "306. xAI batch lifecycle: inline chat lines, retrieve, list, paged results, cancel; files and a file batch (xai batch lifecycle)",
+      "description": "Pins xAI batches on the unified /v1/batches routes (TXE-6664, Bifrost-Tokun contract C8). Create takes inline OpenAI-shape chat lines and reaches xAI as two calls: POST /v1/batches with a name that carries the batch's metadata (tokun_batch_id=...), then POST /v1/batches/{id}/requests with one batch_request per line whose batch_request_id is the line's custom_id. Retrieve maps xAI's state counters to request_counts and a unified status; list returns the team's batches with the metadata read back from their names (the recovery path when a create response is lost); results page through /v1/batches/{id}/results with after/limit, each line carrying custom_id, status, and either an OpenAI chat response.body with the unified usage plus usage.vendor_cost in usd_ticks, or the vendor's error; cancel calls :cancel. Every lifecycle call names the key with x-bf-api-key (the profile's xAI key has use_for_batch_api: true). The [EXPECT-400] row is free: a non-chat line is refused before any upstream call. It names no key, so it also runs against the provider error fixture profile, whose xAI key is a batch key too. The lifecycle rows submit a real batch (xAI bills batch tokens at 20% off), so they are [PREVIEW]: they run only with INCLUDE_PREVIEW=1. Results may still be empty when the row runs, since xAI processes batches asynchronously; the row asserts the paging shape always and the line shape for every line returned. The file rows upload tests/e2e/api/fixtures/xai-batch-input.jsonl to /v1/files with purpose batch (sent to xAI, which stores it), retrieve, list and read it back, create a batch from it by input_file_id and cancel that batch, then delete the file; they are [PREVIEW] too, because the file batch is a real batch.",
+      "item": [
+        {
+          "name": "[EXPECT-400] /v1/batches - xai refuses a non-chat line before any upstream call - xai/grok-4.3 - xai batch lifecycle",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a non-chat line is refused as an unsupported parameter', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect((j.extra_fields || {}).error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect((j.error || {}).message, 'message: ' + pm.response.text()).to.include('/v1/chat/completions');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-4.3\",\n  \"endpoint\": \"/v1/embeddings\",\n  \"completion_window\": \"24h\",\n  \"requests\": [\n    {\n      \"custom_id\": \"line-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/embeddings\",\n      \"body\": {\n        \"model\": \"grok-4.3\",\n        \"input\": \"hello\"\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] /v1/batches - xai batch from inline chat lines carries its metadata - xai/grok-4.3 - xai batch lifecycle",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('xaiBatchId');",
+                  "pm.collectionVariables.set('xaiBatchTag', 'harness_' + Date.now() + '_' + Math.floor(Math.random() * 1e6));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('create returns the xAI batch with both lines pending and the metadata', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id, 'no batch id: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(['validating', 'in_progress', 'completed'], 'status: ' + pm.response.text()).to.include(j.status);",
+                  "  pm.expect((j.request_counts || {}).total, 'request_counts: ' + pm.response.text()).to.eql(2);",
+                  "  pm.expect((j.metadata || {}).tokun_batch_id, 'metadata: ' + pm.response.text()).to.eql(pm.collectionVariables.get('xaiBatchTag'));",
+                  "  pm.collectionVariables.set('xaiBatchId', j.id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Xai API Key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-4.3\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\",\n  \"metadata\": {\n    \"tokun_batch_id\": \"{{xaiBatchTag}}\"\n  },\n  \"requests\": [\n    {\n      \"custom_id\": \"line-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"grok-4.3\",\n        \"max_tokens\": 16,\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ]\n      }\n    },\n    {\n      \"custom_id\": \"line-2\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"grok-4.3\",\n        \"max_tokens\": 16,\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: yes\"\n          }\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] /v1/batches/{id} - xai batch state maps to request_counts and status - xai/grok-4.3 - xai batch lifecycle",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Create did not set an id (preview off, or it failed): nothing to address.",
+                  "if (!pm.collectionVariables.get('xaiBatchId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('retrieve returns the same batch with its counters', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id).to.eql(pm.collectionVariables.get('xaiBatchId'));",
+                  "  pm.expect(['validating', 'in_progress', 'finalizing', 'completed'], 'status: ' + pm.response.text()).to.include(j.status);",
+                  "  var c = j.request_counts || {};",
+                  "  pm.expect(c.total, 'request_counts: ' + pm.response.text()).to.eql(2);",
+                  "  pm.expect((c.pending || 0) + (c.completed || 0) + (c.failed || 0) + (c.canceled || 0), 'counters must add up: ' + pm.response.text()).to.eql(2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Xai API Key"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/{{xaiBatchId}}?provider=xai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "{{xaiBatchId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "xai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] /v1/batches - xai list shows the batch with its metadata - xai/grok-4.3 - xai batch lifecycle",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Create did not set an id (preview off, or it failed): nothing to address.",
+                  "if (!pm.collectionVariables.get('xaiBatchId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('list returns the team\\'s batches with metadata read back from the name', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.data, 'data: ' + pm.response.text()).to.be.an('array');",
+                  "  var mine = j.data.filter(function (b) { return b.id === pm.collectionVariables.get('xaiBatchId'); });",
+                  "  if (mine.length === 0) { pm.expect(j.has_more, 'batch not on the first page and no next page: ' + pm.response.text()).to.eql(true); return; }",
+                  "  pm.expect((mine[0].metadata || {}).tokun_batch_id, 'metadata: ' + JSON.stringify(mine[0])).to.eql(pm.collectionVariables.get('xaiBatchTag'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Xai API Key"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches?provider=xai&limit=100",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "xai"
+                },
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] /v1/batches/{id}/results - xai results page with custom_id, status and unified usage - xai/grok-4.3 - xai batch lifecycle",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Create did not set an id (preview off, or it failed): nothing to address.",
+                  "if (!pm.collectionVariables.get('xaiBatchId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('results are a page of per-line results in OpenAI shape', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.batch_id).to.eql(pm.collectionVariables.get('xaiBatchId'));",
+                  "  pm.expect(j.results, 'results: ' + pm.response.text()).to.be.an('array');",
+                  "  pm.expect(j.results.length, 'limit=1: ' + pm.response.text()).to.be.at.most(1);",
+                  "  if (j.has_more) { pm.expect(j.next_cursor, 'has_more without next_cursor: ' + pm.response.text()).to.be.a('string').that.is.not.empty; }",
+                  "  j.results.forEach(function (r) {",
+                  "    pm.expect(['line-1', 'line-2'], 'custom_id: ' + JSON.stringify(r)).to.include(r.custom_id);",
+                  "    pm.expect(['succeeded', 'failed', 'expired', 'cancelled'], 'status: ' + JSON.stringify(r)).to.include(r.status);",
+                  "    if (r.status !== 'succeeded') { pm.expect(r.error, 'a failed line carries the vendor error: ' + JSON.stringify(r)).to.be.an('object'); return; }",
+                  "    var body = (r.response || {}).body || {};",
+                  "    pm.expect(body.choices, 'response.body.choices: ' + JSON.stringify(r)).to.be.an('array').that.is.not.empty;",
+                  "    var u = body.usage || {};",
+                  "    pm.expect(u.prompt_tokens, 'usage.prompt_tokens: ' + JSON.stringify(r)).to.be.a('number');",
+                  "    pm.expect(u.completion_tokens, 'usage.completion_tokens: ' + JSON.stringify(r)).to.be.a('number');",
+                  "    pm.expect((u.vendor_cost || {}).unit, 'usage.vendor_cost: ' + JSON.stringify(r)).to.eql('usd_ticks');",
+                  "    pm.expect(u.vendor_cost.amount, 'vendor_cost equals cost_in_usd_ticks: ' + JSON.stringify(r)).to.eql(u.cost_in_usd_ticks);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Xai API Key"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/{{xaiBatchId}}/results?provider=xai&limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "{{xaiBatchId}}",
+                "results"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "xai"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] /v1/batches/{id}/cancel - xai cancel calls :cancel - xai/grok-4.3 - xai batch lifecycle",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Create did not set an id (preview off, or it failed): nothing to address.",
+                  "if (!pm.collectionVariables.get('xaiBatchId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cancel returns the batch cancelling, cancelled or already completed', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id).to.eql(pm.collectionVariables.get('xaiBatchId'));",
+                  "  pm.expect(['cancelling', 'cancelled', 'completed'], 'status: ' + pm.response.text()).to.include(j.status);",
+                  "});",
+                  "pm.collectionVariables.unset('xaiBatchId');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Xai API Key"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/{{xaiBatchId}}/cancel?provider=xai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "{{xaiBatchId}}",
+                "cancel"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "xai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] /v1/files - xai upload of a batch JSONL keeps its purpose - xai batch lifecycle",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('xaiFileId');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('upload returns an xAI file id with purpose batch', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id, 'no file id: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(j.purpose, 'purpose: ' + pm.response.text()).to.eql('batch');",
+                  "  pm.expect(j.bytes, 'bytes: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.collectionVariables.set('xaiFileId', j.id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "Xai API Key"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/xai-batch-input.jsonl",
+                  "type": "file"
+                },
+                {
+                  "key": "purpose",
+                  "value": "batch",
+                  "type": "text"
+                },
+                {
+                  "key": "provider",
+                  "value": "xai",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] /v1/files/{id} - xai file retrieve returns the uploaded file - xai batch lifecycle",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Upload did not set a file id (preview off, or it failed): nothing to address.",
+                  "if (!pm.collectionVariables.get('xaiFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('retrieve returns the same file with its purpose', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id).to.eql(pm.collectionVariables.get('xaiFileId'));",
+                  "  pm.expect(j.object, 'object: ' + pm.response.text()).to.eql('file');",
+                  "  pm.expect(j.bytes, 'bytes: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(j.purpose, 'purpose: ' + pm.response.text()).to.eql('batch');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "Xai API Key"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/{{xaiFileId}}?provider=xai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{xaiFileId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "xai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] /v1/files - xai file list includes the uploaded file - xai batch lifecycle",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Upload did not set a file id (preview off, or it failed): nothing to address.",
+                  "if (!pm.collectionVariables.get('xaiFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('list returns the team\\'s files in a data array', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.data, 'data: ' + pm.response.text()).to.be.an('array');",
+                  "  var mine = j.data.filter(function (f) { return f.id === pm.collectionVariables.get('xaiFileId'); });",
+                  "  if (mine.length === 0) { pm.expect(j.has_more, 'file not on the first page and no next page: ' + pm.response.text()).to.eql(true); return; }",
+                  "  pm.expect(mine[0].purpose, 'purpose: ' + JSON.stringify(mine[0])).to.eql('batch');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "Xai API Key"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files?provider=xai&purpose=batch&limit=100",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "xai"
+                },
+                {
+                  "key": "purpose",
+                  "value": "batch"
+                },
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] /v1/files/{id}/content - xai file content is the uploaded JSONL - xai batch lifecycle",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Upload did not set a file id (preview off, or it failed): nothing to address.",
+                  "if (!pm.collectionVariables.get('xaiFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('content returns the uploaded lines', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'content: ' + text).to.include('\"custom_id\": \"file-line-1\"');",
+                  "  pm.expect(text, 'content: ' + text).to.include('\"custom_id\": \"file-line-2\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "Xai API Key"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/{{xaiFileId}}/content?provider=xai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{xaiFileId}}",
+                "content"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "xai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] /v1/batches - xai batch from an uploaded input_file_id - xai/grok-4.3 - xai batch lifecycle",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('xaiFileBatchId');",
+                  "if (!pm.collectionVariables.get('xaiFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('create from a file returns an xAI batch', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id, 'no batch id: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(j.object, 'object: ' + pm.response.text()).to.eql('batch');",
+                  "  pm.expect(['validating', 'in_progress', 'completed'], 'status: ' + pm.response.text()).to.include(j.status);",
+                  "  pm.collectionVariables.set('xaiFileBatchId', j.id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Xai API Key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-4.3\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\",\n  \"input_file_id\": \"{{xaiFileId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] /v1/batches/{id}/cancel - xai cancel of the file batch - xai/grok-4.3 - xai batch lifecycle",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('xaiFileBatchId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cancel returns the file batch cancelling, cancelled or already completed', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id).to.eql(pm.collectionVariables.get('xaiFileBatchId'));",
+                  "  pm.expect(['cancelling', 'cancelled', 'completed'], 'status: ' + pm.response.text()).to.include(j.status);",
+                  "});",
+                  "pm.collectionVariables.unset('xaiFileBatchId');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Xai API Key"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/{{xaiFileBatchId}}/cancel?provider=xai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "{{xaiFileBatchId}}",
+                "cancel"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "xai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] /v1/files/{id} - xai file delete - xai batch lifecycle",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Upload did not set a file id (preview off, or it failed): nothing to address.",
+                  "if (!pm.collectionVariables.get('xaiFileId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('delete returns a receipt for the file', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id).to.eql(pm.collectionVariables.get('xaiFileId'));",
+                  "  pm.expect(j.deleted, 'deleted: ' + pm.response.text()).to.eql(true);",
+                  "});",
+                  "pm.collectionVariables.unset('xaiFileId');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "Xai API Key"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/{{xaiFileId}}?provider=xai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{xaiFileId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "xai"
+                }
+              ]
+            }
+          }
         }
       ]
     }

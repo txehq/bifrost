@@ -1,0 +1,2 @@
+{"custom_id": "file-line-1", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "grok-4.3", "max_tokens": 16, "messages": [{"role": "user", "content": "Reply with the single word: ok"}]}}
+{"custom_id": "file-line-2", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "grok-4.3", "max_tokens": 16, "messages": [{"role": "user", "content": "Reply with the single word: yes"}]}}

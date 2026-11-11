@@ -28,11 +28,11 @@ xAI is an **OpenAI-compatible provider** powering the Grok family of models. Bif
 | Embeddings | ❌ | ❌ | - |
 | Speech (TTS) | ❌ | ❌ | - |
 | Transcriptions (STT) | ❌ | ❌ | - |
-| Files | ❌ | ❌ | - |
-| Batch | ❌ | ❌ | - |
+| Files | ✅ | - | `/v1/files` |
+| Batch | ✅ | - | `/v1/batches` |
 
 <Note>
-**Unsupported Operations** (❌): Embeddings, Speech, Transcriptions, Files, and Batch are not supported by the upstream xAI API. These return `UnsupportedOperationError`.
+**Unsupported Operations** (❌): Embeddings, Speech and Transcriptions are not supported by the upstream xAI API. These return `UnsupportedOperationError`.
 </Note>
 
 ## Setup & Configuration
@@ -224,6 +224,37 @@ Request and response format is identical to [OpenAI Context Compaction](/provide
 
 ---
 
+## Batch API
+
+xAI batches run on the unified batch routes. Each line is an OpenAI-shape chat request, and the batch's results come back per line in OpenAI shape.
+
+**Create** (`POST /v1/batches`) takes inline `requests` whose `url` is `/v1/chat/completions` (other request types are refused with `caller_unsupported_parameter`), or an `input_file_id` from `POST /v1/files`. Inline lines reach xAI as two calls: the batch is created by name, then every line is added with `batch_request_id` set to its `custom_id`. Each line's body goes through the same conversion as the sync chat route. A batch runs one model, the request's `model` (required for inline lines): a line may omit `model` or name the same model, with or without the `xai/` prefix or through a key alias, and a line naming another model is refused with `400`. xAI has no metadata field, so the batch's `metadata` is written into its name as a query string (`tokun_batch_id=batch_123`) and read back on retrieve and list; `display_name` is used as the name when there is no metadata.
+
+```bash
+curl -X POST http://localhost:8080/v1/batches \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "xai/grok-4.3",
+    "endpoint": "/v1/chat/completions",
+    "completion_window": "24h",
+    "metadata": {"tokun_batch_id": "batch_123"},
+    "requests": [
+      {"custom_id": "line-1", "method": "POST", "url": "/v1/chat/completions",
+       "body": {"model": "grok-4.3", "messages": [{"role": "user", "content": "Hello"}]}}
+    ]
+  }'
+```
+
+**Retrieve and list** (`GET /v1/batches/{id}?provider=xai`, `GET /v1/batches?provider=xai`) map xAI's `state` counters to `request_counts` (`total`, `pending`, `completed`/`succeeded`, `failed`, `canceled`). xAI reports no batch status, so it is derived: `cancelling` or `cancelled` after a cancel, `completed` once nothing is pending, `expired` past `expires_at` with requests pending, `validating` while a file batch has no requests yet, and `in_progress` otherwise.
+
+**Results** (`GET /v1/batches/{id}/results?provider=xai&limit=100&after=<next_cursor>`) page through xAI's results, also while the batch runs. Each line carries `custom_id`, `status` (`succeeded`, `failed`, `expired`, `cancelled`), and either `response.body` (an OpenAI chat completion whose `usage` is the sync route's, with `usage.vendor_cost: {amount, unit: "usd_ticks"}` from xAI's `cost_in_usd_ticks`) or the vendor's `error`. `has_more` and `next_cursor` page the results.
+
+**Cancel** (`POST /v1/batches/{id}/cancel?provider=xai`) calls xAI's `:cancel`. A refusal keeps xAI's status and body and carries `extra_fields.error_type: provider_cancel_unsupported`.
+
+**Governance.** A file batch runs the models named in the uploaded rows, not the request's `model`, as on OpenAI and Azure. Under a virtual key that restricts xAI models, a file batch is refused unless the key allows every xAI model; inline batches are checked line by line against the allowlist. Extra fields on an inline line (anything the chat request does not model) are forwarded only when passthrough extra params is enabled, as on the sync chat route. A line the sync chat route would refuse is refused the same way, before any call to xAI, with `error.param` naming the line's field (for example `requests[1].body.service_tier` for a service tier outside the model's catalog list).
+
+---
+
 ## Unsupported Features
 
 | Feature | Reason |
@@ -231,7 +262,6 @@ Request and response format is identical to [OpenAI Context Compaction](/provide
 | Embedding | Not offered by xAI API |
 | Speech/TTS | Not offered by xAI API |
 | Transcription/STT | Not offered by xAI API |
-| Batch Operations | Not offered by xAI API |
-| File Management | Not offered by xAI API |
+| Batch delete | Not offered by xAI API (batches are kept until they expire) |
 
 ---
