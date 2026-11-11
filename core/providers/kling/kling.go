@@ -350,17 +350,22 @@ func (provider *KlingProvider) VideoDownload(ctx *schemas.BifrostContext, key sc
 	}
 
 	// The link comes from Kling's task object, so it is fetched through the SSRF-hardened media
-	// fetcher (public addresses only, checked at dial time and on every redirect), not the
-	// provider client. No credentials are sent.
-	start := time.Now()
-	contentType, content, err := providerUtils.FetchMediaURL(ctx, *task.Videos[0].URL)
-	latency := time.Since(start)
-	if err != nil {
-		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("failed to download video", err), latency)
-	}
-	// The media fetcher buffers the file (its SSRF checks sit on a buffering client), so a
-	// streamed request is served from memory here, within the fetcher's size cap.
-	return providerUtils.NewVideoContentResponse(request, request.ID, content, providerUtils.VideoContentTypeOr(contentType, klingVideoContentType), latency), nil
+	// fetcher (public addresses only, checked at dial time and on every redirect), never the
+	// provider client: no BaseURL is passed, so even a link on the API's own origin takes that
+	// path. No request is passed either, so no credentials reach the file host. A caller that
+	// asked for a stream gets the open response (contract C9; TXE-7036).
+	return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
+		VendorURL:                *task.Videos[0].URL,
+		Stream:                   request.Stream,
+		VideoID:                  request.ID,
+		StreamIdleTimeoutSeconds: provider.networkConfig.StreamIdleTimeoutInSeconds,
+		ParseError: func(resp *fasthttp.Response) *schemas.BifrostError {
+			return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()), nil)
+		},
+		ContentType: func(upstream string) string {
+			return providerUtils.VideoContentTypeOr(upstream, klingVideoContentType)
+		},
+	})
 }
 
 // requestURL is the URL of a Kling path, or the custom provider's request_path_overrides entry
