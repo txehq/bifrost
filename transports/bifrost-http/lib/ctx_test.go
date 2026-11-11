@@ -3542,6 +3542,44 @@ func TestForwardedQueryString(t *testing.T) {
 	}
 }
 
+// BenchmarkForwardedQueryString is the per-request cost ForwardedQueryString adds to a
+// route that forwards its query string (TXE-7087). "before" is what those routes did:
+// copy URI.QueryString. "after" is the helper on the same request: with no query, with a
+// query no plugin changed (the common case: one parse and two encodes into pooled
+// buffers, then the same copy), and with a query a plugin changed.
+func BenchmarkForwardedQueryString(b *testing.B) {
+	cases := []struct {
+		name   string
+		uri    string
+		change map[string]string
+	}{
+		{name: "none", uri: "/openai_passthrough/v1/files"},
+		{name: "unchanged", uri: "/openai_passthrough/v1/files?purpose=batch&limit=20&after=file_abc&order=desc"},
+		{name: "repeated-unchanged", uri: "/openai_passthrough/v1/responses/resp_1/input_items?include=a&include=b%20c&order=desc&limit=5"},
+		{name: "changed", uri: "/openai_passthrough/v1/files?purpose=batch&limit=20&after=file_abc&order=desc", change: map[string]string{"purpose": "pinned", "added": "yes"}},
+	}
+	for _, tc := range cases {
+		ctx := queryTestCtx(tc.uri)
+		applyPluginQueryChanges(ctx, tc.change)
+		var sink string
+		if tc.change == nil {
+			b.Run(tc.name+"/before", func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					sink = string(ctx.Request.URI().QueryString())
+				}
+			})
+		}
+		b.Run(tc.name+"/after", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				sink = ForwardedQueryString(ctx)
+			}
+		})
+		_ = sink
+	}
+}
+
 // TestForwardedQueryStringIsReadInOnePlace fails when a transport source file reads a
 // query string as bytes itself, or builds a passthrough request in a new place, instead
 // of going through ForwardedQueryString (fork, TXE-7087). fasthttp's URI.QueryString is

@@ -179,7 +179,12 @@ func CopyQueryAllValues(args *fasthttp.Args, skip func(name []byte) bool) map[st
 func ForwardedQueryString(ctx *fasthttp.RequestCtx) string {
 	uri := ctx.Request.URI()
 	sent := uri.QueryString()
-	current := uri.QueryArgs().QueryString()
+	args := uri.QueryArgs()
+	if len(sent) == 0 && args.Len() == 0 {
+		// No query and none added: the common case costs two length checks.
+		return ""
+	}
+	current := args.QueryString()
 	asSent := fasthttp.AcquireArgs()
 	defer fasthttp.ReleaseArgs(asSent)
 	asSent.ParseBytes(sent)
