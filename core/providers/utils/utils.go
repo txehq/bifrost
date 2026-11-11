@@ -661,10 +661,10 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 			if resolveErr != nil {
 				return nil, resolveErr
 			}
-			dialer := &net.Dialer{
+			dialer := network.GuardDialer(&net.Dialer{
 				Timeout:         client.ReadTimeout,
 				KeepAliveConfig: keepAliveCfg,
-			}
+			})
 			var lastErr error
 			for _, ip := range ips {
 				// Unspecified (0.0.0.0, ::) and link-local (169.254.x.x, fe80::) are always blocked
@@ -686,7 +686,8 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 			}
 			if conn == nil {
 				if lastErr != nil {
-					return nil, lastErr
+					// An offline test run refused the address (TXE-7083): say which host it was.
+					return nil, network.NameOfflineEgress(lastErr, host)
 				}
 				return nil, fmt.Errorf("no usable address resolved for %s", host)
 			}
@@ -1065,7 +1066,7 @@ func dialWebSocketUpstream(ctx context.Context, proxy func(*http.Request) (*url.
 		return nil, err
 	}
 	if proxyURL == nil {
-		return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+		return network.GuardDialer(&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	}
 	return network.DialViaProxyTLS(ctx, proxyURL, addr, proxyTLS)
 }
@@ -1122,7 +1123,7 @@ func namesProxy(proxyConfig *schemas.ProxyConfig) bool {
 // instance-metadata targets, no_proxy matches (errBypassProxy) and a client with no
 // proxy dialer at all connect directly with a plain dial.
 func directForLocalTargets(proxyDial fasthttp.DialFunc, timeout time.Duration) fasthttp.DialFunc {
-	dialer := &net.Dialer{Timeout: timeout}
+	dialer := network.GuardDialer(&net.Dialer{Timeout: timeout})
 	direct := func(addr string) (net.Conn, error) {
 		return dialer.Dial("tcp", addr)
 	}
