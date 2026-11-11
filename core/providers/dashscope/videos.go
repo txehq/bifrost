@@ -338,13 +338,13 @@ func ToDashScopeVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGeneratio
 	refused := ""
 	for key, value := range extras {
 		for _, object := range dashScopeOwnedBodyFields {
-			if !providerUtils.SameJSONField(key, object.name) {
+			if !schemas.SameJSONFieldName(key, object.name) {
 				continue
 			}
 			nested := extraParamObject(value)
 			for nestedKey := range nested {
 				for _, field := range object.fields {
-					if providerUtils.SameJSONField(nestedKey, field) {
+					if schemas.SameJSONFieldName(nestedKey, field) {
 						if name := key + "." + nestedKey; refused == "" || name < refused {
 							refused = name
 						}
@@ -513,7 +513,7 @@ func (provider *DashScopeProvider) VideoGeneration(ctx *schemas.BifrostContext, 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
-	body, latency, bifrostErr := provider.doRequest(ctx, key, schemas.VideoGenerationRequest, http.MethodPost, dashScopeVideoSynthesisPath, jsonData, sendBackRawRequest, sendBackRawResponse)
+	body, latency, bifrostErr := provider.doDashScopeRequest(ctx, key, schemas.VideoGenerationRequest, http.MethodPost, dashScopeVideoSynthesisPath, jsonData, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -566,7 +566,7 @@ func (provider *DashScopeProvider) videoRetrieve(ctx *schemas.BifrostContext, ke
 	}
 
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-	body, latency, bifrostErr := provider.doRequest(ctx, key, requestType, http.MethodGet, dashScopeTasksPath+"/"+escapedTaskID, nil, false, sendBackRawResponse)
+	body, latency, bifrostErr := provider.doDashScopeRequest(ctx, key, requestType, http.MethodGet, dashScopeTasksPath+"/"+escapedTaskID, nil, false, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -610,7 +610,7 @@ func (provider *DashScopeProvider) VideoCancel(ctx *schemas.BifrostContext, key 
 	}
 
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-	body, latency, bifrostErr := provider.doRequest(ctx, key, schemas.VideoCancelRequest, http.MethodPost, dashScopeTasksPath+"/"+escapedTaskID+"/cancel", nil, false, sendBackRawResponse)
+	body, latency, bifrostErr := provider.doDashScopeRequest(ctx, key, schemas.VideoCancelRequest, http.MethodPost, dashScopeTasksPath+"/"+escapedTaskID+"/cancel", nil, false, sendBackRawResponse)
 	if bifrostErr != nil {
 		if isDashScopeCancelRefused(bifrostErr) {
 			unsupported := schemas.NewVideoCancelUnsupportedError(bifrostErr.Error.Message)
@@ -734,7 +734,7 @@ func (provider *DashScopeProvider) VideoList(ctx *schemas.BifrostContext, key sc
 		pathAndQuery += "?" + query
 	}
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-	body, latency, bifrostErr := provider.doRequest(ctx, key, schemas.VideoListRequest, http.MethodGet, pathAndQuery, nil, false, sendBackRawResponse)
+	body, latency, bifrostErr := provider.doDashScopeRequest(ctx, key, schemas.VideoListRequest, http.MethodGet, pathAndQuery, nil, false, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}

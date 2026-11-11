@@ -12613,6 +12613,8 @@ var nestedPriceProbeModels = map[schemas.ModelProvider][]string{
 	schemas.Gemini:  {"imagen-4.0-generate-001", "veo-3.1-generate-preview"},
 	schemas.Vertex:  {"imagen-4.0-generate-001", "veo-3.1-generate-preview"},
 	schemas.Bedrock: {"amazon.titan-embed-image-v1", "amazon.nova-2-multimodal-embeddings-v1:0"},
+	// Wan 2.6 and earlier take parameters.size; Wan 2.7 and 3.0 (guardModel) take resolution and ratio.
+	schemas.DashScope: {"wan2.6-t2v"},
 }
 
 // nestedPriceProbe is one request type sent bare and then once per price-affecting field.

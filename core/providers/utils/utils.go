@@ -2765,13 +2765,6 @@ var reservedExtraParamFields = []string{"model"}
 // another name needs that name added here.
 var unsettableExtraParamFields = []string{"stream", "model_id", "version", "deployment", "deployment_id", "engine"}
 
-// SameJSONField reports whether the extra-params merger treats a and b as one field name
-// (see sameJSONField). A converter that refuses an extra param by name compares with it, so
-// that a spelling the merger would still merge ("Parameters", "img__url") is refused too.
-func SameJSONField(a, b string) bool {
-	return sameJSONField(a, b)
-}
-
 // sameJSONField reports whether a and b name the same field once case and
 // underscores are ignored: "max_tokens", "maxTokens" and "MaxTokens" are one field. It is
 // schemas.SameJSONFieldName, the one comparison the merge below and core's price-field check

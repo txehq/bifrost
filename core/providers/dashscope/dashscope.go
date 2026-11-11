@@ -96,11 +96,11 @@ func (provider *DashScopeProvider) setRequestHeaders(ctx context.Context, req *f
 	setAuthHeader(req, key)
 }
 
-// doRequest sends one request to DashScope and returns a copy of the body of a 2xx response.
+// doDashScopeRequest sends one request to DashScope and returns a copy of the body of a 2xx response.
 // requestType picks the base (see baseURLFor). A create request is the only one with a body,
 // and the only one that carries X-DashScope-Async: enable, without which the video endpoint
 // refuses the call.
-func (provider *DashScopeProvider) doRequest(ctx *schemas.BifrostContext, key schemas.Key, requestType schemas.RequestType, method, pathAndQuery string, jsonData []byte, sendBackRawRequest, sendBackRawResponse bool) ([]byte, time.Duration, *schemas.BifrostError) {
+func (provider *DashScopeProvider) doDashScopeRequest(ctx *schemas.BifrostContext, key schemas.Key, requestType schemas.RequestType, method, pathAndQuery string, jsonData []byte, sendBackRawRequest, sendBackRawResponse bool) ([]byte, time.Duration, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
