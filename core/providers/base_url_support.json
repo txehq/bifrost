@@ -1,0 +1,150 @@
+{
+  "description": "Whether each registered provider (schemas.StandardProviders) sends its requests to network_config.base_url (TXE-7083). \"honours\": base_url replaces the vendor host. \"fallback\": a key-level host wins and base_url applies only without one. \"ignores\": the host comes from elsewhere (host_from) and base_url changes nothing, so a fixture config must redirect it as \"fixture\" says. tests/e2e/api/runners/lib/base-url-support.test.mjs fails when a registered provider is missing here, when a provider whose package never reads BaseURL is not \"ignores\", and when a fixture config sets base_url on an \"ignores\" provider. In an offline run (scripts/test-offline.sh) a request to any non-loopback host fails anyway, naming it.",
+  "providers": {
+    "anthropic": {
+      "base_url": "honours"
+    },
+    "azure": {
+      "base_url": "ignores",
+      "host_from": "azure_key_config.endpoint on the key (a full URL; http:// is accepted)",
+      "fixture": "set azure_key_config.endpoint to the fixture, e.g. \"http://127.0.0.1:8791\""
+    },
+    "bedrock": {
+      "base_url": "ignores",
+      "host_from": "bedrock-runtime.<region>.amazonaws.com (and bedrock., bedrock-agent-runtime., s3.) built from bedrock_key_config.region; requests are SigV4-signed for that region",
+      "fixture": "set bedrock_key_config.endpoints.runtime (control_plane, agent_runtime, mantle, s3 as needed) to a loopback TLS listener such as \"127.0.0.1:8793\" (the provider error fixture's TLS port) and network_config.insecure_skip_verify: true; Bedrock always dials https://, and the fixture does not check signatures"
+    },
+    "bedrock_mantle": {
+      "base_url": "ignores",
+      "host_from": "bedrock-mantle.<region>.api.aws built from bedrock_mantle_key_config.region",
+      "fixture": "set bedrock_mantle_key_config.endpoints.mantle to a loopback TLS listener and network_config.insecure_skip_verify: true, as for bedrock"
+    },
+    "cerebras": {
+      "base_url": "honours"
+    },
+    "cohere": {
+      "base_url": "honours"
+    },
+    "deepseek": {
+      "base_url": "honours"
+    },
+    "gemini": {
+      "base_url": "honours"
+    },
+    "glm": {
+      "base_url": "honours"
+    },
+    "groq": {
+      "base_url": "honours"
+    },
+    "mistral": {
+      "base_url": "honours"
+    },
+    "moonshot": {
+      "base_url": "honours"
+    },
+    "modelark": {
+      "base_url": "honours"
+    },
+    "ollama": {
+      "base_url": "honours"
+    },
+    "opencode-go": {
+      "base_url": "honours"
+    },
+    "opencode-zen": {
+      "base_url": "honours"
+    },
+    "openai": {
+      "base_url": "honours"
+    },
+    "parasail": {
+      "base_url": "honours"
+    },
+    "perplexity": {
+      "base_url": "honours"
+    },
+    "qwen": {
+      "base_url": "honours"
+    },
+    "sgl": {
+      "base_url": "honours"
+    },
+    "vertex": {
+      "base_url": "ignores",
+      "host_from": "<region>-aiplatform.googleapis.com (or aiplatform.googleapis.com for global) built from vertex_key_config.region; OAuth goes to Google's token endpoints",
+      "fixture": "no host override exists: cover Vertex with Go tests that swap the provider's client, and keep it out of fixture configs (an offline run refuses its hosts, naming them)"
+    },
+    "volcengine": {
+      "base_url": "honours"
+    },
+    "openrouter": {
+      "base_url": "honours"
+    },
+    "elevenlabs": {
+      "base_url": "honours"
+    },
+    "huggingface": {
+      "base_url": "honours"
+    },
+    "nebius": {
+      "base_url": "honours"
+    },
+    "xai": {
+      "base_url": "honours"
+    },
+    "replicate": {
+      "base_url": "honours"
+    },
+    "vllm": {
+      "base_url": "honours"
+    },
+    "runway": {
+      "base_url": "honours"
+    },
+    "runware": {
+      "base_url": "honours"
+    },
+    "fireworks": {
+      "base_url": "honours"
+    },
+    "sarvam": {
+      "base_url": "honours"
+    },
+    "wafer": {
+      "base_url": "honours"
+    },
+    "github-copilot": {
+      "base_url": "honours"
+    },
+    "databricks": {
+      "base_url": "fallback",
+      "host_from": "databricks_key_config.workspace_url on the key; network_config.base_url applies only when the key has none",
+      "fixture": "set databricks_key_config.workspace_url to the fixture's host:port"
+    },
+    "cloudflare": {
+      "base_url": "honours"
+    },
+    "typesafe": {
+      "base_url": "honours"
+    },
+    "minimax": {
+      "base_url": "honours"
+    },
+    "byteplus": {
+      "base_url": "honours"
+    },
+    "tencent": {
+      "base_url": "honours"
+    },
+    "dashscope": {
+      "base_url": "honours"
+    },
+    "bfl": {
+      "base_url": "honours"
+    },
+    "google-cloud-tts": {
+      "base_url": "honours"
+    }
+  }
+}

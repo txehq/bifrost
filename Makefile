@@ -2171,8 +2171,20 @@ HARNESS_JOBS ?= 100
 # as a prerequisite, really does emit nothing but its status table. Install
 # failures still surface: npm's own stderr is untouched and the recipe still fails.
 install-newman: ## Install newman + htmlextra reporter if not already installed (pinned via NEWMAN_VERSION / NEWMAN_HTMLEXTRA_VERSION)
-	@$(USE_NODE); which newman > /dev/null 2>&1 || ([ -n "$$CI" ] || $(ECHO) "$(YELLOW)Installing newman@$(NEWMAN_VERSION)...$(NC)"; npm install -g newman@$(NEWMAN_VERSION))
-	@$(USE_NODE); npm list -g newman-reporter-htmlextra > /dev/null 2>&1 || ([ -n "$$CI" ] || $(ECHO) "$(YELLOW)Installing newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION)...$(NC)"; npm install -g newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION))
+	@: "Under scripts/test-offline.sh (BIFROST_TEST_OFFLINE=1) an install is egress the runner refuses"; \
+	: "(TXE-7083), so a missing tool is an error that says how to install it before the run."; \
+	$(USE_NODE); \
+	offline_missing() { $(ECHO) "$(RED)$$1 is missing and an offline run (scripts/test-offline.sh) cannot download it. Install the pinned tools first, outside the runner: (cd .github/workflows/tools && npm ci), then put .github/workflows/tools/node_modules/.bin on PATH.$(NC)" >&2; exit 1; }; \
+	if ! which newman > /dev/null 2>&1; then \
+		[ "$$BIFROST_TEST_OFFLINE" = "1" ] && offline_missing newman; \
+		[ -n "$$CI" ] || $(ECHO) "$(YELLOW)Installing newman@$(NEWMAN_VERSION)...$(NC)"; npm install -g newman@$(NEWMAN_VERSION) || exit 1; \
+	fi; \
+	: "The pinned tools install the reporter next to newman, where newman loads it from."; \
+	newman_modules="$$(cd "$$(dirname "$$(command -v newman)")/.." 2>/dev/null && pwd)"; \
+	if [ ! -d "$$newman_modules/newman-reporter-htmlextra" ] && ! npm list -g newman-reporter-htmlextra > /dev/null 2>&1; then \
+		[ "$$BIFROST_TEST_OFFLINE" = "1" ] && offline_missing newman-reporter-htmlextra; \
+		[ -n "$$CI" ] || $(ECHO) "$(YELLOW)Installing newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION)...$(NC)"; npm install -g newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION) || exit 1; \
+	fi
 	@[ -n "$$CI" ] || $(ECHO) "$(GREEN)Newman + htmlextra are ready$(NC)"
 
 run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost provider-harness Postman collection. HELP=1 prints full parameter docs. Filter via PROVIDER=openai|anthropic|bedrock|gemini|vertex|azure|passthrough|openrouter|huggingface, FEATURE="<kw>" or FEATURE="<kw1>,<kw2>" (AND across substrings; matches request name/URL/body), RERUN_FAILED=1 (re-run only items that failed last run). INCLUDE_PREVIEW=1 to run [PREVIEW]-tagged account/region-scoped cases. SKIP_STREAM_CANCEL=1 skips stream cancellation probes. USE_INFISICAL=1 to source from Infisical (Usage: make run-provider-harness-test [HELP=1] [PROVIDER=anthropic] [FEATURE="web search"] [FEATURE="cross-cut,structured output"] [RERUN_FAILED=1] [INCLUDE_PREVIEW=1] [BASE_URL=...] [FOLDER="..."] [ENV_FILE=...] [VIEWER_PORT=8090] [CI=1])
@@ -2667,6 +2679,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		say "$(RED)Could not enable allow_per_request_raw_override; raw_request assertions would fail. Set BIFROST_E2E_AUTH_HEADER if auth is on.$(NC)"; \
 		exit 1; \
 	}; \
+	: "A fixture run (ENV_FILE sets providerErrorFixture=1) runs under scripts/test-offline.sh against a"; \
+	: "gateway started the same way, so no request reaches a real vendor, even through a provider"; \
+	: "that ignores base_url (TXE-7083). The check probes the gateway's egress_probe provider."; \
+	node tests/e2e/api/runners/check-gateway-egress.mjs "$$BASE_URL_VAL" $(if $(ENV_FILE),"$(ENV_FILE)",) || exit 1; \
 	say "$(CYAN)Augmenting provider harness with generated streaming/thinking cases...$(NC)"; \
 	: "VERTEX_ACCESS_TOKEN_VAL is exported so the token-parity matrix can skip the Vertex"; \
 	: "direct legs when gcloud could not mint a token, instead of emitting cells that post an"; \

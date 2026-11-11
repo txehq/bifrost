@@ -1,11 +1,21 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import http from "node:http";
+import https from "node:https";
 import net from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const port = Number(process.env.PROVIDER_ERROR_FIXTURE_PORT || "8791");
 // The stall proxy: an HTTP proxy that accepts the TCP connection and never answers the CONNECT, so a
 // gateway routed through it stalls inside connection acquisition (the proxy handshake), before any
 // request reaches an upstream. Each CONNECT it reads is counted under __stall_proxy_connects in /__hits.
 const stallPort = Number(process.env.PROVIDER_ERROR_FIXTURE_STALL_PORT || "8799");
+// The TLS listener (TXE-7083): the same routes over https, for providers that always dial https:// and take a
+// host override rather than network_config.base_url. Bedrock is the case: bedrock_key_config.endpoints.runtime
+// set to 127.0.0.1:<this port> plus network_config.insecure_skip_verify reaches it. The certificate is a
+// throwaway self-signed one made with openssl at start-up; without openssl the listener is skipped.
+const tlsPort = Number(process.env.PROVIDER_ERROR_FIXTURE_TLS_PORT || "8793");
 // How long a stalled connection is held before the fixture drops it, longer than any first-token deadline
 // a case arms and shorter than a proxy handshake timeout, so a gateway that waits for the proxy still fails.
 const STALL_HOLD_MS = 15000;
@@ -728,7 +738,19 @@ const vendorChatAnswer = (site, body) => {
 	return { status: 200, stream: chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n" };
 };
 
+// Bedrock Converse (TXE-7083), reached over the TLS listener through bedrock_key_config.endpoints.runtime.
+const bedrockConverseAnswer = (path) => ({
+	status: 200,
+	body: JSON.stringify({
+		output: { message: { role: "assistant", content: [{ text: `hello from the bedrock fixture (${decodeURIComponent(path.split("/")[2])})` }] } },
+		stopReason: "end_turn",
+		usage: { inputTokens: 3, outputTokens: 7, totalTokens: 10 },
+	}),
+});
+const isBedrockConversePath = (path) => /^\/model\/[^/]+\/converse$/.test(path);
+
 const wireAnswer = (path, body, bytes) => {
+	if (isBedrockConversePath(path)) return bedrockConverseAnswer(path);
 	if (path.startsWith("/pp/bfl/v1/")) return { status: 200, body: JSON.stringify(bflSubmitAnswer()) };
 	if (isOpenAIImagePath(path)) return openAIImageAnswer(body, bytes, path === "/v1/images/edits");
 	const geminiImage = geminiImageAnswerFor(path);
@@ -1225,7 +1247,7 @@ const probeStaleGet = (spec, reply) => {
 	});
 };
 
-const server = http.createServer((req, res) => {
+const handleRequest = (req, res) => {
 	const path = new URL(req.url, "http://localhost").pathname;
 	const send = (status, headers, body) => {
 		res.writeHead(status, { "Content-Type": "application/json", ...headers });
@@ -1333,7 +1355,7 @@ const server = http.createServer((req, res) => {
 		if (answer) return send(answer.status, {}, answer.body);
 		return send(404, {}, JSON.stringify({ error: "unknown fixture task" }));
 	}
-	if (req.method === "POST" && (path.startsWith("/pp/") || path === "/v1/embeddings" || path === "/anthropic/v1/messages" || isOpenAIImagePath(path))) {
+	if (req.method === "POST" && (path.startsWith("/pp/") || path === "/v1/embeddings" || path === "/anthropic/v1/messages" || isOpenAIImagePath(path) || isBedrockConversePath(path))) {
 		const body = [];
 		req.on("data", (c) => body.push(c));
 		req.on("end", () => {
@@ -1721,7 +1743,8 @@ const server = http.createServer((req, res) => {
 		}
 		answer();
 	});
-});
+};
+const server = http.createServer(handleRequest);
 
 const stallProxy = net.createServer((socket) => {
 	let seen = "";
@@ -1736,9 +1759,33 @@ const stallProxy = net.createServer((socket) => {
 	setTimeout(() => socket.destroy(), STALL_HOLD_MS).unref();
 });
 
+// throwawayCertificate makes a self-signed certificate for 127.0.0.1 and localhost with openssl, or returns
+// null when openssl is missing or fails. The files live in a temporary directory removed right away.
+const throwawayCertificate = () => {
+	const dir = mkdtempSync(join(tmpdir(), "provider-error-fixture-tls-"));
+	try {
+		execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-subj", "/CN=provider-error-fixture",
+			"-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost", "-keyout", join(dir, "key.pem"), "-out", join(dir, "cert.pem")], { stdio: "ignore" });
+		return { key: readFileSync(join(dir, "key.pem")), cert: readFileSync(join(dir, "cert.pem")) };
+	} catch {
+		return null;
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+};
+
 stallProxy.listen(stallPort, "127.0.0.1", () => {
 	server.listen(port, "127.0.0.1", () => {
 		console.log(`provider-error-fixture stall proxy on http://127.0.0.1:${stallPort}`);
-		console.log(`provider-error-fixture listening on http://127.0.0.1:${port}`);
+		const certificate = throwawayCertificate();
+		if (!certificate) {
+			console.log("provider-error-fixture: openssl unavailable, no TLS listener (Bedrock rows will fail to connect)");
+			console.log(`provider-error-fixture listening on http://127.0.0.1:${port}`);
+			return;
+		}
+		https.createServer(certificate, handleRequest).listen(tlsPort, "127.0.0.1", () => {
+			console.log(`provider-error-fixture TLS listener on https://127.0.0.1:${tlsPort}`);
+			console.log(`provider-error-fixture listening on http://127.0.0.1:${port}`);
+		});
 	});
 });

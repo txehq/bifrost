@@ -863,6 +863,65 @@
         "max_retries": 0,
         "default_request_timeout_in_seconds": 10
       }
+    },
+    "bedrock": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "models": [
+            "amazon.nova-lite-v1:0"
+          ],
+          "weight": 1,
+          "bedrock_key_config": {
+            "access_key": "AKIAFIXTUREFIXTURE00",
+            "secret_key": "fixture-secret-not-a-credential",
+            "region": "us-east-1",
+            "endpoints": {
+              "runtime": "127.0.0.1:8793"
+            }
+          }
+        },
+        {
+          "name": "egress-probe",
+          "models": [
+            "amazon.egress-probe-v1:0"
+          ],
+          "weight": 1,
+          "bedrock_key_config": {
+            "access_key": "AKIAFIXTUREFIXTURE00",
+            "secret_key": "fixture-secret-not-a-credential",
+            "region": "us-east-1",
+            "endpoints": {
+              "runtime": "203.0.113.10"
+            }
+          }
+        }
+      ],
+      "network_config": {
+        "insecure_skip_verify": true,
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "egress_probe": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai"
+      },
+      "network_config": {
+        "base_url": "https://203.0.113.10",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
     }
   }
 }
