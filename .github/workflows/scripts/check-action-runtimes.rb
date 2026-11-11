@@ -165,19 +165,53 @@ def fetch_action_metadata(occurrence)
 end
 
 
+# A lookup GitHub refused to answer (as opposed to answering "no such commit") is one of these.
+PIN_LOOKUP_REFUSED = %w[401 403 429].freeze
+UNVERIFIED_PINS = []
+
+# verify_pin_is_commit asks GitHub whether the pinned SHA is a commit of the action's
+# repository. A SHA that is not one (a mistyped SHA, an annotated tag object, a missing
+# repository) fails the check.
+#
+# TXE-7112: an organization can refuse this workflow's token while its repository is public
+# (maximhq/snyk-actions answered HTTP 403 to the token and 200 without one), and that refusal
+# says nothing about the pin. So a refused lookup is asked again without the token. If GitHub
+# refuses that too, the pin is reported as not checked, by name, and the run does not fail on
+# it: the action's metadata is still fetched at that SHA, which fails for a SHA that does not
+# exist.
 def verify_pin_is_commit(occurrence)
   cache_key = [occurrence.action_repo, occurrence.ref]
   return if PIN_COMMIT_CACHE[cache_key]
 
   uri = "#{GITHUB_API}/repos/#{occurrence.action_repo}/commits/#{occurrence.ref}"
-  resp = http_get(uri, github_headers)
+  headers = github_headers
+  resp = http_get(uri, headers)
+  if PIN_LOOKUP_REFUSED.include?(resp.code) && headers.key?('Authorization')
+    resp = http_get(uri, headers.reject { |name, _| name == 'Authorization' })
+  end
+
   if resp.is_a?(Net::HTTPSuccess)
     PIN_COMMIT_CACHE[cache_key] = true
     return
   end
 
+  if PIN_LOOKUP_REFUSED.include?(resp.code)
+    PIN_COMMIT_CACHE[cache_key] = true
+    UNVERIFIED_PINS << "#{occurrence.action_repo}@#{occurrence.ref} (HTTP #{resp.code})"
+    return
+  end
+
   raise CheckFailure,
         "#{occurrence.uses} does not pin a commit that GitHub recognizes for #{occurrence.action_repo} (HTTP #{resp.code}); use the release commit SHA, not an annotated tag object"
+end
+
+
+# report_unverified_pins names every pin GitHub refused to look up, as a warning annotation.
+def report_unverified_pins(out = $stdout)
+  UNVERIFIED_PINS.uniq.each do |pin|
+    out.puts "::warning::Pin not checked: GitHub refused the commit lookup for #{pin}, with and without this workflow's token. " \
+             'Whether that SHA is a commit and not an annotated tag object was NOT verified; its action metadata was still fetched at that SHA.'
+  end
 end
 
 
@@ -321,8 +355,9 @@ def main
     failures << "#{workflow} step #{step_name} defines step-scoped #{FORCE_VAR} but has no matching exception entry" unless match
   end
 
+  report_unverified_pins
   if failures.empty?
-    puts 'Action runtime guardrails passed.'
+    puts(UNVERIFIED_PINS.empty? ? 'Action runtime guardrails passed.' : "Action runtime guardrails passed; #{UNVERIFIED_PINS.uniq.length} pin(s) could not be checked, see the warnings above.")
     exit 0
   end
 
@@ -331,4 +366,4 @@ def main
   exit 1
 end
 
-main
+main if $PROGRAM_NAME == __FILE__
