@@ -1092,9 +1092,34 @@ func TestDashScopeTranscriptionInputs(t *testing.T) {
 		})
 		assertUnsupportedParameter(t, schemas.CheckDeclaredUnifiedFields(provider, &schemas.BifrostRequest{RequestType: schemas.TranscriptionRequest, TranscriptionRequest: req}), "timestamp_granularities")
 	})
+	t.Run("file whose data URL exceeds the vendor limit", func(t *testing.T) {
+		// The largest wav whose data URL fits, then one byte more than the limit allows.
+		prefix := len("data:audio/wav;base64,")
+		fits := (maxAudioDataURLBytes - prefix) / 4 * 3
+		big := make([]byte, fits+3)
+		copy(big, wav)
+		_, bifrostErr := provider.Transcription(testContext(t), testKey, transcriptionRequest(big, "", nil))
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusRequestEntityTooLarge {
+			t.Fatalf("error = %+v, want 413", bifrostErr)
+		}
+		if bifrostErr.Error == nil || bifrostErr.Error.Param != "file" || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerInvalidRequest {
+			t.Fatalf("error = %+v, want param file and error_type caller_invalid_request", bifrostErr.Error)
+		}
+		if n := audioDataURLLen("audio/wav", fits); n > maxAudioDataURLBytes {
+			t.Fatalf("data URL of %d bytes for the largest fitting file exceeds the limit", n)
+		}
+	})
 	if vendor.calls != calls {
 		t.Fatalf("refused requests made %d upstream calls", vendor.calls-calls)
 	}
+	t.Run("file at the vendor limit is sent", func(t *testing.T) {
+		fits := (maxAudioDataURLBytes - len("data:audio/wav;base64,")) / 4 * 3
+		big := make([]byte, fits)
+		copy(big, wav)
+		if _, bifrostErr := provider.Transcription(testContext(t), testKey, transcriptionRequest(big, "", nil)); bifrostErr != nil {
+			t.Fatalf("Transcription: %+v", bifrostErr.Error)
+		}
+	})
 	if !schemas.AcceptsTranscriptionURLInput(provider) {
 		t.Fatal("dashscope must declare that transcription takes an audio URL")
 	}

@@ -205,6 +205,7 @@ var nestedPriceFields = func() []NestedPriceField {
 	imageSync := []RequestType{ImageGenerationRequest, ImageEditRequest}
 	video := []RequestType{VideoGenerationRequest}
 	speech := []RequestType{SpeechRequest, SpeechStreamRequest}
+	transcription := []RequestType{TranscriptionRequest, TranscriptionStreamRequest}
 	embedding := []RequestType{EmbeddingRequest}
 	fields := []NestedPriceField{
 		{Bedrock, "imageGenerationConfig.numberOfImages", "n", imageGeneration},
@@ -221,6 +222,9 @@ var nestedPriceFields = func() []NestedPriceField {
 		{DashScope, "parameters.ratio", "aspect_ratio", video},
 		{DashScope, "parameters.duration", "seconds", video},
 		{DashScope, "parameters.audio", "audio", video},
+		{DashScope, "input.voice", "voice", speech},
+		{DashScope, "input.language_type", "language_code", speech},
+		{DashScope, "parameters.asr_options.language", "language", transcription},
 		{Elevenlabs, "voice_settings.speed", "speed", speech},
 		{GoogleCloudTTS, "audioConfig.audioEncoding", "response_format", speech},
 		{GoogleCloudTTS, "audioConfig.speakingRate", "speed", speech},

@@ -239,14 +239,14 @@ Qwen3-TTS answers with a link to the audio, not the bytes. Bifrost does not down
 }
 ```
 
-`usage.billed_characters` is DashScope's `usage.characters` (reported by Qwen3-TTS-Flash). The same usage is in the `x-bifrost-usage` response header. The OpenAI drop-in route `/openai/v1/audio/speech` answers the same JSON. Streamed speech (`stream_format: "sse"`) is not supported yet.
+`usage.billed_characters` is DashScope's `usage.characters` (reported by Qwen3-TTS-Flash). The same usage is in the `x-bifrost-usage` response header. The OpenAI drop-in route `/openai/v1/audio/speech` and the GenAI route `/genai/v1beta/models/dashscope/<model>:generateContent` answer the same JSON, since neither format has a field for a link. Streamed speech (`stream_format: "sse"`) is not supported yet.
 
 ## Transcription (Qwen3-ASR)
 
 `POST /v1/audio/transcriptions` sends one synchronous request to `{workspace_base_url}/api/v1/services/aigc/multimodal-generation/generation`. The audio is the user message's `{"audio": ...}` item:
 
 - A `url` form field (in place of `file`) is sent unchanged. Bifrost does not download it. A data URL (`data:audio/wav;base64,...`) is sent unchanged too.
-- An uploaded `file` is sent as a base64 data URL, with the media type taken from the file name or its header. DashScope limits the encoded audio to 10 MB.
+- An uploaded `file` is sent as a base64 data URL, with the media type taken from the file name or its header. DashScope limits the encoded audio to 10 MB, so Bifrost refuses a larger upload before encoding it: 413, `error.param` `file`, `error_type` `caller_invalid_request`. Send a larger recording as `url`.
 - Sending both `file` and `url` is refused with `caller_unsupported_parameter` naming `url`.
 
 | Unified field | DashScope field |

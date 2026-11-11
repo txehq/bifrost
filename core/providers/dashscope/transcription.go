@@ -3,6 +3,8 @@ package dashscope
 import (
 	"bytes"
 	"encoding/base64"
+	"fmt"
+	"net/http"
 	"path/filepath"
 	"strings"
 
@@ -25,8 +27,9 @@ var transcriptionConvertedExtraParams = []string{schemas.TranscriptionURLParam}
 // The audio is one {"audio": ...} content item of the user message. A URL (the "url" extra
 // param, which may also be a data URL Tokun built) is written unchanged; Bifrost never
 // downloads it. File bytes are sent as a base64 data URL, the form DashScope documents for
-// Qwen3-ASR-Flash (up to 10 MB encoded; the vendor enforces the limit). A request carrying
-// both a file and a URL is refused naming url, since one of them would be dropped.
+// Qwen3-ASR-Flash, up to 10 MB encoded; a larger file is refused with 413 before it is
+// encoded. A request carrying both a file and a URL is refused naming url, since one of them
+// would be dropped.
 //
 // prompt becomes the system message's context text; language becomes asr_options.language;
 // response_format takes only "json", the shape Bifrost returns.
@@ -51,7 +54,11 @@ func ToDashScopeASRRequest(request *schemas.BifrostTranscriptionRequest) (*DashS
 	case hasURL:
 		audio = audioURL
 	case hasFile:
-		audio = audioDataURL(request.Input.Filename, request.Input.File)
+		mediaType := audioMediaType(request.Input.Filename, request.Input.File)
+		if n := audioDataURLLen(mediaType, len(request.Input.File)); n > maxAudioDataURLBytes {
+			return nil, providerUtils.ConverterBifrostError(audioTooLargeError(n))
+		}
+		audio = audioDataURL(mediaType, request.Input.File)
 	default:
 		return nil, providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError("file", "file or url is required for DashScope transcription"))
 	}
@@ -169,12 +176,36 @@ func (provider *DashScopeProvider) Transcription(ctx *schemas.BifrostContext, ke
 	return bifrostResp, nil
 }
 
+// maxAudioDataURLBytes is the largest base64 data URL Qwen3-ASR takes, as DashScope documents
+// it (10 MB encoded). A larger file is refused before it is encoded: encoding and marshalling
+// it would cost several times its size in memory for a request the vendor rejects anyway.
+const maxAudioDataURLBytes = 10 << 20
+
+// audioDataURLLen is the length of the data URL audioDataURL builds for size bytes of audio.
+func audioDataURLLen(mediaType string, size int) int {
+	return len("data:") + len(mediaType) + len(";base64,") + base64.StdEncoding.EncodedLen(size)
+}
+
+// audioTooLargeError is the 413 for an upload whose data URL would exceed maxAudioDataURLBytes.
+// A larger recording can be sent as url instead, which DashScope fetches itself.
+func audioTooLargeError(dataURLLen int) *schemas.BifrostError {
+	return &schemas.BifrostError{
+		StatusCode: schemas.Ptr(http.StatusRequestEntityTooLarge),
+		Error: &schemas.ErrorField{
+			Type:    schemas.Ptr("invalid_request_error"),
+			Code:    schemas.Ptr(string(schemas.ErrorTypeCallerInvalidRequest)),
+			Message: fmt.Sprintf("the file is %d bytes as a base64 data URL; DashScope transcription takes at most %d. Send a larger recording as url", dataURLLen, maxAudioDataURLBytes),
+			Param:   "file",
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+	}
+}
+
 // audioDataURL returns data as a base64 data URL, encoded straight into one buffer sized for
 // it, so the audio is copied once rather than once for the encoding and again for the prefix.
-func audioDataURL(filename string, data []byte) string {
-	mediaType := audioMediaType(filename, data)
+func audioDataURL(mediaType string, data []byte) string {
 	var b strings.Builder
-	b.Grow(len("data:") + len(mediaType) + len(";base64,") + base64.StdEncoding.EncodedLen(len(data)))
+	b.Grow(audioDataURLLen(mediaType, len(data)))
 	b.WriteString("data:")
 	b.WriteString(mediaType)
 	b.WriteString(";base64,")

@@ -179,7 +179,7 @@
           "    } else if (typeof j.text === 'string' && !j.choices && !j.candidates && !j.output) {",
           "        shape = 'audio-transcription';",
           "        hasContent = j.text.length > 0;",
-          "    } else if (__u.split('?')[0].slice(-'/audio/speech'.length) === '/audio/speech' && typeof j.url === 'string' && j.usage) {",
+          "    } else if (typeof j.url === 'string' && j.usage && j.extra_fields && j.extra_fields.request_type === 'speech') {",
           "        // A vendor that answers speech with a link to the audio (DashScope Qwen3-TTS, TXE-6433) is relayed as JSON carrying the link.",
           "        shape = 'speech-link';",
           "        hasContent = j.url.length > 0;",

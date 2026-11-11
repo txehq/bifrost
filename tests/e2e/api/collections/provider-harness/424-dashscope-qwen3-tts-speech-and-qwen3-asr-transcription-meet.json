@@ -1,6 +1,6 @@
 {
   "name": "424. DashScope Qwen3-TTS speech and Qwen3-ASR transcription meet the contract (dashscope speech)",
-  "description": "TXE-6433, contract C4, C5, C6 and C9 on the dashscope provider, with the headers Tokun sends (x-bf-api-key naming one key, x-bf-passthrough-extra-params). Speech: Qwen3-TTS (non-streamed) answers with a link to the audio, not the bytes; Bifrost does not download it, and /v1/audio/speech (and the OpenAI drop-in route) answer JSON with the vendor's url, expires_at and usage, where usage.billed_characters is the vendor's usage.characters (also in x-bifrost-usage). input, voice and language_code reach input.text, input.voice and input.language_type; response_format, speed and instructions have no Qwen3-TTS field and are refused with 400 caller_unsupported_parameter before a key is chosen. Transcription: Qwen3-ASR takes an audio url unchanged as the user message's audio item, and a file as a base64 data URL; the vendor's usage.seconds is usage {type: duration, seconds}. timestamp_granularities and any response_format other than json are refused. The live rows need a real DASHSCOPE_API_KEY; without one the harness skips every dashscope row (keyless provider). The refusal rows make no upstream call. The Singapore host for TTS and STT is an open question on TXE-6433: the profile sends both to dashscope-intl.aliyuncs.com.",
+  "description": "TXE-6433, contract C4, C5, C6 and C9 on the dashscope provider, with the headers Tokun sends (x-bf-api-key naming one key, x-bf-passthrough-extra-params). Speech: Qwen3-TTS (non-streamed) answers with a link to the audio, not the bytes; Bifrost does not download it, and /v1/audio/speech, the OpenAI drop-in route and the GenAI generateContent route all answer JSON with the vendor's url, expires_at and usage, where usage.billed_characters is the vendor's usage.characters (also in x-bifrost-usage). input, voice and language_code reach input.text, input.voice and input.language_type; response_format, speed and instructions have no Qwen3-TTS field and are refused with 400 caller_unsupported_parameter before a key is chosen. Transcription: Qwen3-ASR takes an audio url unchanged as the user message's audio item, and a file as a base64 data URL; the vendor's usage.seconds is usage {type: duration, seconds}. timestamp_granularities and any response_format other than json are refused. The live rows need a real DASHSCOPE_API_KEY; without one the harness skips every dashscope row (keyless provider). The refusal rows make no upstream call. The Singapore host for TTS and STT is an open question on TXE-6433: the profile sends both to dashscope-intl.aliyuncs.com.",
   "item": [
     {
       "name": "424.1 /v1/audio/speech - Qwen3-TTS returns the vendor link, expires_at and billed_characters as JSON - dashscope/qwen3-tts-flash (dashscope speech)",
@@ -652,6 +652,78 @@
               "pm.test('refused in the request conversion: no vendor answer', function () {",
               "  var body = pm.response.json();",
               "  pm.expect(body.extra_fields && body.extra_fields.raw_response, 'a vendor answered').to.not.be.ok;",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "424.11 /genai/v1beta/models/{model}:generateContent - Qwen3-TTS link response on the GenAI route, not empty inline audio - dashscope/qwen3-tts-flash (dashscope speech)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "DashScope API Key"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Hello from the Singapore harness.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\n      \"AUDIO\"\n    ],\n    \"speechConfig\": {\n      \"voiceConfig\": {\n        \"prebuiltVoiceConfig\": {\n          \"voiceName\": \"Cherry\"\n        }\n      }\n    }\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/dashscope/qwen3-tts-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "dashscope",
+            "qwen3-tts-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Qwen3-TTS answers JSON with the vendor audio link and expires_at on the GenAI route, where inline audio would be empty', function () {",
+              "  var text = pm.response.text();",
+              "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 400)).to.eql(200);",
+              "  var ct = (pm.response.headers.get('content-type') || '').split(';')[0].trim();",
+              "  pm.expect(ct, 'a link response is JSON, not audio bytes').to.eql('application/json');",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.url, 'the vendor link: ' + text).to.be.a('string').and.to.match(/^https?:\\/\\//);",
+              "  pm.expect(j.expires_at, 'the vendor expiry (Unix seconds): ' + text).to.be.a('number');",
+              "  pm.expect(j.expires_at, 'expires_at must be in the future: ' + text).to.be.above(Math.floor(Date.now() / 1000));",
+              "});",
+              "pm.test('usage.billed_characters is the vendor characters count, in the body and in x-bifrost-usage', function () {",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.usage && j.usage.billed_characters, 'billed_characters: ' + JSON.stringify(j.usage)).to.be.a('number').and.to.be.above(0);",
+              "  var raw = j.extra_fields && j.extra_fields.raw_response;",
+              "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+              "  if (raw && raw.usage && raw.usage.characters !== undefined) {",
+              "    pm.expect(j.usage.billed_characters, 'must equal the vendor usage.characters').to.eql(raw.usage.characters);",
+              "  }",
+              "  var u = JSON.parse(pm.response.headers.get('x-bifrost-usage') || 'null');",
+              "  pm.expect(u && u.billed_characters, 'x-bifrost-usage: ' + JSON.stringify(u)).to.eql(j.usage.billed_characters);",
+              "});",
+              "pm.test('served by the pinned key, no fallback: one upstream call', function () {",
+              "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), 'routing key').to.eql('DashScope API Key');",
+              "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback') || 'false').to.eql('false');",
               "});"
             ]
           }

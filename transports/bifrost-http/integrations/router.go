@@ -1347,6 +1347,16 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			return
 		}
 
+		// A link to the audio instead of bytes (DashScope Qwen3-TTS) is answered as JSON with the
+		// vendor's url, expires_at and usage on every route, as on /v1/audio/speech (TXE-6433).
+		// A route's converter writes only audio bytes (GenAI's inline data), so it would answer
+		// 200 with no audio and lose the link the caller has paid for.
+		if speechResponse.HasAudioURL() {
+			lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
+			lib.SetSpeechUsageHeader(ctx, speechResponse.Usage)
+			g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, speechResponse, nil)
+			return
+		}
 		if config.SpeechResponseConverter != nil {
 			response, err = config.SpeechResponseConverter(bifrostCtx, speechResponse)
 			if err != nil {
@@ -1359,13 +1369,6 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			return
 		} else {
 			lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
-			// A link to the audio instead of bytes (DashScope Qwen3-TTS) is answered as JSON
-			// with the vendor's url, expires_at and usage, as on /v1/audio/speech (TXE-6433).
-			if speechResponse.HasAudioURL() {
-				lib.SetSpeechUsageHeader(ctx, speechResponse.Usage)
-				g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, speechResponse, nil)
-				return
-			}
 			responseFormat := ""
 			if bifrostReq.SpeechRequest.Params != nil {
 				responseFormat = bifrostReq.SpeechRequest.Params.ResponseFormat
