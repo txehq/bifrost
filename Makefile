@@ -2207,6 +2207,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' ""                "  passed to newman's own --folder as the final scope. In parallel mode (default), provider forks with zero items"; \
 		printf '  %-18s %s\n' ""                "  in that folder are skipped cleanly instead of forked-then-failed - use with PROVIDER=<one> to run a single fork."; \
 		printf '  %-18s %s\n' "ENV_FILE=<path>" "Postman environment JSON with real keys (kept out of git)."; \
+		printf '  %-18s %s\n' "ALLOW_SKIPPED=1" "Fixture runs only: let the run proceed, and pass, when selected rows are skipped for a missing key."; \
+		printf '  %-18s %s\n' "" "  Without it a fixture run (under scripts/test-offline.sh) with such rows is refused: it means augment read the wrong profile."; \
 		printf '  %-18s %s\n' "VIEWER_PORT=N"   "Port for the interactive HTML viewer (default: 8090). Ignored if CI=1."; \
 		printf '  %-18s %s\n' "CI=1"            "CI mode: skip the interactive viewer, emit artifacts only. Prints a one-line heartbeat every"; \
 		printf '  %-18s %s\n' ""                "  MONITOR_INTERVAL seconds and the provider status table (provider x total/pass/failed) exactly ONCE,"; \
@@ -2778,6 +2780,32 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	: "tmp/newman-report-*.json merge glob never sweeps it in."; \
 	rm -f tmp/.newman-report-prior.json; \
 	if [ -n "$(RERUN_FAILED)" ] && [ -f tmp/newman-report.json ]; then cp -f tmp/newman-report.json tmp/.newman-report-prior.json; fi; \
+	: "What this run selected, before it is split into passes: the augmented collection under the"; \
+	: "run's own filters and nothing else. check-harness-skips.mjs counts it, and refuses a fixture"; \
+	: "run in which a selected row would be skipped for a missing key: a fixture needs no vendor key,"; \
+	: "so that only happens when augment read the wrong profile, and the run would exit 0 having sent"; \
+	: "almost nothing (TXE-7099). ALLOW_SKIPPED=1 lets such a run through. A live run is never refused."; \
+	SELECTED_FILE="tmp/harness-augmented.json"; \
+	if [ -n "$(PROVIDER)" ] || [ -n "$(FEATURE)" ] || [ -n "$(FOLDER)" ] || [ -n "$(RERUN_FAILED)" ] || [ -n "$$PICKED_FEATURES" ] || [ -n "$$SMOKE_MANIFEST" ]; then \
+		$(USE_NODE); if run_quiet node tests/e2e/api/runners/filter-collection.mjs \
+			--source tmp/harness-augmented.json \
+			--out tmp/harness-selected.json \
+			$(if $(PROVIDER),--provider $(PROVIDER),) \
+			$(if $(FEATURE),--feature "$(FEATURE)",) \
+			$(if $(FOLDER),--folder "$(FOLDER)",) \
+			$${PICKED_FEATURES:+--feature-any "$$PICKED_FEATURES"} \
+			$${SMOKE_MANIFEST:+--smoke "$$SMOKE_MANIFEST"} \
+			$(if $(RERUN_FAILED),--rerun-failed --report tmp/newman-report.json,); then \
+			SELECTED_FILE="tmp/harness-selected.json"; \
+		else \
+			say "$(YELLOW)Could not compute the run's selection; the skip check and summary are left out.$(NC)"; \
+			SELECTED_FILE=""; \
+		fi; \
+	fi; \
+	if [ -n "$$SELECTED_FILE" ]; then \
+		$(USE_NODE); node tests/e2e/api/runners/check-harness-skips.mjs --collection "$$SELECTED_FILE" \
+			$(if $(ENV_FILE),--env-file "$(ENV_FILE)",) $(if $(ALLOW_SKIPPED),--allow-skipped,) || exit 1; \
+	fi; \
 	if [ "$$SKIP_MAIN" != "1" ] && { [ -n "$(PROVIDER)" ] || [ -n "$(FEATURE)" ] || [ -n "$(FOLDER)" ] || [ -n "$(RERUN_FAILED)" ] || [ -n "$$MAIN_FEATURES" ] || [ -n "$$EXCLUDE_FLAG" ] || [ -n "$$SMOKE_MANIFEST" ]; }; then \
 		say "$(CYAN)Filtering collection (provider=$(PROVIDER), feature=$(FEATURE), folder=$(FOLDER), feature-any=$$MAIN_FEATURES, exclude=$${EXCLUDE_FLAG:+cache-parity}, smoke=$${SMOKE_MANIFEST:--}, rerun-failed=$(RERUN_FAILED))...$(NC)"; \
 		$(USE_NODE); run_quiet node tests/e2e/api/runners/filter-collection.mjs \
@@ -3394,5 +3422,13 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		say "$(RED)Aborted: HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS) refused a launch (reason above); $$BUDGET_USED request(s) were launched. The provider table above is the actual total.$(NC)"; \
 		exit 3; \
 	fi; \
+	: "Always the last lines: the counts a PR body quotes. A fixture run in which nothing ran, or"; \
+	: "selected rows were skipped for a missing key, is not a pass (TXE-7099)."; \
+	SKIPS_EXIT=0; \
+	if [ -n "$$SELECTED_FILE" ] && [ -f tmp/newman-report.json ]; then \
+		$(USE_NODE); node tests/e2e/api/runners/check-harness-skips.mjs --collection "$$SELECTED_FILE" --report tmp/newman-report.json \
+			$(if $(ENV_FILE),--env-file "$(ENV_FILE)",) $(if $(ALLOW_SKIPPED),--allow-skipped,) || SKIPS_EXIT=1; \
+	fi; \
 	if [ "$$NEWMAN_EXIT" -ne 0 ]; then exit $$NEWMAN_EXIT; fi; \
+	if [ "$$SKIPS_EXIT" -ne 0 ]; then exit $$SKIPS_EXIT; fi; \
 	exit $$STREAM_CANCEL_EXIT
