@@ -884,6 +884,14 @@ const wireAnswer = (path, body, bytes) => {
 		if (what === "stream") urls.stream = `${named}/streams/${id}`;
 		return { status: 201, body: JSON.stringify({ id, status: "starting", urls }) };
 	}
+	// HuggingFace speech through fal-ai (TXE-7117): the answer names the audio file by URL. The model's last
+	// path segment picks where: speech-origin on the provider's own origin, speech-loopback on another
+	// loopback origin (the same fixture by the name localhost).
+	const hfSpeech = /^\/pp\/huggingface\/fal-ai\/.*speech-(origin|loopback)$/.exec(path);
+	if (hfSpeech) {
+		const host = hfSpeech[1] === "origin" ? "127.0.0.1" : "localhost";
+		return { status: 200, body: JSON.stringify({ audio: { url: `http://${host}:${port}/pp/huggingface/audio/${hfSpeech[1]}.mp3`, content_type: "audio/mpeg", file_name: `${hfSpeech[1]}.mp3`, file_size: FIXTURE_HF_AUDIO.length } }) };
+	}
 	// Replicate accepts a prediction (201) but the answer names no urls.get to poll it at (folder 456, TXE-7056).
 	if (path.startsWith("/pp/replicate/") && path.endsWith("/predictions")) return { status: 201, body: JSON.stringify({ id: "pred_fixture_no_urls", status: "starting" }) };
 	if (path.endsWith(":predict")) return { status: 200, body: JSON.stringify(imagenPartiallyBlocked) };
@@ -1129,6 +1137,8 @@ const deepgramAnswer = (req, res, raw) => {
 const VIDEO_GAP_MS = 1500;
 const VIDEO_HALF = Buffer.alloc(256 * 1024, 0x1a);
 const videoGapSends = [];
+// The bytes of the audio file a HuggingFace speech answer names (TXE-7117).
+const FIXTURE_HF_AUDIO = Buffer.from("ID3 fixture audio");
 const bearerOf = (req) => String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
 const listedVideo = (id, status, created_at) => ({ id, object: "video", model: "sora-fixture", status, created_at });
 const videoListPage = (after) => after === "video_b"
@@ -1489,6 +1499,21 @@ const handleRequest = (req, res) => {
 	if (req.method === "GET" && path === "/pp/media/internal.mp4") {
 		countHit(`media.internal@${req.headers.host}`);
 		return send(200, { "Content-Type": "video/mp4" }, "internal");
+	}
+	// The HuggingFace model hub (TXE-7117), which a provider whose base URL is the fixture asks here and not at
+	// huggingface.co. A model lookup answers that fal-ai serves the model as text-to-speech; a model list is
+	// empty. Each lookup is counted as "huggingface.hub@<model>".
+	if (req.method === "GET" && path.startsWith("/pp/huggingface/api/models")) {
+		const model = decodeURIComponent(path.slice("/pp/huggingface/api/models".length).replace(/^\//, ""));
+		if (!model) return send(200, {}, "[]");
+		countHit(`huggingface.hub@${model}`);
+		return send(200, {}, JSON.stringify({ _id: "fixture", id: model, pipeline_tag: "text-to-speech", inferenceProviderMapping: { "fal-ai": { status: "live", providerId: `fal-ai/${model}`, task: "text-to-speech" } } }));
+	}
+	// The audio file a HuggingFace speech answer names, counted under the Host it was asked at.
+	if (req.method === "GET" && path.startsWith("/pp/huggingface/audio/")) {
+		countHit(`huggingface.audio@${String(req.headers.host).split(":")[0]}`);
+		res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": FIXTURE_HF_AUDIO.length });
+		return res.end(FIXTURE_HF_AUDIO);
 	}
 	// MiniMax video query is a GET; the task id "base-resp-<code>" selects the base_resp code (TXE-6588).
 	if (req.method === "GET" && path.startsWith("/pp/minimax/v2/query/video_generation/")) {
