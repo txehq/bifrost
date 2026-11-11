@@ -237,8 +237,11 @@ ignores `network_config.base_url` still dials its vendor. Bedrock builds its hos
 TXE-7080 fixture run sent two requests to `bedrock-runtime.us-east-1.amazonaws.com`. So a fixture run
 starts all three processes (the fixture, the gateway and the harness) under `scripts/test-offline.sh`:
 
-- Bifrost's dial guard refuses every TCP connection to an address that is not loopback before it is
+- Bifrost's dial guard refuses a TCP connection to an address that is not loopback before it is
   attempted, naming it: `offline run (BIFROST_TEST_OFFLINE=1): egress to <host> (<ip:port>) refused`.
+  It covers Bifrost's own dialers (provider, proxy, SSRF, fasthttp, WebSocket, gRPC), `http.DefaultTransport`
+  and the AWS SDK client. Libraries that dial on their own are held only by the macOS sandbox
+  (`AGENTS.md`, "Run local tests through `scripts/test-offline.sh`").
 - The runner removes the proxy variables, and on macOS it runs the command under `sandbox-exec` with a
   loopback-only profile, so any process it starts (node, newman, curl) is held to loopback too.
 - `make run-provider-harness-test` refuses a fixture run (`providerErrorFixture=1`) outside the runner. It

@@ -2,11 +2,14 @@ package vectorstore
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	bifrost "github.com/capsohq/bifrost/core"
+	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -569,4 +572,48 @@ func TestQdrantStore_DeleteMissingIDSucceeds(t *testing.T) {
 	props := map[string]VectorStoreProperties{"type": {DataType: VectorStorePropertyTypeString}}
 	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, QdrantTestCollection, QdrantTestDimension, props))
 	assert.NoError(t, setup.Store.Delete(setup.ctx, QdrantTestCollection, generateUUID()))
+}
+
+// TestQdrantGRPCDialsThroughTheOfflineGuard: the Qdrant client's gRPC connection uses Bifrost's
+// gRPC dialer, so an offline run refuses a non-loopback Qdrant (TEST-NET-3, never routed) before
+// connecting, naming it (TXE-7083).
+func TestQdrantGRPCDialsThroughTheOfflineGuard(t *testing.T) {
+	defer network.SetOfflineEgressGuard(true)()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := newQdrantStore(ctx, &QdrantConfig{
+		Host: *schemas.NewSecretVar("203.0.113.10"),
+		Port: *schemas.NewSecretVar("6334"),
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err == nil || !strings.Contains(err.Error(), network.OfflineEgressMarker) || !strings.Contains(err.Error(), "203.0.113.10:6334") {
+		t.Fatalf("want the offline refusal naming 203.0.113.10:6334, got %v", err)
+	}
+}
+
+// TestVectorStoreHostsMustBeLoopbackInAnOfflineRun: the variables naming the service a
+// vector-store test writes to fail loudly under the runner unless they name loopback, because
+// Pinecone's data plane and Weaviate's gRPC dial out of the guard's reach (TXE-7083).
+func TestVectorStoreHostsMustBeLoopbackInAnOfflineRun(t *testing.T) {
+	defer network.SetOfflineEgressGuard(true)()
+	for key, value := range map[string]string{
+		"QDRANT_HOST": "qdrant.example.com", "REDIS_ADDR": "10.0.0.5:6379",
+		"WEAVIATE_HOST": "weaviate.example.com:8080", "PINECONE_INDEX_HOST": "https://idx-abc.svc.pinecone.io",
+	} {
+		t.Setenv(key, value)
+		func() {
+			defer func() {
+				recovered := fmt.Sprint(recover())
+				if !strings.Contains(recovered, key) || !strings.Contains(recovered, "not loopback") {
+					t.Errorf("%s=%s: want a loud refusal, got %q", key, value, recovered)
+				}
+			}()
+			getEnvWithDefault(key, "localhost")
+		}()
+	}
+	t.Setenv("QDRANT_HOST", "127.0.0.1")
+	if got := getEnvWithDefault("QDRANT_HOST", "localhost"); got != "127.0.0.1" {
+		t.Fatalf("a loopback host must pass through, got %q", got)
+	}
+	t.Setenv("PINECONE_INDEX_HOST", "http://localhost:5081")
+	_ = getEnvWithDefault("PINECONE_INDEX_HOST", "x")
 }
