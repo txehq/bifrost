@@ -1112,6 +1112,23 @@ func TestDashScopeTranscriptionInputs(t *testing.T) {
 	if vendor.calls != calls {
 		t.Fatalf("refused requests made %d upstream calls", vendor.calls-calls)
 	}
+	t.Run("data URL longer than the vendor limit", func(t *testing.T) {
+		before := vendor.calls
+		dataURL := "DATA:audio/wav;base64," + strings.Repeat("A", maxAudioDataURLBytes)
+		_, bifrostErr := provider.Transcription(testContext(t), testKey, transcriptionRequest(nil, dataURL, nil))
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusRequestEntityTooLarge || bifrostErr.Error == nil || bifrostErr.Error.Param != schemas.TranscriptionURLParam {
+			t.Fatalf("error = %+v, want 413 naming url", bifrostErr)
+		}
+		if vendor.calls != before {
+			t.Fatalf("a refused data URL made %d upstream calls", vendor.calls-before)
+		}
+	})
+	t.Run("http url of any length is sent unchanged", func(t *testing.T) {
+		long := "https://example.com/a.wav?sig=" + strings.Repeat("a", maxAudioDataURLBytes)
+		if _, bifrostErr := provider.Transcription(testContext(t), testKey, transcriptionRequest(nil, long, nil)); bifrostErr != nil {
+			t.Fatalf("Transcription: %+v", bifrostErr.Error)
+		}
+	})
 	t.Run("file at the vendor limit is sent", func(t *testing.T) {
 		fits := (maxAudioDataURLBytes - len("data:audio/wav;base64,")) / 4 * 3
 		big := make([]byte, fits)

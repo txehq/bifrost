@@ -26,7 +26,7 @@ var transcriptionConvertedExtraParams = []string{schemas.TranscriptionURLParam}
 //
 // The audio is one {"audio": ...} content item of the user message. A URL (the "url" extra
 // param, which may also be a data URL Tokun built) is written unchanged; Bifrost never
-// downloads it. File bytes are sent as a base64 data URL, the form DashScope documents for
+// downloads it. A data URL longer than the vendor's limit is refused with 413 as a file is. File bytes are sent as a base64 data URL, the form DashScope documents for
 // Qwen3-ASR-Flash, up to 10 MB encoded; a larger file is refused with 413 before it is
 // encoded. A request carrying both a file and a URL is refused naming url, since one of them
 // would be dropped.
@@ -52,11 +52,16 @@ func ToDashScopeASRRequest(request *schemas.BifrostTranscriptionRequest) (*DashS
 	case hasFile && hasURL:
 		return nil, providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError(schemas.TranscriptionURLParam, "send the audio as file or as url, not both"))
 	case hasURL:
+		// A data URL (Tokun builds one for an inline upload) is held to the same limit as a file:
+		// it is the vendor's base64 form already, and DashScope refuses a longer one.
+		if len(audioURL) > maxAudioDataURLBytes && len(audioURL) >= len("data:") && strings.EqualFold(audioURL[:len("data:")], "data:") {
+			return nil, providerUtils.ConverterBifrostError(audioTooLargeError(schemas.TranscriptionURLParam, len(audioURL)))
+		}
 		audio = audioURL
 	case hasFile:
 		mediaType := audioMediaType(request.Input.Filename, request.Input.File)
 		if n := audioDataURLLen(mediaType, len(request.Input.File)); n > maxAudioDataURLBytes {
-			return nil, providerUtils.ConverterBifrostError(audioTooLargeError(n))
+			return nil, providerUtils.ConverterBifrostError(audioTooLargeError("file", n))
 		}
 		audio = audioDataURL(mediaType, request.Input.File)
 	default:
@@ -186,16 +191,17 @@ func audioDataURLLen(mediaType string, size int) int {
 	return len("data:") + len(mediaType) + len(";base64,") + base64.StdEncoding.EncodedLen(size)
 }
 
-// audioTooLargeError is the 413 for an upload whose data URL would exceed maxAudioDataURLBytes.
-// A larger recording can be sent as url instead, which DashScope fetches itself.
-func audioTooLargeError(dataURLLen int) *schemas.BifrostError {
+// audioTooLargeError is the 413 for audio whose data URL exceeds maxAudioDataURLBytes, naming
+// param (file, or url for a data URL). A larger recording can be sent as an http(s) url
+// instead, which DashScope fetches itself.
+func audioTooLargeError(param string, dataURLLen int) *schemas.BifrostError {
 	return &schemas.BifrostError{
 		StatusCode: schemas.Ptr(http.StatusRequestEntityTooLarge),
 		Error: &schemas.ErrorField{
 			Type:    schemas.Ptr("invalid_request_error"),
 			Code:    schemas.Ptr(string(schemas.ErrorTypeCallerInvalidRequest)),
-			Message: fmt.Sprintf("the file is %d bytes as a base64 data URL; DashScope transcription takes at most %d. Send a larger recording as url", dataURLLen, maxAudioDataURLBytes),
-			Param:   "file",
+			Message: fmt.Sprintf("the audio is %d bytes as a base64 data URL; DashScope transcription takes at most %d. Send a larger recording as an http(s) url", dataURLLen, maxAudioDataURLBytes),
+			Param:   param,
 		},
 		ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 	}
