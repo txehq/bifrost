@@ -775,6 +775,10 @@ func TestKlingVideoList(t *testing.T) {
 	assertRefusal(t, bifrostErr, schemas.ErrorTypeCallerUnsupportedParameter, "order")
 	_, bifrostErr = provider.VideoList(testContext(t), testKey(), &schemas.BifrostVideoListRequest{Provider: schemas.Kling, Limit: schemas.Ptr(501)})
 	assertRefusal(t, bifrostErr, schemas.ErrorTypeCallerUnsupportedParameter, "limit")
+	// A vendor filter is refused by name (the first in sorted order), not dropped: Kling's list
+	// takes its filters in the POST body, which this provider does not write yet.
+	_, bifrostErr = provider.VideoList(testContext(t), testKey(), &schemas.BifrostVideoListRequest{Provider: schemas.Kling, Filters: map[string][]string{"status": {"succeeded"}, "start_time": {"1781080000000"}}})
+	assertRefusal(t, bifrostErr, schemas.ErrorTypeCallerUnsupportedParameter, "start_time")
 	if n := len(captured()); n != 0 {
 		t.Errorf("a refused list reached Kling: %d calls", n)
 	}
@@ -809,6 +813,20 @@ func TestKlingVideoDownload(t *testing.T) {
 	}
 	if req := onlyRequest(t, captured); req.query != "task_ids="+klingTaskID {
 		t.Errorf("query = %q", req.query)
+	}
+
+	// A caller that asked for a stream gets the same bytes as Body, with their length.
+	streamed, bifrostErr := provider.VideoDownload(ctx, testKey(), &schemas.BifrostVideoDownloadRequest{Provider: schemas.Kling, ID: klingTaskID + ":kling", Stream: true})
+	if bifrostErr != nil {
+		t.Fatalf("streamed VideoDownload error: %+v", bifrostErr.Error)
+	}
+	if streamed.Body == nil || streamed.Content != nil || streamed.ContentLength != int64(len("mp4data")) || streamed.ContentType != "video/mp4" {
+		t.Fatalf("streamed download = %+v", streamed)
+	}
+	streamedBytes, err := io.ReadAll(streamed.Body)
+	_ = streamed.Body.Close()
+	if err != nil || string(streamedBytes) != "mp4data" {
+		t.Errorf("streamed body = %q, %v", streamedBytes, err)
 	}
 
 	provider, _ = newMockKling(t, nil, http.StatusOK, strings.Replace(succeededBody, `"status":"succeeded"`, `"status":"processing"`, 1))

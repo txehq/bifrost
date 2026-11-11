@@ -154,7 +154,7 @@ Both return the same task object, whose `id` is Kling's task id. A query Kling r
 
 Usage holds only what Kling reported. A deduction from a cash balance (`charge_type: "cash"`) is money, not Units, and is not put in `vendor_cost`; it is in `extra_fields.raw_response` with `x-bf-send-back-raw-response: true`. Kling's task object has no failure code, so `error.code` is empty. A watermarked result (`outputs[].watermark_url`) is in the raw response.
 
-`GET /v1/videos?provider=kling` lists the account's video tasks through Kling's query by cursor: `after` is Kling's cursor, `limit` its page size (1 to 500). While `has_more` is true, `last_id` is the cursor of the next page. `order` is refused; Kling has no order parameter.
+`GET /v1/videos?provider=kling` lists the account's video tasks through Kling's query by cursor: `after` is Kling's cursor, `limit` its page size (1 to 500). While `has_more` is true, `last_id` is the cursor of the next page. `order` is refused; Kling has no order parameter. Any other query parameter is a vendor filter, and Kling's list takes its filters (a time window, a status) in the request body, which Bifrost does not write yet: a filter is refused with `400` `caller_unsupported_parameter` naming it, never dropped.
 
 `GET /v1/videos/{id}/content` queries the task and downloads `videos[0].url`, which needs no key.
 

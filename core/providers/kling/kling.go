@@ -15,6 +15,7 @@ package kling
 import (
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -250,13 +251,24 @@ func klingTaskFor(tasks []KlingTask, param, id string) *KlingTask {
 // after is Kling's cursor and limit its page size; the product_type filter keeps the page to
 // video tasks. The response's last_id is the cursor of the next page while has_more is true, so a
 // caller pages with after=last_id as on every other provider. Kling orders the page itself and
-// has no order parameter, so order is refused.
+// has no order parameter, so order is refused. A vendor filter (schemas.BifrostVideoListRequest
+// Filters) is refused too, by name, instead of being dropped: Kling takes its time window and its
+// status filter in the POST body, not as query parameters, and placing them there is TXE-7048.
 func (provider *KlingProvider) VideoList(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
 	if bifrostErr := providerUtils.CheckOperationAllowed(schemas.Kling, provider.customProviderConfig, schemas.VideoListRequest); bifrostErr != nil {
 		return nil, bifrostErr
 	}
 	if request.Order != nil && *request.Order != "" {
 		return nil, schemas.NewUnsupportedParameterError("order", "kling: the task list has no order parameter")
+	}
+	if len(request.Filters) > 0 {
+		names := make([]string, 0, len(request.Filters))
+		for name := range request.Filters {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		return nil, schemas.NewUnsupportedParameterError(names[0], fmt.Sprintf(
+			"kling: the task list takes after and limit only; the filter %q is not sent to Kling", names[0]))
 	}
 	listReq := &KlingListRequest{
 		Filters: []KlingListFilter{{Key: "product_type", Values: []string{klingOutputVideo}}},
@@ -346,13 +358,9 @@ func (provider *KlingProvider) VideoDownload(ctx *schemas.BifrostContext, key sc
 	if err != nil {
 		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("failed to download video", err), latency)
 	}
-	bifrostResp := &schemas.BifrostVideoDownloadResponse{
-		VideoID:     request.ID,
-		Content:     content,
-		ContentType: providerUtils.VideoContentTypeOr(contentType, klingVideoContentType),
-	}
-	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
-	return bifrostResp, nil
+	// The media fetcher buffers the file (its SSRF checks sit on a buffering client), so a
+	// streamed request is served from memory here, within the fetcher's size cap.
+	return providerUtils.NewVideoContentResponse(request, request.ID, content, providerUtils.VideoContentTypeOr(contentType, klingVideoContentType), latency), nil
 }
 
 // requestURL is the URL of a Kling path, or the custom provider's request_path_overrides entry
