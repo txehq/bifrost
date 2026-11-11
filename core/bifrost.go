@@ -8169,13 +8169,26 @@ func clearGenAIPassthroughForNonGoogleProvider(ctx *schemas.BifrostContext, base
 // It runs per attempt: a fallback to another provider or model decides afresh. With
 // neither large-payload mode on it does nothing, which is every request of a gateway
 // with no large-payload hook installed.
-func decideLargePayloadForAttempt(ctx *schemas.BifrostContext, baseProvider, providerKey schemas.ModelProvider, requestType schemas.RequestType, model string) *schemas.BifrostError {
+//
+// requestedModel is the model this attempt serves before a key alias resolves it, the name
+// the key and governance checks admitted; model is the resolved one the provider's family
+// is read from. A staged body that names another model than requestedModel is not
+// forwarded: it goes out unparsed, so a fallback to another model would ask the vendor for
+// the primary's model on a key admitted for the fallback's.
+func decideLargePayloadForAttempt(ctx *schemas.BifrostContext, baseProvider, providerKey schemas.ModelProvider, requestType schemas.RequestType, model, requestedModel string) *schemas.BifrostError {
 	staged, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
 	threshold, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseThreshold).(int64)
 	if !staged && threshold <= 0 {
 		return nil
 	}
-	ctx.SetValue(schemas.BifrostContextKeyLargePayloadEligibility, schemas.DecideLargePayloadEligibility(ctx, baseProvider, providerKey != baseProvider, requestType, model))
+	eligibility := schemas.DecideLargePayloadEligibility(ctx, baseProvider, providerKey != baseProvider, requestType, model)
+	if staged && eligibility.RawRequest && requestType != schemas.PassthroughRequest && requestType != schemas.PassthroughStreamRequest {
+		if bodyModel := schemas.StagedLargePayloadModel(ctx, baseProvider); bodyModel != "" && bodyModel != requestedModel {
+			eligibility = schemas.LargePayloadEligibility{Reason: fmt.Sprintf(
+				"the request body names model %q and this attempt serves %q; a body forwarded unparsed is not rewritten to another model", bodyModel, requestedModel)}
+		}
+	}
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadEligibility, eligibility)
 	return providerUtils.LargePayloadRequestRefusal(ctx, providerKey, requestType)
 }
 
@@ -8656,7 +8669,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				clearGenAIPassthroughForNonGoogleProvider(req.Context, baseProvider, req.RequestType, resolvedModel)
 				// Decide whether this attempt may skip conversion for a large body, and refuse a
 				// staged large request it would have to convert, before anything is sent.
-				if refusal := decideLargePayloadForAttempt(req.Context, baseProvider, provider.GetProviderKey(), req.RequestType, resolvedModel); refusal != nil {
+				if refusal := decideLargePayloadForAttempt(req.Context, baseProvider, provider.GetProviderKey(), req.RequestType, resolvedModel, originalModelRequested); refusal != nil {
 					return nil, refusal
 				}
 				injectedTools, injectedErr := bifrost.injectedToolsForStream(req.Context, config, &req.BifrostRequest, baseProvider, resolvedModel)
@@ -8791,7 +8804,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				clearGenAIPassthroughForNonGoogleProvider(req.Context, baseProvider, req.RequestType, resolvedModel)
 				// Decide whether this attempt may skip conversion for a large body, and refuse a
 				// staged large request it would have to convert, before anything is sent.
-				if refusal := decideLargePayloadForAttempt(req.Context, baseProvider, provider.GetProviderKey(), req.RequestType, resolvedModel); refusal != nil {
+				if refusal := decideLargePayloadForAttempt(req.Context, baseProvider, provider.GetProviderKey(), req.RequestType, resolvedModel, originalModelRequested); refusal != nil {
 					return nil, refusal
 				}
 				injectedTools := bifrost.injectedToolsForAttempt(req.Context, config, &req.BifrostRequest, baseProvider, resolvedModel)

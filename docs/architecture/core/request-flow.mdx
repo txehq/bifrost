@@ -406,12 +406,14 @@ Skipping conversion is right only when the bytes are already in the shape the ot
 | Neutral `/v1` routes and Go SDK callers, any provider | refused with 413 before any upstream write | read in full and converted |
 | Native route to any other provider, including every OpenAI-compatible provider and every custom provider | refused with 413 before any upstream write | read in full and converted |
 | A plugin called `schemas.RequireBodyConversion` (a guardrail that rewrites bodies) | refused with 413 before any upstream write | read in full and converted |
+| A fallback that serves another model than the staged body names | refused with 413 before any upstream write | as its row above |
 | File content, container file content, video download (opaque content, nothing to convert) | as its row above | streamed raw |
 
 The costs of the converting rows:
 
 - **A large request that must be converted is refused**, with status 413, `error.code` `large_payload_not_convertible` and `error_type` `caller_invalid_request`. The body was never parsed, so there is no input to convert, and buffering it to parse it would hold the whole payload in memory, which is the cost the optimization exists to avoid. The caller sends the request below the threshold or through the provider's native route. A fallback is decided afresh: the staged body has not been read, so a fallback provider that takes it unchanged still receives it.
-- **A large response that must be converted is held in memory once**, as it is with no threshold configured. Peak memory for such a response is the body size plus the converted response, per concurrent request.
+- **A large response that must be converted is held in memory once**, as it is with no threshold configured. Peak memory for such a response is the body size plus the converted response, per concurrent request. There is no upper bound on it, as there is none on any buffered provider response today: the threshold bounds memory only for the attempts that stream raw.
+- **A staged body is never rewritten to another model.** It is forwarded unparsed, and the only change made to it is removing a provider prefix from its model. A fallback that serves a different model than the body names is therefore refused like a converting attempt: the key and governance checks admitted the fallback's model, and the vendor would otherwise be asked for the primary's. A fallback on the same model at a provider that takes the wire unchanged still receives the body whole.
 - **A raw response carries no usage inside Bifrost.** The caller receives the vendor's body, usage included, but the response Bifrost's plugins see holds only metadata. Logging, cost and governance for a raw response depend on the response hook (`LargeResponseHook`) extracting usage from the stream.
 - **On a native route a large body is forwarded as written.** Bifrost-only body fields and the adjustments Bifrost makes to a small raw body (stripping unsupported fields, for example) are not applied to it.
 

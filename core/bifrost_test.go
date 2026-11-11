@@ -13799,19 +13799,21 @@ func TestStagedLargeRequestIsForwardedOnlyWhereNothingIsConverted(t *testing.T) 
 }
 
 // Eligibility is decided per attempt. A staged request refused for a converting primary has
-// not been read, so a fallback whose vendor takes the caller's wire still receives it whole.
+// not been read, so a fallback whose vendor takes the caller's wire still receives it whole,
+// when it serves the model the body names. The body goes out unparsed: only the provider
+// prefix leaves its model.
 func TestStagedLargeRequestFallsBackToAProviderThatTakesItUnchanged(t *testing.T) {
 	client, upstreams := largePayloadClient(t, map[schemas.ModelProvider]string{
 		schemas.Mistral: openAIChatResponse,
 		schemas.OpenAI:  openAIChatResponse,
 	})
-	callerBody := `{"model":"mistral/mistral-large-latest","messages":[{"role":"user","content":"hello"}]}`
+	callerBody := `{"model":"mistral/gpt-5","messages":[{"role":"user","content":"hello"}]}`
 	ctx := routeCtx("openai")
-	stageLargeRequest(ctx, callerBody, "mistral/mistral-large-latest")
+	stageLargeRequest(ctx, callerBody, "mistral/gpt-5")
 
 	_, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 		Provider:  schemas.Mistral,
-		Model:     "mistral-large-latest",
+		Model:     "gpt-5",
 		Fallbacks: []schemas.Fallback{{Provider: schemas.OpenAI, Model: "gpt-5"}},
 	})
 	if bifrostErr != nil {
@@ -13823,8 +13825,69 @@ func TestStagedLargeRequestFallsBackToAProviderThatTakesItUnchanged(t *testing.T
 	if calls := upstreams[schemas.OpenAI].calls(); calls != 1 {
 		t.Fatalf("openai calls = %d, want 1", calls)
 	}
-	if got := upstreams[schemas.OpenAI].lastBody(); !strings.Contains(got, `"messages":[{"role":"user","content":"hello"}]`) {
-		t.Errorf("openai did not receive the caller's body: %s", got)
+	if got, want := upstreams[schemas.OpenAI].lastBody(), `{"model":"gpt-5","messages":[{"role":"user","content":"hello"}]}`; got != want {
+		t.Errorf("openai did not receive the caller's body under the model the attempt serves:\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// A staged body cannot be rewritten to another model, so a fallback that serves a different
+// model than the body names does not forward it: the key and governance checks admitted the
+// fallback's model, and the vendor would be asked for the primary's (TXE-7082, security
+// review). The attempt is refused like one that would have to convert, and nothing is sent.
+func TestStagedLargeRequestIsNotForwardedToAFallbackThatServesAnotherModel(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		stagedModel string // as the caller's body names it
+		primary     schemas.ModelProvider
+		model       string
+	}{
+		{"a converting primary, a native fallback on another model", "mistral/gpt-5", schemas.Mistral, "gpt-5"},
+		{"a native primary that fails, a native fallback on another model", "openai/gpt-5", schemas.OpenAI, "gpt-5"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client, upstreams := largePayloadClient(t, map[schemas.ModelProvider]string{
+				schemas.Mistral: openAIChatResponse,
+				schemas.OpenAI:  openAIChatResponse,
+				schemas.Azure:   openAIChatResponse,
+			})
+			callerBody := `{"model":"` + tt.stagedModel + `","messages":[{"role":"user","content":"hello"}]}`
+			ctx := routeCtx("openai")
+			stageLargeRequest(ctx, callerBody, tt.stagedModel)
+
+			// The decision alone: an attempt on gpt-4o-mini with this body staged is not raw.
+			decision := routeCtx("openai")
+			stageLargeRequest(decision, callerBody, tt.stagedModel)
+			refusal := decideLargePayloadForAttempt(decision, schemas.OpenAI, schemas.OpenAI, schemas.ChatCompletionRequest, "gpt-4o-mini", "gpt-4o-mini")
+			if refusal == nil || refusal.StatusCode == nil || *refusal.StatusCode != 413 {
+				t.Fatalf("an attempt on gpt-4o-mini with a body that names gpt-5: got %+v, want a 413 refusal", refusal)
+			}
+			if !strings.Contains(refusal.Error.Message, `names model "gpt-5"`) || !strings.Contains(refusal.Error.Message, `serves "gpt-4o-mini"`) {
+				t.Errorf("the refusal does not say which models differ: %s", refusal.Error.Message)
+			}
+			// The same body on the model it names is still raw.
+			same := routeCtx("openai")
+			stageLargeRequest(same, callerBody, tt.stagedModel)
+			if refusal := decideLargePayloadForAttempt(same, schemas.OpenAI, schemas.OpenAI, schemas.ChatCompletionRequest, "gpt-5", "gpt-5"); refusal != nil {
+				t.Fatalf("an attempt on the model the body names was refused: %s", refusal.Error.Message)
+			}
+
+			if tt.primary != schemas.Mistral {
+				return // the native primary is served; the decision above is the case
+			}
+			_, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+				Provider:  tt.primary,
+				Model:     tt.model,
+				Fallbacks: []schemas.Fallback{{Provider: schemas.OpenAI, Model: "gpt-4o-mini"}},
+			})
+			if bifrostErr == nil {
+				t.Fatalf("the request was served; openai received: %s", upstreams[schemas.OpenAI].lastBody())
+			}
+			for provider, upstream := range upstreams {
+				if calls := upstream.calls(); calls != 0 {
+					t.Errorf("%s was called %d times, want 0: %s", provider, calls, upstream.lastBody())
+				}
+			}
+		})
 	}
 }
 
@@ -13832,7 +13895,7 @@ func TestStagedLargeRequestFallsBackToAProviderThatTakesItUnchanged(t *testing.T
 // installed, the per-attempt decision does nothing and leaves nothing on the context.
 func TestDecideLargePayloadForAttemptIsInertWithoutAMode(t *testing.T) {
 	ctx := routeCtx("openai")
-	if refusal := decideLargePayloadForAttempt(ctx, schemas.Mistral, schemas.Mistral, schemas.ChatCompletionRequest, "mistral-large-latest"); refusal != nil {
+	if refusal := decideLargePayloadForAttempt(ctx, schemas.Mistral, schemas.Mistral, schemas.ChatCompletionRequest, "mistral-large-latest", "mistral-large-latest"); refusal != nil {
 		t.Fatalf("refused a request with no large-payload mode on: %s", refusal.Error.Message)
 	}
 	if ctx.Value(schemas.BifrostContextKeyLargePayloadEligibility) != nil {
@@ -13845,7 +13908,7 @@ func BenchmarkDecideLargePayloadForAttempt(b *testing.B) {
 		ctx := routeCtx("openai")
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			_ = decideLargePayloadForAttempt(ctx, schemas.OpenAI, schemas.OpenAI, schemas.ChatCompletionRequest, "gpt-5")
+			_ = decideLargePayloadForAttempt(ctx, schemas.OpenAI, schemas.OpenAI, schemas.ChatCompletionRequest, "gpt-5", "gpt-5")
 		}
 	})
 	b.Run("response threshold set", func(b *testing.B) {
@@ -13853,7 +13916,7 @@ func BenchmarkDecideLargePayloadForAttempt(b *testing.B) {
 		ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(10<<20))
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			_ = decideLargePayloadForAttempt(ctx, schemas.OpenAI, schemas.OpenAI, schemas.ChatCompletionRequest, "gpt-5")
+			_ = decideLargePayloadForAttempt(ctx, schemas.OpenAI, schemas.OpenAI, schemas.ChatCompletionRequest, "gpt-5", "gpt-5")
 		}
 	})
 }

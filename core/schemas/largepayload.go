@@ -1,6 +1,9 @@
 package schemas
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Large-payload passthrough eligibility (fork, TXE-7082).
 //
@@ -198,6 +201,34 @@ func DecideLargePayloadEligibility(ctx *BifrostContext, provider ModelProvider, 
 		return LargePayloadEligibility{RawResponse: true, Reason: reason}
 	}
 	return LargePayloadEligibility{Reason: reason}
+}
+
+// StagedLargePayloadModel returns the model a staged large request body names, as it would go
+// on the wire to provider: the model the transport hook read from the body, less a known
+// provider prefix, which is the one thing the raw path rewrites. It is "" when no body is
+// staged or the body names no model (the genai routes carry it in the URL).
+//
+// A staged body is forwarded unparsed, so it cannot be rewritten to another model. An attempt
+// that serves a different model than the body names (a fallback to another model) must not
+// forward it: the key and governance checks would have admitted one model and the vendor
+// would be asked for another. Core's per-attempt decision refuses that attempt (TXE-7082).
+func StagedLargePayloadModel(ctx *BifrostContext, provider ModelProvider) string {
+	if ctx == nil {
+		return ""
+	}
+	if staged, _ := ctx.Value(BifrostContextKeyLargePayloadMode).(bool); !staged {
+		return ""
+	}
+	metadata, _ := ctx.Value(BifrostContextKeyLargePayloadMetadata).(*LargePayloadMetadata)
+	if metadata == nil {
+		return ""
+	}
+	raw := strings.TrimSpace(metadata.Model)
+	if raw == "" {
+		return ""
+	}
+	_, model := ParseModelString(raw, provider)
+	return model
 }
 
 // LargePayloadEligibilityFromContext returns the stamp of the current attempt, and the zero
