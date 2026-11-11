@@ -208,6 +208,14 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 		return settlement, nil
 	}
 
+	// Fork (TXE-6432): a vendor that can no longer say what became of the job has not said the
+	// job produced nothing. It is the 200-status form of a retrieve that finds no job, so it
+	// parks as video_gone like one, not as a final price of zero.
+	if resp != nil && videoRecordGone(jobReq.Provider, resp) {
+		settlement.UnpriceableReason = UnpriceableReasonVideoGone
+		return settlement, nil
+	}
+
 	// A failed generation is priced, at zero. Providers are explicit that an
 	// unsuccessful video is not billed, and that is a final answer about the money —
 	// not an absence of one. Recording it as unpriceable instead would leave free
@@ -450,6 +458,18 @@ func videoUnreachableReason(err error) string {
 
 func isTerminalVideoStatus(status schemas.VideoStatus) bool {
 	return status.IsTerminal()
+}
+
+// dashScopeTaskUnknown is DashScope's task state for a task older than its 24-hour record and
+// for a task id the queried key does not know. The task object reports it as expired.
+const dashScopeTaskUnknown = "UNKNOWN"
+
+// videoRecordGone reports whether the vendor answered that it has no record of the job, as
+// opposed to reporting how the job ended. DashScope answers a task query that way with a 200:
+// the task may have finished and been billed before its record aged out, or the key that asked
+// may not be the one that created it, so the answer is no evidence that the video was free.
+func videoRecordGone(provider schemas.ModelProvider, resp *schemas.BifrostVideoGenerationResponse) bool {
+	return provider == schemas.DashScope && resp.Status == schemas.VideoStatusExpired && resp.ProviderStatus == dashScopeTaskUnknown
 }
 
 // isUnbilledTerminalVideoStatus reports whether a job ended without producing a video: failed,

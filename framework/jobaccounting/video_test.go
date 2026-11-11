@@ -210,6 +210,36 @@ func TestVideoSettle_ContentFilteredParksRatherThanGuesses(t *testing.T) {
 	assert.Zero(t, settlement.Cost)
 }
 
+// DashScope answers UNKNOWN for a task whose record aged out and for an id the key does not
+// know. Neither says the video was free, so the job parks as video_gone instead of settling at
+// zero. An expired job of another provider, and a DashScope job that reports how it ended, keep
+// settling at zero.
+func TestVideoSettle_DashScopeUnknownTaskParksAsGone(t *testing.T) {
+	job := videoJob(t, "ds-task", generationDims("wan2.6-t2v", "1280x720", 5))
+	settle := func(provider schemas.ModelProvider, resp *schemas.BifrostVideoGenerationResponse) *Settlement {
+		settlement, err := NewVideoSettler(nil).Settle(context.Background(), fakePricing{}, JobRequest{
+			Provider: provider, ProviderJobID: job.JobID, FallbackModel: job.Model, Job: job, Payload: VideoPayload{Response: resp},
+		})
+		require.NoError(t, err)
+		return settlement
+	}
+	unknown := &schemas.BifrostVideoGenerationResponse{ID: "ds-task", Status: schemas.VideoStatusExpired, ProviderStatus: "UNKNOWN"}
+
+	gone := settle(schemas.DashScope, unknown)
+	assert.False(t, gone.Priced, "an unknown task is not a free one")
+	assert.False(t, gone.Complete)
+	assert.Equal(t, UnpriceableReasonVideoGone, gone.UnpriceableReason)
+	assert.Zero(t, gone.Cost)
+
+	cancelled := settle(schemas.DashScope, &schemas.BifrostVideoGenerationResponse{ID: "ds-task", Status: schemas.VideoStatusCancelled, ProviderStatus: "CANCELED"})
+	assert.True(t, cancelled.Priced, "a cancelled DashScope task still settles at zero")
+	assert.Empty(t, cancelled.UnpriceableReason)
+
+	other := settle(schemas.OpenAI, unknown)
+	assert.True(t, other.Priced, "another provider's expired job still settles at zero")
+	assert.Empty(t, other.UnpriceableReason)
+}
+
 func TestVideoSettle_NoRateRecordsUnpricedRatherThanFree(t *testing.T) {
 	job := videoJob(t, "vid_norate", generationDims("some-unknown-model", "1920x1080", 8))
 	settlement := settleVideo(t, job, &schemas.BifrostVideoGenerationResponse{
