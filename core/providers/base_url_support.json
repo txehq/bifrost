@@ -153,6 +153,9 @@
     },
     "assemblyai": {
       "base_url": "honours"
+    },
+    "deepgram": {
+      "base_url": "honours"
     }
   }
 }
