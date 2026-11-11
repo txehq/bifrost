@@ -40,25 +40,25 @@ const (
 // HTTPRequest is a serializable representation of an HTTP request.
 // Used for plugin HTTP transport interception (supports both native .so and WASM plugins).
 // This type is pooled for allocation control - use AcquireHTTPRequest and ReleaseHTTPRequest.
+//
+// Query parameters (fork, TXE-7042): Query holds one value per name, the first one sent,
+// which is also the value the gateway's handlers and routing rules read. RepeatedQuery
+// holds every value, in the order sent, of each name the caller sent more than once, and
+// is nil when no name repeats. A plugin may change or add Query entries; the transport
+// applies those and never a change to RepeatedQuery.
+//
+// A parameter the gateway does not interpret is forwarded to the vendor with every value,
+// so a plugin that allows or refuses a request by a query value must check RepeatedQuery
+// as well as Query. Setting a name in Query to a different value replaces every value the
+// caller sent. Setting it to the value it already holds changes nothing, because the
+// transport cannot tell that from a name the plugin left alone: a plugin that must pin a
+// value refuses a request whose RepeatedQuery carries the name.
 type HTTPRequest struct {
-	Method  string            `json:"method"`
-	Path    string            `json:"path"`
-	Headers map[string]string `json:"headers"`
-	// Query holds one value per query parameter name: the first, which is also the value
-	// the gateway's handlers and routing rules read. A plugin may change or add entries.
-	Query map[string]string `json:"query"`
-	// RepeatedQuery holds every value, in the order sent, of each query parameter name the
-	// caller sent more than once; it is nil when no name repeats. It is read-only: the
-	// transport applies changes made to Query, never to RepeatedQuery (fork, TXE-7042).
-	//
-	// The gateway reads the first value of a name, but a parameter it does not interpret
-	// is forwarded to the vendor with every value. A plugin that allows or refuses a
-	// request by a query value must therefore check RepeatedQuery as well as Query.
-	// Setting the name in Query to a different value replaces every value the caller
-	// sent; setting it to the value it already holds changes nothing, because the
-	// transport cannot tell that from a name the plugin left alone, so a plugin that
-	// must pin a value refuses a request whose RepeatedQuery carries the name.
-	RepeatedQuery map[string][]string `json:"repeated_query,omitempty"`
+	Method        string              `json:"method"`
+	Path          string              `json:"path"`
+	Headers       map[string]string   `json:"headers"`
+	Query         map[string]string   `json:"query"`                    // First value of each query parameter name
+	RepeatedQuery map[string][]string `json:"repeated_query,omitempty"` // Every value of each name sent more than once; read-only
 	Body          []byte              `json:"body"`
 	PathParams    map[string]string   `json:"path_params"` // Path variables extracted from the URL pattern (e.g., {model})
 }
