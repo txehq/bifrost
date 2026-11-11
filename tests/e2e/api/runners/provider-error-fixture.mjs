@@ -908,6 +908,79 @@ const perplexityChat = (model, stream) => {
 	return { status: 200, stream: frames.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n" };
 };
 
+// Azure AI Speech, TXE-6542: the two APIs the azurespeech provider calls, on the paths a resource endpoint (custom
+// domain) serves them. Text to speech takes an SSML body and answers audio bytes; the voice name in the SSML selects
+// the behaviour. Fast transcription takes a multipart audio + definition and answers JSON; definition.enhancedMode.model
+// selects the behaviour. Every call is kept in /__wire with the headers a case asserts on, and the transcription call is
+// kept as its definition and the size of its audio part, not as the multipart bytes. The resource key is "test-key" in
+// Ocp-Apim-Subscription-Key; any other is refused with 401 and no body, as the text to speech API answers.
+const AZURE_SPEECH_TTS_PATH = "/tts/cognitiveservices/v1";
+const AZURE_SPEECH_STT_PATH = "/speechtotext/transcriptions:transcribe";
+const azureSpeechAudio = Buffer.from("ID3-azure-speech-fixture-audio");
+// The response of the fast transcription quickstart, cut to its first phrase.
+const azureSpeechTranscription = {
+	durationMilliseconds: 182439,
+	combinedPhrases: [{ text: "Good afternoon. This is Sam." }],
+	phrases: [{
+		offsetMilliseconds: 960, durationMilliseconds: 640, text: "Good afternoon.",
+		words: [{ text: "Good", offsetMilliseconds: 960, durationMilliseconds: 240 }, { text: "afternoon.", offsetMilliseconds: 1200, durationMilliseconds: 400 }],
+		locale: "en-US", confidence: 0.93554276,
+	}],
+};
+const azureSpeechAnswer = (req, res, path, raw) => {
+	const headers = {
+		content_type: req.headers["content-type"] || "",
+		output_format: req.headers["x-microsoft-outputformat"] || "",
+		user_agent: req.headers["user-agent"] || "",
+		authorization: req.headers.authorization || "",
+		subscription_key: req.headers["ocp-apim-subscription-key"] === "test-key" ? "test-key" : "other",
+	};
+	const query = new URL(req.url, "http://localhost").search;
+	const unauthorized = headers.subscription_key !== "test-key";
+	if (path === AZURE_SPEECH_TTS_PATH) {
+		const ssml = raw.toString("utf8");
+		wireCalls.push({ path, query, body: ssml, headers });
+		if (unauthorized) { res.writeHead(401); return res.end(); }
+		const voice = (ssml.match(/<voice name="([^"]*)"/) || [])[1] || "";
+		if (voice === "azure-speech-429") { res.writeHead(429); return res.end(); }
+		if (voice === "azure-speech-empty") { res.writeHead(200, { "Content-Type": "audio/mpeg" }); return res.end(); }
+		if (voice === "azure-speech-gapped") {
+			// Raw audio written GAP_MS apart: each marker is one chunk of the vendor's response body.
+			res.writeHead(200, { "Content-Type": "audio/mpeg" });
+			gappedSends.speech = [];
+			let i = 0;
+			const next = () => {
+				if (res.destroyed) return undefined;
+				if (i === GAPPED_FRAMES) return res.end();
+				gappedSends.speech.push(performance.now());
+				res.write(Buffer.from(gapMarker(i++)));
+				return setTimeout(next, GAP_MS);
+			};
+			return next();
+		}
+		// Azure AI Speech labels the audio itself: a riff-* output format comes back as audio/x-wav.
+		res.writeHead(200, { "Content-Type": headers.output_format.startsWith("riff-") ? "audio/x-wav" : "audio/mpeg" });
+		return res.end(azureSpeechAudio);
+	}
+	const form = raw.toString("latin1");
+	const definition = (form.match(/name="definition"\r\n\r\n([\s\S]*?)\r\n--/) || [])[1] || "";
+	const audio = (form.match(/name="audio"[^\r\n]*\r\n(?:[^\r\n]+\r\n)*\r\n([\s\S]*?)\r\n--/) || [])[1];
+	wireCalls.push({ path, query, body: definition, headers, audio_bytes: audio === undefined ? -1 : audio.length });
+	if (unauthorized) { res.writeHead(401); return res.end(); }
+	let model = "";
+	try { model = ((JSON.parse(definition) || {}).enhancedMode || {}).model || ""; } catch {}
+	if (model === "azure-speech-422") {
+		res.writeHead(422, { "Content-Type": "application/json" });
+		return res.end(JSON.stringify({ code: "InvalidRequest", message: "The request is invalid.", innerError: { code: "InvalidAudio", message: "The audio format is not supported." } }));
+	}
+	if (model !== "MAI-Transcribe-2") {
+		res.writeHead(404, { "Content-Type": "application/json" });
+		return res.end(JSON.stringify({ code: "NotFound", message: `unknown fixture model ${model}` }));
+	}
+	res.writeHead(200, { "Content-Type": "application/json" });
+	return res.end(JSON.stringify(azureSpeechTranscription));
+};
+
 // Hit counters are keyed by the request body's model, so they must not inherit Object.prototype names.
 const hits = Object.create(null);
 // The exact bytes the last streamed answer for a model wrote, keyed by the request's model; GET /__sent?model=
@@ -1147,6 +1220,12 @@ const server = http.createServer((req, res) => {
 			catch { return send(400, {}, errorBody("invalid JSON", "invalid_request_error", "invalid_json")); }
 			probeStaleGet(spec, (status, answer) => send(status, {}, JSON.stringify(answer)));
 		});
+		return undefined;
+	}
+	if (req.method === "POST" && (path === AZURE_SPEECH_TTS_PATH || path === AZURE_SPEECH_STT_PATH)) {
+		const body = [];
+		req.on("data", (c) => body.push(c));
+		req.on("end", () => azureSpeechAnswer(req, res, path, Buffer.concat(body)));
 		return undefined;
 	}
 	if (req.method === "POST" && path === "/__probe/stream-gaps") {

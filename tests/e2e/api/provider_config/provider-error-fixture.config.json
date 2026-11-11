@@ -103,6 +103,27 @@
         "default_request_timeout_in_seconds": 10
       }
     },
+    "azurespeech": {
+      "keys": [
+        {
+          "name": "azure-speech-fixture",
+          "value": "test-key",
+          "models": [
+            "mai-voice-2.1-flash",
+            "mai-transcribe-2",
+            "azure-speech-422"
+          ],
+          "weight": 1,
+          "azure_key_config": {
+            "endpoint": "http://127.0.0.1:8791"
+          }
+        }
+      ],
+      "network_config": {
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
     "parasail": {
       "keys": [
         {

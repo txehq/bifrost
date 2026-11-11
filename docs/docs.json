@@ -159,6 +159,7 @@
                   "providers/supported-providers/anthropic",
                   "providers/supported-providers/azure",
                   "providers/supported-providers/azure-model-router",
+                  "providers/supported-providers/azurespeech",
                   "providers/supported-providers/bedrock",
                   "providers/supported-providers/bedrock-mantle",
                   "providers/supported-providers/bfl",

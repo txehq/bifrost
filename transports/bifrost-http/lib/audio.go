@@ -170,7 +170,8 @@ func SpeechAttachmentFilename(responseFormat string) string {
 func speechFilenameForContentType(contentType, responseFormat string) string {
 	mediaType, _, _ := strings.Cut(contentType, ";")
 	switch strings.ToLower(strings.TrimSpace(mediaType)) {
-	case "audio/wav":
+	case "audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave":
+		// Azure AI Speech answers a riff-* format as audio/x-wav.
 		return "speech.wav"
 	case "audio/mpeg":
 		return "speech.mp3"
@@ -184,6 +185,8 @@ func speechFilenameForContentType(contentType, responseFormat string) string {
 		return "speech.m4a"
 	case "audio/ogg", "audio/opus":
 		return "speech.opus"
+	case "audio/webm":
+		return "speech.webm"
 	case "audio/pcm", "audio/l16":
 		return "speech.pcm"
 	case "audio/basic":

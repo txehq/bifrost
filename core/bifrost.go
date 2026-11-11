@@ -23,6 +23,7 @@ import (
 	"github.com/capsohq/bifrost/core/providers/anthropic"
 	"github.com/capsohq/bifrost/core/providers/anthropicmsg"
 	"github.com/capsohq/bifrost/core/providers/azure"
+	"github.com/capsohq/bifrost/core/providers/azurespeech"
 	"github.com/capsohq/bifrost/core/providers/bedrock"
 	"github.com/capsohq/bifrost/core/providers/bedrockmantle"
 	"github.com/capsohq/bifrost/core/providers/bfl"
@@ -5251,6 +5252,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return dashscope.NewDashScopeProvider(config, bifrost.logger)
 	case schemas.BFL:
 		return bfl.NewBFLProvider(config, bifrost.logger)
+	case schemas.AzureSpeech:
+		return azurespeech.NewAzureSpeechProvider(config, bifrost.logger)
 	case schemas.Cloudflare:
 		return cloudflare.NewCloudflareProvider(config, bifrost.logger)
 	case schemas.Gemini:

@@ -114776,7 +114776,8 @@
           "tencent",
           "dashscope",
           "bfl",
-          "google-cloud-tts"
+          "google-cloud-tts",
+          "azurespeech"
         ]
       },
       "Fallback": {

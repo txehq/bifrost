@@ -37,6 +37,7 @@ export const ProviderIcons = {
 	qwen: GenericProviderIcon,
 	dashscope: GenericProviderIcon,
 	bfl: GenericProviderIcon,
+	azurespeech: GenericProviderIcon,
 	volcengine: GenericProviderIcon,
 
 	anthropic: ({ size = "md", className = "", theme }: IconProps) => {

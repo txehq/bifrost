@@ -210,6 +210,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.MiniMax,
 		schemas.BytePlus,
 		schemas.GoogleCloudTTS,
+		schemas.AzureSpeech,
 		schemas.Databricks,
 		schemas.Cloudflare,
 		schemas.GithubCopilot,
@@ -503,6 +504,19 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.AzureSpeech:
+		// AZURE_SPEECH_ENDPOINT is the Speech resource's region (eastus) or its endpoint
+		// (https://<resource>.cognitiveservices.azure.com).
+		return []schemas.Key{
+			{
+				Value:  *schemas.NewSecretVar("env.AZURE_SPEECH_API_KEY"),
+				Models: []string{"*"},
+				Weight: 1.0,
+				AzureKeyConfig: &schemas.AzureKeyConfig{
+					Endpoint: *schemas.NewSecretVar("env.AZURE_SPEECH_ENDPOINT"),
+				},
 			},
 		}, nil
 	case schemas.Sarvam:
@@ -1012,6 +1026,17 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				MaxRetries:                     10,
 				RetryBackoffInitial:            5 * time.Second,
 				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.AzureSpeech:
+		// No retries: every synthesis and transcription call is billed.
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: Concurrency,

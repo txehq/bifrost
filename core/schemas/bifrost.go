@@ -102,6 +102,9 @@ const (
 	// GoogleCloudTTS is Google Cloud Text-to-Speech (text:synthesize), a different API
 	// from Gemini and Vertex speech.
 	GoogleCloudTTS ModelProvider = "google-cloud-tts"
+	// AzureSpeech is Azure AI Speech (text to speech through SSML, fast transcription): a
+	// different API from Azure OpenAI audio, which Azure serves (fork, TXE-6542).
+	AzureSpeech ModelProvider = "azurespeech"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -172,6 +175,7 @@ var StandardProviders = []ModelProvider{
 	DashScope,
 	BFL,
 	GoogleCloudTTS,
+	AzureSpeech,
 }
 
 // RequestType represents the type of request being made to a provider.
