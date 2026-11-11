@@ -14,7 +14,9 @@ import (
 // sent more than once, and nil when no name repeats.
 //
 // lowerKeys lowercases the names, which is what routing rules read; names that differ
-// only in case then count as one name.
+// only in case then count as one name. Handlers look a name up as written, in lower case,
+// so when a name arrives both in lower case and in another case (Model=a&model=b) the
+// lower-case spelling's first value is kept: the routing rules read b, as the handler does.
 //
 // A site that copies the query string any other way reintroduces the fault this replaced:
 // the copies kept the last value while handlers read the first, and the write-back after
@@ -23,15 +25,31 @@ import (
 // TestQueryStringIsCopiedInOnePlace fails on such a site.
 func CopyQueryFirstValues(args *fasthttp.Args, dst map[string]string, lowerKeys bool) map[string][]string {
 	var repeated map[string][]string
+	// fromVariant names the lowercased keys whose value so far came from a spelling that
+	// is not lower case; it stays nil unless such a spelling is sent.
+	var fromVariant map[string]struct{}
 	for k, v := range args.All() {
 		key := string(k)
+		variant := false
 		if lowerKeys {
-			key = strings.ToLower(key)
+			if lowered := strings.ToLower(key); lowered != key {
+				key, variant = lowered, true
+			}
 		}
 		first, seen := dst[key]
 		if !seen {
 			dst[key] = string(v)
+			if variant {
+				if fromVariant == nil {
+					fromVariant = make(map[string]struct{}, 1)
+				}
+				fromVariant[key] = struct{}{}
+			}
 			continue
+		}
+		if _, replace := fromVariant[key]; replace && !variant {
+			dst[key] = string(v)
+			delete(fromVariant, key)
 		}
 		if repeated == nil {
 			repeated = make(map[string][]string, 1)
