@@ -1,6 +1,7 @@
 package governance
 
 import (
+	"bytes"
 	"net/url"
 	"reflect"
 	"strings"
@@ -311,7 +312,8 @@ type fileIDCollector struct {
 	ids  []string
 	seen map[string]struct{}
 	// unreadable is set when part of the request could not be read: untyped data nested past
-	// openValueDepth. What lies below may name a file, so the request cannot be verified.
+	// openValueDepth, or raw JSON that does not parse. The unread part may name a file, so the
+	// request cannot be verified.
 	unreadable bool
 }
 
@@ -476,8 +478,8 @@ func scanOpenValue(value reflect.Value, collector *fileIDCollector, depth int) {
 
 // scanOpenBytes reads a byte slice stored in untyped data. A route can keep a vendor member as
 // raw JSON (json.RawMessage), which the provider forwards as written, so bytes that could name
-// an object are decoded and read like any other value; bytes that are not JSON are read as one
-// string. Media bytes carry none of the markers and are not touched.
+// an object are decoded and read like any other value; bytes with no JSON shape are read as one
+// string, and JSON-shaped bytes that do not decode mark the request unreadable. Media bytes carry none of the markers and are not touched.
 func scanOpenBytes(value reflect.Value, collector *fileIDCollector, depth int) {
 	if value.Kind() != reflect.Slice || value.Len() == 0 {
 		return
@@ -488,7 +490,15 @@ func scanOpenBytes(value reflect.Value, collector *fileIDCollector, depth int) {
 	}
 	var decoded any
 	if err := schemas.Unmarshal(raw, &decoded); err != nil {
-		collector.addReference(fileRefURL, string(raw))
+		// Bytes shaped like JSON that this decoder cannot read may still be read by the
+		// provider's, so what they name is unknown and the request is refused. Bytes with no
+		// JSON shape at all are a plain string.
+		switch trimmed := bytes.TrimSpace(raw); {
+		case len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[' || trimmed[0] == '"'):
+			collector.unreadable = true
+		default:
+			collector.addReference(fileRefURL, string(raw))
+		}
 		return
 	}
 	scanOpenValue(reflect.ValueOf(decoded), collector, depth+1)

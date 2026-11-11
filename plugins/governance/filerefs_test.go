@@ -491,6 +491,12 @@ func TestFileReferencesCannotHideInOpenFields(t *testing.T) {
 				t.Errorf("%s: the file named in raw bytes is not checked; references: %+v", name, providerObjectReferences(req))
 			}
 		}
+		// JSON-shaped bytes this decoder cannot read may be read by a more lenient one.
+		for _, broken := range []string{`{"image":{"gcsUri":"` + uri + `"},}`, `[{"fileUri":"` + uri + `"}`, `"` + uri} {
+			if _, unreadable := requestFileIDs(chatWith(map[string]interface{}{"vendor_field": json.RawMessage(broken)})); !unreadable {
+				t.Errorf("undecodable JSON %s was let through", broken)
+			}
+		}
 		if refs := requestFileRefs(chatWith(map[string]interface{}{"audio": []byte{0x00, 0x01, 0x02, 0xff}})); len(refs) != 0 {
 			t.Errorf("media bytes were read as %+v", refs)
 		}

@@ -1131,7 +1131,7 @@ func (p *GovernancePlugin) enforceProviderObjectOwnership(ctx *schemas.BifrostCo
 			return &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
 				Type:       bifrost.Ptr(string(DecisionAccessBlocked)),
 				StatusCode: bifrost.Ptr(400),
-				Error:      &schemas.ErrorField{Message: fmt.Sprintf("the request's provider-specific fields are nested more than %d levels deep, so the files it names cannot be verified for this virtual key", openValueDepth)},
+				Error:      &schemas.ErrorField{Message: fmt.Sprintf("the request's provider-specific fields could not be read (raw JSON that does not parse, or data nested more than %d levels deep), so the files it names cannot be verified for this virtual key", openValueDepth)},
 			}}
 		}
 		if shortCircuit := p.refuseForeignProviderObject(ctx, req, ref, vkID); shortCircuit != nil {
