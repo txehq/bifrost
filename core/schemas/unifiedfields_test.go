@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 type declaringProvider struct {
@@ -674,5 +675,41 @@ func TestCheckExtraParamPriceFieldsForNestedBoundaries(t *testing.T) {
 	both := video(&VideoGenerationParameters{ExtraParams: object("seconds", "8", "parameters", object("durationSeconds", 8))})
 	if bifrostErr := CheckExtraParamPriceFieldsFor(Gemini, both); bifrostErr == nil || bifrostErr.Error.Param != "seconds" {
 		t.Fatalf("want the top-level name refused first, got %+v", bifrostErr)
+	}
+}
+
+// A refusal echoes at most a bounded amount of the caller's own input (fork, TXE-7142): a
+// megabyte-scale, invalid UTF-8 field name or value does not make a megabyte-scale error.
+func TestUnsupportedParameterErrorIsBounded(t *testing.T) {
+	huge := strings.Repeat("\xff\x00a", 400000)
+	err := NewUnsupportedParameterError(huge, "")
+	param, _ := err.Error.Param.(string)
+	if len(param) > MaxEchoedNameBytes || !utf8.ValidString(param) {
+		t.Errorf("param is %d bytes (valid UTF-8 %v), want at most %d", len(param), utf8.ValidString(param), MaxEchoedNameBytes)
+	}
+	if len(err.Error.Message) > MaxRefusalMessageBytes {
+		t.Errorf("default message is %d bytes, want at most %d", len(err.Error.Message), MaxRefusalMessageBytes)
+	}
+	err = NewUnsupportedParameterError("size", "size "+huge+" is not a size")
+	if len(err.Error.Message) > MaxRefusalMessageBytes || !utf8.ValidString(err.Error.Message) {
+		t.Errorf("message is %d bytes, want at most %d of valid UTF-8", len(err.Error.Message), MaxRefusalMessageBytes)
+	}
+	if got := NewUnsupportedParameterError("seconds", "seconds must be 4 to 15").Error; got.Param != "seconds" || got.Message != "seconds must be 4 to 15" {
+		t.Errorf("a short refusal changed: %+v", got)
+	}
+	if got := BoundEchoedName("résumé"); got != "résumé" {
+		t.Errorf("BoundEchoedName(%q) = %q, want it unchanged", "résumé", got)
+	}
+	if got := BoundEchoedName(strings.Repeat("é", 40)); len(got) > MaxEchoedNameBytes || !utf8.ValidString(got) {
+		t.Errorf("BoundEchoedName cut a multibyte rune: %q", got)
+	}
+}
+
+// BenchmarkNewUnsupportedParameterError is a refusal with an ordinary short message, the cost
+// the bound adds to every caller_unsupported_parameter refusal (TXE-7142).
+func BenchmarkNewUnsupportedParameterError(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = NewUnsupportedParameterError("seconds", "seconds must be a whole number between 4 and 15 for this model")
 	}
 }

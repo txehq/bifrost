@@ -4244,8 +4244,9 @@ var openAIVideoFormValueFields = map[string]bool{
 func parseOpenAIVideoGenerationFormFields(ctx *fasthttp.RequestCtx, form *multipart.Form, req *openai.OpenAIVideoGenerationRequest) error {
 	for name := range form.File {
 		if !openAIVideoFormFileFields[name] {
-			return providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError(name,
-				fmt.Sprintf("file field %q is not a video generation input; send input_reference, last_frame or reference_images", name)))
+			shown := schemas.BoundEchoedName(name)
+			return providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError(shown,
+				fmt.Sprintf("file field %q is not a video generation input; send input_reference, last_frame or reference_images", shown)))
 		}
 	}
 	readFile := func(header *multipart.FileHeader) ([]byte, error) {
@@ -4382,8 +4383,9 @@ func parseOpenAIVideoGenerationFormFields(ctx *fasthttp.RequestCtx, form *multip
 			continue
 		}
 		if !passthrough {
-			return providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError(name,
-				fmt.Sprintf("form field %q is not a video generation field; to send a provider's own field, set x-bf-passthrough-extra-params: true", name)))
+			shown := schemas.BoundEchoedName(name)
+			return providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError(shown,
+				fmt.Sprintf("form field %q is not a video generation field; to send a provider's own field, set x-bf-passthrough-extra-params: true", shown)))
 		}
 		if extra == nil {
 			extra = make(map[string]interface{})

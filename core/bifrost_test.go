@@ -13140,3 +13140,65 @@ func TestNestedPriceFieldsAreDeclaredAndRefused(t *testing.T) {
 		t.Fatal("no provider has a listed nested price field: the table or the probes no longer work")
 	}
 }
+
+// A refusal reached through the core request path echoes a bounded amount of the caller's input
+// (fork, TXE-7142). A megabyte-scale extra-param key that names the model (the rule ignores
+// underscores) and a megabyte-scale video size are both refused, with no upstream call, and the
+// error stays a few KiB however large the input was.
+func TestCallerRefusalsAreBoundedOnTheRequestPath(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	t.Cleanup(server.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, server.URL)
+	account.AddProviderWithBaseURL(schemas.BytePlus, 1, 10, server.URL)
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+
+	assertBounded := func(t *testing.T, what string, bifrostErr *schemas.BifrostError) {
+		t.Helper()
+		if bifrostErr == nil || bifrostErr.Error == nil {
+			t.Fatalf("%s: want a refusal, got %+v", what, bifrostErr)
+		}
+		encoded, _ := json.Marshal(bifrostErr)
+		if len(encoded) > 2*schemas.MaxRefusalMessageBytes {
+			t.Errorf("%s: the refusal encodes to %d bytes, want a bounded one", what, len(encoded))
+		}
+		if p, _ := bifrostErr.Error.Param.(string); len(p) > schemas.MaxEchoedNameBytes {
+			t.Errorf("%s: error.param is %d bytes, want at most %d", what, len(p), schemas.MaxEchoedNameBytes)
+		}
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	hugeModelKey := "model" + strings.Repeat("_\xff\x00", 350000)
+	_, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		Params:   &schemas.ChatParameters{ExtraParams: map[string]interface{}{hugeModelKey: "gpt-4o"}},
+	})
+	assertBounded(t, "an extra param naming the model under a huge key", bifrostErr)
+
+	videoCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer videoCtx.Cancel()
+	_, bifrostErr = client.VideoGenerationRequest(videoCtx, &schemas.BifrostVideoGenerationRequest{
+		Provider: schemas.BytePlus,
+		Model:    "dreamina-seedance-2-5-260628",
+		Input:    &schemas.VideoGenerationInput{Prompt: "a paper boat"},
+		Params:   &schemas.VideoGenerationParameters{Size: strings.Repeat("\x00", 1<<20)},
+	})
+	assertBounded(t, "a huge video size", bifrostErr)
+
+	if got := calls.Load(); got != 0 {
+		t.Errorf("refused requests made %d upstream calls, want 0", got)
+	}
+}

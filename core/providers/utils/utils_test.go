@@ -4954,3 +4954,30 @@ func TestEveryWebSocketDialerGoesThroughConfigureWebSocketProxy(t *testing.T) {
 		t.Fatalf("found no ws.Dialer; the scan no longer sees the sources")
 	}
 }
+
+// The extra-param refusals and the bad-request constructor echo a bounded amount of the caller's
+// input (fork, TXE-7142).
+func TestCallerRefusalsAreBounded(t *testing.T) {
+	huge := "model" + strings.Repeat("_\xff\x00", 400000)
+	for name, err := range map[string]error{
+		"conflict":   ExtraParamConflictError(huge, "model"),
+		"unsettable": ExtraParamUnsettableError(huge, "stream"),
+	} {
+		bifrostErr, ok := AsBifrostBadRequestError(err)
+		if !ok {
+			t.Fatalf("%s: not a bad request error: %v", name, err)
+		}
+		if p, _ := bifrostErr.Error.Param.(string); len(p) > schemas.MaxEchoedNameBytes {
+			t.Errorf("%s: param is %d bytes, want at most %d", name, len(p), schemas.MaxEchoedNameBytes)
+		}
+		if len(bifrostErr.Error.Message) > schemas.MaxRefusalMessageBytes {
+			t.Errorf("%s: message is %d bytes, want at most %d", name, len(bifrostErr.Error.Message), schemas.MaxRefusalMessageBytes)
+		}
+	}
+	if got := NewBifrostBadRequestError("invalid value " + huge).Error.Message; len(got) > schemas.MaxRefusalMessageBytes {
+		t.Errorf("bad request message is %d bytes, want at most %d", len(got), schemas.MaxRefusalMessageBytes)
+	}
+	if got, _ := AsBifrostBadRequestError(InvalidRequestErrorf("invalid %s", huge)); len(got.Error.Message) > schemas.MaxRefusalMessageBytes {
+		t.Errorf("InvalidRequestErrorf message is %d bytes, want at most %d", len(got.Error.Message), schemas.MaxRefusalMessageBytes)
+	}
+}

@@ -2868,6 +2868,7 @@ func unsettableExtraParamField(key string) string {
 // it. Like ExtraParamConflictError it is a 400 caller_invalid_request with error.param
 // set to the extra param as the caller wrote it.
 func ExtraParamUnsettableError(param, field string) error {
+	param = schemas.BoundEchoedName(param)
 	bifrostErr := NewBifrostBadRequestError(fmt.Sprintf(
 		"extra params cannot set %q: %s is decided by the gateway from the request (its model, and whether it streams), never by an extra param",
 		param, field))
@@ -2882,6 +2883,7 @@ func ExtraParamUnsettableError(param, field string) error {
 // caller_invalid_request with error.param set; CheckContextAndGetRequestBody and
 // AsBifrostBadRequestError return it to the caller unchanged.
 func ExtraParamConflictError(param, field string) error {
+	param = schemas.BoundEchoedName(param)
 	bifrostErr := NewBifrostBadRequestError(fmt.Sprintf(
 		"extra params cannot set %q: the request already sets %s, and an extra param never replaces a field of the request; send the value in the request's own %s field",
 		param, field, field))
@@ -3935,7 +3937,8 @@ func NewBifrostBadRequestError(message string) *schemas.BifrostError {
 		IsBifrostError: true,
 		StatusCode:     &statusCode,
 		Error: &schemas.ErrorField{
-			Message: message,
+			// A caller-input refusal often quotes the caller's own input: bounded (TXE-7142).
+			Message: schemas.BoundRefusalMessage(message),
 			Type:    &errorType,
 		},
 		ExtraFields: schemas.BifrostErrorExtraFields{
