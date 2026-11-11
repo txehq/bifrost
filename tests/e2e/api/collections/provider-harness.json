@@ -328837,8 +328837,8 @@
       ]
     },
     {
-      "name": "489. Replicate polls a prediction on its own origin and refuses a poll address on another loopback host (vendor named address)",
-      "description": "Local fixture regression for TXE-7090, no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs and an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, whose replicate provider has the fixture as base URL, and run with providerErrorFixture=1; every case is skipped otherwise. Replicate answers a create with urls.get, the address to poll the prediction at, so that address is the vendor's to name. The gateway polls it on the provider's client only when it is on the origin of the provider's configured base URL; any other address goes out on the SSRF-hardened client, which refuses a loopback or private one. The fixture's model owner/poll-origin names urls.get on the fixture's own origin and the poll answers succeeded with an output URL: 489.2 gets the image. Its model owner/poll-loopback names the same fixture by the host name localhost, another origin on loopback: 489.3 is refused. 489.4 reads the counters: one poll at 127.0.0.1 and none at localhost. Before the change the gateway polled whatever address the answer named, with the key attached. The Go tests cover the stream address, the deployments next link, HuggingFace audio and the GenAI image download, which no fixture route stands in for.",
+      "name": "489. Addresses a vendor's answer names are followed on the provider's origin or a public host, and refused on a loopback one (vendor named address)",
+      "description": "Local fixture regression for TXE-7090, no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs and an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, whose replicate provider has the fixture as base URL, the fixture's media tunnel as proxy_config, and two extra keys that use the deployments endpoint, and run with providerErrorFixture=1; every case is skipped otherwise. A vendor's answer names addresses the gateway then requests: Replicate's urls.get (the poll), urls.stream, the next link of a deployments page, and the URL of an output image that the GenAI route fetches to inline. The gateway uses the provider's client only for an address on the origin of the provider's configured base URL; any other goes out on the SSRF-hardened client, which refuses a loopback or private address and reaches a public one through the provider's proxy. The fixture names the same resource on its own origin (or, for the image, at http://203.0.113.10, reached through the media tunnel) and on another loopback origin (itself by the host name localhost, or its own loopback address for the image). 489.2 and 489.3 poll; 489.4 and 489.5 read the stream of a chat completion; 489.6 and 489.7 inline an image through POST /genai .../models/replicate/owner/<model>:generateContent; 489.8 lists models with one key whose next page is on the origin and one whose next page is on localhost. 489.9 reads the counters: every origin and public address was asked for once and no loopback one was. Before the change the gateway requested whatever address the answer named, with the key attached, and fetched the image on a client with no address check. HuggingFace speech is not here: its model lookup goes to a fixed https://huggingface.co, which an offline gateway cannot reach, so no fixture row can get as far as the audio URL; the Go tests cover it.",
       "item": [
         {
           "name": "489.1 fixture hit counters reset before the replicate poll rows (vendor named address)",
@@ -328988,7 +328988,288 @@
           }
         },
         {
-          "name": "489.4 fixture counters for the replicate poll rows: one poll at the provider's origin, none at the other loopback host (vendor named address)",
+          "name": "489.4 replicate/owner/stream-origin POST /v1/chat/completions stream: a stream address on the provider's own origin is read (vendor named address)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the stream at the provider\\'s own origin is read to its end', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body, body.slice(0, 400)).to.include('fixture stream text');",
+                  "  pm.expect(body, body.slice(-200)).to.include('[DONE]');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"replicate/owner/stream-origin\",\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "489.5 [EXPECT-500] replicate/owner/stream-loopback POST /v1/chat/completions stream: a stream address on another loopback host is refused (vendor named address)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the stream address on another loopback host is refused', function () {",
+                  "  pm.expect(pm.response.code, 'the off-origin loopback stream was read: ' + pm.response.text().slice(0, 300)).to.eql(500);",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body, body).to.include('non-public address');",
+                  "  pm.expect(body, body).to.not.include('fixture stream text');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"replicate/owner/stream-loopback\",\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "489.6 replicate/owner/picture-public POST /genai generateContent: an image answered by URL at a public address is fetched through the provider's proxy and inlined (vendor named address)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the image the vendor named at a public address comes back inline', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  var part = j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts && j.candidates[0].content.parts[0];",
+                  "  pm.expect(part && part.inlineData && part.inlineData.data, pm.response.text()).to.equal('iVBORw0KGgo=');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"a red apple\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\n      \"IMAGE\"\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/replicate/owner/picture-public:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "replicate",
+                "owner",
+                "picture-public:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "489.7 [EXPECT-400] replicate/owner/picture-loopback POST /genai generateContent: an image answered by URL on a loopback address is not fetched (vendor named address)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the image the vendor named on a loopback address is refused, and nothing of it is returned', function () {",
+                  "  pm.expect(pm.response.code, 'the loopback image was fetched: ' + pm.response.text().slice(0, 300)).to.eql(400);",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body, body).to.include('failed to encode response');",
+                  "  pm.expect(body, body).to.not.include('inlineData');",
+                  "  pm.expect(body, body).to.not.include('X-Fixture-Signature');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"a red apple\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\n      \"IMAGE\"\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/replicate/owner/picture-loopback:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "replicate",
+                "owner",
+                "picture-loopback:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "489.8 replicate GET /v1/models: a deployments next page on the provider's own origin is followed, one on another loopback host is refused (vendor named address)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the key whose next page is on the provider\\'s origin lists both pages', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var ids = pm.response.json().data.map(function (m) { return m.id; });",
+                  "  pm.expect(ids, JSON.stringify(ids)).to.include('replicate/fixture/fixture-deploy-origin-page-1');",
+                  "  pm.expect(ids, JSON.stringify(ids)).to.include('replicate/fixture/fixture-deploy-origin-page-2');",
+                  "});",
+                  "pm.test('the key whose next page is on another loopback host lists nothing and reports the refusal', function () {",
+                  "  var j = pm.response.json();",
+                  "  var ids = j.data.map(function (m) { return m.id; });",
+                  "  pm.expect(ids.filter(function (id) { return id.indexOf('fixture-deploy-loopback') !== -1; }), JSON.stringify(ids)).to.eql([]);",
+                  "  var failed = (j.key_statuses || []).filter(function (k) { return k.status === 'list_models_failed'; });",
+                  "  pm.expect(failed.length, JSON.stringify(j.key_statuses)).to.equal(1);",
+                  "  pm.expect(JSON.stringify(failed[0].error), JSON.stringify(failed[0])).to.include('non-public address');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=replicate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "replicate"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "489.9 fixture counters for the vendor-named address rows: every origin and public address asked once, no loopback one asked (vendor named address)",
           "event": [
             {
               "listen": "prerequest",
@@ -329008,11 +329289,16 @@
                 "exec": [
                   "var hits = pm.response.json().data[0].hits;",
                   "var text = JSON.stringify(hits);",
-                  "pm.test('the prediction on the provider\\'s origin was polled once', function () {",
-                  "  pm.expect(hits['replicate.poll@127.0.0.1'], text).to.equal(1);",
+                  "var keys = Object.keys(hits);",
+                  "pm.test('polls, the stream, the image and the next page were asked for at the provider\\'s origin or the public address', function () {",
+                  "  pm.expect(hits['replicate.poll@127.0.0.1'], text).to.equal(3);",
+                  "  pm.expect(hits['replicate.stream@127.0.0.1'], text).to.equal(1);",
+                  "  pm.expect(hits['media.image@203.0.113.10'], text).to.equal(1);",
+                  "  pm.expect(hits['__media_tunnel_connects@203.0.113.10:80'] || 0, text).to.be.at.least(1);",
+                  "  pm.expect(hits['replicate.deployments@fixture-deploy-origin?page=2@127.0.0.1'], text).to.equal(1);",
                   "});",
-                  "pm.test('the address on the other loopback host was never asked for', function () {",
-                  "  pm.expect(hits['replicate.poll@localhost'], text).to.equal(undefined);",
+                  "pm.test('no address on another loopback host, and no loopback image, was ever asked for', function () {",
+                  "  pm.expect(keys.filter(function (k) { return /@localhost$/.test(k) || k.indexOf('media.internal') === 0; }), text).to.eql([]);",
                   "});"
                 ]
               }

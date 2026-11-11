@@ -164,14 +164,24 @@ last row reads `GET /__hits`. Run it as the content-length truncation folder abo
 
 ## Addresses a vendor's response names
 
-Folder 489 pins TXE-7090 on Replicate. A create answers with `urls.get`, the address to poll the prediction
-at. The gateway polls it on the provider's client only when it is on the origin of the provider's configured
-base URL; any other address goes out on the SSRF-hardened client, which refuses a loopback or private one.
-The fixture's model `owner/poll-origin` names `urls.get` on the fixture's own origin, and `owner/poll-loopback`
-names the same fixture by the host name `localhost`, another origin on loopback. The rows expect the image for
-the first and `502 provider_connection_failed` naming a non-public address for the second, and the last row
-reads `GET /__hits`: one poll at `127.0.0.1`, none at `localhost`. Run it as the content-length truncation
-folder above is run, with `FEATURE="vendor named address"`.
+Folder 489 pins TXE-7090. A vendor's answer names addresses the gateway then requests: Replicate's `urls.get`
+(the poll) and `urls.stream`, the `next` link of a deployments page, and the URL of an output image that the
+GenAI route fetches to inline. The gateway uses the provider's client only for an address on the origin of the
+provider's configured base URL; any other goes out on the SSRF-hardened client, which refuses a loopback or
+private address and reaches a public one through the provider's proxy.
+
+The fixture's `replicate` provider therefore has the media tunnel as `proxy_config` and two extra keys,
+`fixture-deploy-origin` and `fixture-deploy-loopback`, that use the deployments endpoint. A model's last path
+segment picks the case: `poll-origin`, `stream-origin` and `picture-public` name the address on the fixture's
+own origin (the picture at `http://203.0.113.10`, reached through the tunnel); `poll-loopback`,
+`stream-loopback` and `picture-loopback` name it on another loopback origin (the fixture by the host name
+`localhost`, or its loopback address for the picture). The rows expect the answer for the first kind and a
+refusal naming a non-public address for the second, and the last row reads `GET /__hits`: no request arrived
+at `localhost` or for the loopback picture. Run it as the content-length truncation folder above is run, with
+`FEATURE="vendor named address"`.
+
+HuggingFace speech has no row. Its model lookup goes to a fixed `https://huggingface.co`, not to the
+provider's base URL, so an offline gateway cannot get as far as the audio URL.
 
 ## Streamed frames timing
 

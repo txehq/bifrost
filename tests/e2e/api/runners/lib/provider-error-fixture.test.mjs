@@ -151,20 +151,40 @@ test("media tasks name the gapped file at a public address and the internal one 
   assert.equal(hits[`media.gapped@127.0.0.1:${post.port}`], 1);
 });
 
-// Folder 489: a Replicate prediction names where to poll it. poll-origin names the fixture's own origin and
-// poll-loopback the same fixture by another loopback name, which a gateway must refuse to follow.
-test("replicate poll predictions name their own origin or another loopback one, and count polls by host", async (t) => {
+// Folder 489: a Replicate answer names addresses a gateway then requests. Each is named on the fixture's own
+// origin (or at a public-looking address for an output image) and on another loopback origin, which a
+// gateway must refuse to follow; every request is counted under the Host it was asked at.
+test("replicate answers name poll, stream, next-page and image addresses on the origin or another loopback host", async (t) => {
   const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}/pp/replicate/v1`;
+  const other = `http://localhost:${post.port}/pp/replicate/v1`;
   const create = async (model) => (await post({ input: { prompt: "x" } }, `/pp/replicate/v1/models/owner/${model}/predictions`)).json();
-  const origin = await create("poll-origin");
-  assert.equal(origin.urls.get, `http://127.0.0.1:${post.port}/pp/replicate/v1/predictions/pred_poll_origin`);
-  const loopback = await create("poll-loopback");
-  assert.equal(loopback.urls.get, `http://localhost:${post.port}/pp/replicate/v1/predictions/pred_poll_loopback`);
-  const polled = await (await fetch(origin.urls.get)).json();
-  assert.equal(polled.status, "succeeded");
+  assert.deepEqual((await create("poll-origin")).urls, { get: `${base}/predictions/pred_poll_origin` });
+  assert.deepEqual((await create("poll-loopback")).urls, { get: `${other}/predictions/pred_poll_loopback` });
+  assert.deepEqual((await create("stream-origin")).urls, { get: `${base}/predictions/pred_stream_origin`, stream: `${base}/streams/pred_stream_origin` });
+  assert.deepEqual((await create("stream-loopback")).urls, { get: `${base}/predictions/pred_stream_loopback`, stream: `${other}/streams/pred_stream_loopback` });
+  assert.deepEqual((await create("picture-public")).urls, { get: `${base}/predictions/pred_picture_public` });
+
+  const polled = async (id) => (await (await fetch(`${base}/predictions/${id}`)).json()).output;
+  assert.equal(await polled("pred_poll_origin"), "https://replicate.delivery/fixture/out.png");
+  assert.equal(await polled("pred_picture_public"), "http://203.0.113.10/pp/media/image.png?X-Fixture-Signature=signed");
+  assert.equal(await polled("pred_picture_loopback"), `http://127.0.0.1:${post.port}/pp/media/internal.png?X-Fixture-Signature=signed`);
+  assert.equal(await (await fetch(`${base}/streams/pred_stream_origin`)).text(), "event: output\nid: 1\ndata: fixture stream text\n\nevent: done\nid: 2\ndata: {}\n\n");
+  assert.equal((await fetch(`http://127.0.0.1:${post.port}/pp/media/image.png`)).headers.get("content-type"), "image/png");
+
+  const page = async (key, query = "") => (await fetch(`${base}/deployments${query}`, { headers: { Authorization: `Bearer ${key}` } })).json();
+  assert.equal((await page("fixture-deploy-origin")).next, `${base}/deployments?page=2`);
+  assert.equal((await page("fixture-deploy-loopback")).next, `${other}/deployments?page=2`);
+  const last = await page("fixture-deploy-origin", "?page=2");
+  assert.equal(last.next, null);
+  assert.equal(last.results[0].name, "fixture-deploy-origin-page-2");
+
   const hits = (await (await fetch(`http://127.0.0.1:${post.port}/__hits`)).json()).data[0].hits;
-  assert.equal(hits["replicate.poll@127.0.0.1"], 1);
-  assert.equal(hits["replicate.poll@localhost"], undefined);
+  assert.equal(hits["replicate.poll@127.0.0.1"], 3);
+  assert.equal(hits["replicate.stream@127.0.0.1"], 1);
+  assert.equal(hits["media.image@127.0.0.1"], 1);
+  assert.equal(hits["replicate.deployments@fixture-deploy-origin?page=2@127.0.0.1"], 1);
+  assert.deepEqual(Object.keys(hits).filter((k) => k.endsWith("@localhost")), []);
 });
 
 test("a turns model calls the tool, then answers once the result comes back", async (t) => {
