@@ -423,7 +423,9 @@ config's `storage_uri_files` provider (OpenAI-shaped) points at `/pp/storage`, w
 `gs://bifrost-fixture-bucket/uploads/<n>.jsonl` id, unique per upload, and whose chat completes. Vertex and Bedrock
 record uploads in that form and neither host can be pointed at a fixture, so the folder pins the gateway's ownership
 check for the id form (two virtual keys, the second refused with 404 on the first's URI on chat, Responses and image
-edit), not those providers' own converters. Its rows use the management API, so run the augmented collection with
+edit), not those providers' own converters. The same folder covers the other names of a stored object and the places
+a request writes (TXE-7105): the upload named by its https URL, and a video task's `output_storage_uri` and a batch's
+`output_folder.url` that name it, each refused with 404 before the fixture is called. Its rows use the management API, so run the augmented collection with
 `--env-var setupToken=<the config's setup_token>`.
 
 The fixture also serves the two datasheets a fresh gateway downloads on first start (the config's `framework.pricing` URLs point at it), including the model-parameters row that makes `gpt-5-pro` Responses-only, which is what makes folder 160's chat request convert. The run therefore needs no network. Starting the gateway with `HTTPS_PROXY=http://127.0.0.1:9` is a cheap proof: loopback is exempt from proxying, so only an accidental external call would fail.

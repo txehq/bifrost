@@ -1,6 +1,6 @@
 {
   "name": "483. A file named by its storage URI as an inference input belongs to the virtual key that uploaded it (storage-uri file ownership) [SERIAL]",
-  "description": "TXE-7032. Local fixture regression, no live provider call: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. A Vertex upload is recorded under its gs:// URI and a Bedrock upload under its s3:// URI, and a request can name that URI as an image, file, video or document input, which the provider then reads with the shared credential. Before TXE-7032 only a file_id and a Gemini file URL were read as naming an upload, so a second virtual key could have the model read the first key's object. Neither Vertex's nor Bedrock's host can be pointed at the fixture, so the provider here is an OpenAI-shaped stand-in (storage_uri_files, the fixture's /pp/storage) whose upload answers with a gs:// id: what the folder pins is the gateway's ownership check for that id form, which is the same code for every provider; it does not exercise Vertex's or Bedrock's own converters. 483.1 to 483.3 create two virtual keys and upload a file under the first. 483.4 to 483.9 name the upload's URI under the second key, as a chat image, with the scheme in upper case, as a Responses input image and input file, as an image edit input and inside an extra field: each is a 404 naming the file. 483.10 and 483.11 show the creating key is served and that a URI nobody uploaded is unrestricted. 483.12 reads what reached the provider: the upload and the two served chats, and none of the refused requests. The uploaded object is the fixture's and is not deleted; its URI is unique per upload.",
+  "description": "TXE-7032, TXE-7105. Local fixture regression, no live provider call: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. A Vertex upload is recorded under its gs:// URI and a Bedrock upload under its s3:// URI, and a request can name that URI as an image, file, video or document input, which the provider then reads with the shared credential. Before TXE-7032 only a file_id and a Gemini file URL were read as naming an upload, so a second virtual key could have the model read the first key's object. TXE-7105 adds the other names of the same object and the places a request writes: an https URL of a stored object resolves to its gs:// or s3:// URI, and a task's output_storage_uri and a batch's output folder are checked like an input. Neither Vertex's nor Bedrock's host can be pointed at the fixture, so the provider here is an OpenAI-shaped stand-in (storage_uri_files, the fixture's /pp/storage) whose upload answers with a gs:// id: what the folder pins is the gateway's ownership check for that id form, which is the same code for every provider; it does not exercise Vertex's or Bedrock's own converters. 483.1 to 483.3 create two virtual keys and upload a file under the first. 483.4 to 483.9 name the upload's URI under the second key, as a chat image, with the scheme in upper case, as a Responses input image and input file, as an image edit input and inside an extra field: each is a 404 naming the file. 483.10 and 483.11 show the creating key is served and that a URI nobody uploaded is unrestricted. 483.12 to 483.14 are the second key again: the upload named by its https URL, a video task whose output_storage_uri is the upload, and a batch whose output folder is the upload; each is a 404 naming the file. 483.15 serves the creating key by the https URL, and 483.16 serves the second key a name under the upload: an object is looked up under its own name, and an uploaded file is one object, not a folder. 483.17 reads what reached the provider: the upload and the four served chats, and none of the refused requests. The uploaded object is the fixture's and is not deleted; its URI is unique per upload.",
   "item": [
     {
       "name": "483.1 [setup] virtual key A (owner) on the storage-URI provider",
@@ -154,7 +154,7 @@
               "try { uri = Buffer.from(String(j.id || '').replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'); } catch (e) { uri = ''; }",
               "if (uri.indexOf('gs://') !== 0 && String(j.id || '').indexOf('gs://') === 0) { uri = j.id; }",
               "pm.test('the file id is a gs:// URI in the fixture bucket', function () { pm.expect(uri, 'id: ' + txt.slice(0, 400)).to.match(/^gs:\\/\\/bifrost-fixture-bucket\\/uploads\\/[0-9]+-[0-9]+\\.jsonl$/); });",
-              "if (uri.indexOf('gs://') === 0) { pm.collectionVariables.set('storageFileUri', uri); pm.collectionVariables.set('storageFileUriUpper', 'GS://' + uri.slice(5)); }"
+              "if (uri.indexOf('gs://') === 0) { pm.collectionVariables.set('storageFileUri', uri); pm.collectionVariables.set('storageFileUriUpper', 'GS://' + uri.slice(5)); pm.collectionVariables.set('storageFileHttpsUrl', 'https://storage.googleapis.com/' + uri.slice(5)); }"
             ]
           }
         }
@@ -737,7 +737,329 @@
       }
     },
     {
-      "name": "483.12 only the upload and the two served chats reached the provider; no refused request did",
+      "name": "483.12 [EXPECT-404] /v1/chat/completions - another key cannot name the upload by its https URL",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('storageVkOwner') || !pm.collectionVariables.get('storageVkOther') || !pm.collectionVariables.get('storageFileUri')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "// Refused at governance, before a provider key is used: 404 on the file, never the answer and never a",
+              "// 401/403/500 that would mean the request was refused for another reason.",
+              "pm.test('a chat image written as an https storage URL naming another key\\'s upload is 404', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404); });",
+              "pm.test('the 404 names the file as not found', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.error && body.error.message, 'unexpected 404 body: ' + txt.slice(0, 400)).to.be.a('string');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include(pm.collectionVariables.get('storageFileUri')).and.to.include('not found');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{storageVkOther}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"storage_uri_files/fixture-model\", \"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"Describe this.\"}, {\"type\": \"image_url\", \"image_url\": {\"url\": \"{{storageFileHttpsUrl}}\"}}]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "483.13 [EXPECT-404] /v1/videos - another key cannot have a task write its output over the upload",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('storageVkOwner') || !pm.collectionVariables.get('storageVkOther') || !pm.collectionVariables.get('storageFileUri')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "// Refused at governance, before a provider key is used: 404 on the file, never the answer and never a",
+              "// 401/403/500 that would mean the request was refused for another reason.",
+              "pm.test('a task output_storage_uri naming another key\\'s upload is 404', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404); });",
+              "pm.test('the 404 names the file as not found', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.error && body.error.message, 'unexpected 404 body: ' + txt.slice(0, 400)).to.be.a('string');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include(pm.collectionVariables.get('storageFileUri')).and.to.include('not found');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{storageVkOther}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"storage_uri_files/fixture-model\", \"prompt\": \"Pan left.\", \"output_storage_uri\": \"{{storageFileUri}}\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      }
+    },
+    {
+      "name": "483.14 [EXPECT-404] /v1/batches - another key cannot have a batch write its output over the upload",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('storageVkOwner') || !pm.collectionVariables.get('storageVkOther') || !pm.collectionVariables.get('storageFileUri')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "// Refused at governance, before a provider key is used: 404 on the file, never the answer and never a",
+              "// 401/403/500 that would mean the request was refused for another reason.",
+              "pm.test('a batch output folder naming another key\\'s upload is 404', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404); });",
+              "pm.test('the 404 names the file as not found', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.error && body.error.message, 'unexpected 404 body: ' + txt.slice(0, 400)).to.be.a('string');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include(pm.collectionVariables.get('storageFileUri')).and.to.include('not found');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{storageVkOther}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"storage_uri_files/fixture-model\", \"input_file_id\": \"gs://bifrost-fixture-bucket/uploads/never-uploaded.jsonl\", \"endpoint\": \"/v1/chat/completions\", \"completion_window\": \"24h\", \"output_folder\": {\"url\": \"{{storageFileUri}}\"}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "483.15 /v1/chat/completions - the owning key names its own upload by its https URL and is served",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('storageVkOwner') || !pm.collectionVariables.get('storageVkOther') || !pm.collectionVariables.get('storageFileUri')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the creating key uses its own upload under any form of its name', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{storageVkOwner}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"storage_uri_files/fixture-model\", \"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"Describe this.\"}, {\"type\": \"image_url\", \"image_url\": {\"url\": \"{{storageFileHttpsUrl}}\"}}]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "483.16 /v1/chat/completions - a name under another key's uploaded file is not that key's: an upload is one object, not a folder",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('storageVkOwner') || !pm.collectionVariables.get('storageVkOther') || !pm.collectionVariables.get('storageFileUri')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('an uploaded file owns its own name only', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{storageVkOther}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"storage_uri_files/fixture-model\", \"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"Describe this.\"}, {\"type\": \"image_url\", \"image_url\": {\"url\": \"{{storageFileUri}}/part-0.png\"}}]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "483.17 only the upload and the four served chats reached the provider; no refused request did",
       "event": [
         {
           "listen": "prerequest",
@@ -758,8 +1080,8 @@
             "type": "text/javascript",
             "exec": [
               "var calls = pm.response.json().data[0].calls.filter(function (c) { return String(c.path).indexOf('/pp/storage/') === 0; }).map(function (c) { return c.path; });",
-              "pm.test('one upload and two chat completions, nothing else', function () {",
-              "  pm.expect(calls, JSON.stringify(calls)).to.eql(['/pp/storage/v1/files', '/pp/storage/v1/chat/completions', '/pp/storage/v1/chat/completions']);",
+              "pm.test('one upload and four chat completions, nothing else', function () {",
+              "  pm.expect(calls, JSON.stringify(calls)).to.eql(['/pp/storage/v1/files', '/pp/storage/v1/chat/completions', '/pp/storage/v1/chat/completions', '/pp/storage/v1/chat/completions', '/pp/storage/v1/chat/completions']);",
               "});"
             ]
           }
@@ -772,7 +1094,7 @@
       }
     },
     {
-      "name": "483.13 [cleanup] virtual key A is deleted",
+      "name": "483.18 [cleanup] virtual key A is deleted",
       "event": [
         {
           "listen": "prerequest",
@@ -821,7 +1143,7 @@
       }
     },
     {
-      "name": "483.14 [cleanup] virtual key B is deleted",
+      "name": "483.19 [cleanup] virtual key B is deleted",
       "event": [
         {
           "listen": "prerequest",
