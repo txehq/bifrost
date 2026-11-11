@@ -328901,7 +328901,7 @@
                   "pm.test('the prediction was polled at the provider\\'s own origin and its output returned', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
                   "  var j = pm.response.json();",
-                  "  pm.expect(j.data && j.data[0] && j.data[0].url, pm.response.text()).to.equal('https://replicate.delivery/fixture/out.png');",
+                  "  pm.expect(j.data && j.data[0] && j.data[0].url, pm.response.text()).to.equal('https://replicate-delivery.invalid/fixture/out.png');",
                   "});"
                 ]
               }
@@ -328956,7 +328956,7 @@
                   "  var body = pm.response.text();",
                   "  pm.expect(body, body).to.include('non-public address');",
                   "  pm.expect(pm.response.json().extra_fields.error_type, body).to.equal('provider_connection_failed');",
-                  "  pm.expect(body, body).to.not.include('replicate.delivery');",
+                  "  pm.expect(body, body).to.not.include('replicate-delivery.invalid');",
                   "});"
                 ]
               }

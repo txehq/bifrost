@@ -1459,7 +1459,7 @@ const handleRequest = (req, res) => {
 		countHit(`replicate.poll@${String(req.headers.host).split(":")[0]}`);
 		const output = id === "pred_picture_public" ? `http://${MEDIA_PUBLIC_HOST}/pp/media/image.png?X-Fixture-Signature=signed`
 			: id === "pred_picture_loopback" ? `http://127.0.0.1:${port}/pp/media/internal.png?X-Fixture-Signature=signed`
-				: "https://replicate.delivery/fixture/out.png";
+				: "https://replicate-delivery.invalid/fixture/out.png";
 		return send(200, {}, JSON.stringify({ id, status: "succeeded", output }));
 	}
 	// The stream of a folder 490 prediction: one output event and the done event, in Replicate's SSE shape.
