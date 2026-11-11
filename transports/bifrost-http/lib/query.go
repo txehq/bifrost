@@ -80,28 +80,61 @@ func CopyQueryFirstValues(args *fasthttp.Args, dst map[string]string, lowerKeys 
 // reads as untouched, because a map cannot say it was written, so every value of a
 // repeated parameter stays, in order. A name deleted from the map stays on the request,
 // as before.
+//
+// The work is linear in the size of the query string: a caller chooses how many names a
+// request carries, and this runs before authentication.
 func ApplyQueryChanges(args *fasthttp.Args, req *schemas.HTTPRequest) {
+	// Past a few names, looking each one up on args (a scan of the whole query string)
+	// would be quadratic, so the first value and the count of every name are read in one
+	// pass. A short query string is scanned per name instead, which allocates nothing.
+	var sent map[string]sentQueryName
+	if args.Len() > maxQueryNamesScannedPerName {
+		sent = make(map[string]sentQueryName, args.Len())
+		for k, v := range args.All() {
+			name, seen := sent[string(k)]
+			if !seen {
+				name.first = string(v)
+			}
+			name.count++
+			sent[string(k)] = name
+		}
+	}
 	for key, value := range req.Query {
-		switch n := countQueryValues(args, key); {
-		case n == 0:
-		case string(args.Peek(key)) == value && (n == 1 || !req.QueryAssigned(key)):
+		count, firstIsValue := 0, false
+		if sent != nil {
+			name := sent[key]
+			count, firstIsValue = name.count, name.first == value
+		} else {
+			for k, v := range args.All() {
+				if string(k) != key {
+					continue
+				}
+				if count == 0 {
+					firstIsValue = string(v) == value
+				}
+				count++
+			}
+		}
+		switch {
+		case count == 0:
+		case firstIsValue && (count == 1 || !req.QueryAssigned(key)):
 			continue
-		case n > 1:
+		case count > 1:
 			args.Del(key)
 		}
 		args.Set(key, value)
 	}
 }
 
-// countQueryValues counts how many times args carries name, without allocating.
-func countQueryValues(args *fasthttp.Args, name string) int {
-	n := 0
-	for k := range args.All() {
-		if string(k) == name {
-			n++
-		}
-	}
-	return n
+// maxQueryNamesScannedPerName is the number of query values up to which ApplyQueryChanges
+// scans the query string once per name instead of building a map of it.
+const maxQueryNamesScannedPerName = 16
+
+// sentQueryName is what the request carries for one query name: its first value and how
+// many times it was sent.
+type sentQueryName struct {
+	first string
+	count int
 }
 
 // CopyQueryAllValues collects the query parameters whose name skip does not claim, with
