@@ -22,6 +22,11 @@ name: API collections offline
 # schemasync with "schema missing Go consts [bfl dashscope]" (run 42894713908). Here it
 # fails the PR that adds the const. It is in this job because this job is the required
 # check; test-api-collections-offline-callers.py keeps the step here.
+#
+# The same job runs the video settler coverage test (test-video-settler-coverage.sh, TXE-7118):
+# a provider that gained a video implementation without an entry in the settler's list had
+# its video jobs recorded and never charged, and no check failed. The callers script keeps
+# that step here too.
 
 on:
   pull_request:
@@ -47,7 +52,9 @@ jobs:
     # scripts/test-approval-environment.py.
     environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
-    timeout-minutes: 15
+    # 25 minutes: the video settler coverage test compiles core and framework with cgo on a
+    # cold cache (TXE-7118).
+    timeout-minutes: 25
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
@@ -102,3 +109,9 @@ jobs:
       # agree, every Go enum const included (TXE-7064). The chart release runs it too.
       - name: Validate Go ↔ config.schema.json ↔ helm-chart sync (schemasync)
         run: bash .github/workflows/scripts/validate-schema-sync.sh
+
+      # A provider that implements video is in the video settler's list, or exempt with a
+      # reason (TXE-7118). Without it a provider's video jobs were recorded and never charged,
+      # and nothing failed. It uses the go.work the schemasync step provisions.
+      - name: Video settler covers every provider that implements video
+        run: bash .github/workflows/scripts/test-video-settler-coverage.sh

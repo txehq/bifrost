@@ -14,6 +14,10 @@ The job that runs the script, which is the required check, also runs schemasync
 entry otherwise passed every PR check and failed the chart release on main (TXE-7064, run
 42894713908), so this checks that the step stays in that job.
 
+The same job runs the video settler coverage test (test-video-settler-coverage.sh). A provider
+that implements video without an entry in the settler's list is never charged for its video
+jobs (TXE-7118), so this checks that the step stays in that job as well.
+
 Usage: test-api-collections-offline-callers.py
 """
 import glob
@@ -29,6 +33,7 @@ SCRIPT = "test-api-collections-offline.sh"
 WORKFLOW = "api-collections-offline.yml"
 RELEASE_CALLER = "test-api-integrations.sh"
 SCHEMA_SYNC = "validate-schema-sync.sh"
+VIDEO_SETTLER = "test-video-settler-coverage.sh"
 SUITES = ("collections/collection-scripts.test.mjs", "runners/newman-exit-when-done.test.mjs")
 REPO = os.path.abspath(os.path.join(WORKFLOWS, "..", ".."))
 # The loop that finds every *.test.mjs under tests/e2e/api, and its exclusion list.
@@ -95,6 +100,8 @@ def main():
         failures.append(f"no job in {WORKFLOW} runs {SCRIPT}")
     elif not any(runs(job, SCHEMA_SYNC) for job in suite_jobs):
         failures.append(f"the job in {WORKFLOW} that runs {SCRIPT} no longer runs {SCHEMA_SYNC}")
+    elif not any(runs(job, VIDEO_SETTLER) for job in suite_jobs):
+        failures.append(f"the job in {WORKFLOW} that runs {SCRIPT} no longer runs {VIDEO_SETTLER}")
 
     for f in failures:
         print(f"FAIL {f}")

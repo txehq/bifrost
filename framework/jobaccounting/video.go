@@ -48,6 +48,10 @@ func init() { RegisterLogNamespace(ProviderJobKindVideo, videoLogNamespace) }
 // videoProviders is the set Bifrost can actually settle video for. Every provider
 // implements the VideoGeneration method, so method presence proves nothing — this
 // is the list with a real implementation behind it.
+//
+// Fork (TXE-7118): TestVideoSettlerCoversEveryProviderThatImplementsVideo builds every standard
+// provider and fails when one that implements video is neither here nor in
+// videoSettlementExemptions, and when an entry here does not implement video.
 var videoProviders = map[schemas.ModelProvider]struct{}{
 	schemas.OpenAI:    {},
 	schemas.Gemini:    {},
@@ -57,6 +61,18 @@ var videoProviders = map[schemas.ModelProvider]struct{}{
 	schemas.Runware:   {},
 	schemas.MiniMax:   {},
 	schemas.BytePlus:  {},
+	// Fork (TXE-7118): the two Volcano Engine Ark providers serve Seedance tasks through the
+	// same API as BytePlus and were never settled. The coverage test found them.
+	schemas.ModelArk:   {},
+	schemas.Volcengine: {},
+}
+
+// videoSettlementExemptions are the providers that implement video and are deliberately not
+// settled, each with the reason. TestVideoSettlerCoversEveryProviderThatImplementsVideo fails
+// for a provider that implements video and is in neither this map nor videoProviders
+// (fork, TXE-7118).
+var videoSettlementExemptions = map[schemas.ModelProvider]string{
+	schemas.Azure: "TXE-7054 adds azure: its two video APIs (Sora 2 and the first-generation jobs API) use different ids and dimensions, and settlement must also be reached from /content",
 }
 
 // VideoRetriever is the provider call the video settler needs: given a job row,
