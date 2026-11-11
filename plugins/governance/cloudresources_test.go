@@ -43,6 +43,10 @@ func restrictedPlugin(t *testing.T, storagePrefixes, pubSubTopics []string) *Gov
 	t.Helper()
 	vk := buildVKForMCPStamping(nil)
 	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("vertex", []string{"*"}), buildProviderConfig("bedrock", []string{"*"}))
+	// The store normalizes the lists when a key is saved; a key built in memory gets the same.
+	if prefixes, topics, err := configstoreTables.NormalizeVirtualKeyAllowlists(storagePrefixes, pubSubTopics); err == nil {
+		storagePrefixes, pubSubTopics = prefixes, topics
+	}
 	vk.AllowedStoragePrefixes = storagePrefixes
 	vk.AllowedPubSubTopics = pubSubTopics
 	plugin := newAccessTestPlugin(t, vk, nil)
@@ -172,7 +176,7 @@ func TestVirtualKeyStorageAllowlistCoversEveryStorageConfig(t *testing.T) {
 			"gcs inside":            {&schemas.FileStorageConfig{GCS: &schemas.GCSStorageConfig{Bucket: "shared-bucket", Prefix: "tenant-a/uploads"}}, true},
 			"gcs outside":           {&schemas.FileStorageConfig{GCS: &schemas.GCSStorageConfig{Bucket: "shared-bucket", Prefix: "tenant-b/uploads"}}, false},
 			"gcs bucket root":       {&schemas.FileStorageConfig{GCS: &schemas.GCSStorageConfig{Bucket: "shared-bucket"}}, false},
-			"s3 inside":             {&schemas.FileStorageConfig{S3: &schemas.S3StorageConfig{Bucket: "shared-bucket", Prefix: "/tenant-a/"}}, true},
+			"s3 inside":             {&schemas.FileStorageConfig{S3: &schemas.S3StorageConfig{Bucket: "shared-bucket", Prefix: "tenant-a/"}}, true},
 			"s3 bucket as a uri":    {&schemas.FileStorageConfig{S3: &schemas.S3StorageConfig{Bucket: "s3://shared-bucket/tenant-a/", Prefix: "in"}}, true},
 			"s3 outside":            {&schemas.FileStorageConfig{S3: &schemas.S3StorageConfig{Bucket: "other-bucket", Prefix: "tenant-a"}}, false},
 			"one inside, one out":   {&schemas.FileStorageConfig{GCS: &schemas.GCSStorageConfig{Bucket: "shared-bucket", Prefix: "tenant-a"}, S3: &schemas.S3StorageConfig{Bucket: "other-bucket"}}, false},
@@ -182,6 +186,9 @@ func TestVirtualKeyStorageAllowlistCoversEveryStorageConfig(t *testing.T) {
 			// prefix for a list, where "tenant-a" also lists "tenant-ab/".
 			"a folder named without its slash": {&schemas.FileStorageConfig{S3: &schemas.S3StorageConfig{Bucket: "shared-bucket", Prefix: "tenant-a"}}, !strings.Contains(field.Name, "List")},
 			"a name prefix past the folder":    {&schemas.FileStorageConfig{S3: &schemas.S3StorageConfig{Bucket: "shared-bucket", Prefix: "tenant-a/in"}}, true},
+			// A list sends its prefix as written: "/tenant-a/" lists under "<bucket>//tenant-a/",
+			// which is not the folder. An upload or a lookup trims it.
+			"a prefix with a leading slash": {&schemas.FileStorageConfig{GCS: &schemas.GCSStorageConfig{Bucket: "shared-bucket", Prefix: "/tenant-a/in/"}}, !strings.Contains(field.Name, "List")},
 		} {
 			req := &schemas.BifrostRequest{}
 			slot := reflect.ValueOf(req).Elem().Field(i)
@@ -276,6 +283,46 @@ func TestVirtualKeyPubSubTopicAllowlist(t *testing.T) {
 		_, shortCircuit, err = plugin.PreLLMHook(emptyCtx(), tc.req)
 		require.NoError(t, err)
 		assert.Nil(t, shortCircuit, "a request that presented no key is not restricted: %s", name)
+	}
+}
+
+// A native route can keep the body it received and forward it as it is (RawRequestBody). What
+// that body names reaches the provider whether or not a typed field repeats it: a native Vertex
+// batch keeps only its first input URI in the typed field. The body is read, for the allowlist
+// and for ownership alike.
+func TestRawRequestBodyIsRead(t *testing.T) {
+	plugin := restrictedPlugin(t, []string{"gs://shared-bucket/tenant-a"}, []string{"projects/p/topics/tenant-a"})
+	batch := func(raw string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.Vertex, Model: schemas.Ptr("m"),
+			InputFileID: "gs://shared-bucket/tenant-a/in/a.jsonl", RawRequestBody: []byte(raw)}}
+	}
+	inside := `{"inputConfig":{"gcsSource":{"uris":["gs://shared-bucket/tenant-a/in/a.jsonl","gs://shared-bucket/tenant-a/in/b.jsonl"]}}}`
+	outside := `{"inputConfig":{"gcsSource":{"uris":["gs://shared-bucket/tenant-a/in/a.jsonl","gs://shared-bucket/tenant-b/in/b.jsonl"]}}}`
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), batch(inside))
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "every URI of the raw body is inside the key's storage")
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), batch(outside))
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "the second URI of the raw body is outside the key's storage")
+	assert.Equal(t, 403, *shortCircuit.Error.StatusCode)
+	assert.Contains(t, shortCircuit.Error.Error.Message, "tenant-b/in/b.jsonl")
+	// The same body is what the ownership check reads.
+	if !namesFile(batch(outside), "gs://shared-bucket/tenant-b/in/b.jsonl") {
+		t.Errorf("a file named only in the raw request body is not among the request's references: %+v", providerObjectReferences(batch(outside)))
+	}
+	// A topic in a raw body is read; uploaded file content is not a request body.
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), batch(`{"parameters":{"pubsubTopic":"projects/p/topics/tenant-b"}}`))
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "a topic named in the raw request body")
+	for name, content := range map[string]string{
+		"a document that mentions topics":      "minutes: topics for next week, not JSON {",
+		"a JSON file naming another topic":     `{"pubsubTopic":"projects/p/topics/tenant-b"}`,
+		"a JSON file naming storage elsewhere": `{"fileUri":"gs://shared-bucket/tenant-b/x"}`,
+	} {
+		upload := &schemas.BifrostRequest{RequestType: schemas.FileUploadRequest, FileUploadRequest: &schemas.BifrostFileUploadRequest{Provider: schemas.OpenAI, Filename: "notes.txt", File: []byte(content)}}
+		_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), upload)
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit, "uploaded content is not read as a request: %s", name)
 	}
 }
 

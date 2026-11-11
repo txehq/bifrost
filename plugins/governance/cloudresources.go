@@ -33,28 +33,20 @@ const (
 )
 
 // stampVirtualKeyCloudResources publishes the key's allowlists for enforceCloudResourceAllowlists.
-// A list is stamped whenever the key has one, in normalized form. An entry that does not
-// normalize is dropped: it covers nothing, and the key stays restricted to the rest, down to
-// nothing at all when no entry is valid. The store normalizes on save, so that is the path of a
-// key loaded some other way.
+// The slices are the store's own, stamped as they are and only read: the lists are normalized
+// once, when the key is saved (configstoreTables.NormalizeVirtualKeyAllowlists), not on the
+// request path. A list is stamped whenever the key has one. An entry that was not normalized
+// (a key that reached memory some other way) is compared as written and covers at most what it
+// literally says, never more.
 func stampVirtualKeyCloudResources(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey) {
 	if ctx == nil || virtualKey == nil {
 		return
 	}
-	normalized := func(entries []string, one func(string) (string, error)) []string {
-		out := make([]string, 0, len(entries))
-		for _, entry := range entries {
-			if value, err := one(entry); err == nil {
-				out = append(out, value)
-			}
-		}
-		return out
-	}
 	if len(virtualKey.AllowedStoragePrefixes) > 0 {
-		ctx.SetValue(governanceAllowedStoragePrefixesContextKey, normalized(virtualKey.AllowedStoragePrefixes, configstoreTables.NormalizeVirtualKeyStoragePrefix))
+		ctx.SetValue(governanceAllowedStoragePrefixesContextKey, virtualKey.AllowedStoragePrefixes)
 	}
 	if len(virtualKey.AllowedPubSubTopics) > 0 {
-		ctx.SetValue(governanceAllowedPubSubTopicsContextKey, normalized(virtualKey.AllowedPubSubTopics, configstoreTables.NormalizeVirtualKeyPubSubTopic))
+		ctx.SetValue(governanceAllowedPubSubTopicsContextKey, virtualKey.AllowedPubSubTopics)
 	}
 }
 
@@ -62,9 +54,10 @@ func stampVirtualKeyCloudResources(ctx *schemas.BifrostContext, virtualKey *conf
 // returns it, lies under one of the prefixes at a folder boundary: "gs://b/tenant-a" covers
 // "gs://b/tenant-a" and "gs://b/tenant-a/x", not "gs://b/tenant-ab/x". Prefixes are normalized
 // (configstoreTables.NormalizeVirtualKeyStoragePrefix): no trailing slash, scheme in lower case.
+// An entry that is not, or that names no bucket, covers nothing.
 func storageLocationAllowed(prefixes []string, location string) bool {
 	for _, prefix := range prefixes {
-		if len(location) < len(prefix) || location[:len(prefix)] != prefix {
+		if !isStorageURI(prefix) || strings.HasSuffix(prefix, "/") || len(location) < len(prefix) || location[:len(prefix)] != prefix {
 			continue
 		}
 		if len(location) == len(prefix) || location[len(prefix)] == '/' {
@@ -130,9 +123,13 @@ func storageConfigLocations(req *schemas.BifrostRequest) []storageConfigLocation
 					continue
 				}
 				for _, prefix := range prefixes {
-					object := strings.TrimLeft(inBucket+prefix, "/")
+					// A list's prefix is sent to the storage as written, so it is compared as
+					// written: "/tenant-a/" lists under "<bucket>//tenant-a/", which is not the
+					// folder "tenant-a". An upload or a lookup names a folder, which the
+					// providers trim.
+					object := inBucket + prefix
 					if !raw {
-						object = strings.TrimRight(object, "/")
+						object = strings.Trim(object, "/")
 					}
 					location := scheme + name
 					if object != "" || raw {
@@ -181,7 +178,7 @@ func storageConfigAllowed(prefixes []string, config storageConfigLocation) bool 
 		return storageLocationAllowed(prefixes, config.location)
 	}
 	for _, prefix := range prefixes {
-		if strings.HasPrefix(config.location, prefix+"/") {
+		if isStorageURI(prefix) && !strings.HasSuffix(prefix, "/") && strings.HasPrefix(config.location, prefix+"/") {
 			return true
 		}
 	}
@@ -245,7 +242,11 @@ func (c *topicCollector) scan(value reflect.Value, open bool, depth int) {
 		}
 	case reflect.Slice, reflect.Array:
 		if value.Type().Elem().Kind() == reflect.Uint8 {
-			c.scanBytes(value, depth)
+			// Bytes inside untyped data are a vendor member kept as raw JSON. Typed byte
+			// fields are read by name in the struct case: most are file and media content.
+			if open {
+				c.scanBytes(value, depth)
+			}
 			return
 		}
 		for i := 0; i < value.Len(); i++ {
@@ -258,9 +259,17 @@ func (c *topicCollector) scan(value reflect.Value, open bool, depth int) {
 		}
 	case reflect.Struct:
 		for i := 0; i < value.NumField(); i++ {
-			if value.Type().Field(i).IsExported() {
-				c.scan(value.Field(i), open, depth+1)
+			field := value.Type().Field(i)
+			if !field.IsExported() {
+				continue
 			}
+			// A body forwarded to the provider as it was received is read; any other typed
+			// byte field is content (an uploaded file, audio, an image) and is not.
+			if isRawBodyField(field) {
+				c.scanBytes(value.Field(i), depth)
+				continue
+			}
+			c.scan(value.Field(i), open, depth+1)
 		}
 	}
 }
