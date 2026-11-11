@@ -149,6 +149,7 @@ type batchVendor struct {
 	uploads     []string            // uploaded file bodies
 	uploadForms []map[string]string // the other form fields of each upload
 	creates     []string            // batch create bodies
+	prefix      string              // the API root the vendor answers on, "/v1" for OpenAI
 	batch       string              // the batch object the retrieve returns
 	files       map[string]string   // file id -> content
 	bytesServed atomic.Int64
@@ -156,7 +157,14 @@ type batchVendor struct {
 
 func newBatchVendor(t *testing.T, batch string, files map[string]string) *batchVendor {
 	t.Helper()
-	v := &batchVendor{auth: map[string]int{}, batch: batch, files: files}
+	return newBatchVendorAt(t, "/v1", batch, files)
+}
+
+// newBatchVendorAt is newBatchVendor for a vendor whose files and batches API is rooted at
+// prefix. A call to any other path fails the test.
+func newBatchVendorAt(t *testing.T, prefix string, batch string, files map[string]string) *batchVendor {
+	t.Helper()
+	v := &batchVendor{auth: map[string]int{}, prefix: prefix, batch: batch, files: files}
 	v.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		v.mu.Lock()
 		v.calls = append(v.calls, r.Method+" "+r.URL.Path)
@@ -164,7 +172,7 @@ func newBatchVendor(t *testing.T, batch string, files map[string]string) *batchV
 		v.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/files":
+		case r.Method == http.MethodPost && r.URL.Path == prefix+"/files":
 			_, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 			if err != nil {
 				t.Errorf("upload content type: %v", err)
@@ -189,16 +197,22 @@ func newBatchVendor(t *testing.T, batch string, files map[string]string) *batchV
 			v.uploadForms = append(v.uploadForms, fields)
 			v.mu.Unlock()
 			fmt.Fprint(w, `{"id":"file-in","object":"file","bytes":1,"created_at":1,"filename":"batch_requests.jsonl","purpose":"batch"}`)
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/batches":
+		case r.Method == http.MethodPost && r.URL.Path == prefix+"/batches":
 			body, _ := io.ReadAll(r.Body)
 			v.mu.Lock()
 			v.creates = append(v.creates, string(body))
 			v.mu.Unlock()
 			fmt.Fprint(w, `{"id":"batch_1","object":"batch","endpoint":"/v1/chat/completions","input_file_id":"file-in","completion_window":"24h","status":"validating","created_at":1711471533,"expires_at":1711557933,"request_counts":{"total":0,"completed":0,"failed":0},"metadata":{"tokun_batch_id":"batch_tk_1"}}`)
-		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/batches/"):
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, prefix+"/batches/"):
 			fmt.Fprint(w, v.batch)
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/content"):
-			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/files/"), "/content")
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, prefix+"/batches/") && strings.HasSuffix(r.URL.Path, "/cancel"):
+			fmt.Fprint(w, `{"id":"batch_1","object":"batch","status":"cancelling","cancelling_at":1711475133,"request_counts":{"total":2,"completed":1,"failed":0}}`)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, prefix+"/files/") && !strings.HasSuffix(r.URL.Path, "/content"):
+			fmt.Fprint(w, `{"id":"file-out","object":"file","bytes":120,"created_at":1711471533,"filename":"output.jsonl","purpose":"batch_output"}`)
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, prefix+"/files/"):
+			fmt.Fprint(w, `{"id":"file-out","object":"file","deleted":true}`)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, prefix+"/files/") && strings.HasSuffix(r.URL.Path, "/content"):
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, prefix+"/files/"), "/content")
 			content, ok := v.files[id]
 			if !ok {
 				w.WriteHeader(http.StatusNotFound)
@@ -471,4 +485,258 @@ func TestBatchCreateInlineUploadsTheLinesUnchanged(t *testing.T) {
 
 	require.Len(t, vendor.creates, 1)
 	assert.JSONEq(t, `{"input_file_id":"file-in","endpoint":"/v1/chat/completions","completion_window":"24h","metadata":{"tokun_batch_id":"batch_tk_1"},"output_expires_after":{"anchor":"created_at","seconds":86400}}`, vendor.creates[0])
+}
+
+// Zhipu bigmodel (the z.ai domestic site) serves OpenAI-shaped files and batches under
+// /api/paas/v4. Tokun reaches it through a custom provider on the openai base whose
+// request_path_overrides name those paths; for a call that names a batch or a file, the
+// override is a template with {batch_id} or {file_id} where the id goes.
+var bigmodelPathOverrides = map[schemas.RequestType]string{
+	schemas.BatchCreateRequest:   "/api/paas/v4/batches",
+	schemas.BatchListRequest:     "/api/paas/v4/batches",
+	schemas.BatchRetrieveRequest: "/api/paas/v4/batches/{batch_id}",
+	schemas.BatchCancelRequest:   "/api/paas/v4/batches/{batch_id}/cancel",
+	schemas.BatchResultsRequest:  "/api/paas/v4/batches/{batch_id}",
+	schemas.FileUploadRequest:    "/api/paas/v4/files",
+	schemas.FileListRequest:      "/api/paas/v4/files",
+	schemas.FileRetrieveRequest:  "/api/paas/v4/files/{file_id}",
+	schemas.FileDeleteRequest:    "/api/paas/v4/files/{file_id}",
+	schemas.FileContentRequest:   "/api/paas/v4/files/{file_id}/content",
+}
+
+// The two lines below are the shape bigmodel documents for a batch output file
+// (docs.bigmodel.cn/cn/guide/tools/batch.md, read 2026-11-10): no "error" member, the
+// batch's id as the line id, and the request id inside the body. The error-file line is
+// in OpenAI's shape, which is all the documentation says about that file.
+const (
+	bigmodelOutputLine1 = `{"response":{"status_code":200,"body":{"created":1715959701,"usage":{"completion_tokens":26,"prompt_tokens":89,"total_tokens":115},"model":"glm-4","id":"8668357533850320547","choices":[{"finish_reason":"stop","index":0,"message":{"role":"assistant","content":"ok"}}],"request_id":"615-request-1"}},"custom_id":"request-1","id":"batch_1791490810192076800"}`
+	bigmodelOutputLine2 = `{"response":{"status_code":200,"body":{"created":1715959701,"usage":{"completion_tokens":22,"prompt_tokens":94,"total_tokens":116,"prompt_tokens_details":{"cached_tokens":64}},"model":"glm-4","id":"8668368425887509080","choices":[{"finish_reason":"stop","index":0,"message":{"role":"assistant","content":"ok"}}],"request_id":"616-request-2"}},"custom_id":"request-2","id":"batch_1791490810192076800"}`
+	bigmodelErrorLine   = `{"response":{"status_code":400,"body":{"error":{"code":"1210","message":"API 调用参数有误，请检查文档。"}}},"custom_id":"request-3","id":"batch_1791490810192076800"}`
+	bigmodelBatch       = `{"id":"batch_1791490810192076800","object":"batch","endpoint":"/v4/chat/completions","input_file_id":"file-in","completion_window":"24h","status":"completed","output_file_id":"file-out","error_file_id":"file-err","created_at":1715959000,"request_counts":{"total":3,"completed":2,"failed":1}}`
+)
+
+func newBigmodelTestProvider(v *batchVendor, overrides map[schemas.RequestType]string) (*OpenAIProvider, *schemas.BifrostContext, []schemas.Key) {
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: v.URL, DefaultRequestTimeoutInSeconds: 30},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			CustomProviderKey:    "tkp_bigmodel",
+			BaseProviderType:     schemas.OpenAI,
+			RequestPathOverrides: overrides,
+		},
+	}, testNoopLogger{})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	keys := []schemas.Key{{ID: "key-1", Name: "tk-key-1", Value: *schemas.NewSecretVar("sk-test")}}
+	return provider, ctx, keys
+}
+
+// batchAndFileCalls runs every batch and file call that names its target in the URL and
+// returns the upstream calls the vendor saw, in order.
+func batchAndFileCalls(t *testing.T, v *batchVendor, provider *OpenAIProvider, ctx *schemas.BifrostContext, keys []schemas.Key) []string {
+	t.Helper()
+	_, bifrostErr := provider.BatchCreate(ctx, keys[0], &schemas.BifrostBatchCreateRequest{
+		Endpoint: "/v4/chat/completions",
+		Requests: []schemas.BatchRequestItem{{CustomID: "request-1", Method: "POST", URL: "/v4/chat/completions", Body: map[string]any{"model": "glm-5.3-flash"}}},
+	})
+	require.Nil(t, bifrostErr, "create: %v", bifrostErr)
+	_, bifrostErr = provider.BatchRetrieve(ctx, keys, &schemas.BifrostBatchRetrieveRequest{BatchID: "batch_1"})
+	require.Nil(t, bifrostErr, "retrieve: %v", bifrostErr)
+	_, bifrostErr = provider.BatchCancel(ctx, keys, &schemas.BifrostBatchCancelRequest{BatchID: "batch_1"})
+	require.Nil(t, bifrostErr, "cancel: %v", bifrostErr)
+	_, bifrostErr = provider.BatchResults(ctx, keys, &schemas.BifrostBatchResultsRequest{BatchID: "batch_1"})
+	require.Nil(t, bifrostErr, "results: %v", bifrostErr)
+	_, bifrostErr = provider.FileRetrieve(ctx, keys, &schemas.BifrostFileRetrieveRequest{FileID: "file-out"})
+	require.Nil(t, bifrostErr, "file retrieve: %v", bifrostErr)
+	_, bifrostErr = provider.FileContent(ctx, keys, &schemas.BifrostFileContentRequest{FileID: "file-out"})
+	require.Nil(t, bifrostErr, "file content: %v", bifrostErr)
+	_, bifrostErr = provider.FileDelete(ctx, keys, &schemas.BifrostFileDeleteRequest{FileID: "file-out"})
+	require.Nil(t, bifrostErr, "file delete: %v", bifrostErr)
+	return v.snapshotCalls()
+}
+
+// Every batch and file call of a custom provider reaches the path its override names, the
+// id in the placeholder's place, on a vendor that answers nowhere else; the built-in openai
+// provider keeps the /v1 paths it had.
+func TestBatchAndFileCallsHonourPathOverrides(t *testing.T) {
+	files := map[string]string{"file-out": bigmodelOutputLine1 + "\n", "file-err": bigmodelErrorLine + "\n"}
+	callsUnder := func(root string) []string {
+		return []string{
+			"POST " + root + "/files",
+			"POST " + root + "/batches",
+			"GET " + root + "/batches/batch_1",
+			"POST " + root + "/batches/batch_1/cancel",
+			"GET " + root + "/batches/batch_1",
+			"GET " + root + "/files/file-out/content",
+			"GET " + root + "/files/file-err/content",
+			"GET " + root + "/files/file-out",
+			"GET " + root + "/files/file-out/content",
+			"DELETE " + root + "/files/file-out",
+		}
+	}
+
+	t.Run("custom provider with overrides reaches /api/paas/v4", func(t *testing.T) {
+		v := newBatchVendorAt(t, "/api/paas/v4", bigmodelBatch, files)
+		provider, ctx, keys := newBigmodelTestProvider(v, bigmodelPathOverrides)
+		assert.Equal(t, callsUnder("/api/paas/v4"), batchAndFileCalls(t, v, provider, ctx, keys))
+		assert.Equal(t, map[string]int{"Bearer sk-test": 10}, v.auth, "every call carries the one key")
+	})
+
+	t.Run("built-in openai provider keeps /v1", func(t *testing.T) {
+		v := newBatchVendor(t, bigmodelBatch, files)
+		provider, ctx, keys := newBatchTestProvider(v)
+		assert.Equal(t, callsUnder("/v1"), batchAndFileCalls(t, v, provider, ctx, keys))
+	})
+
+	t.Run("custom provider without overrides keeps /v1", func(t *testing.T) {
+		v := newBatchVendor(t, bigmodelBatch, files)
+		provider, ctx, keys := newBigmodelTestProvider(v, nil)
+		assert.Equal(t, callsUnder("/v1"), batchAndFileCalls(t, v, provider, ctx, keys))
+	})
+
+	t.Run("an absolute override replaces the base URL", func(t *testing.T) {
+		v := newBatchVendorAt(t, "/api/paas/v4", bigmodelBatch, files)
+		provider, ctx, keys := newBigmodelTestProvider(v, map[schemas.RequestType]string{
+			schemas.BatchRetrieveRequest: v.URL + "/api/paas/v4/batches/{batch_id}",
+		})
+		provider.networkConfig.BaseURL = "http://127.0.0.1:1"
+		_, bifrostErr := provider.BatchRetrieve(ctx, keys, &schemas.BifrostBatchRetrieveRequest{BatchID: "batch_1"})
+		require.Nil(t, bifrostErr, "retrieve: %v", bifrostErr)
+		assert.Equal(t, []string{"GET /api/paas/v4/batches/batch_1"}, v.snapshotCalls())
+	})
+
+	t.Run("results fall back to the batch_retrieve override for the retrieve leg", func(t *testing.T) {
+		v := newBatchVendorAt(t, "/api/paas/v4", bigmodelBatch, files)
+		overrides := map[schemas.RequestType]string{}
+		for requestType, override := range bigmodelPathOverrides {
+			if requestType != schemas.BatchResultsRequest {
+				overrides[requestType] = override
+			}
+		}
+		provider, ctx, keys := newBigmodelTestProvider(v, overrides)
+		_, bifrostErr := provider.BatchResults(ctx, keys, &schemas.BifrostBatchResultsRequest{BatchID: "batch_1"})
+		require.Nil(t, bifrostErr, "results: %v", bifrostErr)
+		assert.Equal(t, []string{"GET /api/paas/v4/batches/batch_1", "GET /api/paas/v4/files/file-out/content", "GET /api/paas/v4/files/file-err/content"}, v.snapshotCalls())
+	})
+
+	t.Run("an override that lost its placeholder is refused before any upstream call", func(t *testing.T) {
+		v := newBatchVendorAt(t, "/api/paas/v4", bigmodelBatch, files)
+		for requestType, call := range map[schemas.RequestType]func(*OpenAIProvider, *schemas.BifrostContext, []schemas.Key) *schemas.BifrostError{
+			schemas.BatchRetrieveRequest: func(p *OpenAIProvider, ctx *schemas.BifrostContext, keys []schemas.Key) *schemas.BifrostError {
+				_, err := p.BatchRetrieve(ctx, keys, &schemas.BifrostBatchRetrieveRequest{BatchID: "batch_1"})
+				return err
+			},
+			schemas.BatchCancelRequest: func(p *OpenAIProvider, ctx *schemas.BifrostContext, keys []schemas.Key) *schemas.BifrostError {
+				_, err := p.BatchCancel(ctx, keys, &schemas.BifrostBatchCancelRequest{BatchID: "batch_1"})
+				return err
+			},
+			schemas.BatchResultsRequest: func(p *OpenAIProvider, ctx *schemas.BifrostContext, keys []schemas.Key) *schemas.BifrostError {
+				_, err := p.BatchResults(ctx, keys, &schemas.BifrostBatchResultsRequest{BatchID: "batch_1"})
+				return err
+			},
+			schemas.FileRetrieveRequest: func(p *OpenAIProvider, ctx *schemas.BifrostContext, keys []schemas.Key) *schemas.BifrostError {
+				_, err := p.FileRetrieve(ctx, keys, &schemas.BifrostFileRetrieveRequest{FileID: "file-out"})
+				return err
+			},
+			schemas.FileDeleteRequest: func(p *OpenAIProvider, ctx *schemas.BifrostContext, keys []schemas.Key) *schemas.BifrostError {
+				_, err := p.FileDelete(ctx, keys, &schemas.BifrostFileDeleteRequest{FileID: "file-out"})
+				return err
+			},
+			schemas.FileContentRequest: func(p *OpenAIProvider, ctx *schemas.BifrostContext, keys []schemas.Key) *schemas.BifrostError {
+				_, err := p.FileContent(ctx, keys, &schemas.BifrostFileContentRequest{FileID: "file-out"})
+				return err
+			},
+		} {
+			provider, ctx, keys := newBigmodelTestProvider(v, map[schemas.RequestType]string{requestType: "/api/paas/v4/batches"})
+			bifrostErr := call(provider, ctx, keys)
+			require.NotNil(t, bifrostErr, "%s", requestType)
+			assert.Contains(t, bifrostErr.Error.Message, "request_path_overrides."+string(requestType), "%s", requestType)
+		}
+		assert.Empty(t, v.snapshotCalls(), "a path without the id never reaches the vendor")
+	})
+}
+
+// A bigmodel batch's results come back per line in the contract's shape: the output file's
+// lines succeeded with the OpenAI chat body and its usage, the error file's line failed
+// with the vendor's error. The batch names its endpoint "/v4/chat/completions", which is
+// read as the chat operation.
+func TestBatchResultsOfABigmodelBatch(t *testing.T) {
+	v := newBatchVendorAt(t, "/api/paas/v4", bigmodelBatch, map[string]string{
+		"file-out": bigmodelOutputLine1 + "\n" + bigmodelOutputLine2 + "\n",
+		"file-err": bigmodelErrorLine + "\n",
+	})
+	provider, ctx, keys := newBigmodelTestProvider(v, bigmodelPathOverrides)
+
+	resp, bifrostErr := provider.BatchResults(ctx, keys, &schemas.BifrostBatchResultsRequest{BatchID: "batch_1791490810192076800"})
+	require.Nil(t, bifrostErr, "results: %v", bifrostErr)
+	require.Len(t, resp.Results, 3)
+
+	first := resp.Results[0]
+	assert.Equal(t, "request-1", first.CustomID)
+	assert.Equal(t, schemas.BatchResultStatusSucceeded, first.Status)
+	assert.Nil(t, first.Error)
+	require.NotNil(t, first.Response)
+	assert.Equal(t, 200, first.Response.StatusCode)
+	assert.Equal(t, "615-request-1", first.Response.Body["request_id"])
+	assert.Len(t, first.Response.Body["choices"], 1)
+	usage := first.Response.Body["usage"].(map[string]any)
+	assert.EqualValues(t, 89, usage["prompt_tokens"])
+	assert.EqualValues(t, 26, usage["completion_tokens"])
+	assert.EqualValues(t, 115, usage["total_tokens"])
+
+	second := resp.Results[1]
+	assert.Equal(t, "request-2", second.CustomID)
+	usage = second.Response.Body["usage"].(map[string]any)
+	assert.EqualValues(t, 94, usage["prompt_tokens"])
+	assert.EqualValues(t, 64, usage["prompt_tokens_details"].(map[string]any)["cached_read_tokens"], "the unified usage of the chat operation, as on the sync route")
+
+	failed := resp.Results[2]
+	assert.Equal(t, "request-3", failed.CustomID)
+	assert.Equal(t, schemas.BatchResultStatusFailed, failed.Status)
+	require.NotNil(t, failed.Error)
+	assert.Equal(t, "1210", failed.Error.Code)
+	assert.Equal(t, "API 调用参数有误，请检查文档。", failed.Error.Message)
+}
+
+// BenchmarkBatchAndFileResourceURL measures building the URL of a batch or file call that
+// names its target. "before" is what the six call sites did until they read
+// request_path_overrides: one concatenation onto the base URL. The built-in provider and a
+// custom provider without overrides must cost the same; only an overridden path pays for
+// the template.
+func BenchmarkBatchAndFileResourceURL(b *testing.B) {
+	const id = "batch_1791490810192076800"
+	newProvider := func(custom *schemas.CustomProviderConfig) *OpenAIProvider {
+		return NewOpenAIProvider(&schemas.ProviderConfig{
+			NetworkConfig:        schemas.NetworkConfig{BaseURL: "https://open.bigmodel.cn", DefaultRequestTimeoutInSeconds: 30},
+			CustomProviderConfig: custom,
+		}, testNoopLogger{})
+	}
+	var sink string
+	b.Run("before: base URL + /v1 path", func(b *testing.B) {
+		provider := newProvider(nil)
+		b.ReportAllocs()
+		for b.Loop() {
+			sink = provider.networkConfig.BaseURL + "/v1/batches/" + id + "/cancel"
+		}
+	})
+	for _, bc := range []struct {
+		name   string
+		custom *schemas.CustomProviderConfig
+	}{
+		{"built-in provider", nil},
+		{"custom provider without overrides", &schemas.CustomProviderConfig{CustomProviderKey: "tkp_plain", BaseProviderType: schemas.OpenAI}},
+		{"custom provider, path override", &schemas.CustomProviderConfig{CustomProviderKey: "tkp_bigmodel", BaseProviderType: schemas.OpenAI, RequestPathOverrides: bigmodelPathOverrides}},
+		{"custom provider, full URL override", &schemas.CustomProviderConfig{CustomProviderKey: "tkp_bigmodel", BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{schemas.BatchCancelRequest: "https://open.bigmodel.cn/api/paas/v4/batches/{batch_id}/cancel"}}},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			provider := newProvider(bc.custom)
+			b.ReportAllocs()
+			for b.Loop() {
+				url, err := provider.buildResourceURL("/v1/batches/", id, "/cancel", schemas.BatchCancelRequest)
+				if err != nil {
+					b.Fatal(err.Error.Message)
+				}
+				sink = url
+			}
+		})
+	}
+	_ = sink
 }

@@ -468,6 +468,83 @@ func TestHandleProviderAPIError_AllPathsSetRawResponse(t *testing.T) {
 	}
 }
 
+// A request_path_overrides entry for a call that names a batch or a file is a template: the
+// placeholder is replaced by the escaped id, the first request type with an override wins,
+// and an override without its placeholder is an error instead of a path that lost the id.
+func TestGetResourceRequestPath(t *testing.T) {
+	overrides := func(m map[schemas.RequestType]string) *schemas.CustomProviderConfig {
+		return &schemas.CustomProviderConfig{RequestPathOverrides: m}
+	}
+	tests := []struct {
+		name          string
+		config        *schemas.CustomProviderConfig
+		requestTypes  []schemas.RequestType
+		id            string
+		expectedPath  string
+		expectedIsURL bool
+		expectedErr   string
+	}{
+		{name: "no custom provider keeps the default path", requestTypes: []schemas.RequestType{schemas.BatchRetrieveRequest}, expectedPath: "/v1/batches/batch%201"},
+		{name: "no override for the request type keeps the default path", config: overrides(map[schemas.RequestType]string{schemas.BatchCreateRequest: "/api/paas/v4/batches"}), requestTypes: []schemas.RequestType{schemas.BatchRetrieveRequest}, expectedPath: "/v1/batches/batch%201"},
+		{name: "a blank override keeps the default path", config: overrides(map[schemas.RequestType]string{schemas.BatchRetrieveRequest: "  "}), requestTypes: []schemas.RequestType{schemas.BatchRetrieveRequest}, expectedPath: "/v1/batches/batch%201"},
+		{name: "the placeholder is replaced by the escaped id", config: overrides(map[schemas.RequestType]string{schemas.BatchCancelRequest: "/api/paas/v4/batches/{batch_id}/cancel"}), requestTypes: []schemas.RequestType{schemas.BatchCancelRequest}, expectedPath: "/api/paas/v4/batches/batch%201/cancel"},
+		{name: "a leading slash is added", config: overrides(map[schemas.RequestType]string{schemas.FileContentRequest: "api/paas/v4/files/{file_id}/content"}), requestTypes: []schemas.RequestType{schemas.FileContentRequest}, expectedPath: "/api/paas/v4/files/batch%201/content"},
+		{name: "an absolute override is a full URL", config: overrides(map[schemas.RequestType]string{schemas.FileRetrieveRequest: "https://open.bigmodel.cn/api/paas/v4/files/{file_id}"}), requestTypes: []schemas.RequestType{schemas.FileRetrieveRequest}, expectedPath: "https://open.bigmodel.cn/api/paas/v4/files/batch%201", expectedIsURL: true},
+		{name: "the first request type with an override wins", config: overrides(map[schemas.RequestType]string{schemas.BatchResultsRequest: "/results/{batch_id}", schemas.BatchRetrieveRequest: "/retrieve/{batch_id}"}), requestTypes: []schemas.RequestType{schemas.BatchResultsRequest, schemas.BatchRetrieveRequest}, expectedPath: "/results/batch%201"},
+		{name: "a later request type's override is used when the first has none", config: overrides(map[schemas.RequestType]string{schemas.BatchRetrieveRequest: "/retrieve/{batch_id}"}), requestTypes: []schemas.RequestType{schemas.BatchResultsRequest, schemas.BatchRetrieveRequest}, expectedPath: "/retrieve/batch%201"},
+		{name: "an override without its placeholder is an error", config: overrides(map[schemas.RequestType]string{schemas.FileDeleteRequest: "/api/paas/v4/files"}), requestTypes: []schemas.RequestType{schemas.FileDeleteRequest}, expectedErr: "request_path_overrides.file_delete must contain {file_id}"},
+		{name: "the other resource's placeholder does not count", config: overrides(map[schemas.RequestType]string{schemas.FileDeleteRequest: "/api/paas/v4/files/{batch_id}"}), requestTypes: []schemas.RequestType{schemas.FileDeleteRequest}, expectedErr: "must contain {file_id}"},
+		{name: "a placeholder in the host of a full URL is an error", config: overrides(map[schemas.RequestType]string{schemas.FileContentRequest: "https://{file_id}.evil.example.com/content"}), requestTypes: []schemas.RequestType{schemas.FileContentRequest}, expectedErr: "only in the path of a full URL"},
+		{name: "a placeholder in the credentials of a full URL is an error", config: overrides(map[schemas.RequestType]string{schemas.FileContentRequest: "https://{file_id}@evil.example.com/files/{file_id}"}), requestTypes: []schemas.RequestType{schemas.FileContentRequest}, expectedErr: "only in the path of a full URL"},
+		{name: "a placeholder in the scheme of a full URL is an error", config: overrides(map[schemas.RequestType]string{schemas.FileContentRequest: "{file_id}://evil.example.com/files/{file_id}"}), requestTypes: []schemas.RequestType{schemas.FileContentRequest}, expectedErr: "only in the path of a full URL"},
+		{name: "a placeholder in the query of a full URL is an error", config: overrides(map[schemas.RequestType]string{schemas.FileContentRequest: "https://open.bigmodel.cn/files/{file_id}?file={file_id}"}), requestTypes: []schemas.RequestType{schemas.FileContentRequest}, expectedErr: "only in the path, not in a query"},
+		{name: "a placeholder in the query of a path is an error", config: overrides(map[schemas.RequestType]string{schemas.FileContentRequest: "/content?file={file_id}"}), requestTypes: []schemas.RequestType{schemas.FileContentRequest}, expectedErr: "only in the path, not in a query"},
+		{name: "a fixed query beside a path placeholder is kept", config: overrides(map[schemas.RequestType]string{schemas.FileContentRequest: "/files/{file_id}/content?api-version=2024"}), requestTypes: []schemas.RequestType{schemas.FileContentRequest}, expectedPath: "/files/batch%201/content?api-version=2024"},
+		{name: "a path template stays a path whatever the id is", config: overrides(map[schemas.RequestType]string{schemas.FileContentRequest: "{file_id}//evil.example.com/x"}), requestTypes: []schemas.RequestType{schemas.FileContentRequest}, id: "https:", expectedPath: "/https://evil.example.com/x"},
+		{name: "a request type with no placeholder registered is an error", config: overrides(map[schemas.RequestType]string{schemas.BatchListRequest: "/api/paas/v4/batches"}), requestTypes: []schemas.RequestType{schemas.BatchListRequest}, expectedErr: "has no resource path placeholder"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := tt.id
+			if id == "" {
+				id = "batch%201"
+			}
+			path, isURL, err := GetResourceRequestPath("/v1/batches/"+id, tt.config, id, tt.requestTypes...)
+			if tt.expectedErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.expectedErr) {
+					t.Fatalf("expected an error containing %q, got path %q err %v", tt.expectedErr, path, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if path != tt.expectedPath || isURL != tt.expectedIsURL {
+				t.Fatalf("got (%q, %v), want (%q, %v)", path, isURL, tt.expectedPath, tt.expectedIsURL)
+			}
+		})
+	}
+}
+
+// Every request type whose placeholder is registered is refused without it and accepted
+// with it; request types outside the list and blank overrides are not checked.
+func TestValidateResourcePathOverride(t *testing.T) {
+	for requestType, placeholder := range ResourcePathPlaceholders {
+		if err := ValidateResourcePathOverride(requestType, "/api/paas/v4/things"); err == nil {
+			t.Errorf("%s: an override without %s was accepted", requestType, placeholder)
+		}
+		if err := ValidateResourcePathOverride(requestType, "/api/paas/v4/things/"+placeholder); err != nil {
+			t.Errorf("%s: an override with %s was refused: %v", requestType, placeholder, err)
+		}
+		if err := ValidateResourcePathOverride(requestType, " "); err != nil {
+			t.Errorf("%s: a blank override was refused: %v", requestType, err)
+		}
+	}
+	if err := ValidateResourcePathOverride(schemas.BatchCreateRequest, "/api/paas/v4/batches"); err != nil {
+		t.Errorf("batch_create names no resource and was refused: %v", err)
+	}
+}
+
 // TestGetRequestPath verifies GetRequestPath handles all path resolution scenarios correctly
 func TestGetRequestPath(t *testing.T) {
 	tests := []struct {
@@ -4247,6 +4324,13 @@ func TestIsAbsoluteRequestURL(t *testing.T) {
 		"v2/chat/completions":              false,
 		"https:///no-host":                 false,
 		"":                                 false,
+		// A resource template is judged as the URL it becomes: braces in a host would
+		// otherwise fail to parse and read as "not absolute".
+		"https://open.bigmodel.cn/api/paas/v4/files/{file_id}/content": true,
+		"https://{file_id}.evil.example.com/content":                   true,
+		"https://{batch_id}/x":                                         true,
+		"/api/paas/v4/batches/{batch_id}":                              false,
+		"{file_id}//evil.example.com/x":                                false,
 	}
 	for in, want := range cases {
 		if got := IsAbsoluteRequestURL(in); got != want {
@@ -4542,6 +4626,31 @@ func TestExtractDecisionImages_ForwardsURLsForTheProviderToJudge(t *testing.T) {
 // headers come from decoding a network config, so the same benchmark builds against
 // the string-valued map the previous release used and records a true before/after.
 // "none" is the common case (no extra headers configured) and must not allocate.
+// BenchmarkGetResourceRequestPath measures what resolving the path of a batch or file call
+// costs: nothing for a provider without overrides, one substitution for an overridden path.
+func BenchmarkGetResourceRequestPath(b *testing.B) {
+	const defaultPath, id = "/v1/batches/batch_1791490810192076800", "batch_1791490810192076800"
+	for _, bc := range []struct {
+		name   string
+		config *schemas.CustomProviderConfig
+	}{
+		{"no custom provider", nil},
+		{"custom provider without overrides", &schemas.CustomProviderConfig{}},
+		{"override for another request type", &schemas.CustomProviderConfig{RequestPathOverrides: map[schemas.RequestType]string{schemas.BatchCreateRequest: "/api/paas/v4/batches"}}},
+		{"path override", &schemas.CustomProviderConfig{RequestPathOverrides: map[schemas.RequestType]string{schemas.BatchRetrieveRequest: "/api/paas/v4/batches/{batch_id}"}}},
+		{"full URL override", &schemas.CustomProviderConfig{RequestPathOverrides: map[schemas.RequestType]string{schemas.BatchRetrieveRequest: "https://open.bigmodel.cn/api/paas/v4/batches/{batch_id}"}}},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, _, err := GetResourceRequestPath(defaultPath, bc.config, id, schemas.BatchResultsRequest, schemas.BatchRetrieveRequest); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkSetExtraHeaders(b *testing.B) {
 	b.Setenv("BF_BENCH_EXTRA_HEADER", "from-env")
 	cases := []struct {

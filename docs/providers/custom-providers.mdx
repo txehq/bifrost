@@ -461,6 +461,47 @@ The field accepts a mapping of request types to either custom **paths** or **ful
 When a full URL (with scheme and host) is provided in `request_path_overrides`, Bifrost will use that URL directly and ignore the `base_url` from `network_config` for that specific request type. This allows you to route different request types to completely different endpoints.
 </Info>
 
+**Batch and file calls that name a resource (`openai` base)**
+
+An override replaces the whole default path. A batch or a file call that names its target carries an id in that path, so for these request types the override is a template: write the placeholder where the id goes, and Bifrost replaces it with the escaped id.
+
+| Request type | Default path | Placeholder |
+|---|---|---|
+| `batch_retrieve` | `/v1/batches/{batch_id}` | `{batch_id}` |
+| `batch_cancel` | `/v1/batches/{batch_id}/cancel` | `{batch_id}` |
+| `batch_results` | `/v1/batches/{batch_id}` | `{batch_id}` |
+| `file_retrieve` | `/v1/files/{file_id}` | `{file_id}` |
+| `file_delete` | `/v1/files/{file_id}` | `{file_id}` |
+| `file_content` | `/v1/files/{file_id}/content` | `{file_id}` |
+
+`batch_create`, `batch_list`, `file_upload` and `file_list` name no resource and take a plain path. Reading a batch's results is a batch retrieve followed by a download of its output and error files: the retrieve uses the `batch_results` override, or the `batch_retrieve` one when `batch_results` has none, and each download uses `file_content`.
+
+The template may be a path on `base_url` or a full URL. The placeholder may stand only in the path: never in the scheme, the credentials or the host of a full URL, and never in a query. The id comes from the caller and is escaped as a path segment; the provider key is sent wherever the URL points.
+
+An override for one of these six request types that does not contain its placeholder, or carries it outside the path, is refused when the provider is created or updated, and a request on a provider that already has one fails with a configuration error before anything is sent upstream.
+
+```json
+{
+    "custom_provider_config": {
+        "base_provider_type": "openai",
+        "request_path_overrides": {
+            "batch_create": "/api/paas/v4/batches",
+            "batch_list": "/api/paas/v4/batches",
+            "batch_retrieve": "/api/paas/v4/batches/{batch_id}",
+            "batch_cancel": "/api/paas/v4/batches/{batch_id}/cancel",
+            "batch_results": "/api/paas/v4/batches/{batch_id}",
+            "file_upload": "/api/paas/v4/files",
+            "file_list": "/api/paas/v4/files",
+            "file_retrieve": "/api/paas/v4/files/{file_id}",
+            "file_delete": "/api/paas/v4/files/{file_id}",
+            "file_content": "/api/paas/v4/files/{file_id}/content"
+        }
+    }
+}
+```
+
+This is the configuration for Zhipu bigmodel's batch API (`base_url` `https://open.bigmodel.cn`). Inline batch `requests` are uploaded as they are sent, so each line's `url` and the batch's `endpoint` must be the vendor's spelling (`/v4/chat/completions` on bigmodel). A succeeded result line still carries the unified usage of its operation: the endpoint is matched by operation, whatever API version the vendor writes in front of it.
+
 **Example: OpenAI-Compatible Endpoint with Custom Paths**
 
 ```json

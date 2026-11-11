@@ -228,6 +228,45 @@ test("video, file and batch endpoints answer in OpenAI shape and count their hit
   assert.equal(hits["file.content"], undefined, "nothing downloaded a results file");
 });
 
+// Folder 407 (TXE-6665): the bigmodel upstream answers files and batches only under /api/paas/v4 and keeps
+// every call with its method and the name of the key it carried, so a case can prove which path and which key
+// the gateway used; a call on the default /v1 path is a 404 that still shows in the wire.
+test("the bigmodel upstream answers only under /api/paas/v4 and records method and key name", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}/pp/bigmodel`;
+  const keyA = { Authorization: "Bearer bm-fixture-key-a" };
+  const keyB = { Authorization: "Bearer bm-fixture-key-b" };
+  const file = await (await fetch(`${base}/api/paas/v4/files`, { method: "POST", headers: keyB, body: "multipart bytes" })).json();
+  assert.equal(file.id, "file-bm-input");
+  const created = await (await fetch(`${base}/api/paas/v4/batches`, { method: "POST", headers: keyB, body: JSON.stringify({ input_file_id: file.id, endpoint: "/v4/chat/completions", metadata: { tokun_batch_id: "b1" } }) })).json();
+  assert.equal(created.status, "validating");
+  assert.deepEqual(created.metadata, { tokun_batch_id: "b1" });
+  const batch = await (await fetch(`${base}/api/paas/v4/batches/${created.id}`, { headers: keyB })).json();
+  assert.equal(batch.status, "completed");
+  assert.equal(batch.endpoint, "/v4/chat/completions");
+  const cancelled = await (await fetch(`${base}/api/paas/v4/batches/${created.id}/cancel`, { method: "POST", headers: keyA })).json();
+  assert.equal(cancelled.status, "cancelling");
+  const output = (await (await fetch(`${base}/api/paas/v4/files/${batch.output_file_id}/content`, { headers: keyB })).text()).trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual(output.map((l) => l.custom_id), ["request-1", "request-2"]);
+  assert.equal(output[0].response.body.usage.total_tokens, 115);
+  const errors = (await (await fetch(`${base}/api/paas/v4/files/${batch.error_file_id}/content`)).text()).trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(errors[0].response.body.error.code, "1210");
+  for (const [method, path] of [["GET", `/v1/batches/${created.id}`], ["POST", `/v1/batches/${created.id}/cancel`], ["GET", "/v1/files/file-bm-output/content"], ["GET", "/api/paas/v4/batches/other"]]) {
+    assert.equal((await fetch(`${base}${path}`, { method, headers: keyB })).status, 404, `${method} ${path}`);
+  }
+  const calls = (await (await fetch(`http://127.0.0.1:${post.port}/__wire`)).json()).data[0].calls;
+  assert.deepEqual(calls.slice(0, 6).map((c) => `${c.method} ${c.path} ${c.key}`), [
+    "POST /pp/bigmodel/api/paas/v4/files tk-key-bigmodel-b",
+    "POST /pp/bigmodel/api/paas/v4/batches tk-key-bigmodel-b",
+    `GET /pp/bigmodel/api/paas/v4/batches/${created.id} tk-key-bigmodel-b`,
+    `POST /pp/bigmodel/api/paas/v4/batches/${created.id}/cancel tk-key-bigmodel-a`,
+    "GET /pp/bigmodel/api/paas/v4/files/file-bm-output/content tk-key-bigmodel-b",
+    "GET /pp/bigmodel/api/paas/v4/files/file-bm-error/content unknown",
+  ]);
+  assert.equal(calls.length, 10, "the refused calls are recorded too");
+  assert.ok(!JSON.stringify(calls).includes("bm-fixture-key"), "no key value is kept");
+});
+
 // upstream-idle-stream answers a streamed chat request in two writes with a 2.5 s gap, and /__sent keeps the
 // exact bytes, so a passthrough case can compare what the gateway relayed byte for byte.
 test("upstream-idle-stream pauses between its events and records the bytes it sent", async (t) => {

@@ -1,6 +1,8 @@
 // Package schemas defines the core schemas and types used by the Bifrost system.
 package schemas
 
+import "strings"
+
 // BatchStatus represents the status of a batch job.
 type BatchStatus string
 
@@ -500,9 +502,28 @@ type BifrostBatchResultsResponse struct {
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
+// canonical returns the /v1 spelling of an endpoint a vendor writes under another API version:
+// Zhipu bigmodel's batches name "/v4/chat/completions" for the operation OpenAI names
+// "/v1/chat/completions". Only a leading "/v<digits>/" segment is rewritten.
+func (endpoint BatchEndpoint) canonical() BatchEndpoint {
+	rest, ok := strings.CutPrefix(string(endpoint), "/v")
+	if !ok {
+		return endpoint
+	}
+	digits := 0
+	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 || digits == len(rest) || rest[digits] != '/' {
+		return endpoint
+	}
+	return BatchEndpoint("/v1" + rest[digits:])
+}
+
 // UnifyBatchResultUsage rewrites body["usage"] of a succeeded batch line into the unified
 // usage of the line's operation, the shape the sync route returns for the same request, so
-// one billing map reads both. The vendor's usage is decoded into the operation's unified
+// one billing map reads both. The endpoint is matched by operation, whatever API version
+// the vendor spells it under (see canonical). The vendor's usage is decoded into the operation's unified
 // type and encoded back; a body without usage, or an endpoint with no unified usage type,
 // is left as it is. The body is modified in place and returned.
 func UnifyBatchResultUsage(endpoint BatchEndpoint, body map[string]any) map[string]any {
@@ -511,7 +532,7 @@ func UnifyBatchResultUsage(endpoint BatchEndpoint, body map[string]any) map[stri
 		return body
 	}
 	var unified any
-	switch endpoint {
+	switch endpoint.canonical() {
 	case BatchEndpointChatCompletions, BatchEndpointCompletions, BatchEndpointEmbeddings:
 		unified = &BifrostLLMUsage{}
 	case BatchEndpointResponses:

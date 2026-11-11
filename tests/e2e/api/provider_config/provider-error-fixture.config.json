@@ -593,6 +593,60 @@
         "default_request_timeout_in_seconds": 10
       }
     },
+    "tkp_bigmodel": {
+      "keys": [
+        {
+          "name": "tk-key-bigmodel-a",
+          "value": "bm-fixture-key-a",
+          "models": [
+            "*"
+          ],
+          "use_for_batch_api": true,
+          "weight": 1
+        },
+        {
+          "name": "tk-key-bigmodel-b",
+          "value": "bm-fixture-key-b",
+          "models": [
+            "*"
+          ],
+          "use_for_batch_api": true,
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "allowed_requests": {
+          "batch_create": true,
+          "batch_list": true,
+          "batch_retrieve": true,
+          "batch_cancel": true,
+          "batch_results": true,
+          "file_upload": true,
+          "file_list": true,
+          "file_retrieve": true,
+          "file_delete": true,
+          "file_content": true
+        },
+        "request_path_overrides": {
+          "batch_create": "/api/paas/v4/batches",
+          "batch_list": "/api/paas/v4/batches",
+          "batch_retrieve": "/api/paas/v4/batches/{batch_id}",
+          "batch_cancel": "/api/paas/v4/batches/{batch_id}/cancel",
+          "batch_results": "/api/paas/v4/batches/{batch_id}",
+          "file_upload": "/api/paas/v4/files",
+          "file_list": "/api/paas/v4/files",
+          "file_retrieve": "/api/paas/v4/files/{file_id}",
+          "file_delete": "/api/paas/v4/files/{file_id}",
+          "file_content": "/api/paas/v4/files/{file_id}/content"
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/bigmodel",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
     "pp_vercel": {
       "keys": [
         {

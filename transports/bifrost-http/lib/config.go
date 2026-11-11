@@ -28,6 +28,7 @@ import (
 	"github.com/capsohq/bifrost/core/mcp"
 	mcputils "github.com/capsohq/bifrost/core/mcp/utils"
 	"github.com/capsohq/bifrost/core/network"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework"
 	"github.com/capsohq/bifrost/framework/configstore"
@@ -9789,6 +9790,22 @@ func ValidateCustomProvider(config configstore.ProviderConfig, provider schemas.
 	// Reject Bedrock providers with IsKeyLess=true
 	if cpc.BaseProviderType == schemas.Bedrock && cpc.IsKeyLess {
 		return fmt.Errorf("custom provider validation failed: Bedrock providers cannot be keyless (is_key_less=true)")
+	}
+
+	// On the openai base an override for a call that names a batch or a file by id is a
+	// template. One without its placeholder would fail every such request, so it is refused
+	// here, when the provider is written. The other base types do not read these overrides.
+	if cpc.BaseProviderType == schemas.OpenAI {
+		requestTypes := make([]string, 0, len(cpc.RequestPathOverrides))
+		for requestType := range cpc.RequestPathOverrides {
+			requestTypes = append(requestTypes, string(requestType))
+		}
+		slices.Sort(requestTypes)
+		for _, requestType := range requestTypes {
+			if err := providerUtils.ValidateResourcePathOverride(schemas.RequestType(requestType), cpc.RequestPathOverrides[schemas.RequestType(requestType)]); err != nil {
+				return fmt.Errorf("custom provider validation failed: %w", err)
+			}
+		}
 	}
 
 	return nil
