@@ -532,6 +532,29 @@ Rows 403.10 and 403.11 are the async route: 403.10 submits a url-only job to
 transcript, the duration usage and exactly one call in `/__wire`. Run them together and in order, as the
 folder does.
 
+## Gemini embedding batches on the fixture
+
+Folder 406 (TXE-6637) runs its rows 406.5 to 406.8 on the same fixture and the same isolated gateway as folder
+154; rows 406.2 and 406.3 run on any gateway, and rows 406.1 and 406.4 need the real vendor and are skipped
+when `providerErrorFixture=1`. Start the fixture and the isolated gateway as in the section above, then:
+
+```bash
+newman run tmp/provider-harness.json \
+  --folder "406. Gemini embedding batches run through asyncBatchEmbedContent (gemini embedding-batch)" \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1 \
+  --env-var providerErrorFixtureUrl=http://127.0.0.1:8791
+```
+
+The fixture answers `POST /pp/gemini/models/{model}:asyncBatchEmbedContent` with a pending job,
+`POST /pp/gemini/batches/{id}:cancel` with `{}`, and `GET /pp/gemini/batches/{id}` by id:
+`emb-fixture-done` is a finished inline batch of seven responses for four lines (one input; three
+inputs sent as three requests; a failed line; two inputs, one of which failed) and any other id is
+Gemini's `NOT_FOUND`. A batch read bearing a key other than `test-key` is Gemini's "API key not valid"
+400, and `GET /__wire` records the `x-goog-api-key` of every batch read, which is how row 406.8 shows
+that the key the caller named, and no other, reached the vendor. The job shapes are the API
+reference's; no live `asyncBatchEmbedContent` response has been recorded.
+
 ## Fork deployment switches: provider job accounting off and passthrough heartbeat off
 
 Folder 329 (TXE-6519) uses the same fixture and the same isolated gateway as folder 154. The

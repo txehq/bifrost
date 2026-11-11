@@ -123814,7 +123814,7 @@
                 },
                 "url": {
                   "type": "string",
-                  "description": "The operation the line runs, e.g. `/v1/chat/completions`. Defaults to the batch's\n`endpoint`. On `gemini` and `vertex` (Gemini models) the supported urls are\n`/v1/chat/completions` and `/v1/images/generations`; any other is a 400 naming\nthe line.\n"
+                  "description": "The operation the line runs, e.g. `/v1/chat/completions`. Defaults to the batch's\n`endpoint`. On `gemini` and `vertex` (Gemini models) the supported urls are\n`/v1/chat/completions` and `/v1/images/generations`; any other is a 400 naming\nthe line. On `gemini`, `/v1/embeddings` lines are also supported, as a batch of\ntheir own (`asyncBatchEmbedContent`): every line of the batch must then be an\nembeddings line. A line whose `input` holds several items is sent to the vendor\nas one request per item, so the batch's `request_counts` count inputs, and comes\nback as one result line whose `data` holds one embedding per item; the line\nfails if any of its items fails.\n"
                 },
                 "body": {
                   "type": "object",

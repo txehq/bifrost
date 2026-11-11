@@ -109,3 +109,65 @@ func TestBatchRequestItemEndpointAndLineError(t *testing.T) {
 		t.Errorf("BatchLineError = %q", err.Error())
 	}
 }
+
+// An embeddings line is read as the sync /v1/embeddings route reads the same body: every input
+// shape that route accepts, the embedding parameters, and unmodelled fields as extra params.
+func TestBatchRequestItemToBifrostEmbeddingRequest(t *testing.T) {
+	line := func(body string) BatchRequestItem {
+		var item BatchRequestItem
+		if err := Unmarshal([]byte(`{"custom_id":"e-1","url":"/v1/embeddings","body":`+body+`}`), &item); err != nil {
+			t.Fatalf("line: %v", err)
+		}
+		return item
+	}
+
+	request, err := line(`{"model":"gemini-embedding-001","input":["a","b"],"dimensions":256,"task_type":"RETRIEVAL_QUERY","encoding_format":"float","vendor_only":1}`).ToBifrostEmbeddingRequest(Gemini, "gemini-embedding-001")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if request.Provider != Gemini || request.Model != "gemini-embedding-001" {
+		t.Fatalf("provider/model = %s/%s", request.Provider, request.Model)
+	}
+	if got := EmbeddingInput(request.Input).Texts(); len(got) != 2 || got[0] != "a" || got[1] != "b" || len(request.Input) != 2 {
+		t.Fatalf("input = %v (%d items)", got, len(request.Input))
+	}
+	if request.Params.Dimensions == nil || *request.Params.Dimensions != 256 || request.Params.TaskType == nil || *request.Params.TaskType != "RETRIEVAL_QUERY" {
+		t.Fatalf("params = %+v", request.Params)
+	}
+	if len(request.Params.ExtraParams) != 1 || request.Params.ExtraParams["vendor_only"] == nil {
+		t.Fatalf("extra params = %v: only the unmodelled field belongs there", request.Params.ExtraParams)
+	}
+
+	for name, tc := range map[string]struct {
+		body  string
+		items int
+	}{
+		"a string":                 {`{"input":"hello"}`, 1},
+		"token ids":                {`{"input":[15339,1917]}`, 1},
+		"several token inputs":     {`{"input":[[15339,1917],[9906]]}`, 2},
+		"content parts":            {`{"input":[[{"type":"text","text":"a"}],[{"type":"text","text":"b"}]]}`, 2},
+		"items with params":        {`{"input":[{"content":[{"type":"text","text":"a"}],"params":{"task_type":"RETRIEVAL_QUERY"}}]}`, 1},
+		"the flat multimodal list": {`{"input":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}`, 1},
+	} {
+		request, err := line(tc.body).ToBifrostEmbeddingRequest(Gemini, "m")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if len(request.Input) != tc.items {
+			t.Fatalf("%s: %d items, want %d", name, len(request.Input), tc.items)
+		}
+	}
+
+	for name, body := range map[string]string{
+		"no input":       `{"model":"m"}`,
+		"an empty input": `{"input":[]}`,
+		"an empty text":  `{"input":[[{"type":"text","text":""}]]}`,
+	} {
+		if _, err := line(body).ToBifrostEmbeddingRequest(Gemini, "m"); err == nil {
+			t.Fatalf("%s: expected an error", name)
+		}
+	}
+	if _, err := (BatchRequestItem{CustomID: "e-2"}).ToBifrostEmbeddingRequest(Gemini, "m"); err == nil || err.Error() != "body is required" {
+		t.Fatalf("no body: %v", err)
+	}
+}
