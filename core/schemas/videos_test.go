@@ -6,7 +6,10 @@ import (
 	"testing"
 )
 
-func TestBifrostVideoGenerationResponseBackfillSeconds(t *testing.T) {
+// TXE-6537 (contract C5): the duration on a task object is the provider's own. It is never
+// filled from the request, and Gemini and Vertex no longer get an 8-second default; usage stays
+// empty too. The model is still backfilled.
+func TestBifrostVideoGenerationResponseNeverBackfillsSeconds(t *testing.T) {
 	request := func(provider ModelProvider, seconds *string) *BifrostRequest {
 		req := &BifrostVideoGenerationRequest{Provider: provider, Model: "m"}
 		if seconds != nil {
@@ -21,9 +24,11 @@ func TestBifrostVideoGenerationResponseBackfillSeconds(t *testing.T) {
 		want     *string
 	}{
 		{name: "provider-reported duration is kept", reported: Ptr("5"), req: request(MiniMax, Ptr("2")), want: Ptr("5")},
-		{name: "missing duration comes from the request", req: request(OpenAI, Ptr("8")), want: Ptr("8")},
-		{name: "missing duration on Gemini gets the default", req: request(Gemini, nil), want: Ptr(DefaultVideoDuration)},
-		{name: "nothing to backfill", req: request(OpenAI, nil), want: nil},
+		{name: "requested duration is not copied", req: request(OpenAI, Ptr("8")), want: nil},
+		{name: "requested duration is not copied on Vertex", req: request(Vertex, Ptr("6")), want: nil},
+		{name: "no default on Gemini", req: request(Gemini, nil), want: nil},
+		{name: "no default on Vertex", req: request(Vertex, nil), want: nil},
+		{name: "no default on a remix", req: &BifrostRequest{VideoRemixRequest: &BifrostVideoRemixRequest{Provider: Vertex}}, want: nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -35,7 +40,10 @@ func TestBifrostVideoGenerationResponseBackfillSeconds(t *testing.T) {
 			case tc.want != nil && (resp.Seconds == nil || *resp.Seconds != *tc.want):
 				t.Errorf("seconds = %v, want %q", resp.Seconds, *tc.want)
 			}
-			if resp.Model != "m" {
+			if resp.Usage != nil {
+				t.Errorf("usage = %+v, want none: the vendor reported no quantity", resp.Usage)
+			}
+			if tc.req.VideoGenerationRequest != nil && resp.Model != "m" {
 				t.Errorf("model = %q, want backfilled m", resp.Model)
 			}
 		})
@@ -43,7 +51,7 @@ func TestBifrostVideoGenerationResponseBackfillSeconds(t *testing.T) {
 }
 
 // BenchmarkBifrostVideoGenerationResponseBackfillParams measures the backfill every video create
-// and edit response gets in the core request path, with and without a provider-reported duration.
+// and edit response gets in the core request path.
 func BenchmarkBifrostVideoGenerationResponseBackfillParams(b *testing.B) {
 	req := &BifrostRequest{VideoGenerationRequest: &BifrostVideoGenerationRequest{
 		Provider: MiniMax,
@@ -51,19 +59,19 @@ func BenchmarkBifrostVideoGenerationResponseBackfillParams(b *testing.B) {
 		Params:   &VideoGenerationParameters{Seconds: Ptr("2")},
 	}}
 	for _, tc := range []struct {
-		name     string
-		reported *string
+		name  string
+		model string
 	}{
 		{name: "provider_reported_none"},
-		{name: "provider_reported_seconds", reported: Ptr("5")},
+		{name: "provider_reported_model", model: "MiniMax-H3"},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
-				resp := BifrostVideoGenerationResponse{Seconds: tc.reported, Model: "MiniMax-H3"}
+				resp := BifrostVideoGenerationResponse{Model: tc.model}
 				resp.BackfillParams(req)
-				if resp.Seconds == nil {
-					b.Fatal("no seconds")
+				if resp.Model == "" {
+					b.Fatal("no model")
 				}
 			}
 		})

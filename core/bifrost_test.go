@@ -12370,7 +12370,6 @@ var unmappedVendorPriceNames = map[string]string{
 	"gemini/numberOfVideos":                        "the number of videos; contract C4's video table has no count field to map it to",
 	"gemini/lastFrame":                             "Veo's last frame object; the converter does not deliver the unified last_frame yet, so refusing this name would remove the feature",
 	"gemini/referenceImages":                       "Veo's reference image objects; the converter does not deliver the unified reference_images yet",
-	"gemini/storageURI":                            "the output location; the unified output_storage_uri is a task control field Gemini does not declare, so mapping it would refuse every use",
 	"gemini/storageUri":                            "the output location on images; C4's image table has no storage field",
 	"gemini/sampleImageSize":                       "Imagen's size tier; the genai route converts it to the unified size, and the converter reads the unified resolution",
 	"gemini/compressionQuality":                    "Veo's output compression; C4's video table has no quality field",

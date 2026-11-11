@@ -1,0 +1,1061 @@
+{
+  "name": "417. Veo on the video routes, Vertex and the Gemini API: fields delivered or refused, filtered videos, provider_status, %2F task ids, cancel (vertex endpoint fixture, provider error fixture, vertex veo contract) [SERIAL]",
+  "description": "Pins contract C4, C5, C6, C7 and C9 for Veo on Vertex (TXE-6537) against the local Vertex fixture; no network traffic leaves the machine. Run tests/e2e/api/runners/vertex-endpoint-fixture.mjs --app-dir <dir>, start an isolated gateway with -app-dir <dir>, and run with vertexEndpointFixture=1; every case is skipped otherwise. Keys are selected with x-bf-api-key. The fixture answers :predictLongRunning with an operation named after the model path, and :fetchPredictOperation by the id after /operations/: veo-partly-filtered (one video in the caller's bucket, one inline, one filtered), veo-all-filtered, veo-running, veo-failed. Row 1: a create sends output_storage_uri as parameters.storageUri, aspect_ratio, resolution, last_frame and reference_images under the vendor's names, and fps, pubsubTopic and task inside parameters, with nothing repeated at the top level; the task object has provider_status and no seconds. Rows 2 to 5: a size Veo does not render, an http first frame and callback_url are each 400 caller_unsupported_parameter naming the field with no upstream call, on /v1/videos and on /openai/v1/videos. Row 6: the Gemini-shaped route delivers a gcsUri first frame, storageUri and the Vertex parameters. Rows 7 to 9: a query by a %2F task id reaches Vertex as one operation name; a partly filtered task is completed with two videos and content_filter, the bucket artifact a content entry with no url; a fully filtered one is failed with content_filter; provider_status is done=false, done=true or done=true,error.code=<n>. Row 10: cancel is 400 provider_cancel_unsupported with no upstream call. Red before the change: storageUri was sent as storageURI and output_storage_uri was refused; an unknown size was sent as 16:9; the http frame was sent as a bare mimeType; fps, pubsubTopic and task landed at the top level; the filtered count was not read, so a fully filtered task was completed; the bucket artifact was a url entry; provider_status was absent; the create response carried seconds from the request. Streaming the gs:// artifact through GET /v1/videos/{id}/content is pinned by the Go test (vertex TestVertexVideoDownloadStreamsGCSArtifact). Rows 11 to 16 are the Gemini API, which shares the converter, against the provider error fixture (providerErrorFixture=1; skipped otherwise): size 1920x1080 is aspectRatio 16:9 and resolution 1080p, first and last frame go as bytes, and the create response has no seconds; reference_images go as asset references with aspect_ratio and resolution as given; a size outside Veo's table, a gs:// last frame (only Vertex takes gcsUri) and an http first frame are each 400 caller_unsupported_parameter naming the field with no upstream call; the Gemini-shaped route delivers the frames and parameters as sent. Red before the change on these rows: 1920x1080 sent no resolution, 1024x1024 was sent as 16:9, last_frame and reference_images were not delivered, and the http frame was sent as a bare mimeType.",
+  "item": [
+    {
+      "name": "417.1 vertex/veo-3.1-generate-001 POST /v1/videos sends every unified field and Vertex parameter under the vendor's name, storageUri included, in one upstream call (vertex veo contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/veo-3.1-generate-001\",\n  \"prompt\": \"a red circle drifting across a white background\",\n  \"seconds\": \"8\",\n  \"audio\": false,\n  \"input_reference\": \"gs://fixture-bucket/frames/first.jpg\",\n  \"aspect_ratio\": \"9:16\",\n  \"resolution\": \"1080p\",\n  \"last_frame\": \"gs://fixture-bucket/frames/last.png\",\n  \"reference_images\": [\n    \"data:image/png;base64,cmVmZXJlbmNl\"\n  ],\n  \"output_storage_uri\": \"gs://fixture-bucket/task_417/\",\n  \"fps\": 24,\n  \"pubsubTopic\": \"projects/fixture-project/topics/veo\",\n  \"task\": \"interpolation\",\n  \"sampleCount\": 2\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('200 with a task object whose id is the operation name, URL-encoded, with the provider', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(200);",
+              "  pm.expect(j.id).to.equal('projects%2Ffixture-project%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.1-generate-001%2Foperations%2Fveo-fixture-created:vertex');",
+              "});",
+              "pm.test('status in_progress with the raw operation state in provider_status', function () { pm.expect(j.status).to.equal('in_progress'); pm.expect(j.provider_status).to.equal('done=false'); });",
+              "pm.test('no duration is filled from the request', function () { pm.expect(j, pm.response.text().slice(0, 400)).to.not.have.property('seconds'); pm.expect(j).to.not.have.property('usage'); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = (res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:predictLongRunning/.test(q.path); });",
+              "  pm.test('exactly one :predictLongRunning call reached Vertex', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.equal(1); });",
+              "  var sent = JSON.parse(calls[0].body);",
+              "  pm.test('parameters carry every field under the vendor name', function () {",
+              "    pm.expect(sent.parameters, calls[0].body).to.eql({ storageUri: 'gs://fixture-bucket/task_417/', aspectRatio: '9:16', resolution: '1080p', durationSeconds: 8, generateAudio: false, fps: 24, pubsubTopic: 'projects/fixture-project/topics/veo', task: 'interpolation', sampleCount: 2 });",
+              "  });",
+              "  pm.test('instances[0] carries the first frame, the last frame and the reference image', function () {",
+              "    pm.expect(sent.instances.length).to.equal(1);",
+              "    pm.expect(sent.instances[0].image, calls[0].body).to.eql({ gcsUri: 'gs://fixture-bucket/frames/first.jpg', mimeType: 'image/jpeg' });",
+              "    pm.expect(sent.instances[0].lastFrame).to.eql({ gcsUri: 'gs://fixture-bucket/frames/last.png', mimeType: 'image/png' });",
+              "    pm.expect(sent.instances[0].referenceImages).to.eql([{ image: { bytesBase64Encoded: 'cmVmZXJlbmNl', mimeType: 'image/png' }, referenceType: 'asset' }]);",
+              "  });",
+              "  pm.test('nothing is repeated at the top level of the body', function () { pm.expect(Object.keys(sent).sort(), calls[0].body).to.eql(['instances', 'parameters']); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "417.2 [EXPECT-400] vertex/veo-3.1-generate-001 POST /v1/videos with a size Veo does not render is refused before any upstream call (vertex veo contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/veo-3.1-generate-001\",\n  \"prompt\": \"a red circle\",\n  \"size\": \"1024x1024\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('400 caller_unsupported_parameter naming size', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(400);",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text().slice(0, 400)).to.equal('caller_unsupported_parameter');",
+              "  pm.expect(j.error.param).to.equal('size');",
+              "});",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = (res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:predictLongRunning/.test(q.path); });",
+              "  pm.test('a refused request makes no upstream call', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "417.3 [EXPECT-400] vertex/veo-3.1-generate-001 POST /v1/videos with an http first frame is refused before any upstream call (vertex veo contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/veo-3.1-generate-001\",\n  \"prompt\": \"a red circle\",\n  \"input_reference\": \"https://example.com/first.png\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('400 caller_unsupported_parameter naming input_reference', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(400);",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text().slice(0, 400)).to.equal('caller_unsupported_parameter');",
+              "  pm.expect(j.error.param).to.equal('input_reference');",
+              "});",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = (res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:predictLongRunning/.test(q.path); });",
+              "  pm.test('a refused request makes no upstream call', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "417.4 [EXPECT-400] vertex/veo-3.1-generate-001 POST /v1/videos with callback_url, which Veo has no parameter for, is refused before any upstream call (vertex veo contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/veo-3.1-generate-001\",\n  \"prompt\": \"a red circle\",\n  \"callback_url\": \"https://hooks.example/v/task_417\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('400 caller_unsupported_parameter naming callback_url', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(400);",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text().slice(0, 400)).to.equal('caller_unsupported_parameter');",
+              "  pm.expect(j.error.param).to.equal('callback_url');",
+              "});",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = (res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:predictLongRunning/.test(q.path); });",
+              "  pm.test('a refused request makes no upstream call', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "417.5 [EXPECT-400] /openai/v1/videos vertex/veo-3.1-generate-001 with a size Veo does not render is refused before any upstream call (vertex veo contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/veo-3.1-generate-001\",\n  \"prompt\": \"a red circle\",\n  \"size\": \"1792x1024\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('400 caller_unsupported_parameter naming size', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(400);",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text().slice(0, 400)).to.equal('caller_unsupported_parameter');",
+              "  pm.expect(j.error.param).to.equal('size');",
+              "});",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = (res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:predictLongRunning/.test(q.path); });",
+              "  pm.test('a refused request makes no upstream call', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "417.6 [NO-CONTENT] /genai vertex/veo-3.1-generate-001 :predictLongRunning answers an operation receipt and sends a Cloud Storage first frame, storageUri and the Vertex parameters, in one upstream call (vertex veo contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"instances\": [\n    {\n      \"prompt\": \"a red circle drifting across a white background\",\n      \"image\": {\n        \"gcsUri\": \"gs://fixture-bucket/frames/first.jpg\",\n        \"mimeType\": \"image/jpeg\"\n      }\n    }\n  ],\n  \"parameters\": {\n    \"storageUri\": \"gs://fixture-bucket/task_417/\",\n    \"aspectRatio\": \"9:16\",\n    \"durationSeconds\": 8,\n    \"fps\": 24,\n    \"pubsubTopic\": \"projects/fixture-project/topics/veo\",\n    \"task\": \"interpolation\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/vertex/veo-3.1-generate-001:predictLongRunning",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "vertex",
+            "veo-3.1-generate-001:predictLongRunning"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('200 with an operation name', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(200);",
+              "  pm.expect(j.name, pm.response.text().slice(0, 400)).to.be.a('string').and.include('operations/veo-fixture-created');",
+              "});",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = (res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:predictLongRunning/.test(q.path); });",
+              "  pm.test('exactly one :predictLongRunning call reached Vertex', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.equal(1); });",
+              "  var sent = JSON.parse(calls[0].body);",
+              "  pm.test('the Vertex body keeps the first frame and every parameter', function () {",
+              "    pm.expect(sent.instances[0].image, calls[0].body).to.eql({ gcsUri: 'gs://fixture-bucket/frames/first.jpg', mimeType: 'image/jpeg' });",
+              "    pm.expect(sent.parameters, calls[0].body).to.eql({ storageUri: 'gs://fixture-bucket/task_417/', aspectRatio: '9:16', durationSeconds: 8, fps: 24, pubsubTopic: 'projects/fixture-project/topics/veo', task: 'interpolation' });",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "417.7 vertex GET /v1/videos/{id} with a %2F task id reports two delivered videos and one filtered, the bucket artifact as a content entry (vertex veo contract)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/projects%2Ffixture-project%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.1-generate-001%2Foperations%2Fveo-partly-filtered:vertex",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "projects%2Ffixture-project%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.1-generate-001%2Foperations%2Fveo-partly-filtered:vertex"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('200 completed: the id reached the query as one path segment', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(200);",
+              "  pm.expect(j.status, pm.response.text().slice(0, 400)).to.equal('completed');",
+              "  pm.expect(j.id).to.equal('projects%2Ffixture-project%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.1-generate-001%2Foperations%2Fveo-partly-filtered:vertex');",
+              "});",
+              "pm.test('provider_status is the raw operation state', function () { pm.expect(j.provider_status).to.equal('done=true'); });",
+              "pm.test('content_filter carries the count and the vendor reason verbatim', function () { pm.expect(j.content_filter).to.eql({ filtered_count: 1, reasons: ['Veo could not generate videos because the input may violate the usage guidelines. Support codes: 15236754'] }); });",
+              "pm.test('two delivered videos, the filtered one takes no slot', function () { pm.expect(j.videos.length, JSON.stringify(j.videos).slice(0, 300)).to.equal(2); });",
+              "pm.test('the Cloud Storage artifact is a content entry with no url', function () {",
+              "  pm.expect(j.videos[0]).to.eql({ id: 'gs://fixture-bucket/task_417/sample_0.mp4', type: 'content', content_type: 'video/mp4' });",
+              "  pm.expect(j.videos[1].type).to.equal('base64');",
+              "});",
+              "pm.test('no duration the vendor did not report', function () { pm.expect(j).to.not.have.property('seconds'); pm.expect(j).to.not.have.property('usage'); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = (res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:fetchPredictOperation/.test(q.path); });",
+              "  pm.test('exactly one :fetchPredictOperation call, on the operation region, naming the whole operation', function () {",
+              "    pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.equal(1);",
+              "    pm.expect(calls[0].host).to.equal('us-central1-aiplatform.googleapis.com');",
+              "    pm.expect(JSON.parse(calls[0].body).operationName).to.equal('projects/fixture-project/locations/us-central1/publishers/google/models/veo-3.1-generate-001/operations/veo-partly-filtered');",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "417.8 vertex GET /v1/videos/{id} with every video filtered is failed with content_filter (vertex veo contract)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/projects%2Ffixture-project%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.1-generate-001%2Foperations%2Fveo-all-filtered:vertex",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "projects%2Ffixture-project%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.1-generate-001%2Foperations%2Fveo-all-filtered:vertex"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('200 with a failed task', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(200);",
+              "  pm.expect(j.status, pm.response.text().slice(0, 400)).to.equal('failed');",
+              "});",
+              "pm.test('content_filter is present with the count and the vendor reason', function () { pm.expect(j.content_filter).to.eql({ filtered_count: 2, reasons: ['Veo could not generate videos because the input may violate the usage guidelines. Support codes: 15236754'] }); });",
+              "pm.test('error names the filter and no video is listed', function () { pm.expect(j.error.code).to.equal('content_filtered'); pm.expect(j).to.not.have.property('videos'); });",
+              "pm.test('provider_status is the raw operation state', function () { pm.expect(j.provider_status).to.equal('done=true'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "417.9 vertex GET /v1/videos/{id} carries provider_status for a running and for a failed operation (vertex veo contract)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/projects%2Ffixture-project%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.1-generate-001%2Foperations%2Fveo-running:vertex",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "projects%2Ffixture-project%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.1-generate-001%2Foperations%2Fveo-running:vertex"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('a running operation is in_progress with provider_status done=false', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(200);",
+              "  pm.expect(j.status).to.equal('in_progress');",
+              "  pm.expect(j.provider_status).to.equal('done=false');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/v1/videos/projects%2Ffixture-project%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.1-generate-001%2Foperations%2Fveo-failed:vertex', method: 'GET', header: { 'x-bf-api-key': 'vertex-us-central1' } }, function (err, res) {",
+              "  pm.test('a failed operation is failed with the vendor code in error.code and in provider_status', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code, res.text().slice(0, 400)).to.equal(200);",
+              "    var f = res.json();",
+              "    pm.expect(f.status).to.equal('failed');",
+              "    pm.expect(f.provider_status).to.equal('done=true,error.code=3');",
+              "    pm.expect(f.error.code).to.equal('3');",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "417.10 [EXPECT-400] vertex POST /v1/videos/{id}/cancel with a %2F task id is provider_cancel_unsupported with no upstream call (vertex veo contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/projects%2Ffixture-project%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.1-generate-001%2Foperations%2Fveo-running:vertex/cancel",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "projects%2Ffixture-project%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.1-generate-001%2Foperations%2Fveo-running:vertex",
+            "cancel"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('400 provider_cancel_unsupported from vertex', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(400);",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text().slice(0, 400)).to.equal('provider_cancel_unsupported');",
+              "  pm.expect(j.extra_fields.provider).to.equal('vertex');",
+              "});",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = (res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /./.test(q.path); });",
+              "  pm.test('a refused request makes no upstream call', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "417.11 gemini POST /v1/videos sends size as aspectRatio and resolution, and the first and last frame as bytes (provider error fixture, vertex veo contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/veo-3.1-generate-preview\",\n  \"prompt\": \"a fox running through snow veo-gemini-size-frames\",\n  \"seconds\": \"8\",\n  \"size\": \"1920x1080\",\n  \"input_reference\": \"data:image/png;base64,iVBORw0KGgo=\",\n  \"last_frame\": \"data:image/png;base64,iVBORw0KGgo=\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// The vendor here is the local fixture. Against a real vendor this row would create a billed task.",
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text();",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "pm.test('the video create is accepted and seconds is not copied from the request', function () {",
+              "  pm.expect(pm.response.code, text.slice(0, 600)).to.equal(200);",
+              "  pm.expect(j, text.slice(0, 600)).to.not.have.property('seconds');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/gemini/models/veo-3.1-generate-preview:predictLongRunning' && c.body.indexOf('veo-gemini-size-frames') !== -1; });",
+              "  pm.test('the request reached the vendor', function () { pm.expect(calls.length, 'no captured call on /pp/gemini/models/veo-3.1-generate-preview:predictLongRunning').to.be.above(0); });",
+              "  if (!calls.length) { return; }",
+              "  var raw = calls[calls.length - 1].body;",
+              "  var sent = JSON.parse(raw);",
+              "  var inst = (sent.instances || [])[0] || {};",
+              "  var params = sent.parameters || {};",
+              "  pm.test('size 1920x1080 is aspectRatio 16:9 and resolution 1080p, seconds is durationSeconds', function () {",
+              "    pm.expect(params.aspectRatio, raw).to.equal('16:9');",
+              "    pm.expect(params.resolution, raw).to.equal('1080p');",
+              "    pm.expect(params.durationSeconds, raw).to.equal(8);",
+              "  });",
+              "  pm.test('the first and the last frame are sent as bytes with their type', function () {",
+              "    pm.expect(inst.image, raw).to.eql({ bytesBase64Encoded: 'iVBORw0KGgo=', mimeType: 'image/png' });",
+              "    pm.expect(inst.lastFrame, raw).to.eql({ bytesBase64Encoded: 'iVBORw0KGgo=', mimeType: 'image/png' });",
+              "  });",
+              "  pm.test('nothing is repeated at the top level or under a unified name', function () {",
+              "    pm.expect(Object.keys(sent).sort(), raw).to.eql(['instances', 'parameters']);",
+              "    pm.expect(Object.keys(params), raw).to.not.include.members(['size', 'last_frame', 'seconds']);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "417.12 gemini POST /v1/videos sends reference_images as asset references and aspect_ratio and resolution as given (provider error fixture, vertex veo contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/veo-3.1-generate-preview\",\n  \"prompt\": \"a fox running through snow veo-gemini-reference-images\",\n  \"aspect_ratio\": \"9:16\",\n  \"resolution\": \"720p\",\n  \"reference_images\": [\n    \"data:image/png;base64,iVBORw0KGgo=\"\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// The vendor here is the local fixture. Against a real vendor this row would create a billed task.",
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text();",
+              "pm.test('the video create is accepted', function () { pm.expect(pm.response.code, text.slice(0, 600)).to.equal(200); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/gemini/models/veo-3.1-generate-preview:predictLongRunning' && c.body.indexOf('veo-gemini-reference-images') !== -1; });",
+              "  pm.test('the request reached the vendor', function () { pm.expect(calls.length, 'no captured call on /pp/gemini/models/veo-3.1-generate-preview:predictLongRunning').to.be.above(0); });",
+              "  if (!calls.length) { return; }",
+              "  var raw = calls[calls.length - 1].body;",
+              "  var sent = JSON.parse(raw);",
+              "  var inst = (sent.instances || [])[0] || {};",
+              "  var params = sent.parameters || {};",
+              "  pm.test('the reference image is an asset reference carrying the bytes', function () {",
+              "    pm.expect(inst.referenceImages, raw).to.eql([{ image: { bytesBase64Encoded: 'iVBORw0KGgo=', mimeType: 'image/png' }, referenceType: 'asset' }]);",
+              "  });",
+              "  pm.test('aspect_ratio and resolution reach Veo under its names with the values sent', function () {",
+              "    pm.expect(params.aspectRatio, raw).to.equal('9:16');",
+              "    pm.expect(params.resolution, raw).to.equal('720p');",
+              "    pm.expect(Object.keys(sent).sort(), raw).to.eql(['instances', 'parameters']);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "417.13 [EXPECT-400] gemini POST /v1/videos refuses a size Veo does not render (provider error fixture, vertex veo contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/veo-3.1-generate-preview\",\n  \"prompt\": \"a fox running through snow veo-gemini-bad-size\",\n  \"size\": \"1024x1024\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// The vendor here is the local fixture. Against a real vendor this row would create a billed task.",
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text();",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "pm.test('400 caller_unsupported_parameter naming size', function () {",
+              "  pm.expect(pm.response.code, text.slice(0, 600)).to.equal(400);",
+              "  pm.expect((j.extra_fields || {}).error_type, text.slice(0, 600)).to.equal('caller_unsupported_parameter');",
+              "  pm.expect((j.error || {}).param, text.slice(0, 600)).to.equal('size');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/gemini/models/veo-3.1-generate-preview:predictLongRunning' && c.body.indexOf('veo-gemini-bad-size') !== -1; });",
+              "  pm.test('a refused request makes no upstream call', function () { pm.expect(calls.length, JSON.stringify(calls)).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "417.14 [EXPECT-400] gemini POST /v1/videos refuses a gs:// last frame, which only Vertex takes (provider error fixture, vertex veo contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/veo-3.1-generate-preview\",\n  \"prompt\": \"a fox running through snow veo-gemini-gcs-frame\",\n  \"last_frame\": \"gs://frames/last.png\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// The vendor here is the local fixture. Against a real vendor this row would create a billed task.",
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text();",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "pm.test('400 caller_unsupported_parameter naming last_frame', function () {",
+              "  pm.expect(pm.response.code, text.slice(0, 600)).to.equal(400);",
+              "  pm.expect((j.extra_fields || {}).error_type, text.slice(0, 600)).to.equal('caller_unsupported_parameter');",
+              "  pm.expect((j.error || {}).param, text.slice(0, 600)).to.equal('last_frame');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/gemini/models/veo-3.1-generate-preview:predictLongRunning' && c.body.indexOf('veo-gemini-gcs-frame') !== -1; });",
+              "  pm.test('a refused request makes no upstream call', function () { pm.expect(calls.length, JSON.stringify(calls)).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "417.15 [EXPECT-400] gemini POST /v1/videos refuses an http first frame (provider error fixture, vertex veo contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/veo-3.1-generate-preview\",\n  \"prompt\": \"a fox running through snow veo-gemini-http-frame\",\n  \"input_reference\": \"https://example.com/first.png\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// The vendor here is the local fixture. Against a real vendor this row would create a billed task.",
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text();",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "pm.test('400 caller_unsupported_parameter naming input_reference', function () {",
+              "  pm.expect(pm.response.code, text.slice(0, 600)).to.equal(400);",
+              "  pm.expect((j.extra_fields || {}).error_type, text.slice(0, 600)).to.equal('caller_unsupported_parameter');",
+              "  pm.expect((j.error || {}).param, text.slice(0, 600)).to.equal('input_reference');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/gemini/models/veo-3.1-generate-preview:predictLongRunning' && c.body.indexOf('veo-gemini-http-frame') !== -1; });",
+              "  pm.test('a refused request makes no upstream call', function () { pm.expect(calls.length, JSON.stringify(calls)).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "417.16 [NO-CONTENT] gemini POST /genai/v1beta/models/{model}:predictLongRunning delivers the first frame, lastFrame and the parameters as sent (provider error fixture, vertex veo contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"instances\": [\n    {\n      \"prompt\": \"a fox running through snow veo-gemini-genai\",\n      \"image\": {\n        \"bytesBase64Encoded\": \"iVBORw0KGgo=\",\n        \"mimeType\": \"image/png\"\n      },\n      \"lastFrame\": {\n        \"bytesBase64Encoded\": \"iVBORw0KGgo=\",\n        \"mimeType\": \"image/png\"\n      }\n    }\n  ],\n  \"parameters\": {\n    \"aspectRatio\": \"16:9\",\n    \"resolution\": \"1080p\",\n    \"durationSeconds\": 8\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini/veo-3.1-generate-preview:predictLongRunning",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini",
+            "veo-3.1-generate-preview:predictLongRunning"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// The vendor here is the local fixture. Against a real vendor this row would create a billed task.",
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text();",
+              "pm.test('the reply is the operation Veo started', function () {",
+              "  pm.expect(pm.response.code, text.slice(0, 600)).to.equal(200);",
+              "  var op = {}; try { op = pm.response.json(); } catch (e) { op = {}; }",
+              "  pm.expect(String(op.name), text.slice(0, 600)).to.include('operations/');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/gemini/models/veo-3.1-generate-preview:predictLongRunning' && c.body.indexOf('veo-gemini-genai') !== -1; });",
+              "  pm.test('the request reached the vendor', function () { pm.expect(calls.length, 'no captured call on /pp/gemini/models/veo-3.1-generate-preview:predictLongRunning').to.be.above(0); });",
+              "  if (!calls.length) { return; }",
+              "  var raw = calls[calls.length - 1].body;",
+              "  var sent = JSON.parse(raw);",
+              "  var inst = (sent.instances || [])[0] || {};",
+              "  var params = sent.parameters || {};",
+              "  pm.test('Veo received the frames and the parameters the caller sent', function () {",
+              "    pm.expect(inst.image, raw).to.eql({ bytesBase64Encoded: 'iVBORw0KGgo=', mimeType: 'image/png' });",
+              "    pm.expect(inst.lastFrame, raw).to.eql({ bytesBase64Encoded: 'iVBORw0KGgo=', mimeType: 'image/png' });",
+              "    pm.expect(params.aspectRatio, raw).to.equal('16:9');",
+              "    pm.expect(params.resolution, raw).to.equal('1080p');",
+              "    pm.expect(params.durationSeconds, raw).to.equal(8);",
+              "    pm.expect(Object.keys(sent).sort(), raw).to.eql(['instances', 'parameters']);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -210,6 +210,25 @@ func TestVideoSettle_ContentFilteredParksRatherThanGuesses(t *testing.T) {
 	assert.Zero(t, settlement.Cost)
 }
 
+// TXE-6537: a task that delivered videos and had others filtered is charged for the delivered
+// clips. Parking it with the fully filtered ones would leave delivered output uncharged.
+func TestVideoSettle_PartlyFilteredJobIsPricedByTheClipsDelivered(t *testing.T) {
+	job := videoJob(t, "vid_partly_filtered", generationDims("sora-2-pro", "1280x720", 8))
+	settlement := settleVideo(t, job, &schemas.BifrostVideoGenerationResponse{
+		Status: schemas.VideoStatusCompleted,
+		Videos: []schemas.VideoOutput{
+			{Type: schemas.VideoOutputTypeContent, ID: "gs://out/t/sample_0.mp4", ContentType: "video/mp4"},
+			{Type: schemas.VideoOutputTypeBase64, ContentType: "video/mp4"},
+		},
+		ContentFilter: &schemas.ContentFilterInfo{FilteredCount: 1, Reasons: []string{"safety"}},
+	})
+
+	require.True(t, settlement.Priced)
+	assert.True(t, settlement.Complete)
+	assert.Empty(t, settlement.UnpriceableReason)
+	assert.InDelta(t, 2*8*0.30, settlement.Cost, 1e-12, "the two delivered clips, not the filtered one")
+}
+
 func TestVideoSettle_NoRateRecordsUnpricedRatherThanFree(t *testing.T) {
 	job := videoJob(t, "vid_norate", generationDims("some-unknown-model", "1920x1080", 8))
 	settlement := settleVideo(t, job, &schemas.BifrostVideoGenerationResponse{

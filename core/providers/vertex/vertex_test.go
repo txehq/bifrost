@@ -256,3 +256,82 @@ func TestVertexImagen_UnsupportedParamsReturn400(t *testing.T) {
 	require.NotNil(t, bifrostErr)
 	assert.NotEqual(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
 }
+
+// TXE-6537 (contract C4): a Veo create whose size or first frame cannot be sent is refused with
+// 400 caller_unsupported_parameter before any key or endpoint work (the empty key below would
+// otherwise fail with "project ID is not set"). A Cloud Storage first frame is deliverable.
+func TestVertexVideoGeneration_UndeliverableFieldsReturn400(t *testing.T) {
+	config := &schemas.ProviderConfig{}
+	config.CheckAndSetDefaults()
+	provider, err := vertex.NewVertexProvider(config, nil)
+	require.NoError(t, err)
+	create := func(input schemas.VideoGenerationInput, params schemas.VideoGenerationParameters) *schemas.BifrostError {
+		input.Prompt = "a fox"
+		_, bifrostErr := provider.VideoGeneration(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.Key{},
+			&schemas.BifrostVideoGenerationRequest{Provider: schemas.Vertex, Model: "veo-3.1-generate-001", Input: &input, Params: &params})
+		require.NotNil(t, bifrostErr)
+		return bifrostErr
+	}
+	assertRejected := func(t *testing.T, bifrostErr *schemas.BifrostError, param string) {
+		t.Helper()
+		require.NotNil(t, bifrostErr.StatusCode, "error: %+v", bifrostErr.Error)
+		assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+		require.NotNil(t, bifrostErr.Error)
+		assert.Equal(t, param, bifrostErr.Error.Param)
+		assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+	}
+
+	assertRejected(t, create(schemas.VideoGenerationInput{}, schemas.VideoGenerationParameters{Size: "1024x1024"}), "size")
+	assertRejected(t, create(schemas.VideoGenerationInput{InputReference: schemas.Ptr("https://example.com/first.png")}, schemas.VideoGenerationParameters{}), "input_reference")
+	assertRejected(t, create(schemas.VideoGenerationInput{}, schemas.VideoGenerationParameters{LastFrame: "https://example.com/last.png"}), "last_frame")
+	assertRejected(t, create(schemas.VideoGenerationInput{}, schemas.VideoGenerationParameters{ReferenceImages: schemas.VideoReferenceImages{"https://example.com/ref.png"}}), "reference_images")
+	assertRejected(t, create(schemas.VideoGenerationInput{}, schemas.VideoGenerationParameters{Seconds: schemas.Ptr("7.5")}), "seconds")
+
+	deliverable := create(schemas.VideoGenerationInput{InputReference: schemas.Ptr("gs://frames/first.png")},
+		schemas.VideoGenerationParameters{Size: "1920x1080", TaskControlParameters: schemas.TaskControlParameters{OutputStorageURI: schemas.Ptr("gs://out/task_1/")}})
+	assert.NotEqual(t, schemas.ErrorTypeCallerUnsupportedParameter, deliverable.ExtraFields.ErrorType, "error: %+v", deliverable.Error)
+}
+
+// TXE-6537 (contract C4 BF4, C7): what core's pre-key checks decide for Vertex. Veo takes the
+// unified video fields below and output_storage_uri; it has no callback, external task id or
+// deadline parameter, no output format, and no cancel API.
+func TestVertexVideoFieldAndCancelDeclarations(t *testing.T) {
+	config := &schemas.ProviderConfig{}
+	config.CheckAndSetDefaults()
+	provider, err := vertex.NewVertexProvider(config, nil)
+	require.NoError(t, err)
+	check := func(params schemas.VideoGenerationParameters) *schemas.BifrostError {
+		req := &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{
+			Provider: schemas.Vertex, Model: "veo-3.1-generate-001", Input: &schemas.VideoGenerationInput{Prompt: "a fox"}, Params: &params,
+		}}
+		if bifrostErr := schemas.CheckDeclaredUnifiedFields(provider, req); bifrostErr != nil {
+			return bifrostErr
+		}
+		return schemas.CheckTaskControlFields(provider, req)
+	}
+
+	require.Nil(t, check(schemas.VideoGenerationParameters{
+		Seconds: schemas.Ptr("8"), Size: "1280x720", Audio: schemas.Ptr(true), Seed: schemas.Ptr(7), NegativePrompt: schemas.Ptr("rain"),
+		AspectRatio: "16:9", Resolution: "720p", LastFrame: "gs://f/last.png", ReferenceImages: schemas.VideoReferenceImages{"gs://f/ref.png"},
+		TaskControlParameters: schemas.TaskControlParameters{OutputStorageURI: schemas.Ptr("gs://out/task_1/")},
+	}))
+
+	for param, params := range map[string]schemas.VideoGenerationParameters{
+		"output_format":         {OutputFormat: schemas.Ptr("webm")},
+		"type":                  {Type: schemas.Ptr("upscale")},
+		"upscale_factor":        {UpscaleFactor: schemas.Ptr(2)},
+		"callback_url":          {TaskControlParameters: schemas.TaskControlParameters{CallbackURL: schemas.Ptr("https://hooks.tokun.sh/v/task_1")}},
+		"client_reference_id":   {TaskControlParameters: schemas.TaskControlParameters{ClientReferenceID: schemas.Ptr("task_1")}},
+		"expires_after_seconds": {TaskControlParameters: schemas.TaskControlParameters{ExpiresAfterSeconds: schemas.Ptr(3600)}},
+	} {
+		bifrostErr := check(params)
+		require.NotNil(t, bifrostErr, "%s was accepted", param)
+		assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType, param)
+		assert.Equal(t, param, bifrostErr.Error.Param)
+	}
+
+	cancelErr := schemas.CheckVideoCancelSupported(provider, &schemas.BifrostRequest{RequestType: schemas.VideoCancelRequest})
+	require.NotNil(t, cancelErr)
+	assert.Equal(t, http.StatusBadRequest, *cancelErr.StatusCode)
+	assert.Equal(t, schemas.ErrorTypeProviderCancelUnsupported, cancelErr.ExtraFields.ErrorType)
+}

@@ -3316,9 +3316,17 @@ type VideoGenerationParameters struct {
 	// Random seed for reproducibility (Veo 3, 3.1)
 	Seed *int `json:"seed,omitempty"`
 
-	StorageURI *string `json:"storageURI,omitempty"`
+	// Cloud Storage location the vendor writes the output to (Vertex). The vendor's key is
+	// storageUri; the fork sent storageURI before TXE-6537, which Vertex does not read.
+	StorageURI *string `json:"storageUri,omitempty"`
 
 	CompressionQuality *string `json:"compressionQuality,omitempty"`
+
+	// Vertex VideoGenerationModelParams fields with no unified name (fork, TXE-6537): sent
+	// under the vendor's name with the value the caller gave, of whatever JSON type.
+	FPS         any `json:"fps,omitempty"`
+	PubsubTopic any `json:"pubsubTopic,omitempty"`
+	Task        any `json:"task,omitempty"`
 
 	// Veo 2 models only
 	EnhancePrompt *bool `json:"enhancePrompt,omitempty"`
@@ -3601,6 +3609,10 @@ type GenerateVideosOperationResponse struct {
 	GeneratedVideos []*GeneratedVideo `json:"generatedVideos,omitempty"`
 	// List of generated sample videos in operation retrieve responses.
 	Videos []VideoGenerationResponse `json:"videos,omitempty"`
+	// Vertex shape (GoogleCloudAiplatformV1GenerateVideoResponse): how many videos the vendor's
+	// safety filter removed, and its reasons. The removed videos are not in Videos (fork, TXE-6537).
+	RAIMediaFilteredCount   int32    `json:"raiMediaFilteredCount,omitempty"`
+	RAIMediaFilteredReasons []string `json:"raiMediaFilteredReasons,omitempty"`
 }
 
 type VideoGenerationResponse struct {

@@ -259,8 +259,22 @@ func CheckTaskControlFields(provider any, req *BifrostRequest) *BifrostError {
 	return nil
 }
 
-// DefaultVideoDuration is the default video duration in seconds for Gemini/Vertex when not specified.
+// DefaultVideoDuration is the duration Veo renders when the request names none. It is used only
+// for Bifrost's own accounting (passthrough usage estimates and job settlement); a task object
+// never carries it.
 const DefaultVideoDuration = "8"
+
+// DefaultVideoSeconds is the duration a provider renders when a video create names none, for
+// the providers whose default Bifrost knows (Veo on Gemini and Vertex: 8 seconds). Job
+// settlement prices a create that sent no seconds by it, so such a job is still charged to the
+// caller's budget. It is never written to a response (contract C5).
+func DefaultVideoSeconds(provider ModelProvider) (int, bool) {
+	switch provider {
+	case Gemini, Vertex:
+		return 8, true
+	}
+	return 0, false
+}
 
 // BifrostVideoGenerationResponse represents the video generation job response in bifrost format.
 type BifrostVideoGenerationResponse struct {
@@ -349,41 +363,15 @@ type VideoUsage struct {
 	VendorCost     *VendorCost `json:"vendor_cost,omitempty"`     // money or credits the vendor reported
 }
 
-// getSecondsFromVideoRequest extracts Seconds from video-related requests.
-func getSecondsFromVideoRequest(req *BifrostRequest) *string {
-	if req == nil {
-		return nil
-	}
-	useDefaultForSeconds := func(p ModelProvider) bool {
-		return p == Gemini || p == Vertex
-	}
-	if req.VideoGenerationRequest != nil {
-		var seconds *string
-		if req.VideoGenerationRequest.Params != nil {
-			seconds = req.VideoGenerationRequest.Params.Seconds
-		}
-		if seconds == nil && useDefaultForSeconds(req.VideoGenerationRequest.Provider) {
-			seconds = Ptr(DefaultVideoDuration)
-		}
-		return seconds
-	}
-	if req.VideoRemixRequest != nil && useDefaultForSeconds(req.VideoRemixRequest.Provider) {
-		return Ptr(DefaultVideoDuration)
-	}
-	return nil
-}
-
-// BackfillParams populates response fields from the original request that are needed
-// for cost calculation but may not be returned by the provider.
-// - Seconds (duration from request params or default), only when the provider reported none
+// BackfillParams populates response fields from the original request that the provider may not
+// return. It fills the model only.
+//
+// Fork (TXE-6537, contract C5): the duration is never filled from the request, nor from a
+// default (it was 8 seconds for Gemini and Vertex). Seconds is what the provider reported or
+// ordered; when the provider says nothing it stays empty, and so does usage.output_seconds.
 func (r *BifrostVideoGenerationResponse) BackfillParams(req *BifrostRequest) {
 	if r == nil || req == nil {
 		return
-	}
-	// Fork: keep a duration the provider already reported. A provider can normalize the requested
-	// duration (MiniMax clamps H3-Max to 5-15s), and that is the clip that was ordered and billed.
-	if r.Seconds == nil {
-		r.Seconds = getSecondsFromVideoRequest(req)
 	}
 	if r.Model == "" {
 		switch {

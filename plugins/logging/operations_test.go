@@ -4046,6 +4046,46 @@ func newVideoLifecyclePlugin(t *testing.T) (*LoggerPlugin, *fakeBatchStore) {
 	}, bs
 }
 
+// TXE-6537: a Veo create that names no duration renders the vendor's 8-second default, and the
+// task object no longer carries a duration copied from the request. Settlement still needs one,
+// so the accounting row gets the default: without it the job cannot be priced and is never
+// charged to the caller's budget. A provider whose default Bifrost does not know gets none.
+func TestRecordVideoJobLifecycle_DefaultDurationPricesAVeoJobWithoutSeconds(t *testing.T) {
+	cases := []struct {
+		provider schemas.ModelProvider
+		seconds  *string
+		reported *string
+		want     *int
+	}{
+		{schemas.Vertex, nil, nil, schemas.Ptr(8)},
+		{schemas.Gemini, nil, nil, schemas.Ptr(8)},
+		{schemas.Vertex, schemas.Ptr("4"), nil, schemas.Ptr(4)},
+		{schemas.Vertex, nil, schemas.Ptr("6"), schemas.Ptr(6)},
+		{schemas.OpenAI, nil, nil, nil},
+	}
+	for _, tc := range cases {
+		plugin, bs := newVideoLifecyclePlugin(t)
+		entry := &logstore.Log{
+			ID: "req-veo", Provider: string(tc.provider), Model: "veo-3.1-generate-001", SelectedKeyID: "key-abc",
+			ParamsParsed: &schemas.VideoGenerationParameters{Seconds: tc.seconds, Size: "1280x720"},
+		}
+		plugin.recordVideoJobLifecycle(entry, &schemas.BifrostResponse{
+			VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "op-1", Status: schemas.VideoStatusInProgress, Seconds: tc.reported},
+		}, schemas.VideoGenerationRequest)
+		job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, string(tc.provider), "op-1"))
+		if err != nil {
+			t.Fatalf("%s: expected a video job row: %v", tc.provider, err)
+		}
+		got := jobaccounting.VideoDimensionsFromJob(job).Seconds
+		switch {
+		case tc.want == nil && got != nil:
+			t.Fatalf("%s: seconds = %d, want none", tc.provider, *got)
+		case tc.want != nil && (got == nil || *got != *tc.want):
+			t.Fatalf("%s (sent %v, reported %v): seconds = %v, want %d", tc.provider, tc.seconds, tc.reported, got, *tc.want)
+		}
+	}
+}
+
 // The request is the only witness to duration and resolution for most providers,
 // and it is in hand exactly once — here. If it is not written down now, settlement
 // minutes later has nothing to price from.
