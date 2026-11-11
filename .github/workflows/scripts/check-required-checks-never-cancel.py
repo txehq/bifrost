@@ -35,7 +35,7 @@ import sys
 import yaml
 
 # The required status checks of main's branch protection.
-REQUIRED_CHECKS = ("codex-review", "API collection offline suites")
+REQUIRED_CHECKS = ("codex-review", "API collection offline suites", "Go unit tests (offline)")
 
 WAIT_VAR = re.compile(r"_WAIT_SECONDS$")
 
