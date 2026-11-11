@@ -12501,3 +12501,373 @@ func TestConvertersReadNoUnlistedVendorPriceName(t *testing.T) {
 		}
 	}
 }
+
+// nestedPriceProbeModels are the extra models TestNestedPriceFieldsAreDeclaredAndRefused
+// sends each price field with, beside guardModel: the names from which a provider picks a
+// request shape that nests those fields elsewhere (Imagen and Veo beside the Gemini image
+// models; Bedrock's embedding families). A converter that gains a shape for a new model
+// family is covered once a model of it is listed here.
+var nestedPriceProbeModels = map[schemas.ModelProvider][]string{
+	schemas.Gemini:  {"imagen-4.0-generate-001", "veo-3.1-generate-preview"},
+	schemas.Vertex:  {"imagen-4.0-generate-001", "veo-3.1-generate-preview"},
+	schemas.Bedrock: {"amazon.titan-embed-image-v1", "amazon.nova-2-multimodal-embeddings-v1:0"},
+}
+
+// nestedPriceProbe is one request type sent bare and then once per price-affecting field.
+type nestedPriceProbe struct {
+	requestType schemas.RequestType
+	// send runs the operation with the n-th variant of its parameters; variant 0 is the
+	// bare request the others are compared with. It returns false past the last variant.
+	send func(ctx *schemas.BifrostContext, provider schemas.Provider, key schemas.Key, model string, variant int) bool
+}
+
+func nestedPriceProbes() []nestedPriceProbe {
+	text := guardOriginalText
+	images := []*schemas.ImageGenerationParameters{
+		{}, {N: schemas.Ptr(3)}, {Size: schemas.Ptr("1024x1024")}, {Size: schemas.Ptr("1536x1024")}, {Quality: schemas.Ptr("high")},
+		{AspectRatio: schemas.Ptr("16:9")}, {ResponseFormat: schemas.Ptr("b64_json")}, {OutputFormat: schemas.Ptr("jpeg")},
+		{Background: schemas.Ptr("transparent")}, {Resolution: "2K"},
+	}
+	edits := []*schemas.ImageEditParameters{
+		{}, {N: schemas.Ptr(3)}, {Size: schemas.Ptr("1024x1024")}, {Quality: schemas.Ptr("high")},
+		{ResponseFormat: schemas.Ptr("b64_json")}, {OutputFormat: schemas.Ptr("jpeg")}, {Background: schemas.Ptr("transparent")},
+	}
+	videos := []*schemas.VideoGenerationParameters{
+		{}, {Seconds: schemas.Ptr("8")}, {Seconds: schemas.Ptr("5")}, {Size: "1280x720"}, {Size: "720x1280"},
+		{Audio: schemas.Ptr(true)}, {AspectRatio: "16:9"}, {Resolution: "1080p"}, {Resolution: "720p"},
+	}
+	// Every speech variant names a voice: several providers refuse a request without one.
+	// The voice is itself a price field, found by sending a second voice.
+	speeches := func(voice string) []*schemas.SpeechParameters {
+		named := func() *schemas.SpeechVoiceInput { return &schemas.SpeechVoiceInput{Voice: schemas.Ptr(voice)} }
+		other := strings.TrimSuffix(voice, "-A") + "-B"
+		return []*schemas.SpeechParameters{
+			{VoiceConfig: named()}, {VoiceConfig: &schemas.SpeechVoiceInput{Voice: schemas.Ptr(other)}},
+			{VoiceConfig: named(), ResponseFormat: "wav"}, {VoiceConfig: named(), ResponseFormat: "opus"},
+			{VoiceConfig: named(), Speed: schemas.Ptr(1.5)}, {VoiceConfig: named(), Instructions: "speak slowly"},
+			{VoiceConfig: named(), LanguageCode: schemas.Ptr("en-US")},
+		}
+	}
+	embeddings := []*schemas.EmbeddingParameters{
+		{}, {Dimensions: schemas.Ptr(256)}, {EncodingFormat: schemas.Ptr("base64")}, {TaskType: schemas.Ptr("search_query")},
+	}
+	transcriptions := []*schemas.TranscriptionParameters{
+		{}, {Language: schemas.Ptr("en")}, {ResponseFormat: schemas.Ptr("verbose_json")},
+	}
+	return []nestedPriceProbe{
+		{schemas.ImageGenerationRequest, func(ctx *schemas.BifrostContext, pr schemas.Provider, key schemas.Key, model string, variant int) bool {
+			if variant >= len(images) {
+				return false
+			}
+			params := *images[variant]
+			_, _ = pr.ImageGeneration(ctx, key, &schemas.BifrostImageGenerationRequest{Provider: pr.GetProviderKey(), Model: model, Input: &schemas.ImageGenerationInput{Prompt: text}, Params: &params})
+			return true
+		}},
+		{schemas.ImageEditRequest, func(ctx *schemas.BifrostContext, pr schemas.Provider, key schemas.Key, model string, variant int) bool {
+			if variant >= len(edits) {
+				return false
+			}
+			params := *edits[variant]
+			_, _ = pr.ImageEdit(ctx, key, &schemas.BifrostImageEditRequest{Provider: pr.GetProviderKey(), Model: model, Input: &schemas.ImageEditInput{Prompt: text, Images: []schemas.ImageInput{{Image: []byte("png")}}}, Params: &params})
+			return true
+		}},
+		{schemas.VideoGenerationRequest, func(ctx *schemas.BifrostContext, pr schemas.Provider, key schemas.Key, model string, variant int) bool {
+			if variant >= len(videos) {
+				return false
+			}
+			params := *videos[variant]
+			_, _ = pr.VideoGeneration(ctx, key, &schemas.BifrostVideoGenerationRequest{Provider: pr.GetProviderKey(), Model: model, Input: &schemas.VideoGenerationInput{Prompt: text}, Params: &params})
+			return true
+		}},
+		{schemas.SpeechRequest, func(ctx *schemas.BifrostContext, pr schemas.Provider, key schemas.Key, model string, variant int) bool {
+			variants := speeches(guardSpeechVoice(pr.GetProviderKey(), model))
+			if variant >= len(variants) {
+				return false
+			}
+			_, _ = pr.Speech(ctx, key, &schemas.BifrostSpeechRequest{Provider: pr.GetProviderKey(), Model: model, Input: &schemas.SpeechInput{Input: text}, Params: variants[variant]})
+			return true
+		}},
+		{schemas.EmbeddingRequest, func(ctx *schemas.BifrostContext, pr schemas.Provider, key schemas.Key, model string, variant int) bool {
+			if variant >= len(embeddings) {
+				return false
+			}
+			params := *embeddings[variant]
+			_, _ = pr.Embedding(ctx, key, &schemas.BifrostEmbeddingRequest{Provider: pr.GetProviderKey(), Model: model, Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}}, Params: &params})
+			return true
+		}},
+		{schemas.TranscriptionRequest, func(ctx *schemas.BifrostContext, pr schemas.Provider, key schemas.Key, model string, variant int) bool {
+			if variant >= len(transcriptions) {
+				return false
+			}
+			params := *transcriptions[variant]
+			_, _ = pr.Transcription(ctx, key, &schemas.BifrostTranscriptionRequest{Provider: pr.GetProviderKey(), Model: model, Input: &schemas.TranscriptionInput{File: []byte(guardOriginalText), Filename: "audio.wav"}, Params: &params})
+			return true
+		}},
+	}
+}
+
+// nestedBodyLeaves flattens a JSON body into its leaves below the top level, keyed by
+// dotted path and following objects only: what an extra param named after the parent
+// object could add. A list is one leaf; nothing inside it is reachable by the merge.
+func nestedBodyLeaves(prefix string, value interface{}, out map[string]string) {
+	object, isObject := value.(map[string]interface{})
+	if !isObject {
+		if strings.Contains(prefix, ".") {
+			encoded, _ := json.Marshal(value)
+			out[prefix] = string(encoded)
+		}
+		return
+	}
+	for name, child := range object {
+		path := name
+		if prefix != "" {
+			path = prefix + "." + name
+		}
+		nestedBodyLeaves(path, child, out)
+	}
+}
+
+// nestedPriceRequest is a request of requestType whose only parameters are extra params
+// that set value at a dotted body path.
+func nestedPriceRequest(requestType schemas.RequestType, provider schemas.ModelProvider, model, path string, value interface{}) schemas.BifrostRequest {
+	names := strings.Split(path, ".")
+	var current interface{} = value
+	for i := len(names) - 1; i >= 0; i-- {
+		current = map[string]interface{}{names[i]: current}
+	}
+	extra := current.(map[string]interface{})
+	text := guardOriginalText
+	req := schemas.BifrostRequest{RequestType: requestType}
+	switch requestType {
+	case schemas.ImageGenerationRequest:
+		req.ImageGenerationRequest = &schemas.BifrostImageGenerationRequest{Provider: provider, Model: model, Input: &schemas.ImageGenerationInput{Prompt: text}, Params: &schemas.ImageGenerationParameters{ExtraParams: extra}}
+	case schemas.ImageEditRequest:
+		req.ImageEditRequest = &schemas.BifrostImageEditRequest{Provider: provider, Model: model, Input: &schemas.ImageEditInput{Prompt: text, Images: []schemas.ImageInput{{Image: []byte("png")}}}, Params: &schemas.ImageEditParameters{ExtraParams: extra}}
+	case schemas.VideoGenerationRequest:
+		req.VideoGenerationRequest = &schemas.BifrostVideoGenerationRequest{Provider: provider, Model: model, Input: &schemas.VideoGenerationInput{Prompt: text}, Params: &schemas.VideoGenerationParameters{ExtraParams: extra}}
+	case schemas.SpeechRequest:
+		req.SpeechRequest = &schemas.BifrostSpeechRequest{Provider: provider, Model: model, Input: &schemas.SpeechInput{Input: text}, Params: &schemas.SpeechParameters{ExtraParams: extra}}
+	case schemas.EmbeddingRequest:
+		req.EmbeddingRequest = &schemas.BifrostEmbeddingRequest{Provider: provider, Model: model, Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}}, Params: &schemas.EmbeddingParameters{ExtraParams: extra}}
+	case schemas.TranscriptionRequest:
+		req.TranscriptionRequest = &schemas.BifrostTranscriptionRequest{Provider: provider, Model: model, Input: &schemas.TranscriptionInput{File: []byte(text), Filename: "audio.wav"}, Params: &schemas.TranscriptionParameters{ExtraParams: extra}}
+	}
+	return req
+}
+
+// TXE-7124, contract C4: a price-affecting field that a provider's body holds inside an
+// object cannot be set through an extra param named after that object.
+//
+// The test finds those fields itself. For every standard provider it sends each C4
+// operation bare and then once per price-affecting unified field, and reads what the
+// converter put on the wire: a leaf below the top level that appears or changes with the
+// field is a nested price field of that provider. Then, for each one found:
+//
+//   - core's check refuses an extra param that sets it, with 400
+//     caller_unsupported_parameter. A provider whose converter nests a price field that
+//     schemas.NestedPriceFields does not list fails here, so a new provider or a new body
+//     shape is covered or the test says which line to add.
+//   - sent through the real request worker and the real provider, the request is refused
+//     and nothing reaches the upstream.
+//
+// And every path schemas.NestedPriceFields lists must be one a converter writes, so the
+// table cannot keep a path no provider has.
+func TestNestedPriceFieldsAreDeclaredAndRefused(t *testing.T) {
+	upstream := newGuardUpstream(t)
+	client := &Bifrost{logger: NewNoOpLogger()}
+	probes := nestedPriceProbes()
+
+	// The streaming twin of an operation runs the same converter.
+	streamTwin := map[schemas.RequestType]schemas.RequestType{
+		schemas.ImageGenerationStreamRequest: schemas.ImageGenerationRequest,
+		schemas.ImageEditStreamRequest:       schemas.ImageEditRequest,
+		schemas.SpeechStreamRequest:          schemas.SpeechRequest,
+		schemas.TranscriptionStreamRequest:   schemas.TranscriptionRequest,
+	}
+	for _, probe := range probes {
+		if len(schemas.PriceAffectingUnifiedFields(probe.requestType)) == 0 {
+			t.Fatalf("%s is probed but has no price-affecting fields", probe.requestType)
+		}
+	}
+
+	type nestedField struct {
+		requestType schemas.RequestType
+		path        string
+		model       string
+		value       string
+	}
+	total, found := 0, 0
+	for _, providerKey := range schemas.StandardProviders {
+		t.Run(string(providerKey), func(t *testing.T) {
+			config := &schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{BaseURL: "http://" + guardUpstreamHost, DefaultRequestTimeoutInSeconds: 10},
+				ProxyConfig: &schemas.ProxyConfig{
+					Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(upstream.proxyURL), CACertPEM: schemas.NewSecretVar(upstream.caPEM),
+				},
+			}
+			provider, err := client.createBaseProvider(providerKey, config)
+			if err != nil {
+				t.Fatalf("construct: %v", err)
+			}
+			key := guardKey(providerKey)
+			body := func(probe nestedPriceProbe, model string, variant int) (leaves map[string]string, sent, more bool) {
+				upstream.take()
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+				func() {
+					// The upstream's answer is no provider's response shape, and a few
+					// providers do not survive that. What they sent is already recorded.
+					defer func() { _ = recover() }()
+					more = probe.send(ctx, provider, key, model, variant)
+				}()
+				leaves = map[string]string{}
+				for _, request := range upstream.take() {
+					var decoded interface{}
+					if json.Unmarshal(request.body, &decoded) == nil {
+						nestedBodyLeaves("", decoded, leaves)
+						sent = true
+						break
+					}
+				}
+				return leaves, sent, more
+			}
+
+			var nested []nestedField
+			seen := map[string]bool{}
+			for _, model := range append([]string{guardModel(providerKey)}, nestedPriceProbeModels[providerKey]...) {
+				for _, probe := range probes {
+					bare, bareSent, _ := body(probe, model, 0)
+					for variant := 1; ; variant++ {
+						with, _, more := body(probe, model, variant)
+						if !more {
+							break
+						}
+						// Nothing to compare with: the provider does not serve the
+						// operation, or sends no JSON body for it.
+						if !bareSent {
+							continue
+						}
+						for path, value := range with {
+							id := string(probe.requestType) + " " + path
+							if was, inBare := bare[path]; (!inBare || was != value) && !seen[id] {
+								seen[id] = true
+								nested = append(nested, nestedField{probe.requestType, path, model, value})
+							}
+						}
+					}
+				}
+			}
+			sort.Slice(nested, func(i, j int) bool {
+				if nested[i].requestType != nested[j].requestType {
+					return nested[i].requestType < nested[j].requestType
+				}
+				return nested[i].path < nested[j].path
+			})
+
+			// Every nested price field the converter writes is refused as an extra param.
+			for _, field := range nested {
+				var planted interface{}
+				if err := json.Unmarshal([]byte(field.value), &planted); err != nil {
+					t.Fatalf("%s %s: %v", field.requestType, field.path, err)
+				}
+				req := nestedPriceRequest(field.requestType, providerKey, field.model, field.path, planted)
+				bifrostErr := schemas.CheckExtraParamPriceFieldsFor(providerKey, &req)
+				if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter {
+					t.Errorf("%s on %s (model %s) writes the price-affecting value %s at %s, and an extra param that sets it there is not refused. List the path in nestedPriceFields (core/schemas/unifiedfields.go) with the unified field it is written from. Got %+v",
+						providerKey, field.requestType, field.model, field.value, field.path, bifrostErr)
+				}
+			}
+
+			// Every listed path is one the converter writes.
+			listed := 0
+			for _, entry := range schemas.NestedPriceFields() {
+				if entry.Provider != providerKey {
+					continue
+				}
+				listed++
+				for _, requestType := range entry.Requests {
+					base := requestType
+					if twin, isStream := streamTwin[requestType]; isStream {
+						base = twin
+						if !slices.Contains(entry.Requests, twin) {
+							t.Errorf("nestedPriceFields lists %s for %s but not for %s, which runs the same converter", entry.Path, requestType, twin)
+						}
+					}
+					if !seen[string(base)+" "+entry.Path] {
+						t.Errorf("nestedPriceFields lists %s for %s on %s, but no price-affecting field sent through that converter lands there; remove the entry, or add the model that takes that shape to nestedPriceProbeModels", entry.Path, requestType, providerKey)
+					}
+				}
+			}
+			if listed == 0 {
+				return
+			}
+			total += listed
+
+			// Through the real worker and the real provider: refused, and nothing is sent.
+			account := NewMockAccount()
+			account.AddProvider(providerKey, 1, 4)
+			workerKey := key
+			workerKey.Models, workerKey.Weight = schemas.WhiteList{"*"}, 100
+			account.SetKeysForProvider(providerKey, []schemas.Key{workerKey})
+			core, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			t.Cleanup(core.Shutdown)
+			workerConfig, err := account.GetConfigForProvider(providerKey)
+			if err != nil {
+				t.Fatalf("GetConfigForProvider: %v", err)
+			}
+			workerConfig.NetworkConfig, workerConfig.ProxyConfig = config.NetworkConfig, config.ProxyConfig
+			pq := &ProviderQueue{queue: make(chan *ChannelMessage, 2), done: make(chan struct{})}
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go core.requestWorker(provider, workerConfig, pq, &wg)
+			t.Cleanup(func() { pq.signalClosing(); wg.Wait() })
+
+			upstream.take()
+			sent := 0
+			for _, field := range nested {
+				var planted interface{}
+				_ = json.Unmarshal([]byte(field.value), &planted)
+				ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+				tracer := core.getTracer()
+				ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+				ctx.SetValue(schemas.BifrostContextKeyTraceID, tracer.CreateTrace(""))
+				ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+				msg := core.getChannelMessage(nestedPriceRequest(field.requestType, providerKey, field.model, field.path, planted))
+				msg.Context = ctx
+				pq.queue <- msg
+				var bifrostErr *schemas.BifrostError
+				select {
+				case <-msg.Response:
+				case e := <-msg.Err:
+					bifrostErr = &e
+				case <-time.After(10 * time.Second):
+					cancel()
+					t.Fatalf("%s %s: the worker never answered", field.requestType, field.path)
+				}
+				cancel()
+				sent++
+				// error.param is the nested path, or its first name when that object is itself
+				// a unified price field and the top-level rule refuses it (voice.name).
+				parent, _, _ := strings.Cut(field.path, ".")
+				if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 ||
+					bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error == nil ||
+					(bifrostErr.Error.Param != field.path && bifrostErr.Error.Param != parent) {
+					t.Errorf("%s with %s among its extra params: want 400 %s with error.param %q from the worker, got %+v",
+						field.requestType, field.path, schemas.ErrorTypeCallerUnsupportedParameter, field.path, bifrostErr)
+				}
+			}
+			if requests := upstream.take(); len(requests) != 0 {
+				t.Errorf("%d requests reached the upstream for %d refused requests, want 0: first %s", len(requests), sent, requests[0].target)
+			}
+			found += sent
+			t.Logf("%s: %d nested price fields found and refused through the worker, %d listed", providerKey, sent, listed)
+		})
+	}
+	t.Logf("%d nested price fields across all providers, %d table entries", found, total)
+	if total == 0 {
+		t.Fatal("no provider has a listed nested price field: the table or the probes no longer work")
+	}
+}
