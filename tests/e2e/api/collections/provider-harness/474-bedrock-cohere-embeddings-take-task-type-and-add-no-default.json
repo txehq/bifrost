@@ -1,6 +1,6 @@
 {
   "name": "474. Bedrock Cohere embeddings take task_type and add no default input_type (bedrock cohere embeddings task_type)",
-  "description": "Fork contract C4 on Bedrock's Cohere embed models, as on the cohere provider (folder 315). Before this, Bedrock's Cohere converter sent input_type search_document (image for images[]) whenever the caller named none, and ignored the unified task_type. Now task_type is sent as input_type through the same mapping the cohere provider uses (Cohere's own values as given, Gemini's RETRIEVAL_QUERY/RETRIEVAL_DOCUMENT onto search_query/search_document), a native invoke body's own input_type is sent as given, and a request with neither is refused with 400 caller_unsupported_parameter on task_type before any upstream call. Every case pins the key with x-bf-api-key.",
+  "description": "Fork contract C4 on Bedrock's Cohere embed models, as on the cohere provider (folder 315). Before this, Bedrock's Cohere converter sent input_type search_document (image for images[]) whenever the caller named none, and ignored the unified task_type. Now task_type is sent as input_type through the same mapping the cohere provider uses (Cohere's own values as given, Gemini's RETRIEVAL_QUERY/RETRIEVAL_DOCUMENT onto search_query/search_document), a native invoke body's own input_type is sent as given, and a request with neither is refused with 400 caller_unsupported_parameter on task_type before any upstream call, on /v1/embeddings, the native /bedrock invoke route, /genai (Gemini's taskType) and /openai alike. Every case pins the key with x-bf-api-key.",
   "item": [
     {
       "name": "474.1 bedrock/global.cohere.embed-v4:0 - /v1/embeddings task_type reaches Bedrock as input_type",
@@ -222,6 +222,169 @@
               "  var j = pm.response.json(); var e = j.embeddings;",
               "  var n = Array.isArray(e) ? e.length : ((e && e.float) || []).length;",
               "  pm.expect(n, 'body: ' + pm.response.text().slice(0, 300)).to.eql(1);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "474.5 /genai bedrock/global.cohere.embed-v4:0:embedContent - taskType RETRIEVAL_QUERY reaches Bedrock as input_type",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "Bedrock API Key"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          },
+          {
+            "key": "x-bf-send-back-raw-response",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"content\": {\n    \"parts\": [\n      {\n        \"text\": \"alpha kestrel harbor\"\n      }\n    ]\n  },\n  \"taskType\": \"RETRIEVAL_QUERY\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/bedrock/global.cohere.embed-v4:0:embedContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "bedrock",
+            "global.cohere.embed-v4:0:embedContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200 with a vector', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "  pm.expect(((pm.response.json().embedding || {}).values || []).length).to.be.above(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "474.6 [EXPECT-400] /genai bedrock/global.cohere.embed-v4:0:embedContent - no taskType is caller_unsupported_parameter with no upstream call",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "Bedrock API Key"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          },
+          {
+            "key": "x-bf-send-back-raw-response",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"content\": {\n    \"parts\": [\n      {\n        \"text\": \"alpha kestrel harbor\"\n      }\n    ]\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/bedrock/global.cohere.embed-v4:0:embedContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "bedrock",
+            "global.cohere.embed-v4:0:embedContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('400, classified caller_unsupported_parameter', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 400)).to.eql(400);",
+              "  pm.expect(pm.response.headers.get('x-bifrost-error-type')).to.eql('caller_unsupported_parameter');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "474.7 [EXPECT-400] /openai/v1/embeddings bedrock/global.cohere.embed-v4:0 - no task_type is caller_unsupported_parameter with no upstream call",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "Bedrock API Key"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          },
+          {
+            "key": "x-bf-send-back-raw-response",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"alpha kestrel harbor\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "embeddings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('400, classified caller_unsupported_parameter', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 400)).to.eql(400);",
+              "  pm.expect(pm.response.headers.get('x-bifrost-error-type')).to.eql('caller_unsupported_parameter');",
               "});"
             ]
           }
