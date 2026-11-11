@@ -6,6 +6,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -47,6 +51,46 @@ func TestModelHubFollowsTheConfiguredBaseURL(t *testing.T) {
 	require.Nil(t, bifrostErr)
 	assert.Equal(t, "fal-ai/org-model", modelID)
 	assert.Equal(t, []string{"/pp/huggingface/api/models/org/model"}, paths, "the lookup must go to the configured base URL")
+}
+
+// TestNoHuggingFaceRequestGoesToAFixedHost keeps TXE-7117 true of the whole package: the
+// base_url table (core/providers/base_url_support.json) says HuggingFace honours base_url, and
+// that holds only while no request is built from a host constant. The hub constant may be
+// read where the provider chooses its hub base and nowhere else; a new https:// host constant
+// in the package fails here until it is routed through configuration or recorded in the table.
+func TestNoHuggingFaceRequestGoesToAFixedHost(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	require.NoError(t, err)
+	hostConstant := regexp.MustCompile(`"https?://[^"\s]+"`)
+	allowedHosts := map[string]bool{`"https://router.huggingface.co"`: true, `"https://huggingface.co"`: true}
+	hubUses := map[string]int{}
+	hostLiterals := 0
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		source, err := os.ReadFile(file)
+		require.NoError(t, err)
+		for _, line := range strings.Split(string(source), "\n") {
+			// A comment is a whole line or follows the code after a space; "//" inside a
+			// URL literal is neither.
+			code := line
+			if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "//") {
+				continue
+			} else if at := strings.Index(line, " // "); at >= 0 {
+				code = line[:at]
+			}
+			for _, literal := range hostConstant.FindAllString(code, -1) {
+				hostLiterals++
+				assert.True(t, allowedHosts[literal], "%s builds a request from the fixed host %s; take it from configuration (as hubBaseURL does) or record it in base_url_support.json", file, literal)
+			}
+			if strings.Contains(code, "modelHubBaseURL") && !strings.Contains(code, "modelHubBaseURL         =") {
+				hubUses[file]++
+			}
+		}
+	}
+	assert.Equal(t, 2, hostLiterals, "the scan must see the router and hub constants and nothing else; it is not reading the sources if it sees fewer")
+	assert.Equal(t, map[string]int{"huggingface.go": 1, "utils.go": 1}, hubUses, "modelHubBaseURL is read once by the constructor and once by hubBase; every request asks provider.hubBase()")
 }
 
 // Regression tests for https://github.com/capsohq/bifrost/issues/4215.
