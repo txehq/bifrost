@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -829,7 +830,7 @@ func (s *recordingObjectStore) UpsertProviderObject(ctx context.Context, object 
 func TestPreLLMHookBindsObjectsReferencedInsideRequests(t *testing.T) {
 	store := newProviderObjectConfigStore(t)
 	vk := buildVKForMCPStamping(nil)
-	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("gemini", []string{"*"}))
+	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("gemini", []string{"*"}), buildProviderConfig("vertex", []string{"*"}), buildProviderConfig("bedrock", []string{"*"}))
 	plugin := newAccessTestPlugin(t, vk, nil)
 	plugin.configStore = store
 	own := "vk-mcp-stamp"
@@ -1021,6 +1022,84 @@ func TestPreLLMHookBindsObjectsReferencedInsideRequests(t *testing.T) {
 				allowed(t, presentCtx(mcpTestVKValue), build("https://example.com/files/g-other"), "a URL on another host is not a Gemini file")
 				allowed(t, emptyCtx(), build(geminiFiles+"g-other"), "a request that presented no key is unrestricted")
 			})
+		}
+	})
+	// A Vertex upload is recorded under its gs:// URI and a Bedrock upload under its s3:// URI
+	// (TXE-7032). Named as a file, image, video or document input, that URI is the upload: the
+	// provider reads the object with the shared credential. Every route that can carry it is
+	// checked, on the provider itself and on a custom provider built on it.
+	t.Run("storage uris", func(t *testing.T) {
+		for _, tc := range []struct {
+			provider schemas.ModelProvider
+			scheme   string
+		}{{schemas.Vertex, "gs"}, {schemas.Bedrock, "s3"}} {
+			provider := tc.provider
+			foreign := tc.scheme + "://shared-bucket/uploads/other.pdf"
+			mine := tc.scheme + "://shared-bucket/uploads/own.pdf"
+			unrecorded := tc.scheme + "://shared-bucket/uploads/nobody.pdf"
+			seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, string(provider), foreign, other)
+			seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, string(provider), mine, own)
+			chat := func(block schemas.ChatContentBlock) *schemas.BifrostRequest {
+				return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: provider, Model: "m", Input: []schemas.ChatMessage{{
+					Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{block}}}}}}
+			}
+			responses := func(block schemas.ResponsesMessageContentBlock) *schemas.BifrostRequest {
+				return &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: provider, Model: "m", Input: []schemas.ResponsesMessage{{
+					Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{block}}}}}}
+			}
+			builders := map[string]func(string) *schemas.BifrostRequest{
+				"chat file": func(uri string) *schemas.BifrostRequest {
+					return chat(schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileURL: str(uri)}})
+				},
+				"chat image": func(uri string) *schemas.BifrostRequest {
+					return chat(schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: uri}})
+				},
+				"responses file": func(uri string) *schemas.BifrostRequest {
+					return responses(schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeFile, ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileURL: str(uri)}})
+				},
+				"responses image": func(uri string) *schemas.BifrostRequest {
+					return responses(schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeImage, ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: str(uri)}})
+				},
+				"image edit": func(uri string) *schemas.BifrostRequest {
+					return &schemas.BifrostRequest{RequestType: schemas.ImageEditRequest, ImageEditRequest: &schemas.BifrostImageEditRequest{Provider: provider, Model: "m",
+						Input: &schemas.ImageEditInput{Prompt: "make it blue", Images: []schemas.ImageInput{{Image: []byte("png")}, {URL: uri}}}}}
+				},
+				"cached content create": func(uri string) *schemas.BifrostRequest {
+					return &schemas.BifrostRequest{RequestType: schemas.CachedContentCreateRequest, CachedContentCreateRequest: &schemas.BifrostCachedContentCreateRequest{Provider: provider, Model: "m",
+						Contents: []any{map[string]any{"role": "user", "parts": []any{map[string]any{"fileData": map[string]any{"fileUri": uri, "mimeType": "application/pdf"}}}}}}}
+				},
+				"embedding": func(uri string) *schemas.BifrostRequest {
+					req, ok := plantInRequest("EmbeddingRequest", "EmbeddingMediaPart.URL", uri)
+					if !ok {
+						t.Fatal("could not build an embedding request with a media URL")
+					}
+					req.RequestType = schemas.EmbeddingRequest
+					req.SetProvider(provider)
+					return req
+				},
+				"video generation": func(uri string) *schemas.BifrostRequest {
+					return &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{Provider: provider, Model: "m",
+						Input: &schemas.VideoGenerationInput{Prompt: "pan left", InputReference: str(uri)}}}
+				},
+				"an extra param": func(uri string) *schemas.BifrostRequest {
+					return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: provider, Model: "m",
+						Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: str("hi")}}},
+						Params: &schemas.ChatParameters{ExtraParams: map[string]interface{}{"image": map[string]any{"gcsUri": uri}}}}}
+				},
+				"passthrough": func(uri string) *schemas.BifrostRequest {
+					return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: provider, Method: "POST", Path: "/v1/models/m:generateContent",
+						Body: []byte(`{"contents":[{"role":"user","parts":[{"fileData":{"fileUri":"` + uri + `","mimeType":"application/pdf"}}]}]}`)}}
+				},
+			}
+			for name, build := range builders {
+				t.Run(string(provider)+" "+name, func(t *testing.T) {
+					refused(t, build(foreign), foreign)
+					refused(t, build(strings.ToUpper(tc.scheme)+foreign[len(tc.scheme):]), foreign)
+					allowed(t, presentCtx(mcpTestVKValue), build(mine), "the creating key uses its own upload")
+					allowed(t, presentCtx(mcpTestVKValue), build(unrecorded), "an object nobody recorded is unrestricted")
+					allowed(t, emptyCtx(), build(foreign), "a request that presented no key is unrestricted")
+				})
+			}
 		}
 	})
 	// A passthrough request carries the provider's raw body and path, forwarded under the shared
