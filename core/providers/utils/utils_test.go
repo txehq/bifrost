@@ -540,12 +540,24 @@ func TestGetResourceRequestPath(t *testing.T) {
 // Every request type whose placeholder is registered is refused without it and accepted
 // with it; request types outside the list and blank overrides are not checked.
 func TestValidateResourcePathOverride(t *testing.T) {
-	for requestType, placeholder := range ResourcePathPlaceholders {
-		if err := ValidateResourcePathOverride(requestType, "/api/paas/v4/things"); err == nil {
-			t.Errorf("%s: an override without %s was accepted", requestType, placeholder)
+	for requestType, placeholders := range ResourcePathPlaceholders {
+		if len(placeholders) == 0 {
+			t.Errorf("%s is listed with no placeholder", requestType)
+			continue
 		}
-		if err := ValidateResourcePathOverride(requestType, "/api/paas/v4/things/"+placeholder); err != nil {
-			t.Errorf("%s: an override with %s was refused: %v", requestType, placeholder, err)
+		if err := ValidateResourcePathOverride(requestType, "/api/paas/v4/things"); err == nil {
+			t.Errorf("%s: an override without %v was accepted", requestType, placeholders)
+		}
+		if err := ValidateResourcePathOverride(requestType, "/api/paas/v4/things/"+strings.Join(placeholders, "/")); err != nil {
+			t.Errorf("%s: an override with %v was refused: %v", requestType, placeholders, err)
+		}
+		// Each placeholder is required: leaving any one out is refused, naming it.
+		for i, missing := range placeholders {
+			rest := append(append([]string{}, placeholders[:i]...), placeholders[i+1:]...)
+			err := ValidateResourcePathOverride(requestType, "/api/paas/v4/things/"+strings.Join(rest, "/"))
+			if err == nil || !strings.Contains(err.Error(), missing) {
+				t.Errorf("%s: an override without %s: got %v", requestType, missing, err)
+			}
 		}
 		if err := ValidateResourcePathOverride(requestType, " "); err != nil {
 			t.Errorf("%s: a blank override was refused: %v", requestType, err)
@@ -4637,6 +4649,54 @@ func TestExtractDecisionImages_ForwardsURLsForTheProviderToJudge(t *testing.T) {
 // headers come from decoding a network config, so the same benchmark builds against
 // the string-valued map the previous release used and records a true before/after.
 // "none" is the common case (no extra headers configured) and must not allocate.
+// A request type that names two ids has each placeholder replaced by its own id, wherever
+// the template puts it, and an id that spells a placeholder is not substituted again.
+func TestGetResourceRequestPathForIDs(t *testing.T) {
+	config := func(override string) *schemas.CustomProviderConfig {
+		return &schemas.CustomProviderConfig{RequestPathOverrides: map[schemas.RequestType]string{schemas.ContainerFileRetrieveRequest: override}}
+	}
+	const defaultPath = "/v1/containers/cntr_1/files/cfile_2"
+	tests := []struct {
+		name    string
+		config  *schemas.CustomProviderConfig
+		ids     []string
+		want    string
+		wantURL bool
+		wantErr string
+	}{
+		{"no config", nil, []string{"cntr_1", "cfile_2"}, defaultPath, false, ""},
+		{"blank override", config("  "), []string{"cntr_1", "cfile_2"}, defaultPath, false, ""},
+		{"path template", config("api/v3/boxes/{container_id}/items/{file_id}"), []string{"cntr_1", "cfile_2"}, "/api/v3/boxes/cntr_1/items/cfile_2", false, ""},
+		{"ids by placeholder, not by position", config("/api/v3/items/{file_id}/in/{container_id}"), []string{"cntr_1", "cfile_2"}, "/api/v3/items/cfile_2/in/cntr_1", false, ""},
+		{"full URL template", config("https://vendor.example/api/v3/boxes/{container_id}/items/{file_id}"), []string{"cntr_1", "cfile_2"}, "https://vendor.example/api/v3/boxes/cntr_1/items/cfile_2", true, ""},
+		{"an id spelling a placeholder is substituted once", config("/b/{container_id}/i/{file_id}"), []string{"{file_id}", "cfile_2"}, "/b/{file_id}/i/cfile_2", false, ""},
+		{"one placeholder missing", config("/api/v3/boxes/{container_id}/items"), []string{"cntr_1", "cfile_2"}, "", false, "{file_id}"},
+		{"placeholder in the host", config("https://{container_id}.vendor.example/items/{file_id}"), []string{"cntr_1", "cfile_2"}, "", false, "only in the path of a full URL"},
+		{"wrong number of ids", config("/api/v3/boxes/{container_id}/items/{file_id}"), []string{"cntr_1"}, "", false, "got 1 ids"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path, isURL, err := GetResourceRequestPathForIDs(defaultPath, tt.config, schemas.ContainerFileRetrieveRequest, tt.ids...)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("want an error containing %q, got %v", tt.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if path != tt.want || isURL != tt.wantURL {
+				t.Errorf("got (%q, %v), want (%q, %v)", path, isURL, tt.want, tt.wantURL)
+			}
+		})
+	}
+	// The single-id resolver refuses a request type that names two ids.
+	if _, _, err := GetResourceRequestPath(defaultPath, config("/b/{container_id}/i/{file_id}"), "cntr_1", schemas.ContainerFileRetrieveRequest); err == nil {
+		t.Error("GetResourceRequestPath accepted a request type with two placeholders")
+	}
+}
+
 // BenchmarkGetResourceRequestPath measures what resolving the path of a batch or file call
 // costs: nothing for a provider without overrides, one substitution for an overridden path.
 func BenchmarkGetResourceRequestPath(b *testing.B) {

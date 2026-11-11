@@ -108,8 +108,10 @@ const RequestTypes: Array<{ key: RequestType; label: string }> = [
 	{ key: "live", label: "Live" },
 ];
 
-// Path overrides replace the default path verbatim; these request paths embed a
-// resource ID, so an override can never produce a valid URL for them.
+// These request paths embed a resource ID. On the openai base an override for them is a
+// template that must carry the ID's placeholder (providerUtils.ResourcePathPlaceholders);
+// the other bases still send an override verbatim, without the ID. This form offers no
+// path field for them: such an override is written through the API or config.json.
 const PathOverrideUnsupported = new Set<RequestType>([
 	"model_retrieve",
 	"responses_retrieve",

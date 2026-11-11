@@ -138,6 +138,32 @@ func (provider *OpenAIProvider) buildResourceURL(prefix string, escapedID string
 	return provider.networkConfig.BaseURL + path, nil
 }
 
+// buildResourceURLForIDs constructs the URL of a call of one request type whose default path
+// names one or more ids (a model, a video, a container, a file inside a container, a stored
+// response). Without an override for that request type, which is every built-in provider,
+// it is buildRequestURL, unchanged. A custom provider's request_path_overrides entry for
+// such a call is a template: each placeholder of the request type (see
+// providerUtils.ResourcePathPlaceholders) is replaced by its escaped id, given in the order
+// the ids stand in the default path. A path set on the context still wins, as in
+// buildRequestURL. An override without a placeholder is a configuration error, never a
+// request to a path that lost the id.
+func (provider *OpenAIProvider) buildResourceURLForIDs(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType, escapedIDs ...string) (string, *schemas.BifrostError) {
+	if provider.customProviderConfig == nil || strings.TrimSpace(provider.customProviderConfig.RequestPathOverrides[requestType]) == "" {
+		return provider.buildRequestURL(ctx, defaultPath, requestType), nil
+	}
+	if _, ok := ctx.Value(schemas.BifrostContextKeyURLPath).(string); ok {
+		return provider.buildRequestURL(ctx, defaultPath, requestType), nil
+	}
+	path, isCompleteURL, err := providerUtils.GetResourceRequestPathForIDs(defaultPath, provider.customProviderConfig, requestType, escapedIDs...)
+	if err != nil {
+		return "", providerUtils.NewConfigurationError(err.Error())
+	}
+	if isCompleteURL {
+		return path, nil
+	}
+	return provider.networkConfig.BaseURL + path, nil
+}
+
 func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
 		return nil, err
@@ -308,11 +334,15 @@ func (provider *OpenAIProvider) ModelRetrieve(ctx *schemas.BifrostContext, key s
 	if idErr != nil {
 		return nil, idErr
 	}
+	resourceURL, urlErr := provider.buildResourceURLForIDs(ctx, "/v1/models/"+escapedModel, schemas.ModelRetrieveRequest, escapedModel)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	return HandleOpenAIModelRetrieveRequest(
 		ctx,
 		provider.client,
-		provider.buildRequestURL(ctx, "/v1/models/"+escapedModel, schemas.ModelRetrieveRequest),
+		resourceURL,
 		key,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
@@ -4574,11 +4604,15 @@ func (provider *OpenAIProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 	if idErr != nil {
 		return nil, idErr
 	}
+	resourceURL, urlErr := provider.buildResourceURLForIDs(ctx, "/v1/videos/"+escapedVideoID, schemas.VideoRetrieveRequest, escapedVideoID)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	return HandleOpenAIVideoRetrieveRequest(
 		ctx,
 		provider.client,
-		provider.buildRequestURL(ctx, "/v1/videos/"+escapedVideoID, schemas.VideoRetrieveRequest),
+		resourceURL,
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -4611,6 +4645,10 @@ func (provider *OpenAIProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := provider.buildResourceURLForIDs(ctx, "/v1/videos/"+escapedVideoID+"/content", schemas.VideoDownloadRequest, escapedVideoID)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -4620,7 +4658,6 @@ func (provider *OpenAIProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Build URL: /v1/videos/{video_id}/content
-	requestURL := provider.buildRequestURL(ctx, "/v1/videos/"+escapedVideoID+"/content", schemas.VideoDownloadRequest)
 
 	if request.Variant != nil && *request.Variant != "" {
 		// attach variant to url if present
@@ -4669,11 +4706,15 @@ func (provider *OpenAIProvider) VideoDelete(ctx *schemas.BifrostContext, key sch
 	if idErr != nil {
 		return nil, idErr
 	}
+	resourceURL, urlErr := provider.buildResourceURLForIDs(ctx, "/v1/videos/"+escapedVideoID, schemas.VideoDeleteRequest, escapedVideoID)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	return HandleOpenAIVideoDeleteRequest(
 		ctx,
 		provider.client,
-		provider.buildRequestURL(ctx, "/v1/videos/"+escapedVideoID, schemas.VideoDeleteRequest),
+		resourceURL,
 		videoID,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -6829,6 +6870,10 @@ func (provider *OpenAIProvider) VideoRemix(ctx *schemas.BifrostContext, key sche
 	if idErr != nil {
 		return nil, idErr
 	}
+	resourceURL, urlErr := provider.buildResourceURLForIDs(ctx, "/v1/videos/"+escapedVideoID+"/remix", schemas.VideoRemixRequest, escapedVideoID)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
@@ -6841,7 +6886,7 @@ func (provider *OpenAIProvider) VideoRemix(ctx *schemas.BifrostContext, key sche
 
 	// Set headers
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/videos/"+escapedVideoID+"/remix", schemas.VideoRemixRequest))
+	req.SetRequestURI(resourceURL)
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 
@@ -7733,6 +7778,10 @@ func (provider *OpenAIProvider) ContainerRetrieve(ctx *schemas.BifrostContext, k
 	if idErr != nil {
 		return nil, idErr
 	}
+	resourceURL, urlErr := provider.buildResourceURLForIDs(ctx, "/v1/containers/"+escapedContainerID, schemas.ContainerRetrieveRequest, escapedContainerID)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ContainerRetrieveRequest); err != nil {
 		return nil, err
@@ -7753,7 +7802,7 @@ func (provider *OpenAIProvider) ContainerRetrieve(ctx *schemas.BifrostContext, k
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-		req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/containers/"+escapedContainerID, schemas.ContainerRetrieveRequest))
+		req.SetRequestURI(resourceURL)
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
@@ -7851,6 +7900,10 @@ func (provider *OpenAIProvider) ContainerDelete(ctx *schemas.BifrostContext, key
 	if idErr != nil {
 		return nil, idErr
 	}
+	resourceURL, urlErr := provider.buildResourceURLForIDs(ctx, "/v1/containers/"+escapedContainerID, schemas.ContainerDeleteRequest, escapedContainerID)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ContainerDeleteRequest); err != nil {
 		return nil, err
@@ -7871,7 +7924,7 @@ func (provider *OpenAIProvider) ContainerDelete(ctx *schemas.BifrostContext, key
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-		req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/containers/"+escapedContainerID, schemas.ContainerDeleteRequest))
+		req.SetRequestURI(resourceURL)
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
 
@@ -7963,6 +8016,10 @@ func (provider *OpenAIProvider) ContainerFileCreate(ctx *schemas.BifrostContext,
 	if idErr != nil {
 		return nil, idErr
 	}
+	resourceURL, urlErr := provider.buildResourceURLForIDs(ctx, "/v1/containers/"+escapedContainerID+"/files", schemas.ContainerFileCreateRequest, escapedContainerID)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -7972,8 +8029,7 @@ func (provider *OpenAIProvider) ContainerFileCreate(ctx *schemas.BifrostContext,
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	endpoint := fmt.Sprintf("/v1/containers/%s/files", escapedContainerID)
-	req.SetRequestURI(provider.buildRequestURL(ctx, endpoint, schemas.ContainerFileCreateRequest))
+	req.SetRequestURI(resourceURL)
 	req.Header.SetMethod(http.MethodPost)
 
 	// Handle file upload (multipart only)
@@ -8076,6 +8132,10 @@ func (provider *OpenAIProvider) ContainerFileList(ctx *schemas.BifrostContext, k
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := provider.buildResourceURLForIDs(ctx, "/v1/containers/"+escapedContainerID+"/files", schemas.ContainerFileListRequest, escapedContainerID)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	if len(keys) == 0 {
 		if provider.customProviderConfig != nil && provider.customProviderConfig.IsKeyLess {
@@ -8116,8 +8176,6 @@ func (provider *OpenAIProvider) ContainerFileList(ctx *schemas.BifrostContext, k
 	}
 
 	// Build URL with query parameters
-	endpoint := fmt.Sprintf("/v1/containers/%s/files", escapedContainerID)
-	requestURL := provider.buildRequestURL(ctx, endpoint, schemas.ContainerFileListRequest)
 
 	// Add query parameters
 	queryParams := url.Values{}
@@ -8247,6 +8305,10 @@ func (provider *OpenAIProvider) ContainerFileRetrieve(ctx *schemas.BifrostContex
 	if idErr != nil {
 		return nil, idErr
 	}
+	resourceURL, urlErr := provider.buildResourceURLForIDs(ctx, "/v1/containers/"+escapedContainerID+"/files/"+escapedFileID, schemas.ContainerFileRetrieveRequest, escapedContainerID, escapedFileID)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
@@ -8262,8 +8324,7 @@ func (provider *OpenAIProvider) ContainerFileRetrieve(ctx *schemas.BifrostContex
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-		endpoint := fmt.Sprintf("/v1/containers/%s/files/%s", escapedContainerID, escapedFileID)
-		req.SetRequestURI(provider.buildRequestURL(ctx, endpoint, schemas.ContainerFileRetrieveRequest))
+		req.SetRequestURI(resourceURL)
 		req.Header.SetMethod(http.MethodGet)
 
 		if key.Value.GetValue() != "" {
@@ -8376,6 +8437,10 @@ func (provider *OpenAIProvider) ContainerFileContent(ctx *schemas.BifrostContext
 	if idErr != nil {
 		return nil, idErr
 	}
+	resourceURL, urlErr := provider.buildResourceURLForIDs(ctx, "/v1/containers/"+escapedContainerID+"/files/"+escapedFileID+"/content", schemas.ContainerFileContentRequest, escapedContainerID, escapedFileID)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
@@ -8391,8 +8456,7 @@ func (provider *OpenAIProvider) ContainerFileContent(ctx *schemas.BifrostContext
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-		endpoint := fmt.Sprintf("/v1/containers/%s/files/%s/content", escapedContainerID, escapedFileID)
-		req.SetRequestURI(provider.buildRequestURL(ctx, endpoint, schemas.ContainerFileContentRequest))
+		req.SetRequestURI(resourceURL)
 		req.Header.SetMethod(http.MethodGet)
 
 		if key.Value.GetValue() != "" {
@@ -8490,6 +8554,10 @@ func (provider *OpenAIProvider) ContainerFileDelete(ctx *schemas.BifrostContext,
 	if idErr != nil {
 		return nil, idErr
 	}
+	resourceURL, urlErr := provider.buildResourceURLForIDs(ctx, "/v1/containers/"+escapedContainerID+"/files/"+escapedFileID, schemas.ContainerFileDeleteRequest, escapedContainerID, escapedFileID)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
@@ -8505,8 +8573,7 @@ func (provider *OpenAIProvider) ContainerFileDelete(ctx *schemas.BifrostContext,
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-		endpoint := fmt.Sprintf("/v1/containers/%s/files/%s", escapedContainerID, escapedFileID)
-		req.SetRequestURI(provider.buildRequestURL(ctx, endpoint, schemas.ContainerFileDeleteRequest))
+		req.SetRequestURI(resourceURL)
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
 

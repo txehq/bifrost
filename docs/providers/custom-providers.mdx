@@ -461,9 +461,9 @@ The field accepts a mapping of request types to either custom **paths** or **ful
 When a full URL (with scheme and host) is provided in `request_path_overrides`, Bifrost will use that URL directly and ignore the `base_url` from `network_config` for that specific request type. This allows you to route different request types to completely different endpoints.
 </Info>
 
-**Batch and file calls that name a resource (`openai` base)**
+**Calls that name a resource (`openai` base)**
 
-An override replaces the whole default path. A batch or a file call that names its target carries an id in that path, so for these request types the override is a template: write the placeholder where the id goes, and Bifrost replaces it with the escaped id.
+An override replaces the whole default path. A call that names its target (a batch, a file, a model, a video, a container, a stored response) carries an id in that path, so for these request types the override is a template: write each placeholder where its id goes, and Bifrost replaces it with the escaped id.
 
 | Request type | Default path | Placeholder |
 |---|---|---|
@@ -473,12 +473,29 @@ An override replaces the whole default path. A batch or a file call that names i
 | `file_retrieve` | `/v1/files/{file_id}` | `{file_id}` |
 | `file_delete` | `/v1/files/{file_id}` | `{file_id}` |
 | `file_content` | `/v1/files/{file_id}/content` | `{file_id}` |
+| `model_retrieve` | `/v1/models/{model}` | `{model}` |
+| `video_retrieve` | `/v1/videos/{video_id}` | `{video_id}` |
+| `video_download` | `/v1/videos/{video_id}/content` | `{video_id}` |
+| `video_delete` | `/v1/videos/{video_id}` | `{video_id}` |
+| `video_remix` | `/v1/videos/{video_id}/remix` | `{video_id}` |
+| `container_retrieve` | `/v1/containers/{container_id}` | `{container_id}` |
+| `container_delete` | `/v1/containers/{container_id}` | `{container_id}` |
+| `container_file_create` | `/v1/containers/{container_id}/files` | `{container_id}` |
+| `container_file_list` | `/v1/containers/{container_id}/files` | `{container_id}` |
+| `container_file_retrieve` | `/v1/containers/{container_id}/files/{file_id}` | `{container_id}` and `{file_id}` |
+| `container_file_content` | `/v1/containers/{container_id}/files/{file_id}/content` | `{container_id}` and `{file_id}` |
+| `container_file_delete` | `/v1/containers/{container_id}/files/{file_id}` | `{container_id}` and `{file_id}` |
+| `responses_retrieve` | `/v1/responses/{response_id}` | `{response_id}` |
+| `responses_retrieve_stream` | `/v1/responses/{response_id}` | `{response_id}` |
+| `responses_delete` | `/v1/responses/{response_id}` | `{response_id}` |
+| `responses_cancel` | `/v1/responses/{response_id}/cancel` | `{response_id}` |
+| `responses_input_items` | `/v1/responses/{response_id}/input_items` | `{response_id}` |
 
-`batch_create`, `batch_list`, `file_upload` and `file_list` name no resource and take a plain path. Reading a batch's results is a batch retrieve followed by a download of its output and error files: the retrieve uses the `batch_results` override, or the `batch_retrieve` one when `batch_results` has none, and each download uses `file_content`.
+A request type with two placeholders needs both, in any order: `/api/v3/items/{file_id}/in/{container_id}` is a valid `container_file_retrieve` template. Request types that name no resource (`batch_create`, `batch_list`, `file_upload`, `file_list`, `video_generation`, `video_list`, `container_create`, `container_list` and the rest) take a plain path. Reading a batch's results is a batch retrieve followed by a download of its output and error files: the retrieve uses the `batch_results` override, or the `batch_retrieve` one when `batch_results` has none, and each download uses `file_content`.
 
-The template may be a path on `base_url` or a full URL. The placeholder may stand only in the path: never in the scheme, the credentials or the host of a full URL, and never in a query. The id comes from the caller and is escaped as a path segment; the provider key is sent wherever the URL points.
+The template may be a path on `base_url` or a full URL. A placeholder may stand only in the path: never in the scheme, the credentials or the host of a full URL, and never in a query. The id comes from the caller and is escaped as a path segment; the provider key is sent wherever the URL points.
 
-An override for one of these six request types that does not contain its placeholder, or carries it outside the path, is refused when the provider is created or updated, and a request on a provider that already has one fails with a configuration error before anything is sent upstream.
+An override for one of these request types that does not contain every placeholder of its row, or carries one outside the path, is refused when the provider is created or updated, and a request on a provider that already has one fails with a configuration error before anything is sent upstream.
 
 ```json
 {

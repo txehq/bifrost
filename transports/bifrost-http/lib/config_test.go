@@ -25101,7 +25101,7 @@ func TestValidateCustomProvider_ResourcePathOverrides(t *testing.T) {
 		err := ValidateCustomProvider(withOverrides(schemas.OpenAI, map[schemas.RequestType]string{requestType: "/api/paas/v4/batches"}), "tkp_bigmodel")
 		require.Error(t, err, "%s", requestType)
 		assert.Contains(t, err.Error(), "request_path_overrides."+string(requestType), "%s", requestType)
-		assert.Contains(t, err.Error(), providerUtils.ResourcePathPlaceholders[requestType], "%s", requestType)
+		assert.Contains(t, err.Error(), providerUtils.ResourcePathPlaceholders[requestType][0], "%s", requestType)
 
 		require.NoError(t, ValidateCustomProvider(withOverrides(schemas.Anthropic, map[schemas.RequestType]string{requestType: "/v1/files"}), "my-anthropic"), "%s on a base that does not read it", requestType)
 		require.NoError(t, ValidateCustomProvider(withOverrides(schemas.OpenAI, map[schemas.RequestType]string{requestType: ""}), "tkp_bigmodel"), "%s blank", requestType)

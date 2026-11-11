@@ -1,0 +1,1250 @@
+{
+  "name": "477. Model, video, container and stored-response calls on an openai-based custom provider put each id in its path template (resource path templates) [SERIAL]",
+  "description": "TXE-7020 regression, contract C12. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. Every row is skipped otherwise. On an openai-based custom provider a request_path_overrides entry replaces the whole default path. For a call whose default path names an id the entry is a template: {model}, {video_id}, {container_id}, {file_id} or {response_id} is where that id goes. TXE-6665 did this for the batch and file calls; before this change the model, video, container and stored-response calls sent the override verbatim, so the request reached the vendor with no id. tkp_vidvendor is an openai-based custom provider that templates every one of those request types off /v1: videos under /api/v3/tasks/{video_id}, the model at /api/v3/models/{model}, containers under /api/v3/boxes/{container_id}, a file inside a container at /api/v3/items/{file_id}/in/{container_id} (the file before its container, so an id placed by position would land in the wrong segment), and stored responses under /api/v3/answers/{response_id}, with the streamed retrieve on its own template /api/v3/answers/{response_id}/events. The fixture answers only under /pp/vidvendor/api/v3 and only for those ids in those places; GET /__wire returns each call with the name of the key it carried. Rows 1 to 17: one row per templated request type (video retrieve, download, remix, delete; model retrieve; container retrieve, file create, file list, file retrieve, file content, file delete, container delete; stored response retrieve, streamed retrieve, input items, cancel, delete). Each asserts the vendor's answer came back and that exactly one call reached the vendor, on the templated path with every id in place. Row 18: writing a provider whose video_retrieve override has no {video_id} is refused with a 400 and nothing is stored. Rows 1 to 17 are tagged [NO-CONTENT]: none is an inference response the collection's shape check knows, and each row asserts its own body. Run the whole folder in order.",
+  "item": [
+    {
+      "name": "[NO-CONTENT] tkp_vidvendor GET /v1/videos/{id} reaches /api/v3/tasks/{id} (resource path templates)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/video_477:tkp_vidvendor",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "video_477:tkp_vidvendor"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path templates setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/vidvendor/api/v3';",
+              "// wire: the calls that reached the fixture's vidvendor upstream, in order, each with its method, path and the name of",
+              "// the key it carried. The fixture answers only under ROOT and only where each id stands in its own place, so a call",
+              "// built on the default /v1 path, or one that lost an id, is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the vendor\\'s answer comes back', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+              "pm.test('the vendor\\'s video comes back', function () { pm.expect(String(body.id), pm.response.text()).to.include('video_477'); pm.expect(body.status, pm.response.text()).to.equal('completed'); });",
+              "wire(function (calls) {",
+              "  pm.test('one call reached the vendor, on the templated path with every id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['GET /pp/vidvendor/api/v3/tasks/video_477 tk-key-vidvendor']); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[NO-CONTENT] tkp_vidvendor GET /v1/videos/{id}/content reaches /api/v3/tasks/{id}/file (resource path templates)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/video_477:tkp_vidvendor/content",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "video_477:tkp_vidvendor",
+            "content"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path templates setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/vidvendor/api/v3';",
+              "// wire: the calls that reached the fixture's vidvendor upstream, in order, each with its method, path and the name of",
+              "// the key it carried. The fixture answers only under ROOT and only where each id stands in its own place, so a call",
+              "// built on the default /v1 path, or one that lost an id, is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the vendor\\'s answer comes back', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+              "pm.test('the vendor\\'s bytes come back', function () { pm.expect(pm.response.text()).to.equal('vidvendor video bytes'); });",
+              "wire(function (calls) {",
+              "  pm.test('one call reached the vendor, on the templated path with every id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['GET /pp/vidvendor/api/v3/tasks/video_477/file tk-key-vidvendor']); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[NO-CONTENT] tkp_vidvendor POST /v1/videos/{id}/remix reaches /api/v3/tasks/{id}/remix (resource path templates)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"prompt\": \"again, at night\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/video_477:tkp_vidvendor/remix",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "video_477:tkp_vidvendor",
+            "remix"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path templates setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/vidvendor/api/v3';",
+              "// wire: the calls that reached the fixture's vidvendor upstream, in order, each with its method, path and the name of",
+              "// the key it carried. The fixture answers only under ROOT and only where each id stands in its own place, so a call",
+              "// built on the default /v1 path, or one that lost an id, is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the vendor\\'s answer comes back', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+              "pm.test('the vendor\\'s new video comes back', function () { pm.expect(String(body.id), pm.response.text()).to.include('video_478'); });",
+              "wire(function (calls) {",
+              "  pm.test('one call reached the vendor, on the templated path with every id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['POST /pp/vidvendor/api/v3/tasks/video_477/remix tk-key-vidvendor']); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[NO-CONTENT] tkp_vidvendor DELETE /v1/videos/{id} reaches /api/v3/tasks/{id} (resource path templates)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/video_477:tkp_vidvendor",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "video_477:tkp_vidvendor"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path templates setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/vidvendor/api/v3';",
+              "// wire: the calls that reached the fixture's vidvendor upstream, in order, each with its method, path and the name of",
+              "// the key it carried. The fixture answers only under ROOT and only where each id stands in its own place, so a call",
+              "// built on the default /v1 path, or one that lost an id, is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the vendor\\'s answer comes back', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+              "pm.test('the vendor\\'s deletion comes back', function () { pm.expect(body.deleted, pm.response.text()).to.equal(true); });",
+              "wire(function (calls) {",
+              "  pm.test('one call reached the vendor, on the templated path with every id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['DELETE /pp/vidvendor/api/v3/tasks/video_477 tk-key-vidvendor']); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[NO-CONTENT] tkp_vidvendor GET /v1/models/{provider}/{model} reaches /api/v3/models/{model} (resource path templates)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/models/tkp_vidvendor/glm-video-1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "models",
+            "tkp_vidvendor",
+            "glm-video-1"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path templates setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/vidvendor/api/v3';",
+              "// wire: the calls that reached the fixture's vidvendor upstream, in order, each with its method, path and the name of",
+              "// the key it carried. The fixture answers only under ROOT and only where each id stands in its own place, so a call",
+              "// built on the default /v1 path, or one that lost an id, is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the vendor\\'s answer comes back', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+              "pm.test('the vendor\\'s model comes back', function () { pm.expect(String(body.id), pm.response.text()).to.include('glm-video-1'); });",
+              "wire(function (calls) {",
+              "  pm.test('one call reached the vendor, on the templated path with every id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['GET /pp/vidvendor/api/v3/models/glm-video-1 tk-key-vidvendor']); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[NO-CONTENT] tkp_vidvendor GET /v1/containers/{id} reaches /api/v3/boxes/{id} (resource path templates)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/containers/cntr_477?provider=tkp_vidvendor",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "containers",
+            "cntr_477"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_vidvendor"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path templates setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/vidvendor/api/v3';",
+              "// wire: the calls that reached the fixture's vidvendor upstream, in order, each with its method, path and the name of",
+              "// the key it carried. The fixture answers only under ROOT and only where each id stands in its own place, so a call",
+              "// built on the default /v1 path, or one that lost an id, is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the vendor\\'s answer comes back', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+              "pm.test('the vendor\\'s container comes back', function () { pm.expect(body.id, pm.response.text()).to.equal('cntr_477'); });",
+              "wire(function (calls) {",
+              "  pm.test('one call reached the vendor, on the templated path with every id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['GET /pp/vidvendor/api/v3/boxes/cntr_477 tk-key-vidvendor']); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[NO-CONTENT] tkp_vidvendor POST /v1/containers/{id}/files reaches /api/v3/boxes/{id}/items (resource path templates)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "multipart/form-data; boundary=harness477"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "--harness477\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\nContent-Type: text/plain\r\n\r\nhello\r\n--harness477--\r\n",
+          "options": {
+            "raw": {
+              "language": "text"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/containers/cntr_477/files?provider=tkp_vidvendor",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "containers",
+            "cntr_477",
+            "files"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_vidvendor"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path templates setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/vidvendor/api/v3';",
+              "// wire: the calls that reached the fixture's vidvendor upstream, in order, each with its method, path and the name of",
+              "// the key it carried. The fixture answers only under ROOT and only where each id stands in its own place, so a call",
+              "// built on the default /v1 path, or one that lost an id, is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the vendor\\'s answer comes back', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+              "pm.test('the vendor\\'s container file comes back', function () { pm.expect(body.id, pm.response.text()).to.equal('cfile_477'); });",
+              "wire(function (calls) {",
+              "  pm.test('one call reached the vendor, on the templated path with every id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['POST /pp/vidvendor/api/v3/boxes/cntr_477/items tk-key-vidvendor']); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[NO-CONTENT] tkp_vidvendor GET /v1/containers/{id}/files reaches /api/v3/boxes/{id}/items (resource path templates)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/containers/cntr_477/files?provider=tkp_vidvendor",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "containers",
+            "cntr_477",
+            "files"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_vidvendor"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path templates setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/vidvendor/api/v3';",
+              "// wire: the calls that reached the fixture's vidvendor upstream, in order, each with its method, path and the name of",
+              "// the key it carried. The fixture answers only under ROOT and only where each id stands in its own place, so a call",
+              "// built on the default /v1 path, or one that lost an id, is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the vendor\\'s answer comes back', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+              "pm.test('the vendor\\'s list comes back', function () { pm.expect((body.data || []).map(function (f) { return f.id; }), pm.response.text()).to.eql(['cfile_477']); });",
+              "wire(function (calls) {",
+              "  pm.test('one call reached the vendor, on the templated path with every id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['GET /pp/vidvendor/api/v3/boxes/cntr_477/items tk-key-vidvendor']); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[NO-CONTENT] tkp_vidvendor GET /v1/containers/{id}/files/{file_id} puts each id in its own placeholder (resource path templates)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/containers/cntr_477/files/cfile_477?provider=tkp_vidvendor",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "containers",
+            "cntr_477",
+            "files",
+            "cfile_477"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_vidvendor"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path templates setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/vidvendor/api/v3';",
+              "// wire: the calls that reached the fixture's vidvendor upstream, in order, each with its method, path and the name of",
+              "// the key it carried. The fixture answers only under ROOT and only where each id stands in its own place, so a call",
+              "// built on the default /v1 path, or one that lost an id, is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the vendor\\'s answer comes back', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+              "pm.test('the vendor\\'s container file comes back', function () { pm.expect(body.id, pm.response.text()).to.equal('cfile_477'); pm.expect(body.container_id, pm.response.text()).to.equal('cntr_477'); });",
+              "wire(function (calls) {",
+              "  pm.test('one call reached the vendor, on the templated path with every id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['GET /pp/vidvendor/api/v3/items/cfile_477/in/cntr_477 tk-key-vidvendor']); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[NO-CONTENT] tkp_vidvendor GET /v1/containers/{id}/files/{file_id}/content puts each id in its own placeholder (resource path templates)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/containers/cntr_477/files/cfile_477/content?provider=tkp_vidvendor",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "containers",
+            "cntr_477",
+            "files",
+            "cfile_477",
+            "content"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_vidvendor"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path templates setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/vidvendor/api/v3';",
+              "// wire: the calls that reached the fixture's vidvendor upstream, in order, each with its method, path and the name of",
+              "// the key it carried. The fixture answers only under ROOT and only where each id stands in its own place, so a call",
+              "// built on the default /v1 path, or one that lost an id, is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the vendor\\'s answer comes back', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+              "pm.test('the vendor\\'s bytes come back', function () { pm.expect(pm.response.text()).to.equal('hello'); });",
+              "wire(function (calls) {",
+              "  pm.test('one call reached the vendor, on the templated path with every id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['GET /pp/vidvendor/api/v3/items/cfile_477/in/cntr_477/bytes tk-key-vidvendor']); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[NO-CONTENT] tkp_vidvendor DELETE /v1/containers/{id}/files/{file_id} puts each id in its own placeholder (resource path templates)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/containers/cntr_477/files/cfile_477?provider=tkp_vidvendor",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "containers",
+            "cntr_477",
+            "files",
+            "cfile_477"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_vidvendor"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path templates setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/vidvendor/api/v3';",
+              "// wire: the calls that reached the fixture's vidvendor upstream, in order, each with its method, path and the name of",
+              "// the key it carried. The fixture answers only under ROOT and only where each id stands in its own place, so a call",
+              "// built on the default /v1 path, or one that lost an id, is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the vendor\\'s answer comes back', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+              "pm.test('the vendor\\'s deletion comes back', function () { pm.expect(body.deleted, pm.response.text()).to.equal(true); });",
+              "wire(function (calls) {",
+              "  pm.test('one call reached the vendor, on the templated path with every id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['DELETE /pp/vidvendor/api/v3/items/cfile_477/in/cntr_477 tk-key-vidvendor']); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[NO-CONTENT] tkp_vidvendor DELETE /v1/containers/{id} reaches /api/v3/boxes/{id} (resource path templates)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/containers/cntr_477?provider=tkp_vidvendor",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "containers",
+            "cntr_477"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_vidvendor"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path templates setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/vidvendor/api/v3';",
+              "// wire: the calls that reached the fixture's vidvendor upstream, in order, each with its method, path and the name of",
+              "// the key it carried. The fixture answers only under ROOT and only where each id stands in its own place, so a call",
+              "// built on the default /v1 path, or one that lost an id, is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the vendor\\'s answer comes back', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+              "pm.test('the vendor\\'s deletion comes back', function () { pm.expect(body.deleted, pm.response.text()).to.equal(true); });",
+              "wire(function (calls) {",
+              "  pm.test('one call reached the vendor, on the templated path with every id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['DELETE /pp/vidvendor/api/v3/boxes/cntr_477 tk-key-vidvendor']); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[NO-CONTENT] tkp_vidvendor GET /v1/responses/{id} reaches /api/v3/answers/{id} (resource path templates)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses/resp_477?provider=tkp_vidvendor",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses",
+            "resp_477"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_vidvendor"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path templates setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/vidvendor/api/v3';",
+              "// wire: the calls that reached the fixture's vidvendor upstream, in order, each with its method, path and the name of",
+              "// the key it carried. The fixture answers only under ROOT and only where each id stands in its own place, so a call",
+              "// built on the default /v1 path, or one that lost an id, is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the vendor\\'s answer comes back', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+              "pm.test('the stored response comes back', function () { pm.expect(body.id, pm.response.text()).to.equal('resp_477'); pm.expect(body.status, pm.response.text()).to.equal('completed'); });",
+              "wire(function (calls) {",
+              "  pm.test('one call reached the vendor, on the templated path with every id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['GET /pp/vidvendor/api/v3/answers/resp_477 tk-key-vidvendor']); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[NO-CONTENT] tkp_vidvendor GET /v1/responses/{id}?stream=true reaches the responses_retrieve_stream template (resource path templates)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses/resp_477?provider=tkp_vidvendor&stream=true",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses",
+            "resp_477"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_vidvendor"
+            },
+            {
+              "key": "stream",
+              "value": "true"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path templates setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/vidvendor/api/v3';",
+              "// wire: the calls that reached the fixture's vidvendor upstream, in order, each with its method, path and the name of",
+              "// the key it carried. The fixture answers only under ROOT and only where each id stands in its own place, so a call",
+              "// built on the default /v1 path, or one that lost an id, is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the vendor\\'s answer comes back', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+              "pm.test('the stored response is replayed as a stream', function () { pm.expect(pm.response.text()).to.include('response.completed'); pm.expect(pm.response.text()).to.include('resp_477'); });",
+              "wire(function (calls) {",
+              "  pm.test('one call reached the vendor, on the templated path with every id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['GET /pp/vidvendor/api/v3/answers/resp_477/events tk-key-vidvendor']); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[NO-CONTENT] tkp_vidvendor GET /v1/responses/{id}/input_items reaches /api/v3/answers/{id}/inputs (resource path templates)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses/resp_477/input_items?provider=tkp_vidvendor",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses",
+            "resp_477",
+            "input_items"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_vidvendor"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path templates setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/vidvendor/api/v3';",
+              "// wire: the calls that reached the fixture's vidvendor upstream, in order, each with its method, path and the name of",
+              "// the key it carried. The fixture answers only under ROOT and only where each id stands in its own place, so a call",
+              "// built on the default /v1 path, or one that lost an id, is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the vendor\\'s answer comes back', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+              "pm.test('the vendor\\'s input items come back', function () { pm.expect((body.data || []).map(function (m) { return m.id; }), pm.response.text()).to.eql(['msg_in_477']); });",
+              "wire(function (calls) {",
+              "  pm.test('one call reached the vendor, on the templated path with every id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['GET /pp/vidvendor/api/v3/answers/resp_477/inputs tk-key-vidvendor']); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[NO-CONTENT] tkp_vidvendor POST /v1/responses/{id}/cancel reaches /api/v3/answers/{id}/stop (resource path templates)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses/resp_477/cancel?provider=tkp_vidvendor",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses",
+            "resp_477",
+            "cancel"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_vidvendor"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path templates setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/vidvendor/api/v3';",
+              "// wire: the calls that reached the fixture's vidvendor upstream, in order, each with its method, path and the name of",
+              "// the key it carried. The fixture answers only under ROOT and only where each id stands in its own place, so a call",
+              "// built on the default /v1 path, or one that lost an id, is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the vendor\\'s answer comes back', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+              "pm.test('the cancelled response comes back', function () { pm.expect(body.id, pm.response.text()).to.equal('resp_477'); pm.expect(body.status, pm.response.text()).to.equal('cancelled'); });",
+              "wire(function (calls) {",
+              "  pm.test('one call reached the vendor, on the templated path with every id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['POST /pp/vidvendor/api/v3/answers/resp_477/stop tk-key-vidvendor']); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[NO-CONTENT] tkp_vidvendor DELETE /v1/responses/{id} reaches /api/v3/answers/{id} (resource path templates)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses/resp_477?provider=tkp_vidvendor",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses",
+            "resp_477"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_vidvendor"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path templates setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/vidvendor/api/v3';",
+              "// wire: the calls that reached the fixture's vidvendor upstream, in order, each with its method, path and the name of",
+              "// the key it carried. The fixture answers only under ROOT and only where each id stands in its own place, so a call",
+              "// built on the default /v1 path, or one that lost an id, is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the vendor\\'s answer comes back', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+              "pm.test('the vendor\\'s deletion comes back', function () { pm.expect(body.deleted, pm.response.text()).to.equal(true); });",
+              "wire(function (calls) {",
+              "  pm.test('one call reached the vendor, on the templated path with every id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['DELETE /pp/vidvendor/api/v3/answers/resp_477 tk-key-vidvendor']); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] tkp_vidvendor POST /api/providers: a video_retrieve path override without {video_id} is refused when the provider is written (resource path templates)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"provider\": \"harness-vidvendor-no-placeholder\",\n  \"keys\": [],\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"openai\",\n    \"allowed_requests\": {\n      \"video_retrieve\": true\n    },\n    \"request_path_overrides\": {\n      \"video_retrieve\": \"/api/v3/tasks\"\n    }\n  }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/providers",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "providers"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path templates setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/vidvendor/api/v3';",
+              "// wire: the calls that reached the fixture's vidvendor upstream, in order, each with its method, path and the name of",
+              "// the key it carried. The fixture answers only under ROOT and only where each id stands in its own place, so a call",
+              "// built on the default /v1 path, or one that lost an id, is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the provider is refused with a 400 naming the override and its placeholder', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400); pm.expect(pm.response.text()).to.include('request_path_overrides.video_retrieve'); pm.expect(pm.response.text()).to.include('{video_id}'); });",
+              "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/providers/harness-vidvendor-no-placeholder', method: 'GET' }, function (err, res) { pm.test('nothing was stored', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(404); }); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -869,6 +869,39 @@
         "default_request_timeout_in_seconds": 10
       }
     },
+    "tkp_vidvendor": {
+      "keys": [
+        {
+          "name": "tk-key-vidvendor",
+          "value": "vv-fixture-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "allowed_requests": {
+          "list_models": true,
+          "model_retrieve": true,
+          "video_retrieve": true,
+          "video_delete": true,
+          "container_file_retrieve": true
+        },
+        "request_path_overrides": {
+          "model_retrieve": "/api/v3/models/{model}",
+          "video_retrieve": "/api/v3/tasks/{video_id}",
+          "video_delete": "/api/v3/tasks/{video_id}",
+          "container_file_retrieve": "/api/v3/items/{file_id}/in/{container_id}"
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/vidvendor",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
     "tkp_bigmodel": {
       "keys": [
         {

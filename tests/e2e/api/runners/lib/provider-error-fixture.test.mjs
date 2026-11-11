@@ -1012,3 +1012,30 @@ test("Sarvam and ElevenLabs speech are answered and recorded with their query", 
     "/pp/elevenlabs/v1/text-to-speech/voice-1/with-timestamps",
   ]);
 });
+
+// Folder 477 (TXE-7020): the vidvendor upstream answers only under /api/v3, only where each id stands in its
+// own place, and keeps the method and the name of the key of every call for GET /__wire.
+test("the vidvendor upstream answers only under /api/v3 with each id in its place", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}/pp/vidvendor`;
+  const auth = { Authorization: "Bearer vv-fixture-key" };
+  const call = async (method, path) => {
+    const res = await fetch(base + path, { method, headers: auth });
+    return { status: res.status, body: await res.json() };
+  };
+  assert.equal((await call("GET", "/api/v3/tasks/video_477")).body.status, "completed");
+  assert.equal((await call("DELETE", "/api/v3/tasks/video_477")).body.deleted, true);
+  assert.equal((await call("GET", "/api/v3/models/glm-video-1")).body.object, "model");
+  assert.equal((await call("GET", "/api/v3/items/cfile_477/in/cntr_477")).body.container_id, "cntr_477");
+  // A default /v1 path, a path that lost its id, and ids in each other's place are all 404.
+  for (const path of ["/v1/videos/video_477", "/api/v3/tasks", "/api/v3/tasks/", "/api/v3/items/cntr_477/in/cfile_477"]) {
+    assert.equal((await call("GET", path)).status, 404, path);
+  }
+  const wire = await (await fetch(`http://127.0.0.1:${post.port}/__wire`)).json();
+  assert.deepEqual(wire.data[0].calls.slice(0, 4).map((c) => `${c.method} ${c.path} ${c.key}`), [
+    "GET /pp/vidvendor/api/v3/tasks/video_477 tk-key-vidvendor",
+    "DELETE /pp/vidvendor/api/v3/tasks/video_477 tk-key-vidvendor",
+    "GET /pp/vidvendor/api/v3/models/glm-video-1 tk-key-vidvendor",
+    "GET /pp/vidvendor/api/v3/items/cfile_477/in/cntr_477 tk-key-vidvendor",
+  ]);
+});
