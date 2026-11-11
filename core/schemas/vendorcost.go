@@ -30,3 +30,34 @@ type VendorCost struct {
 	Amount float64        `json:"amount"`
 	Unit   VendorCostUnit `json:"unit"`
 }
+
+// SumVendorCosts is the vendor's charge for a request made of several upstream calls (an MCP agent's turns),
+// fork TXE-6967: the sum when every call reported a charge in the same unit, otherwise nil. A partial sum
+// would understate what the vendor charged, and nil is what contract C5 agreement two means by "the
+// vendor did not report it", so the caller measures instead.
+func SumVendorCosts(base, add *VendorCost) *VendorCost {
+	if base == nil || add == nil || base.Unit != add.Unit {
+		return nil
+	}
+	return &VendorCost{Amount: base.Amount + add.Amount, Unit: base.Unit}
+}
+
+// sumReportedInt64 is SumVendorCosts for a raw counter such as cost_in_usd_ticks: the sum when both calls
+// reported it, otherwise nil.
+func sumReportedInt64(base, add *int64) *int64 {
+	if base == nil || add == nil {
+		return nil
+	}
+	sum := *base + *add
+	return &sum
+}
+
+// vendorCostFromUSDTicks is xAI's reported charge, cost_in_usd_ticks, as a VendorCost in the vendor's own
+// unit (fork, TXE-6967, contract C5/C10): nil when the vendor reported no ticks, and a reported zero stays
+// amount 0, unlike costFromUSDTicks, which feeds pricing and skips non-positive counts.
+func vendorCostFromUSDTicks(ticks *int64) *VendorCost {
+	if ticks == nil {
+		return nil
+	}
+	return &VendorCost{Amount: float64(*ticks), Unit: VendorCostUnitUSDTicks}
+}

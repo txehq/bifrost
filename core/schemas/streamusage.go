@@ -60,6 +60,9 @@ func (u *BifrostLLMUsage) MergeStreamFrame(frame *BifrostLLMUsage) {
 	if frame.CostInUsdTicks != nil {
 		u.CostInUsdTicks = frame.CostInUsdTicks
 	}
+	if frame.VendorCost != nil {
+		u.VendorCost = frame.VendorCost
+	}
 	if frame.StateTokens != nil {
 		u.StateTokens = frame.StateTokens
 	}

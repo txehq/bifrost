@@ -51,6 +51,11 @@ BifrostLLMUsage:
         fee by it. Present only when the provider reports it.
     cost:
       $ref: "#/BifrostCost"
+    vendor_cost:
+      $ref: "#/VendorCost"
+      description: >
+        Money the provider reported for this request, in its own unit. Set only when the provider
+        reported it: xAI's cost_in_usd_ticks, as unit usd_ticks. On a stream it is on the final frame.
 
 ToolUsage:
   type: object

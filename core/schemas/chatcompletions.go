@@ -1985,8 +1985,9 @@ type BifrostLLMUsage struct {
 	ToolUsage         *ToolUsage           `json:"tool_usage,omitempty"`
 	SearchContextSize *string              `json:"search_context_size,omitempty"` // Search context tier the vendor billed ("low" | "medium" | "high")
 	Cost              *BifrostCost         `json:"cost,omitempty"`                // Only for the providers which support cost calculation
-	// xAI-specific usage field, normalized into Cost by NormalizeProviderCost.
-	CostInUsdTicks *int64 `json:"cost_in_usd_ticks,omitempty"`
+	// xAI-specific usage field, normalized into Cost and VendorCost by NormalizeProviderCost.
+	CostInUsdTicks *int64      `json:"cost_in_usd_ticks,omitempty"`
+	VendorCost     *VendorCost `json:"vendor_cost,omitempty"` // money the vendor reported (fork, TXE-6967); nil when it reported none
 	// Laya decision usage: state token accounting and truncation, reported on /v1/decisions.
 	StateTokens        *int     `json:"state_tokens,omitempty"`
 	StateTokensDropped *int     `json:"state_tokens_dropped,omitempty"`
@@ -2378,6 +2379,8 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 	if merged.SearchContextSize == nil {
 		merged.SearchContextSize = base.SearchContextSize
 	}
+	merged.CostInUsdTicks = sumReportedInt64(base.CostInUsdTicks, add.CostInUsdTicks)
+	merged.VendorCost = SumVendorCosts(base.VendorCost, add.VendorCost)
 
 	return merged
 }
@@ -2764,10 +2767,18 @@ func costFromUSDTicks(ticks *int64) *BifrostCost {
 }
 
 // NormalizeProviderCost derives the neutral Cost object from a provider-reported
-// cost_in_usd_ticks so cost calculation only ever reads Cost. No-op when the
-// provider already sent a cost or reported no ticks.
+// cost_in_usd_ticks so cost calculation only ever reads Cost, and records the same
+// report as vendor_cost in the vendor's unit (usd_ticks) for callers that settle on
+// what the vendor charged (fork, TXE-6967, contract C5/C10). Cost is left alone when
+// the provider already sent one; nothing is set when it reported no ticks.
 func (u *BifrostLLMUsage) NormalizeProviderCost() {
-	if u == nil || u.Cost != nil {
+	if u == nil {
+		return
+	}
+	if u.VendorCost == nil {
+		u.VendorCost = vendorCostFromUSDTicks(u.CostInUsdTicks)
+	}
+	if u.Cost != nil {
 		return
 	}
 	u.Cost = costFromUSDTicks(u.CostInUsdTicks)
@@ -2813,6 +2824,10 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 		t := *u.CostInUsdTicks
 		c.CostInUsdTicks = &t
 	}
+	if u.VendorCost != nil {
+		vc := *u.VendorCost
+		c.VendorCost = &vc
+	}
 	if u.Speed != nil {
 		s := *u.Speed
 		c.Speed = &s
@@ -2850,6 +2865,15 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 // copyIntPtr returns an independent copy of an *int (nil-safe), for deep-copying
 // the optional token-detail counters.
 func copyIntPtr(p *int) *int {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
+// copyFloat64Ptr returns an independent copy of a *float64 (nil-safe).
+func copyFloat64Ptr(p *float64) *float64 {
 	if p == nil {
 		return nil
 	}

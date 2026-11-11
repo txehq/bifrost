@@ -9382,6 +9382,30 @@
                               "type": "integer"
                             }
                           }
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money the provider reported for this request, in its own unit. Set only when the provider reported it: xAI's cost_in_usd_ticks, as unit usd_ticks. On a stream it is on response.completed.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
+                            }
+                          }
                         }
                       }
                     },
@@ -20971,6 +20995,30 @@
                             },
                             "completion_tokens": {
                               "type": "integer"
+                            }
+                          }
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money the provider reported for this request, in its own unit. Set only when the provider reported it: xAI's cost_in_usd_ticks, as unit usd_ticks. On a stream it is on response.completed.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
                             }
                           }
                         }
@@ -115322,6 +115370,30 @@
           },
           "cost": {
             "$ref": "#/components/schemas/BifrostCost"
+          },
+          "vendor_cost": {
+            "type": "object",
+            "description": "Money the provider reported for this request, in its own unit. Set only when the provider reported it: xAI's cost_in_usd_ticks, as unit usd_ticks. On a stream it is on the final frame.\n",
+            "required": [
+              "amount",
+              "unit"
+            ],
+            "properties": {
+              "amount": {
+                "type": "number",
+                "description": "The amount, in `unit`. A reported zero is kept as 0"
+              },
+              "unit": {
+                "type": "string",
+                "enum": [
+                  "usd",
+                  "usd_ticks",
+                  "credit",
+                  "unit"
+                ],
+                "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
+              }
+            }
           }
         }
       },
@@ -119550,6 +119622,30 @@
                   },
                   "completion_tokens": {
                     "type": "integer"
+                  }
+                }
+              },
+              "vendor_cost": {
+                "type": "object",
+                "description": "Money the provider reported for this request, in its own unit. Set only when the provider reported it: xAI's cost_in_usd_ticks, as unit usd_ticks. On a stream it is on response.completed.\n",
+                "required": [
+                  "amount",
+                  "unit"
+                ],
+                "properties": {
+                  "amount": {
+                    "type": "number",
+                    "description": "The amount, in `unit`. A reported zero is kept as 0"
+                  },
+                  "unit": {
+                    "type": "string",
+                    "enum": [
+                      "usd",
+                      "usd_ticks",
+                      "credit",
+                      "unit"
+                    ],
+                    "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
                   }
                 }
               }
@@ -130174,6 +130270,11 @@
                 "default": false,
                 "description": "Fork (txehq/bifrost): turn off the SSE comment heartbeat on passthrough streams. When true, an idle text/event-stream passthrough response carries only the bytes the vendor sent. Honoured on a config save without a restart."
               },
+              "disable_encrypted_reasoning_retry": {
+                "type": "boolean",
+                "default": false,
+                "description": "Fork (txehq/bifrost): turn off the encrypted-reasoning retry. By default, when a request replays encrypted reasoning (an OpenAI encrypted_content item, an Anthropic signature or redacted_thinking block, a Gemini thought signature) and the upstream answers 400, Bifrost strips the encrypted content and calls the upstream once more on the same key. When true, that second call is not made and the caller gets the vendor's 400 unchanged, so one request is exactly one upstream call. Honoured on a config save without a restart."
+              },
               "enforce_auth_on_inference": {
                 "type": "boolean",
                 "description": "Whether to enforce virtual key authentication on inference requests"
@@ -130713,6 +130814,11 @@
                 "type": "boolean",
                 "default": false,
                 "description": "Fork (txehq/bifrost): turn off the SSE comment heartbeat on passthrough streams. When true, an idle text/event-stream passthrough response carries only the bytes the vendor sent. Honoured on a config save without a restart."
+              },
+              "disable_encrypted_reasoning_retry": {
+                "type": "boolean",
+                "default": false,
+                "description": "Fork (txehq/bifrost): turn off the encrypted-reasoning retry. By default, when a request replays encrypted reasoning (an OpenAI encrypted_content item, an Anthropic signature or redacted_thinking block, a Gemini thought signature) and the upstream answers 400, Bifrost strips the encrypted content and calls the upstream once more on the same key. When true, that second call is not made and the caller gets the vendor's 400 unchanged, so one request is exactly one upstream call. Honoured on a config save without a restart."
               },
               "enforce_auth_on_inference": {
                 "type": "boolean",

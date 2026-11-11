@@ -967,3 +967,147 @@ func TestProcessedTokensSurviveChatResponsesConversion(t *testing.T) {
 		t.Fatal("absent processed_tokens must stay absent")
 	}
 }
+
+// sharedUsageFields are the fields BifrostLLMUsage and ResponsesResponseUsage both have, under the
+// same name and type, so a conversion between them can copy them unchanged.
+func sharedUsageFields() []string {
+	llm, resp := reflect.TypeOf(BifrostLLMUsage{}), reflect.TypeOf(ResponsesResponseUsage{})
+	var names []string
+	for i := 0; i < llm.NumField(); i++ {
+		f := llm.Field(i)
+		if g, ok := resp.FieldByName(f.Name); ok && g.Type == f.Type {
+			names = append(names, f.Name)
+		}
+	}
+	return names
+}
+
+// TestUsageConversionsCarrySharedFields: ToResponsesResponseUsage and ToBifrostLLMUsage copy every field
+// the two usage types share (fork, TXE-6967). vendor_cost reaches a Responses caller served by the chat
+// fallback, and a chat caller served by a Responses upstream, only through these conversions; a shared
+// field added later and not copied fails here by name.
+func TestUsageConversionsCarrySharedFields(t *testing.T) {
+	names := sharedUsageFields()
+	if len(names) == 0 {
+		t.Fatal("no shared fields found")
+	}
+
+	var llm BifrostLLMUsage
+	fillNonZero(t, reflect.ValueOf(&llm).Elem(), 0)
+	resp := llm.ToResponsesResponseUsage()
+	var r ResponsesResponseUsage
+	fillNonZero(t, reflect.ValueOf(&r).Elem(), 0)
+	r.Iterations = nil
+	back := r.ToBifrostLLMUsage()
+
+	for _, name := range names {
+		if got, want := reflect.ValueOf(resp).Elem().FieldByName(name).Interface(), reflect.ValueOf(&llm).Elem().FieldByName(name).Interface(); !reflect.DeepEqual(got, want) {
+			t.Errorf("ToResponsesResponseUsage drops %s: got %#v, want %#v", name, got, want)
+		}
+		if got, want := reflect.ValueOf(back).Elem().FieldByName(name).Interface(), reflect.ValueOf(&r).Elem().FieldByName(name).Interface(); !reflect.DeepEqual(got, want) {
+			t.Errorf("ToBifrostLLMUsage drops %s: got %#v, want %#v", name, got, want)
+		}
+	}
+}
+
+// TestNormalizeProviderCostSetsVendorCost (TXE-6967): cost_in_usd_ticks becomes vendor_cost in usd_ticks on
+// chat and Responses usage. A reported zero is kept as amount 0, a cost the vendor sent itself does not stop
+// it, no ticks leaves it nil (contract C5 agreement two), and a vendor_cost already set is not overwritten.
+func TestNormalizeProviderCostSetsVendorCost(t *testing.T) {
+	ticks := func(n int64) *int64 { return &n }
+	cases := []struct {
+		name  string
+		ticks *int64
+		cost  *BifrostCost
+		want  *VendorCost
+	}{
+		{"ticks", ticks(5584000), nil, &VendorCost{Amount: 5584000, Unit: VendorCostUnitUSDTicks}},
+		{"zero ticks", ticks(0), nil, &VendorCost{Amount: 0, Unit: VendorCostUnitUSDTicks}},
+		{"ticks with a vendor-sent cost", ticks(7), &BifrostCost{TotalCost: 1}, &VendorCost{Amount: 7, Unit: VendorCostUnitUSDTicks}},
+		{"no ticks", nil, nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			chat := &BifrostLLMUsage{CostInUsdTicks: tc.ticks, Cost: tc.cost}
+			chat.NormalizeProviderCost()
+			resp := &ResponsesResponseUsage{CostInUsdTicks: tc.ticks, Cost: tc.cost}
+			resp.NormalizeProviderCost()
+			for name, got := range map[string]*VendorCost{"chat": chat.VendorCost, "responses": resp.VendorCost} {
+				if !reflect.DeepEqual(got, tc.want) {
+					t.Errorf("%s vendor_cost = %+v, want %+v", name, got, tc.want)
+				}
+			}
+			if tc.cost != nil && (chat.Cost != tc.cost || resp.Cost != tc.cost) {
+				t.Errorf("a vendor-sent cost was replaced")
+			}
+		})
+	}
+
+	set := &VendorCost{Amount: 1, Unit: VendorCostUnitUSD}
+	u := &BifrostLLMUsage{CostInUsdTicks: ticks(9), VendorCost: set}
+	u.NormalizeProviderCost()
+	if u.VendorCost != set {
+		t.Errorf("an existing vendor_cost was overwritten: %+v", u.VendorCost)
+	}
+	(*BifrostLLMUsage)(nil).NormalizeProviderCost()
+	(*ResponsesResponseUsage)(nil).NormalizeProviderCost()
+}
+
+// TestVendorCostSerialisesOnUsage: vendor_cost is on the wire for chat and Responses usage when set, absent
+// when not, and DeepCopy owns its copy.
+func TestVendorCostSerialisesOnUsage(t *testing.T) {
+	vc := &VendorCost{Amount: 5584000, Unit: VendorCostUnitUSDTicks}
+	for name, v := range map[string]any{"chat": &BifrostLLMUsage{VendorCost: vc}, "responses": &ResponsesResponseUsage{VendorCost: vc}} {
+		b, _ := json.Marshal(v)
+		if !strings.Contains(string(b), `"vendor_cost":{"amount":5584000,"unit":"usd_ticks"}`) {
+			t.Errorf("%s: %s", name, b)
+		}
+	}
+	for name, v := range map[string]any{"chat": &BifrostLLMUsage{}, "responses": &ResponsesResponseUsage{}} {
+		b, _ := json.Marshal(v)
+		if strings.Contains(string(b), "vendor_cost") {
+			t.Errorf("%s carries vendor_cost unset: %s", name, b)
+		}
+	}
+	orig := &BifrostLLMUsage{VendorCost: &VendorCost{Amount: 1, Unit: VendorCostUnitUSDTicks}}
+	c := orig.DeepCopy()
+	c.VendorCost.Amount = 9
+	if orig.VendorCost.Amount != 1 {
+		t.Errorf("DeepCopy shares vendor_cost")
+	}
+}
+
+// TestMergeBifrostLLMUsageSumsVendorCost (TXE-6967): a request made of several upstream calls (an MCP agent's
+// turns, injected-tool stream turns) carries the vendor's charge for all of them: the sum when every call
+// reported one in the same unit, otherwise nothing, never a partial sum. cost_in_usd_ticks follows the same rule.
+func TestMergeBifrostLLMUsageSumsVendorCost(t *testing.T) {
+	ticks := func(n int64) *int64 { return &n }
+	vc := func(a float64, u VendorCostUnit) *VendorCost { return &VendorCost{Amount: a, Unit: u} }
+	cases := []struct {
+		name      string
+		base, add *BifrostLLMUsage
+		want      *VendorCost
+		wantTicks *int64
+	}{
+		{"both reported", &BifrostLLMUsage{VendorCost: vc(100, VendorCostUnitUSDTicks), CostInUsdTicks: ticks(100)}, &BifrostLLMUsage{VendorCost: vc(250, VendorCostUnitUSDTicks), CostInUsdTicks: ticks(250)}, vc(350, VendorCostUnitUSDTicks), ticks(350)},
+		{"one call unreported", &BifrostLLMUsage{VendorCost: vc(100, VendorCostUnitUSDTicks), CostInUsdTicks: ticks(100)}, &BifrostLLMUsage{PromptTokens: 1}, nil, nil},
+		{"units differ", &BifrostLLMUsage{VendorCost: vc(1, VendorCostUnitUSD)}, &BifrostLLMUsage{VendorCost: vc(2, VendorCostUnitCredit)}, nil, nil},
+		{"neither reported", &BifrostLLMUsage{PromptTokens: 1}, &BifrostLLMUsage{PromptTokens: 2}, nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := MergeBifrostLLMUsage(tc.base, tc.add)
+			if !reflect.DeepEqual(got.VendorCost, tc.want) {
+				t.Errorf("vendor_cost = %+v, want %+v", got.VendorCost, tc.want)
+			}
+			if !reflect.DeepEqual(got.CostInUsdTicks, tc.wantTicks) {
+				t.Errorf("cost_in_usd_ticks = %v, want %v", got.CostInUsdTicks, tc.wantTicks)
+			}
+		})
+	}
+	// AddBillingTurn is the path the injected-tool streams take.
+	total := AddBillingTurn(&BifrostLLMUsage{VendorCost: vc(1, VendorCostUnitUSDTicks)}, &BifrostLLMUsage{VendorCost: vc(2, VendorCostUnitUSDTicks)})
+	if !reflect.DeepEqual(total.VendorCost, vc(3, VendorCostUnitUSDTicks)) {
+		t.Errorf("AddBillingTurn vendor_cost = %+v", total.VendorCost)
+	}
+}
