@@ -5176,3 +5176,98 @@ func TestKeySecretMaySignFor(t *testing.T) {
 		}
 	}
 }
+
+// The shared entry points enforce the large-payload eligibility rule (TXE-7082): a body is
+// streamed raw only for an attempt whose stamp allows it, and with no stamp it never is.
+
+type stagedRequest struct{}
+
+func (stagedRequest) GetRawRequestBody() []byte { return nil }
+
+type convertedBody struct{}
+
+func (convertedBody) GetExtraParams() map[string]interface{} { return nil }
+
+func stagedLargePayloadCtx(body string) *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, io.Reader(strings.NewReader(body)))
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, len(body))
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentType, "application/json")
+	return ctx
+}
+
+func TestCheckContextAndGetRequestBodyRefusesAStagedBodyItMayNotForward(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		stamp *schemas.LargePayloadEligibility
+	}{
+		{"no decision on the context", nil},
+		{"the attempt converts", &schemas.LargePayloadEligibility{Reason: "mistral converts"}},
+		{"only the response is raw", &schemas.LargePayloadEligibility{RawResponse: true, Reason: "unified request"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := stagedLargePayloadCtx(`{"model":"m","input":"x"}`)
+			if tt.stamp != nil {
+				ctx.SetValue(schemas.BifrostContextKeyLargePayloadEligibility, *tt.stamp)
+			}
+			converterCalls := 0
+			body, bifrostErr := CheckContextAndGetRequestBody(ctx, stagedRequest{}, func() (RequestBodyWithExtraParams, error) {
+				converterCalls++
+				return convertedBody{}, nil
+			})
+			if bifrostErr == nil {
+				t.Fatalf("got body %q and no error, want the 413 refusal", body)
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusRequestEntityTooLarge {
+				t.Errorf("status = %v, want 413", bifrostErr.StatusCode)
+			}
+			if bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerInvalidRequest {
+				t.Errorf("error_type = %q", bifrostErr.ExtraFields.ErrorType)
+			}
+			if converterCalls != 0 {
+				t.Errorf("the converter ran %d times on a request with no parsed input", converterCalls)
+			}
+			if IsLargePayloadPassthroughEnabled(ctx) {
+				t.Error("IsLargePayloadPassthroughEnabled is true for an attempt that may not forward the body")
+			}
+			req := fasthttp.AcquireRequest()
+			defer fasthttp.ReleaseRequest(req)
+			if ApplyLargePayloadRequestBody(ctx, req) {
+				t.Error("the staged body was applied to the upstream request")
+			}
+		})
+	}
+}
+
+func TestCheckContextAndGetRequestBodyStreamsAStagedBodyForAnEligibleAttempt(t *testing.T) {
+	ctx := stagedLargePayloadCtx(`{"model":"openai/gpt-5","input":"x"}`)
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadEligibility, schemas.LargePayloadEligibility{RawRequest: true, RawResponse: true})
+	body, bifrostErr := CheckContextAndGetRequestBody(ctx, stagedRequest{}, func() (RequestBodyWithExtraParams, error) {
+		t.Error("the converter ran for a body that is streamed as written")
+		return convertedBody{}, nil
+	})
+	if bifrostErr != nil || body != nil {
+		t.Fatalf("got body %q, err %v; want nil, nil (the body is the staged stream)", body, bifrostErr)
+	}
+	req := fasthttp.AcquireRequest()
+	defer fasthttp.ReleaseRequest(req)
+	if !ApplyLargePayloadRequestBody(ctx, req) {
+		t.Fatal("the staged body was not applied")
+	}
+}
+
+// A request that is not staged is untouched by the rule: the converter runs as always.
+func TestCheckContextAndGetRequestBodyConvertsWhenNothingIsStaged(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	converterCalls := 0
+	if _, bifrostErr := CheckContextAndGetRequestBody(ctx, stagedRequest{}, func() (RequestBodyWithExtraParams, error) {
+		converterCalls++
+		return convertedBody{}, nil
+	}); bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	if converterCalls != 1 {
+		t.Errorf("converter calls = %d, want 1", converterCalls)
+	}
+}

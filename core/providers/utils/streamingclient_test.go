@@ -26,6 +26,7 @@ import (
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
+	"strings"
 )
 
 // TestBuildStreamingClient_KeepsHeaderTimeouts verifies the streaming client
@@ -1980,6 +1981,71 @@ func TestFinalizeResponseWithLargeDetection_ThresholdAboveTheLimitStreams(t *tes
 			require.NoError(t, err)
 			require.NoError(t, reader.Close())
 			require.Equal(t, len(body), len(streamed))
+		})
+	}
+}
+
+// A response the attempt must convert is returned whole above the threshold, with a known
+// length and without one, and nothing is left on the context for the transport to stream.
+func TestFinalizeResponseWithLargeDetectionBuffersAResponseThatMustBeConverted(t *testing.T) {
+	payload := `{"data":"` + strings.Repeat("x", 200*1024) + `","usage":{"total_tokens":7}}`
+	for _, chunked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("chunked=%v", chunked), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if chunked {
+					w.WriteHeader(http.StatusOK)
+					half := len(payload) / 2
+					_, _ = io.WriteString(w, payload[:half])
+					w.(http.Flusher).Flush()
+					_, _ = io.WriteString(w, payload[half:])
+					return
+				}
+				w.Header().Set("Content-Length", fmt.Sprint(len(payload)))
+				_, _ = io.WriteString(w, payload)
+			}))
+			defer srv.Close()
+
+			ctx, resp, release := largeResponseRequest(t, srv, 5*time.Second)
+			defer release()
+			defer fasthttp.ReleaseResponse(resp)
+			ctx.SetValue(schemas.BifrostContextKeyLargePayloadEligibility, schemas.LargePayloadEligibility{Reason: "cohere converts"})
+
+			body, isLarge, bifrostErr := FinalizeResponseWithLargeDetection(ctx, resp, nil)
+			if bifrostErr != nil {
+				t.Fatalf("FinalizeResponseWithLargeDetection: %s", bifrostErr.Error.Message)
+			}
+			if isLarge {
+				t.Fatal("a response that must be converted took the raw streaming path")
+			}
+			if string(body) != payload {
+				t.Fatalf("got %d bytes, want the whole %d byte body", len(body), len(payload))
+			}
+			if ctx.Value(schemas.BifrostContextKeyLargeResponseMode) != nil || ctx.Value(schemas.BifrostContextKeyLargeResponseReader) != nil {
+				t.Error("large-response state was left on the context")
+			}
+		})
+	}
+}
+
+func TestSetupStreamingPassthroughNeedsAnEligibleAttempt(t *testing.T) {
+	for _, eligible := range []bool{false, true} {
+		t.Run(fmt.Sprintf("eligible=%v", eligible), func(t *testing.T) {
+			ctx := stagedLargePayloadCtx(`{}`)
+			if eligible {
+				ctx.SetValue(schemas.BifrostContextKeyLargePayloadEligibility, schemas.LargePayloadEligibility{RawRequest: true, RawResponse: true})
+			}
+			resp := fasthttp.AcquireResponse()
+			resp.SetBodyStream(strings.NewReader("data: {}\n\n"), -1)
+			got := SetupStreamingPassthrough(ctx, resp)
+			if got != eligible {
+				t.Fatalf("SetupStreamingPassthrough = %v, want %v", got, eligible)
+			}
+			if reader, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseReader).(io.Closer); ok {
+				_ = reader.Close()
+			} else {
+				fasthttp.ReleaseResponse(resp)
+			}
 		})
 	}
 }
