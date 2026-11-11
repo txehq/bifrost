@@ -543,7 +543,8 @@ and `order`; and the first `provider`, which serves the request.
 Start the fixture and the isolated gateway as in the provider error fixture section above, then run:
 
 ```bash
-newman run tests/e2e/api/collections/provider-harness.json \
+node tests/e2e/api/runners/provider-harness-folders.mjs build
+newman run tmp/provider-harness.json \
   --folder "481. A query parameter sent more than once keeps every value through the transport plugins (repeated query) [SERIAL]" \
   --working-dir . \
   --env-var baseUrl=http://127.0.0.1:8790 \
