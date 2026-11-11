@@ -24,7 +24,8 @@ name: Go unit tests (offline)
 #   skipped in its package's main run and run alone at the end of its shard.
 # - The required check is the `Go unit tests (offline)` job, which fails unless every shard
 #   passed. No paths filter: a path-filtered required check never reports on a PR outside its
-#   paths, which blocks that PR's merge.
+#   paths, which blocks that PR's merge. No concurrency group either: a cancelled run of a
+#   required check leaves the PR blocked beside a passing one (TXE-7104).
 # - On a push to main, warm-cache compiles every test binary and saves the go-unit build cache
 #   that the shards restore (a cache saved by a pull request is readable by that PR alone).
 
@@ -35,10 +36,6 @@ on:
 
 permissions:
   contents: read
-
-concurrency:
-  group: go-unit-tests-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
 
 env:
   # <ticket> <import path> <test name>, one per line. Run alone at the end of its shard.
@@ -179,6 +176,11 @@ jobs:
     if: github.event_name == 'push'
     name: Save the go-unit build cache
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    # Only this job may declare concurrency: the required check and the shards it needs must
+    # not (check-required-checks-never-cancel.py, TXE-7104). A newer push to main supersedes it.
+    concurrency:
+      group: go-unit-warm-cache
+      cancel-in-progress: true
     timeout-minutes: 30
     steps:
       - name: Harden Runner
