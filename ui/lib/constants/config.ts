@@ -312,6 +312,7 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 	],
 	huggingface: ["list_models", "chat_completion", "chat_completion_stream", "responses", "responses_stream"],
 	tencent: ["image_generation"],
+	kling: ["video_generation", "video_retrieve", "video_download", "video_list"],
 	minimax: [
 		"list_models",
 		"text_completion",
