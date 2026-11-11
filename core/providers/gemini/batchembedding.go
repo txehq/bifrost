@@ -75,10 +75,17 @@ func IsEmbeddingBatch(request *schemas.BifrostBatchCreateRequest) bool {
 // them into its body: an embedding batch has no body of its own to carry them.
 //
 // A body already in Gemini shape (content, no input) is sent as it is.
-func ToGeminiEmbeddingBatchLineRequests(item schemas.BatchRequestItem, provider schemas.ModelProvider, model string) ([][]byte, error) {
+//
+// batchEndpoint is the batch's own endpoint, which a line with no url inherits. A line whose
+// operation is not /v1/embeddings is refused: a batch runs one url, and a line with no url
+// under a chat batch endpoint is a chat line even when the first line named /v1/embeddings.
+func ToGeminiEmbeddingBatchLineRequests(item schemas.BatchRequestItem, batchEndpoint schemas.BatchEndpoint, provider schemas.ModelProvider, model string) ([][]byte, error) {
 	body := item.RequestBody()
 	if body == nil {
 		return nil, &schemas.BatchLineError{CustomID: item.CustomID, Param: "body", Message: "body is required"}
+	}
+	if operation := batchLineOperation(item.Endpoint(batchEndpoint)); operation != schemas.BatchEndpointEmbeddings {
+		return nil, &schemas.BatchLineError{CustomID: item.CustomID, Param: "url", Unsupported: true, Message: fmt.Sprintf("url %s differs from the batch's other lines (%s): a batch runs one url", operation, schemas.BatchEndpointEmbeddings)}
 	}
 	if isNativeGeminiEmbeddingBatchBody(body) {
 		encoded, err := providerUtils.MarshalSorted(body)
@@ -87,12 +94,15 @@ func ToGeminiEmbeddingBatchLineRequests(item schemas.BatchRequestItem, provider 
 		}
 		return [][]byte{encoded}, nil
 	}
-	if endpoint := item.Endpoint(schemas.BatchEndpointEmbeddings); endpoint != schemas.BatchEndpointEmbeddings {
-		return nil, &schemas.BatchLineError{CustomID: item.CustomID, Param: "url", Unsupported: true, Message: fmt.Sprintf("url %s differs from the batch's other lines (%s): a batch runs one url", endpoint, schemas.BatchEndpointEmbeddings)}
-	}
 	embeddingRequest, err := item.ToBifrostEmbeddingRequest(provider, model)
 	if err != nil {
 		return nil, &schemas.BatchLineError{CustomID: item.CustomID, Param: "body", Message: err.Error()}
+	}
+	// The sync route refuses an encoding_format other than float before any upstream call;
+	// the converter drops the field, so without this a base64 line would run, be billed and
+	// come back as floats.
+	if err := RejectNonFloatEncodingFormat(embeddingRequest); err != nil {
+		return nil, &schemas.BatchLineError{CustomID: item.CustomID, Param: "body.encoding_format", Unsupported: true, Message: "encoding_format other than float is not supported: Google embedding endpoints return float vectors only"}
 	}
 	converted, err := ToGeminiEmbeddingRequest(embeddingRequest)
 	if err != nil {
@@ -120,7 +130,7 @@ func geminiEmbeddingBatchRequestItems(request *schemas.BifrostBatchCreateRequest
 		if err := CheckBatchLineModel(line, schemas.Gemini, model, resolve); err != nil {
 			return nil, NewBatchLineBadRequestError(i, err)
 		}
-		lineRequests, err := ToGeminiEmbeddingBatchLineRequests(line, schemas.Gemini, model)
+		lineRequests, err := ToGeminiEmbeddingBatchLineRequests(line, request.Endpoint, schemas.Gemini, model)
 		if err != nil {
 			return nil, NewBatchLineBadRequestError(i, err)
 		}
@@ -245,8 +255,14 @@ func groupGeminiInlinedResponses(inlined []GeminiInlinedResponse) []GeminiInline
 // geminiInlinedInputPosition reads, from a response's metadata, the request count of the
 // line it belongs to and its position in the line. ok is false for a response that is a
 // line of its own.
+//
+// A generateContent response is always a line of its own, whatever its metadata says. The
+// metadata is the caller's: a native :batchGenerateContent body is passed through with the
+// metadata it carries, and the vendor echoes it. Only an embedding batch is created with
+// these fields by the gateway, so only a response that is an embedding or an error is
+// grouped. Grouped chat responses would be settled as one line while each was billed.
 func geminiInlinedInputPosition(response GeminiInlinedResponse) (count, index int, ok bool) {
-	if response.Metadata == nil || response.Metadata.InputCount == "" {
+	if response.Response != nil || response.Metadata == nil || response.Metadata.InputCount == "" {
 		return 0, 0, false
 	}
 	count, countErr := strconv.Atoi(response.Metadata.InputCount)

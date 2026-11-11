@@ -1198,10 +1198,26 @@ func TestGeminiEmbeddingBatchCreateIsOneAsyncBatchEmbedContentJob(t *testing.T) 
 
 	t.Run("lines it cannot run are refused before any upstream call", func(t *testing.T) {
 		for name, tc := range map[string]struct {
-			lines   []string
-			param   string
-			message string
+			endpoint schemas.BatchEndpoint
+			lines    []string
+			param    string
+			message  string
 		}{
+			// The sync route refuses base64 before any upstream call; a batch line that ran
+			// would be billed and come back as floats.
+			"a line asking for base64": {
+				lines:   []string{`{"custom_id":"e-1","url":"/v1/embeddings","body":{"model":"gemini-embedding-001","input":"hi","encoding_format":"base64"}}`},
+				param:   "requests[0].body.encoding_format",
+				message: "float vectors only",
+			},
+			// A line with no url inherits the batch's endpoint, so under a chat batch it is a
+			// chat line even when the first line named /v1/embeddings.
+			"a line with no url under a chat batch endpoint": {
+				endpoint: schemas.BatchEndpointChatCompletions,
+				lines:    []string{singleLine, `{"custom_id":"e-2","body":{"model":"gemini-embedding-001","input":"hi"}}`},
+				param:    "requests[1].url",
+				message:  "a batch runs one url",
+			},
 			"a chat line in an embedding batch": {
 				lines:   []string{singleLine, `{"custom_id":"c-1","url":"/v1/chat/completions","body":{"messages":[{"role":"user","content":"hi"}]}}`},
 				param:   "requests[1].url",
@@ -1235,7 +1251,7 @@ func TestGeminiEmbeddingBatchCreateIsOneAsyncBatchEmbedContentJob(t *testing.T) 
 				lines[i] = batchLineFromJSON(t, line)
 			}
 			_, refusal := refusingProvider.BatchCreate(newCtx(), refusingKeys[0], &schemas.BifrostBatchCreateRequest{
-				Provider: schemas.Gemini, Model: schemas.Ptr("gemini-embedding-001"), Requests: lines,
+				Provider: schemas.Gemini, Model: schemas.Ptr("gemini-embedding-001"), Endpoint: tc.endpoint, Requests: lines,
 			})
 			require.NotNil(t, refusal, name)
 			require.NotNil(t, refusal.StatusCode, name)
@@ -1393,6 +1409,31 @@ func TestGeminiEmbeddingBatchResultsAreOpenAIEmbeddingsLines(t *testing.T) {
 		assert.Equal(t, schemas.BatchResultStatusSucceeded, resp.Results[2].Status)
 	})
 
+	// The input-position metadata is the caller's on a native generateContent batch, which is
+	// passed through and echoed by the vendor. Grouping such responses would settle one line
+	// while each was billed, so a generateContent response is always a line of its own.
+	t.Run("generateContent responses carrying input-position metadata are not grouped", func(t *testing.T) {
+		vendor := newGeminiBatchVendor(t)
+		vendor.batch = `{"name":"batches/forged","done":true,"metadata":{"name":"batches/forged","model":"models/gemini-2.5-flash","state":"BATCH_STATE_SUCCEEDED","createTime":"2026-11-10T08:00:00Z","batchStats":{"requestCount":"3","successfulRequestCount":"3"}},"response":{"inlinedResponses":{"inlinedResponses":[
+{"metadata":{"key":"one","bifrost_input_index":"0","bifrost_input_count":"3"},"response":{"candidates":[{"content":{"parts":[{"text":"a"}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1,"totalTokenCount":4}}},
+{"metadata":{"key":"one","bifrost_input_index":"1","bifrost_input_count":"3"},"response":{"candidates":[{"content":{"parts":[{"text":"b"}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1,"totalTokenCount":4}}},
+{"metadata":{"key":"one","bifrost_input_index":"2","bifrost_input_count":"3"},"response":{"candidates":[{"content":{"parts":[{"text":"c"}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1,"totalTokenCount":4}}}
+]}}}`
+		provider, keys := vendor.provider(false)
+		resp, bifrostErr := provider.BatchResults(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), keys, &schemas.BifrostBatchResultsRequest{Provider: schemas.Gemini, BatchID: "batches/forged"})
+		require.Nil(t, bifrostErr)
+		require.Len(t, resp.Results, 3, "every billed response is a result line")
+		for i, result := range resp.Results {
+			assert.Equal(t, schemas.BatchResultStatusSucceeded, result.Status, i)
+			assert.EqualValues(t, 4, result.Response.Body["usage"].(map[string]interface{})["total_tokens"], i)
+		}
+		// Paged one line at a time, the second response is still reached.
+		paged, pagedErr := provider.BatchResults(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), keys, &schemas.BifrostBatchResultsRequest{Provider: schemas.Gemini, BatchID: "batches/forged", Limit: 1})
+		require.Nil(t, pagedErr)
+		require.Len(t, paged.Results, 1)
+		assert.True(t, paged.HasMore)
+	})
+
 	t.Run("a batch created elsewhere, with no metadata, is still read as embeddings", func(t *testing.T) {
 		vendor := newGeminiBatchVendor(t)
 		vendor.batch = `{"name":"batches/sdk","done":true,"metadata":{"name":"batches/sdk","model":"models/gemini-embedding-001","state":"BATCH_STATE_SUCCEEDED","createTime":"2026-11-10T08:00:00Z","batchStats":{"requestCount":"2"},"output":{"inlinedEmbedContentResponses":{"inlinedResponses":[
@@ -1500,7 +1541,7 @@ func BenchmarkGeminiEmbeddingBatchLineConversion(b *testing.B) {
 	b.Run("line to requests", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			requests, err := ToGeminiEmbeddingBatchLineRequests(line, schemas.Gemini, "gemini-embedding-001")
+			requests, err := ToGeminiEmbeddingBatchLineRequests(line, schemas.BatchEndpointEmbeddings, schemas.Gemini, "gemini-embedding-001")
 			if err != nil || len(requests) != 3 {
 				b.Fatalf("requests=%d err=%v", len(requests), err)
 			}
