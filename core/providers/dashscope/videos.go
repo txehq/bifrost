@@ -212,9 +212,9 @@ func ToDashScopeVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGeneratio
 			}
 			req.Input.Media = append(req.Input.Media, DashScopeVideoMedia{Type: "reference_image", URL: url})
 		}
-		for _, extra := range []struct{ name, mediaType string }{
-			{"reference_videos", "reference_video"},
-			{"reference_audios", "reference_audio"},
+		for _, extra := range []struct{ name, mediaType, dataPrefix string }{
+			{"reference_videos", "reference_video", "data:video/"},
+			{"reference_audios", "reference_audio", "data:audio/"},
 		} {
 			value, ok := extras[extra.name]
 			if !ok {
@@ -230,6 +230,9 @@ func ToDashScopeVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGeneratio
 			for _, url := range urls {
 				if strings.TrimSpace(url) == "" {
 					return nil, providerUtils.InvalidRequestErrorf("%s holds an empty URL", extra.name)
+				}
+				if !isReferenceMediaURL(url, extra.dataPrefix) {
+					return nil, providerUtils.InvalidRequestErrorf("%s takes an http or https URL, or a %s data URL", extra.name, extra.dataPrefix)
 				}
 				req.Input.Media = append(req.Input.Media, DashScopeVideoMedia{Type: extra.mediaType, URL: url})
 			}
@@ -356,6 +359,15 @@ func ToDashScopeVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGeneratio
 		req.ExtraParams = extras
 	}
 	return req, nil
+}
+
+// isReferenceMediaURL reports whether a reference video or audio address is one the gateway
+// passes on: an http or https URL, or a data URL of the media's own type. The frames and
+// reference images are held to the same by SanitizeImageURL. Any other scheme (oss://, file://)
+// names something in the vendor account's or host's own storage and is refused.
+func isReferenceMediaURL(raw, dataPrefix string) bool {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	return strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, dataPrefix)
 }
 
 // extraParamObject returns an extra param's value as a JSON object, or nil when it is not one.

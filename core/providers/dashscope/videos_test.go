@@ -290,6 +290,8 @@ func TestDashScopeVideoCreateRefusesUndeliverableFields(t *testing.T) {
 		{"media nested under an input extra", "wan3.0-video", schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"input": map[string]any{"media": []any{map[string]any{"type": "reference_video", "url": "https://cdn.example.com/v.mp4"}}}}}, schemas.ErrorTypeCallerUnsupportedParameter, "input.media"},
 		{"video_uri", "wan3.0-video", schemas.VideoGenerationInput{Prompt: "p", VideoURI: schemas.Ptr("https://cdn.example.com/v.mp4")}, nil, schemas.ErrorTypeCallerUnsupportedParameter, "video_uri"},
 		{"a model whose request fields are not known", "happyhorse-1.0", schemas.VideoGenerationInput{Prompt: "p"}, nil, schemas.ErrorTypeCallerModelUnknown, ""},
+		{"a reference video that is not a web or data URL", "wan3.0-video", schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"reference_videos": []any{"oss://bucket/other-tenant.mp4"}}}, schemas.ErrorTypeCallerInvalidRequest, ""},
+		{"a reference audio given as a video data URL", "wan3.0-video", schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"reference_audios": []any{"data:video/mp4;base64,AAAA"}}}, schemas.ErrorTypeCallerInvalidRequest, ""},
 		{"a watermark that is not a boolean", "wan3.0-video", schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"watermark": "yes"}}, schemas.ErrorTypeCallerInvalidRequest, ""},
 		{"no prompt and no input media", "wan3.0-video", schemas.VideoGenerationInput{}, nil, schemas.ErrorTypeCallerInvalidRequest, ""},
 	}
