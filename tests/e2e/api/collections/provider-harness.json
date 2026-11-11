@@ -303131,7 +303131,7 @@
     },
     {
       "name": "410. OpenAI image edit refuses the unified fields it cannot deliver; a streamed image response reports usage.output_images (openai image edit fields) [SERIAL]",
-      "description": "TXE-6984 regression, contract C4 and C5. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream (see folder 331 for the fixture's OpenAI image paths). Every row names the key with x-bf-api-key and reads back from /__wire the requests that reached the fixture. Pinned: an image edit to openai or azure carrying aspect_ratio, resolution, type, upscale_factor or target_megapixels, which OpenAI's edit API has no field for in its multipart form or its JSON edit body, is answered 400 caller_unsupported_parameter with error.param naming the field and makes no upstream call, as a form, as JSON with link inputs, and with stream set (before, the field was dropped and the edit ran without it); the completed frame of a streamed generation or edit carries usage.output_images 1 next to OpenAI's token usage, with two previews in the stream, because partial_image_index numbers the previews of one image and is not an image count (before, a streamed response had no image count). The last two rows pin the same count on azure, whose streams run on the same handlers and reach the fixture on /openai/v1/images/generations and /openai/v1/images/edits.",
+      "description": "TXE-6984 regression, contract C4 and C5. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream (see folder 331 for the fixture's OpenAI image paths). Every row names the key with x-bf-api-key and reads back from /__wire the requests that reached the fixture. Pinned: an image edit to openai or azure carrying aspect_ratio, resolution, type, upscale_factor or target_megapixels, which OpenAI's edit API has no field for in its multipart form or its JSON edit body, is answered 400 caller_unsupported_parameter with error.param naming the field and makes no upstream call, as a form, as JSON with link inputs, and with stream set (before, the field was dropped and the edit ran without it); the completed frame of a streamed generation or edit carries usage.output_images 1 next to OpenAI's token usage, with two previews in the stream, because partial_image_index numbers the previews of one image and is not an image count (before, a streamed response had no image count). Two rows pin the same count on azure, whose streams run on the same handlers and reach the fixture on /openai/v1/images/generations and /openai/v1/images/edits. Four rows enter by the OpenAI drop-in route (/openai/v1/images/edits, /openai/v1/images/generations), which has its own multipart parser and stream converter: the refusal for aspect_ratio and for upscale_factor (which that parser did not read before, so it never reached the check), and the count on both streams.",
       "item": [
         {
           "name": "[EXPECT-400] openai/gpt-image-1.5 /v1/images/edits multipart with aspect_ratio is refused naming the field, before any upstream call (openai image edit fields)",
@@ -303919,6 +303919,184 @@
           ]
         },
         {
+          "name": "[EXPECT-400] openai/gpt-image-1.5 /openai/v1/images/edits multipart with aspect_ratio is refused naming the field, before any upstream call on the OpenAI drop-in route (openai image edit fields)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "local-error-fixture"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/gpt-image-1.5",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "add a hat",
+                  "type": "text"
+                },
+                {
+                  "key": "aspect_ratio",
+                  "value": "16:9",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('openai image edit fields setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function imageCalls(calls) { return calls.filter(function (c) { return /\\/images\\/(generations|edits)$/.test(c.path); }); }",
+                  "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "var body = pm.response.json();",
+                  "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+                  "pm.test('error.param names the field', function () { pm.expect(body.error && body.error.param, pm.response.text()).to.equal('aspect_ratio'); });",
+                  "wire(function (calls) { pm.test('no upstream call was made', function () { pm.expect(imageCalls(calls), JSON.stringify(calls)).to.have.length(0); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] openai/gpt-image-1.5 /openai/v1/images/edits multipart with upscale_factor is refused naming the field, before any upstream call on the OpenAI drop-in route (openai image edit fields)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "local-error-fixture"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/gpt-image-1.5",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "add a hat",
+                  "type": "text"
+                },
+                {
+                  "key": "upscale_factor",
+                  "value": "2",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('openai image edit fields setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function imageCalls(calls) { return calls.filter(function (c) { return /\\/images\\/(generations|edits)$/.test(c.path); }); }",
+                  "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "var body = pm.response.json();",
+                  "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+                  "pm.test('error.param names the field', function () { pm.expect(body.error && body.error.param, pm.response.text()).to.equal('upscale_factor'); });",
+                  "wire(function (calls) { pm.test('no upstream call was made', function () { pm.expect(imageCalls(calls), JSON.stringify(calls)).to.have.length(0); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "openai/gpt-image-1.5 /v1/images/generations stream with two previews: the completed frame carries usage.output_images 1 (openai image edit fields)",
           "protocolProfileBehavior": {
             "followRedirects": false,
@@ -304267,6 +304445,185 @@
                   "pm.test('OpenAI\\'s token usage is kept next to the count', function () { pm.expect(last.usage.input_tokens, text).to.equal(12); pm.expect(last.usage.output_tokens, text).to.equal(272); pm.expect(last.usage.total_tokens, text).to.equal(284); });",
                   "pm.test('no preview frame carries usage', function () { events.slice(0, -1).forEach(function (e) { pm.expect(e.usage, JSON.stringify(e)).to.equal(undefined); }); });",
                   "wire(function (calls) { var images = imageCalls(calls); pm.test('exactly one upstream call, with stream set', function () { pm.expect(images, JSON.stringify(calls)).to.have.length(1); pm.expect(images[0].path).to.equal('/openai/v1/images/edits'); pm.expect(images[0].contentType, JSON.stringify(images[0]).slice(0, 300)).to.match(/^multipart\\/form-data/); pm.expect(images[0].body).to.match(/\"stream\":true|name=\"stream\"\\r\\n\\r\\ntrue/); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-image-1.5 /openai/v1/images/generations stream with two previews: the completed frame carries usage.output_images 1 on the OpenAI drop-in route (openai image edit fields)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "local-error-fixture"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-image-1.5\", \"prompt\": \"a lighthouse at dusk\", \"stream\": true, \"partial_images\": 2}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('openai image edit fields setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function imageCalls(calls) { return calls.filter(function (c) { return /\\/images\\/(generations|edits)$/.test(c.path); }); }",
+                  "pm.test('the client gets 200 and a server-sent event stream', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(pm.response.headers.get('Content-Type'), JSON.stringify(pm.response.headers.toObject())).to.match(/^text\\/event-stream/); });",
+                  "var text = pm.response.text();",
+                  "var events = text.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "pm.test('the stream is 2 previews of one image, then the completed event', function () { pm.expect(events.map(function (e) { return e.type; }), text).to.deep.equal(['image_generation.partial_image', 'image_generation.partial_image', 'image_generation.completed']); });",
+                  "var last = events[events.length - 1] || {};",
+                  "pm.test('the completed frame carries usage.output_images 1: one finished image, whatever the number of previews', function () { pm.expect(last.usage, text).to.be.an('object'); pm.expect(last.usage.output_images, text).to.equal(1); });",
+                  "pm.test('OpenAI\\'s token usage is kept next to the count', function () { pm.expect(last.usage.input_tokens, text).to.equal(12); pm.expect(last.usage.output_tokens, text).to.equal(272); pm.expect(last.usage.total_tokens, text).to.equal(284); });",
+                  "pm.test('no preview frame carries usage', function () { events.slice(0, -1).forEach(function (e) { pm.expect(e.usage, JSON.stringify(e)).to.equal(undefined); }); });",
+                  "wire(function (calls) { var images = imageCalls(calls); pm.test('exactly one upstream call, with stream set', function () { pm.expect(images, JSON.stringify(calls)).to.have.length(1); pm.expect(images[0].path).to.equal('/v1/images/generations'); pm.expect(images[0].contentType, JSON.stringify(images[0]).slice(0, 300)).to.match(/^application\\/json/); pm.expect(images[0].body).to.match(/\"stream\":true|name=\"stream\"\\r\\n\\r\\ntrue/); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-image-1.5 /openai/v1/images/edits multipart stream with an uploaded file and two previews: the completed frame carries usage.output_images 1 on the OpenAI drop-in route (openai image edit fields)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "local-error-fixture"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/gpt-image-1.5",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "add a hat",
+                  "type": "text"
+                },
+                {
+                  "key": "stream",
+                  "value": "true",
+                  "type": "text"
+                },
+                {
+                  "key": "partial_images",
+                  "value": "2",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('openai image edit fields setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function imageCalls(calls) { return calls.filter(function (c) { return /\\/images\\/(generations|edits)$/.test(c.path); }); }",
+                  "pm.test('the client gets 200 and a server-sent event stream', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(pm.response.headers.get('Content-Type'), JSON.stringify(pm.response.headers.toObject())).to.match(/^text\\/event-stream/); });",
+                  "var text = pm.response.text();",
+                  "var events = text.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "pm.test('the stream is 2 previews of one image, then the completed event', function () { pm.expect(events.map(function (e) { return e.type; }), text).to.deep.equal(['image_edit.partial_image', 'image_edit.partial_image', 'image_edit.completed']); });",
+                  "var last = events[events.length - 1] || {};",
+                  "pm.test('the completed frame carries usage.output_images 1: one finished image, whatever the number of previews', function () { pm.expect(last.usage, text).to.be.an('object'); pm.expect(last.usage.output_images, text).to.equal(1); });",
+                  "pm.test('OpenAI\\'s token usage is kept next to the count', function () { pm.expect(last.usage.input_tokens, text).to.equal(12); pm.expect(last.usage.output_tokens, text).to.equal(272); pm.expect(last.usage.total_tokens, text).to.equal(284); });",
+                  "pm.test('no preview frame carries usage', function () { events.slice(0, -1).forEach(function (e) { pm.expect(e.usage, JSON.stringify(e)).to.equal(undefined); }); });",
+                  "wire(function (calls) { var images = imageCalls(calls); pm.test('exactly one upstream call, with stream set', function () { pm.expect(images, JSON.stringify(calls)).to.have.length(1); pm.expect(images[0].path).to.equal('/v1/images/edits'); pm.expect(images[0].contentType, JSON.stringify(images[0]).slice(0, 300)).to.match(/^multipart\\/form-data/); pm.expect(images[0].body).to.match(/\"stream\":true|name=\"stream\"\\r\\n\\r\\ntrue/); }); });"
                 ]
               }
             }
