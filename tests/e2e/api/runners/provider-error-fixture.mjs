@@ -1763,7 +1763,9 @@ const handleRequest = (req, res) => {
 	// The xAI video link, fetched through this fixture as a forward proxy (see XAI_MEDIA_HOST). The row
 	// says whether the fetch carried credentials: the link is public and must get none.
 	const proxiedHost = /^http:\/\//.test(req.url) ? new URL(req.url).hostname : (req.headers.host || "").split(":")[0];
-	if (req.method === "GET" && proxiedHost === XAI_MEDIA_HOST) {
+	// Only the video's own path: the media tunnel joins other requests for this address to the
+	// fixture's ordinary routes (/__hits among them).
+	if (req.method === "GET" && proxiedHost === XAI_MEDIA_HOST && path.startsWith("/xai-video-")) {
 		wireCalls.push({ method: "GET", path, query: "", body: "", host: XAI_MEDIA_HOST, authorization: Boolean(req.headers.authorization) });
 		res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": FIXTURE_MP4.length });
 		return res.end(FIXTURE_MP4);

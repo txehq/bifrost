@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -341,14 +342,34 @@ func refuseLargePayload(ctx *schemas.BifrostContext, operation string) *schemas.
 		": the request is converted to xAI's own fields and cannot be streamed through unparsed; send a smaller body")
 }
 
-// rejectModelExtraParam refuses an extra field named model, in any letter case. Governance and
-// key selection authorize the request's typed model; an extra field is merged over the
-// converted body (or written to the form) after that, so a "model" among them would send the
-// key to a model nobody authorized. The HTTP handlers never produce one; a Go SDK caller can.
+// rejectModelExtraParam refuses an extra field that names the model: "model" in any spelling
+// the extra-params rule reads as that field, and the fields only the gateway decides
+// (providerUtils.ExtraParamUnsettableField: another vendor's name for the model or its
+// deployment, and stream). Governance and key selection authorize the request's typed model;
+// an extra field reaches the body or the form after that, so one of these would send the key
+// to a model nobody authorized. The JSON merge refuses them as well; the transcription form
+// is written here, so the check is made for all three operations before anything is built.
+// The error is a 400 caller_invalid_request whose error.param is the field as the caller
+// wrote it.
 func rejectModelExtraParam(extraParams map[string]interface{}) *schemas.BifrostError {
+	if len(extraParams) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(extraParams))
 	for name := range extraParams {
-		if strings.EqualFold(name, "model") {
-			return providerUtils.NewBifrostBadRequestError("extra params cannot set model; set the request's model")
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		var err error
+		if providerUtils.ExtraParamNamesField(name, "model") {
+			err = providerUtils.ExtraParamConflictError(name, "model")
+		} else if field := providerUtils.ExtraParamUnsettableField(name); field != "" {
+			err = providerUtils.ExtraParamUnsettableError(name, field)
+		}
+		if err != nil {
+			bifrostErr, _ := providerUtils.AsBifrostBadRequestError(err)
+			return bifrostErr
 		}
 	}
 	return nil
