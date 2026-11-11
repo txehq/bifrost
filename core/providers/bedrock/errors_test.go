@@ -1,10 +1,13 @@
 package bedrock
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -265,4 +268,45 @@ func TestParseBedrockHTTPError_NoTypeFallsBack(t *testing.T) {
 	require.NotNil(t, bedrockErr)
 	assert.Equal(t, "InternalServerError", bedrockErr.Type)
 	assert.Equal(t, "something went wrong", bedrockErr.Message)
+}
+
+// GET /v1/models and GET /v1/files hand a query parameter sent more than once to the
+// provider as a []string. Bedrock takes each of its parameters once, so a repeated one is
+// refused with caller_unsupported_parameter before any request is built; the string
+// assertion this replaced read it as absent (fork, TXE-7086).
+func TestListRequestsRefuseARepeatedExtraParam(t *testing.T) {
+	provider := &BedrockProvider{}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	key := schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{}}
+
+	refused := func(t *testing.T, bifrostErr *schemas.BifrostError, param string) {
+		t.Helper()
+		require.NotNil(t, bifrostErr)
+		require.NotNil(t, bifrostErr.StatusCode)
+		assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+		assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+		require.NotNil(t, bifrostErr.Error)
+		assert.Equal(t, param, bifrostErr.Error.Param)
+	}
+
+	for _, name := range []string{"byCustomizationType", "byInferenceType", "byOutputModality", "byProvider"} {
+		_, bifrostErr := provider.listModelsByKey(ctx, key, &schemas.BifrostListModelsRequest{
+			ExtraParams: map[string]interface{}{name: []string{"a", "b"}},
+		})
+		refused(t, bifrostErr, name)
+	}
+
+	for _, name := range []string{"s3_bucket", "s3_prefix"} {
+		extra := map[string]interface{}{"s3_bucket": "one-bucket"}
+		extra[name] = []string{"a", "b"}
+		_, bifrostErr := provider.FileList(ctx, []schemas.Key{key}, &schemas.BifrostFileListRequest{ExtraParams: extra})
+		refused(t, bifrostErr, name)
+	}
+
+	// No s3_bucket at all is still the missing-bucket error, not a refusal.
+	_, bifrostErr := provider.FileList(ctx, []schemas.Key{key}, &schemas.BifrostFileListRequest{})
+	require.NotNil(t, bifrostErr)
+	assert.NotEqual(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+	require.NotNil(t, bifrostErr.Error)
+	assert.Contains(t, bifrostErr.Error.Message, "s3_bucket is required")
 }

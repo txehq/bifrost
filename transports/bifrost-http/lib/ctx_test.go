@@ -3489,3 +3489,87 @@ func TestQueryStringIsCopiedInOnePlace(t *testing.T) {
 		t.Errorf("%d files walk the query string, the allow list names %d: drop the entries that no longer apply", found, len(allowed))
 	}
 }
+
+// QueryExtraParams hands a handler the query parameters it does not read: a name sent
+// once as a string, a name sent more than once as every value in the order sent, the
+// names the handler reads and empty values left out (fork, TXE-7086).
+func TestQueryExtraParams(t *testing.T) {
+	skip := func(name []byte) bool { return string(name) == "provider" || string(name) == "limit" }
+	cases := []struct {
+		name, uri string
+		want      map[string]interface{}
+	}{
+		{"nothing unread", "/v1/models?provider=bedrock&limit=5&limit=6", nil},
+		{"no query", "/v1/models", nil},
+		{"sent once is a string", "/v1/models?provider=bedrock&byProvider=amazon", map[string]interface{}{"byProvider": "amazon"}},
+		{"sent twice keeps both, in order", "/v1/models?filter=b&provider=huggingface&filter=a&search=x",
+			map[string]interface{}{"filter": []string{"b", "a"}, "search": "x"}},
+		{"same value twice is still two values", "/v1/files?s3_bucket=a&s3_bucket=a", map[string]interface{}{"s3_bucket": []string{"a", "a"}}},
+		{"empty values are left out", "/v1/files?s3_prefix=&s3_bucket=&s3_bucket=b&tag=&tag=x&tag=y",
+			map[string]interface{}{"s3_bucket": "b", "tag": []string{"x", "y"}}},
+		{"names are case sensitive", "/v1/models?Filter=a&filter=b", map[string]interface{}{"Filter": "a", "filter": "b"}},
+		{"encoded names and values are decoded", "/v1/models?expand%5B%5D=a%20b&expand%5B%5D=c", map[string]interface{}{"expand[]": []string{"a b", "c"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := QueryExtraParams(queryTestCtx(tc.uri).Request.URI().QueryArgs(), skip)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("QueryExtraParams = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+	if got := QueryExtraParams(queryTestCtx("/v1/models?a=1&a=2&b=3").Request.URI().QueryArgs(), nil); !reflect.DeepEqual(got, map[string]interface{}{"a": []string{"1", "2"}, "b": "3"}) {
+		t.Fatalf("nil skip: QueryExtraParams = %#v", got)
+	}
+}
+
+// TestUnreadQueryParametersBecomeExtraParamsInOnePlace fails when a transport source file
+// outside the allow list calls CopyQueryFirstValues. That function is for the maps a plugin
+// and a routing rule read, one value per name; a handler that used it to fill a request's
+// ExtraParams forwarded one value of a repeated vendor parameter and dropped the rest
+// (GET /v1/models and GET /v1/files, fork TXE-7086). A handler forwards the parameters it
+// does not read with QueryExtraParams. TestQueryStringIsCopiedInOnePlace already fails on
+// a handler that walks the query string itself.
+func TestUnreadQueryParametersBecomeExtraParamsInOnePlace(t *testing.T) {
+	allowed := map[string]bool{
+		filepath.Join("lib", "query.go"):            true,
+		filepath.Join("lib", "ctx.go"):              true,
+		filepath.Join("handlers", "middlewares.go"): true,
+		filepath.Join("handlers", "wsrealtime.go"):  true,
+	}
+	call := regexp.MustCompile(`\bCopyQueryFirstValues\(`)
+	root := ".."
+	found := 0
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == "ui" || d.Name() == "node_modules" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, path)
+		src, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if call.Match(src) {
+			found++
+			if !allowed[rel] {
+				t.Errorf("%s copies one value per query parameter; forward unread parameters to a provider with lib.QueryExtraParams", rel)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found != len(allowed) {
+		t.Errorf("%d files call CopyQueryFirstValues, the allow list names %d: drop the entries that no longer apply", found, len(allowed))
+	}
+}

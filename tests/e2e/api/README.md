@@ -552,6 +552,32 @@ newman run tmp/provider-harness.json \
 
 Every row is skipped unless `providerErrorFixture=1`.
 
+## Repeated vendor query parameters on the list routes
+
+Folder 488 pins what `GET /v1/models` and `GET /v1/files` do with a query parameter the gateway does not
+read when it is sent more than once, against the same local fixture and with no live provider calls. The
+two routes forward such parameters to the provider and used to keep one value of a repeated name, so
+`endpoint=chat&endpoint=embed` listed Cohere's chat models as if `embed` had never been sent. Every value
+now reaches the provider code, and a provider whose vendor takes the parameter once refuses the request
+with 400 `caller_unsupported_parameter` naming it, before any vendor call. The fixture answers Cohere's
+model list at `GET /pp/cohere/v1/models` and keeps each call in `GET /__wire`. The `pp_cohere` rows read
+it back: no call for the repeated `endpoint`, one call carrying `endpoint` once. The `bedrock` rows
+(`s3_bucket` on the file list, `byProvider` on the model list) are refused before a request is built and
+need no upstream.
+
+Start the fixture and the isolated gateway as in the provider error fixture section above, then run:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "488. A vendor query parameter sent more than once on GET /v1/models and GET /v1/files is refused, never reduced to one value (repeated vendor query) [SERIAL]" \
+  --working-dir . \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1 \
+  --env-var providerErrorFixtureUrl=http://127.0.0.1:8791
+```
+
+Every row is skipped unless `providerErrorFixture=1`.
+
 ## Fork deployment switches: provider job accounting off and passthrough heartbeat off
 
 Folder 329 (TXE-6519) uses the same fixture and the same isolated gateway as folder 154. The

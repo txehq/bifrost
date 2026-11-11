@@ -1414,6 +1414,12 @@ const handleRequest = (req, res) => {
 		}
 		return send(200, {}, JSON.stringify({ id: decodeURIComponent(lifecycleRead[1]), object: "response", created_at: 1, status: "completed", model: "upstream-ok", output: [] }));
 	}
+	// Cohere's model list (TXE-7086), for the pp_cohere provider. Each call is kept in /__wire with the query
+	// string as it arrived, so a row can read back the endpoint filter the vendor received.
+	if (req.method === "GET" && path === "/pp/cohere/v1/models") {
+		wireCalls.push({ method: req.method, path, query: new URL(req.url, "http://localhost").search, body: "" });
+		return send(200, {}, JSON.stringify({ models: [] }));
+	}
 	if (path.startsWith("/pp/bigmodel/")) {
 		const body = [];
 		req.on("data", (c) => body.push(c));

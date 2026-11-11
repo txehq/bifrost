@@ -1043,18 +1043,9 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		PageToken: pageToken,
 	}
 
-	// Pass-through unknown query params for provider-specific features
-	extraParams := map[string]interface{}{}
-	query := make(map[string]string, ctx.QueryArgs().Len())
-	lib.CopyQueryFirstValues(ctx.QueryArgs(), query, false)
-	for s, v := range query {
-		if s != "provider" && s != "page_size" && s != "page_token" {
-			extraParams[s] = v
-		}
-	}
-	if len(extraParams) > 0 {
-		bifrostListModelsReq.ExtraParams = extraParams
-	}
+	// Pass-through unknown query params for provider-specific features. Fork: a name sent
+	// more than once keeps every value (TXE-7086).
+	bifrostListModelsReq.ExtraParams = lib.QueryExtraParams(ctx.QueryArgs(), isListModelsReadParam)
 
 	// If provider is empty, list all models from all providers
 	if provider == "" {
@@ -1079,6 +1070,16 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	}
 	// Send successful response
 	SendJSON(ctx, resp)
+}
+
+// isListModelsReadParam reports whether name is a query parameter GET /v1/models reads
+// itself; every other one goes to the provider in ExtraParams.
+func isListModelsReadParam(name []byte) bool {
+	switch string(name) {
+	case "provider", "page_size", "page_token":
+		return true
+	}
+	return false
 }
 
 // modelRetrieve handles GET /v1/models/{model} - retrieve a single model's metadata
@@ -4555,15 +4556,8 @@ func (h *CompletionHandler) fileList(ctx *fasthttp.RequestCtx) {
 
 	// Collect unknown query args as extra params. gcs_bucket/gcs_prefix are consumed into
 	// StorageConfig above; other providers (e.g. Bedrock s3_bucket) still flow through here.
-	fileListKnownArgs := map[string]bool{"provider": true, "x-model-provider": true, "purpose": true, "limit": true, "after": true, "order": true, "gcs_bucket": true, "gcs_prefix": true}
-	extraParams := map[string]interface{}{}
-	query := make(map[string]string, ctx.QueryArgs().Len())
-	lib.CopyQueryFirstValues(ctx.QueryArgs(), query, false)
-	for argKey, v := range query {
-		if !fileListKnownArgs[argKey] && v != "" {
-			extraParams[argKey] = v
-		}
-	}
+	// Fork: a name sent more than once keeps every value (TXE-7086).
+	extraParams := lib.QueryExtraParams(ctx.QueryArgs(), isFileListReadParam)
 
 	// Build Bifrost file list request
 	bifrostFileReq := &schemas.BifrostFileListRequest{
@@ -4601,6 +4595,16 @@ func (h *CompletionHandler) fileList(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	SendJSON(ctx, resp)
+}
+
+// isFileListReadParam reports whether name is a query parameter GET /v1/files reads
+// itself; every other one goes to the provider in ExtraParams.
+func isFileListReadParam(name []byte) bool {
+	switch string(name) {
+	case "provider", "x-model-provider", "purpose", "limit", "after", "order", "gcs_bucket", "gcs_prefix":
+		return true
+	}
+	return false
 }
 
 // fileRetrieve handles GET /v1/files/{file_id} - Retrieve file metadata
