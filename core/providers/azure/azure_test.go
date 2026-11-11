@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1666,8 +1667,8 @@ func TestAzureSoraJobsRefusesUndeliverableFields(t *testing.T) {
 		{"resolution", schemas.VideoGenerationParameters{Resolution: "1080p"}, nil},
 		{"last_frame", schemas.VideoGenerationParameters{LastFrame: "https://example.com/a.png"}, nil},
 		{"reference_images", schemas.VideoGenerationParameters{ReferenceImages: []string{"https://example.com/a.png"}}, nil},
-		{"audio", schemas.VideoGenerationParameters{Audio: schemas.Ptr(true)}, nil},
-		{"output_format", schemas.VideoGenerationParameters{OutputFormat: schemas.Ptr("webm")}, nil},
+		{"audio", schemas.VideoGenerationParameters{Audio: schemas.Ptr(false)}, nil},
+		{"output_format", schemas.VideoGenerationParameters{OutputFormat: schemas.Ptr("mp4")}, nil},
 		{"seconds", schemas.VideoGenerationParameters{Seconds: schemas.Ptr("2.5")}, nil},
 		{"size", schemas.VideoGenerationParameters{Size: "1080p"}, nil},
 		{"n", schemas.VideoGenerationParameters{ExtraParams: map[string]any{"n": float64(2)}}, nil},
@@ -1697,10 +1698,10 @@ func TestAzureSoraJobsRefusesUndeliverableFields(t *testing.T) {
 		t.Fatalf("refused requests reached Azure: %+v", c)
 	}
 
-	// One variant, audio off and mp4 are deliverable as asked.
+	// One variant is deliverable as asked.
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	if _, bifrostErr := newAzureDecisionProvider(t).VideoGeneration(ctx, newAzureDecisionKey(server.URL), newAzureSoraJobsRequest(&schemas.VideoGenerationParameters{
-		Audio: schemas.Ptr(false), OutputFormat: schemas.Ptr("mp4"), ExtraParams: map[string]any{"n_variants": float64(1)},
+		Seconds: schemas.Ptr("5"), Size: "480x480", ExtraParams: map[string]any{"n_variants": float64(1)},
 	})); bifrostErr != nil {
 		t.Fatalf("VideoGeneration with deliverable fields: %+v", bifrostErr.Error)
 	}
@@ -1865,5 +1866,45 @@ func TestAzureSoraJobsDownloadStreamsOnRequest(t *testing.T) {
 	if len(got) != 2 || got[0].path != "/openai/v1/video/generations/jobs/task_01jwcet0eje35tc5jy54yjax5q" ||
 		got[1].path != "/openai/v1/video/generations/gen_01jwcf0a/content/video" || got[1].query != "api-version=preview" || got[1].apiKey != "test-key" {
 		t.Fatalf("calls = %+v, want the job lookup then the streamed content with the key", got)
+	}
+}
+
+// TestAzureSoraJobsAgreeWithTheProviderDeclaration pins that the jobs path takes exactly the video
+// fields the azure provider declares, the declaration core checks before the converter runs: a
+// field the jobs path accepted but the declaration did not would be unreachable through the
+// gateway, and one the declaration admitted but the jobs path refused would contradict Tokun's
+// catalog.
+func TestAzureSoraJobsAgreeWithTheProviderDeclaration(t *testing.T) {
+	declared, ok := newAzureDecisionProvider(t).SupportedUnifiedFields(schemas.VideoGenerationRequest)
+	if !ok {
+		t.Fatal("azure declares no video generation fields")
+	}
+	server, _ := azureSoraJobsServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, azureSoraJobQueued)
+	})
+	request := &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: newAzureSoraJobsRequest(&schemas.VideoGenerationParameters{
+		Seconds: schemas.Ptr("5"), Size: "480x480", Audio: schemas.Ptr(false), OutputFormat: schemas.Ptr("mp4"), AspectRatio: "1:1",
+	})}
+	for _, field := range request.UnifiedFieldsPresent() {
+		params := schemas.VideoGenerationParameters{}
+		switch field {
+		case "seconds":
+			params.Seconds = schemas.Ptr("5")
+		case "size":
+			params.Size = "480x480"
+		case "audio":
+			params.Audio = schemas.Ptr(false)
+		case "output_format":
+			params.OutputFormat = schemas.Ptr("mp4")
+		case "aspect_ratio":
+			params.AspectRatio = "1:1"
+		}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		_, bifrostErr := newAzureDecisionProvider(t).VideoGeneration(ctx, newAzureDecisionKey(server.URL), newAzureSoraJobsRequest(&params))
+		accepted := bifrostErr == nil
+		if accepted != slices.Contains(declared, field) {
+			t.Errorf("field %s: jobs path accepted=%v, provider declares it=%v", field, accepted, slices.Contains(declared, field))
+		}
 	}
 }

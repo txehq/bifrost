@@ -61,9 +61,11 @@ var azureSoraJobsStatuses = providerUtils.VideoStatusTable{
 }
 
 // azureSoraJobsFields are the unified video create fields the jobs API takes: seconds becomes
-// n_seconds, size becomes width and height. audio and output_format are checked by value in
-// toAzureSoraJobRequest. Every other priced field is refused (contract C4, convention three).
-var azureSoraJobsFields = []string{"seconds", "size", "audio", "output_format"}
+// n_seconds, size becomes width and height. They are the fields the provider declares for video
+// generation (azureVideoGenerationFields), which core checks before a key is chosen; this path
+// checks them again because it is also reached directly. Every other priced field, audio and
+// output_format included, is refused (contract C4, convention three).
+var azureSoraJobsFields = azureVideoGenerationFields
 
 // azureSoraJobRequest is the JSON body of POST /openai/v1/video/generations/jobs.
 type azureSoraJobRequest struct {
@@ -159,12 +161,6 @@ func toAzureSoraJobRequest(request *schemas.BifrostVideoGenerationRequest) (*azu
 	params := request.Params
 	if params == nil {
 		return body, nil
-	}
-	if params.Audio != nil && *params.Audio {
-		return nil, schemas.NewUnsupportedParameterError("audio", "first-generation sora generates video without audio")
-	}
-	if params.OutputFormat != nil && !strings.EqualFold(*params.OutputFormat, "mp4") {
-		return nil, schemas.NewUnsupportedParameterError("output_format", "first-generation sora generates mp4 only")
 	}
 	if params.Seconds != nil {
 		seconds, err := strconv.Atoi(strings.TrimSpace(*params.Seconds))
