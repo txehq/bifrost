@@ -986,6 +986,169 @@
         "default_request_timeout_in_seconds": 10
       }
     },
+    "tkp_ovr_anthropic": {
+      "keys": [
+        {
+          "name": "tk-key-ovr-anthropic",
+          "value": "ovr-fixture-key-anthropic",
+          "models": [
+            "*"
+          ],
+          "use_for_batch_api": true,
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "allowed_requests": {
+          "batch_retrieve": true,
+          "batch_cancel": true,
+          "batch_results": true,
+          "file_retrieve": true,
+          "file_delete": true,
+          "file_content": true
+        },
+        "request_path_overrides": {
+          "batch_retrieve": "/moved/batch_retrieve/{batch_id}",
+          "batch_cancel": "/moved/batch_cancel/{batch_id}",
+          "batch_results": "/moved/batch_results/{batch_id}",
+          "file_retrieve": "/moved/file_retrieve/{file_id}",
+          "file_delete": "/moved/file_delete/{file_id}",
+          "file_content": "/moved/file_content/{file_id}"
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/ovr/anthropic",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "tkp_ovr_gemini": {
+      "keys": [
+        {
+          "name": "tk-key-ovr-gemini",
+          "value": "ovr-fixture-key-gemini",
+          "models": [
+            "*"
+          ],
+          "use_for_batch_api": true,
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "gemini",
+        "allowed_requests": {
+          "batch_retrieve": true,
+          "batch_cancel": true,
+          "batch_results": true,
+          "file_retrieve": true,
+          "file_delete": true
+        },
+        "request_path_overrides": {
+          "batch_retrieve": "/moved/batch_retrieve/{batch_id}",
+          "batch_cancel": "/moved/batch_cancel/{batch_id}",
+          "batch_results": "/moved/batch_results/{batch_id}",
+          "file_retrieve": "/moved/file_retrieve/{file_id}",
+          "file_delete": "/moved/file_delete/{file_id}"
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/ovr/gemini",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "tkp_ovr_modelark": {
+      "keys": [
+        {
+          "name": "tk-key-ovr-modelark",
+          "value": "ovr-fixture-key-modelark",
+          "models": [
+            "*"
+          ],
+          "use_for_batch_api": true,
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "modelark",
+        "allowed_requests": {
+          "file_retrieve": true,
+          "file_delete": true,
+          "file_content": true
+        },
+        "request_path_overrides": {
+          "file_retrieve": "/moved/file_retrieve/{file_id}",
+          "file_delete": "/moved/file_delete/{file_id}",
+          "file_content": "/moved/file_content/{file_id}"
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/ovr/modelark",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "tkp_ovr_volcengine": {
+      "keys": [
+        {
+          "name": "tk-key-ovr-volcengine",
+          "value": "ovr-fixture-key-volcengine",
+          "models": [
+            "*"
+          ],
+          "use_for_batch_api": true,
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "volcengine",
+        "allowed_requests": {
+          "file_retrieve": true,
+          "file_delete": true,
+          "file_content": true
+        },
+        "request_path_overrides": {
+          "file_retrieve": "/moved/file_retrieve/{file_id}",
+          "file_delete": "/moved/file_delete/{file_id}",
+          "file_content": "/moved/file_content/{file_id}"
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/ovr/volcengine",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "tkp_ovr_replicate": {
+      "keys": [
+        {
+          "name": "tk-key-ovr-replicate",
+          "value": "ovr-fixture-key-replicate",
+          "models": [
+            "*"
+          ],
+          "use_for_batch_api": true,
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "replicate",
+        "allowed_requests": {
+          "file_retrieve": true,
+          "file_delete": true
+        },
+        "request_path_overrides": {
+          "file_retrieve": "/moved/file_retrieve/{file_id}",
+          "file_delete": "/moved/file_delete/{file_id}"
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/ovr/replicate",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
     "tkp_xaicompat": {
       "keys": [
         {

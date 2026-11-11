@@ -1071,3 +1071,36 @@ test("VolcEngine task DELETE answers {} or no body and is counted", async (t) =>
   const hits = (await (await fetch(`${base}/__hits`)).json()).data[0].hits;
   assert.deepEqual(hits, { "volcengine.delete cgt-volc-empty-object": 1, "volcengine.delete cgt-volc-no-body": 1 });
 });
+
+// Folder 485 (TXE-7085): the upstream behind tkp_ovr_<base> answers only on the moved path with the id in place,
+// with the shape that base decodes, and keeps every call with its method and the name of the key it carried.
+test("the path-override upstream answers only on the moved path with the id in place", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}`;
+  const call = (method, path, headers) => fetch(base + path, { method, headers });
+  const moved = await call("GET", "/pp/ovr/anthropic/moved/batch_retrieve/ob_485", { "x-api-key": "ovr-fixture-key-anthropic" });
+  assert.equal(moved.status, 200);
+  assert.equal((await moved.json()).type, "message_batch");
+  const gemini = await call("GET", "/pp/ovr/gemini/moved/file_retrieve/of_485", { "x-goog-api-key": "ovr-fixture-key-gemini" });
+  assert.equal((await gemini.json()).name, "files/of_485");
+  const deleted = await call("DELETE", "/pp/ovr/replicate/moved/file_delete/of_485", { authorization: "Bearer ovr-fixture-key-replicate" });
+  assert.equal(deleted.status, 204);
+  // The vendor's own path, the literal placeholder, another id and a call the base does not serve are all 404s.
+  for (const [method, path] of [
+    ["GET", "/pp/ovr/anthropic/v1/messages/batches/ob_485"],
+    ["GET", "/pp/ovr/anthropic/moved/batch_retrieve/%7Bbatch_id%7D"],
+    ["GET", "/pp/ovr/volcengine/moved/file_retrieve/of_000"],
+    ["GET", "/pp/ovr/replicate/moved/file_content/of_485"],
+  ]) {
+    const refused = await call(method, path, { authorization: "Bearer ovr-fixture-key-volcengine" });
+    assert.equal(refused.status, 404, `${method} ${path}`);
+  }
+  const { calls } = (await (await fetch(base + "/__wire")).json()).data[0];
+  assert.deepEqual(calls.slice(0, 3).map((c) => `${c.method} ${c.path} ${c.key}`), [
+    "GET /pp/ovr/anthropic/moved/batch_retrieve/ob_485 tk-key-ovr-anthropic",
+    "GET /pp/ovr/gemini/moved/file_retrieve/of_485 tk-key-ovr-gemini",
+    "DELETE /pp/ovr/replicate/moved/file_delete/of_485 tk-key-ovr-replicate",
+  ]);
+  assert.equal(calls.length, 7, "the refused calls are recorded too");
+  assert.ok(!JSON.stringify(calls).includes("ovr-fixture-key"), "no key value is kept");
+});

@@ -1,0 +1,1440 @@
+{
+  "name": "485. Calls that name a batch or a file by id follow request_path_overrides on every base, and bedrock refuses them (resource path overrides) [SERIAL]",
+  "description": "TXE-7085 regression. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream (providerErrorFixtureUrl when it is not on its default address). Every row is skipped otherwise. tkp_ovr_anthropic, tkp_ovr_gemini, tkp_ovr_modelark, tkp_ovr_volcengine and tkp_ovr_replicate are custom providers on those bases whose request_path_overrides move every call that names a batch or a file by id to /moved/<request type>/{batch_id} or /moved/<request type>/{file_id}. The fixture answers only on the moved path with the id in place and records every call for GET /__wire, so a call on the vendor's own path, or one that kept the literal placeholder, is a 404 and fails its row. Rows 1-19 assert each such call the base serves: the gateway's 200 and the one vendor call, its method, path and key name. Row 20 asserts that a bedrock-based provider with such an override is refused when it is written, because Bedrock's ids are job ARNs and S3 URIs and its calls go to signed AWS endpoints. Before TXE-7085 rows 1-19 fail (anthropic batch_retrieve and file_retrieve sent the literal placeholder; every other call ignored its override) and row 20 stored the provider. The rows are structural for the vendors themselves: no real vendor serves a moved path. Run with FEATURE=\"resource path overrides\".",
+  "item": [
+    {
+      "name": "tkp_ovr_anthropic batch_retrieve: GET /v1/batches/{id} reaches /moved/batch_retrieve/{id} on the anthropic base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the calls that reached the fixture's upstream for this base, in order, each with its method, path and the name",
+              "// of the key it carried. Only the moved path with the id in place answers; the vendor's own path is a 404 there.",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the gateway answered from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.id, pm.response.text()).to.include('ob_485');",
+              "});",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the vendor, on the overridden path with the id in place', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/anthropic/moved/batch_retrieve/ob_485']);",
+              "  });",
+              "  pm.test('the call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-anthropic']); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-anthropic"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches/ob_485?provider=tkp_ovr_anthropic",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches",
+            "ob_485"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_ovr_anthropic"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_ovr_anthropic batch_cancel: POST /v1/batches/{id}/cancel reaches /moved/batch_cancel/{id} on the anthropic base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the calls that reached the fixture's upstream for this base, in order, each with its method, path and the name",
+              "// of the key it carried. Only the moved path with the id in place answers; the vendor's own path is a 404 there.",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the gateway answered from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.id, pm.response.text()).to.include('ob_485');",
+              "});",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the vendor, on the overridden path with the id in place', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['POST /pp/ovr/anthropic/moved/batch_cancel/ob_485']);",
+              "  });",
+              "  pm.test('the call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-anthropic']); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-anthropic"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches/ob_485/cancel?provider=tkp_ovr_anthropic",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches",
+            "ob_485",
+            "cancel"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_ovr_anthropic"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_ovr_anthropic batch_results: GET /v1/batches/{id}/results reaches /moved/batch_results/{id} on the anthropic base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the calls that reached the fixture's upstream for this base, in order, each with its method, path and the name",
+              "// of the key it carried. Only the moved path with the id in place answers; the vendor's own path is a 404 there.",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the gateway answered from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.text()).to.include('line-1');",
+              "});",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the vendor, on the overridden path with the id in place', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/anthropic/moved/batch_results/ob_485']);",
+              "  });",
+              "  pm.test('the call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-anthropic']); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-anthropic"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches/ob_485/results?provider=tkp_ovr_anthropic",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches",
+            "ob_485",
+            "results"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_ovr_anthropic"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_ovr_anthropic file_retrieve: GET /v1/files/{id} reaches /moved/file_retrieve/{id} on the anthropic base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the calls that reached the fixture's upstream for this base, in order, each with its method, path and the name",
+              "// of the key it carried. Only the moved path with the id in place answers; the vendor's own path is a 404 there.",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the gateway answered from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.id, pm.response.text()).to.include('of_485');",
+              "});",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the vendor, on the overridden path with the id in place', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/anthropic/moved/file_retrieve/of_485']);",
+              "  });",
+              "  pm.test('the call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-anthropic']); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-anthropic"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/files/of_485?provider=tkp_ovr_anthropic",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files",
+            "of_485"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_ovr_anthropic"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_ovr_anthropic file_delete: DELETE /v1/files/{id} reaches /moved/file_delete/{id} on the anthropic base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the calls that reached the fixture's upstream for this base, in order, each with its method, path and the name",
+              "// of the key it carried. Only the moved path with the id in place answers; the vendor's own path is a 404 there.",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the gateway answered from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.deleted, pm.response.text()).to.equal(true);",
+              "});",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the vendor, on the overridden path with the id in place', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['DELETE /pp/ovr/anthropic/moved/file_delete/of_485']);",
+              "  });",
+              "  pm.test('the call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-anthropic']); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-anthropic"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/files/of_485?provider=tkp_ovr_anthropic",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files",
+            "of_485"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_ovr_anthropic"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_ovr_anthropic file_content: GET /v1/files/{id}/content reaches /moved/file_content/{id} on the anthropic base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the calls that reached the fixture's upstream for this base, in order, each with its method, path and the name",
+              "// of the key it carried. Only the moved path with the id in place answers; the vendor's own path is a 404 there.",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the gateway answered from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.text()).to.include('line-1');",
+              "});",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the vendor, on the overridden path with the id in place', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/anthropic/moved/file_content/of_485']);",
+              "  });",
+              "  pm.test('the call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-anthropic']); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-anthropic"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/files/of_485/content?provider=tkp_ovr_anthropic",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files",
+            "of_485",
+            "content"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_ovr_anthropic"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_ovr_gemini batch_retrieve: GET /v1/batches/{id} reaches /moved/batch_retrieve/{id} on the gemini base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the calls that reached the fixture's upstream for this base, in order, each with its method, path and the name",
+              "// of the key it carried. Only the moved path with the id in place answers; the vendor's own path is a 404 there.",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the gateway answered from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.id, pm.response.text()).to.include('ob_485');",
+              "});",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the vendor, on the overridden path with the id in place', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/gemini/moved/batch_retrieve/ob_485']);",
+              "  });",
+              "  pm.test('the call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-gemini']); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-gemini"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches/ob_485?provider=tkp_ovr_gemini",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches",
+            "ob_485"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_ovr_gemini"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_ovr_gemini batch_cancel: POST /v1/batches/{id}/cancel reaches /moved/batch_cancel/{id} on the gemini base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the calls that reached the fixture's upstream for this base, in order, each with its method, path and the name",
+              "// of the key it carried. Only the moved path with the id in place answers; the vendor's own path is a 404 there.",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the gateway answered from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.id, pm.response.text()).to.include('ob_485');",
+              "});",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the vendor, on the overridden path with the id in place', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['POST /pp/ovr/gemini/moved/batch_cancel/ob_485']);",
+              "  });",
+              "  pm.test('the call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-gemini']); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-gemini"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches/ob_485/cancel?provider=tkp_ovr_gemini",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches",
+            "ob_485",
+            "cancel"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_ovr_gemini"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_ovr_gemini batch_results: GET /v1/batches/{id}/results reaches /moved/batch_results/{id} on the gemini base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the calls that reached the fixture's upstream for this base, in order, each with its method, path and the name",
+              "// of the key it carried. Only the moved path with the id in place answers; the vendor's own path is a 404 there.",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the gateway answered from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.text()).to.include('line-1');",
+              "});",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the vendor, on the overridden path with the id in place', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/gemini/moved/batch_results/ob_485']);",
+              "  });",
+              "  pm.test('the call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-gemini']); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-gemini"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches/ob_485/results?provider=tkp_ovr_gemini",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches",
+            "ob_485",
+            "results"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_ovr_gemini"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_ovr_gemini file_retrieve: GET /v1/files/{id} reaches /moved/file_retrieve/{id} on the gemini base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the calls that reached the fixture's upstream for this base, in order, each with its method, path and the name",
+              "// of the key it carried. Only the moved path with the id in place answers; the vendor's own path is a 404 there.",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the gateway answered from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.id, pm.response.text()).to.include('of_485');",
+              "});",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the vendor, on the overridden path with the id in place', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/gemini/moved/file_retrieve/of_485']);",
+              "  });",
+              "  pm.test('the call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-gemini']); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-gemini"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/files/of_485?provider=tkp_ovr_gemini",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files",
+            "of_485"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_ovr_gemini"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_ovr_gemini file_delete: DELETE /v1/files/{id} reaches /moved/file_delete/{id} on the gemini base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the calls that reached the fixture's upstream for this base, in order, each with its method, path and the name",
+              "// of the key it carried. Only the moved path with the id in place answers; the vendor's own path is a 404 there.",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the gateway answered from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.deleted, pm.response.text()).to.equal(true);",
+              "});",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the vendor, on the overridden path with the id in place', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['DELETE /pp/ovr/gemini/moved/file_delete/of_485']);",
+              "  });",
+              "  pm.test('the call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-gemini']); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-gemini"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/files/of_485?provider=tkp_ovr_gemini",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files",
+            "of_485"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_ovr_gemini"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_ovr_modelark file_retrieve: GET /v1/files/{id} reaches /moved/file_retrieve/{id} on the modelark base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the calls that reached the fixture's upstream for this base, in order, each with its method, path and the name",
+              "// of the key it carried. Only the moved path with the id in place answers; the vendor's own path is a 404 there.",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the gateway answered from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.id, pm.response.text()).to.include('of_485');",
+              "});",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the vendor, on the overridden path with the id in place', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/modelark/moved/file_retrieve/of_485']);",
+              "  });",
+              "  pm.test('the call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-modelark']); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-modelark"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/files/of_485?provider=tkp_ovr_modelark",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files",
+            "of_485"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_ovr_modelark"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_ovr_modelark file_delete: DELETE /v1/files/{id} reaches /moved/file_delete/{id} on the modelark base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the calls that reached the fixture's upstream for this base, in order, each with its method, path and the name",
+              "// of the key it carried. Only the moved path with the id in place answers; the vendor's own path is a 404 there.",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the gateway answered from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.deleted, pm.response.text()).to.equal(true);",
+              "});",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the vendor, on the overridden path with the id in place', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['DELETE /pp/ovr/modelark/moved/file_delete/of_485']);",
+              "  });",
+              "  pm.test('the call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-modelark']); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-modelark"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/files/of_485?provider=tkp_ovr_modelark",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files",
+            "of_485"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_ovr_modelark"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_ovr_modelark file_content: GET /v1/files/{id}/content reaches /moved/file_content/{id} on the modelark base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the calls that reached the fixture's upstream for this base, in order, each with its method, path and the name",
+              "// of the key it carried. Only the moved path with the id in place answers; the vendor's own path is a 404 there.",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the gateway answered from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.text()).to.include('line-1');",
+              "});",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the vendor, on the overridden path with the id in place', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/modelark/moved/file_content/of_485']);",
+              "  });",
+              "  pm.test('the call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-modelark']); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-modelark"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/files/of_485/content?provider=tkp_ovr_modelark",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files",
+            "of_485",
+            "content"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_ovr_modelark"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_ovr_volcengine file_retrieve: GET /v1/files/{id} reaches /moved/file_retrieve/{id} on the volcengine base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the calls that reached the fixture's upstream for this base, in order, each with its method, path and the name",
+              "// of the key it carried. Only the moved path with the id in place answers; the vendor's own path is a 404 there.",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the gateway answered from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.id, pm.response.text()).to.include('of_485');",
+              "});",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the vendor, on the overridden path with the id in place', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/volcengine/moved/file_retrieve/of_485']);",
+              "  });",
+              "  pm.test('the call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-volcengine']); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-volcengine"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/files/of_485?provider=tkp_ovr_volcengine",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files",
+            "of_485"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_ovr_volcengine"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_ovr_volcengine file_delete: DELETE /v1/files/{id} reaches /moved/file_delete/{id} on the volcengine base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the calls that reached the fixture's upstream for this base, in order, each with its method, path and the name",
+              "// of the key it carried. Only the moved path with the id in place answers; the vendor's own path is a 404 there.",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the gateway answered from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.deleted, pm.response.text()).to.equal(true);",
+              "});",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the vendor, on the overridden path with the id in place', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['DELETE /pp/ovr/volcengine/moved/file_delete/of_485']);",
+              "  });",
+              "  pm.test('the call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-volcengine']); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-volcengine"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/files/of_485?provider=tkp_ovr_volcengine",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files",
+            "of_485"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_ovr_volcengine"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_ovr_volcengine file_content: GET /v1/files/{id}/content reaches /moved/file_content/{id} on the volcengine base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the calls that reached the fixture's upstream for this base, in order, each with its method, path and the name",
+              "// of the key it carried. Only the moved path with the id in place answers; the vendor's own path is a 404 there.",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the gateway answered from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.text()).to.include('line-1');",
+              "});",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the vendor, on the overridden path with the id in place', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/volcengine/moved/file_content/of_485']);",
+              "  });",
+              "  pm.test('the call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-volcengine']); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-volcengine"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/files/of_485/content?provider=tkp_ovr_volcengine",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files",
+            "of_485",
+            "content"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_ovr_volcengine"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_ovr_replicate file_retrieve: GET /v1/files/{id} reaches /moved/file_retrieve/{id} on the replicate base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the calls that reached the fixture's upstream for this base, in order, each with its method, path and the name",
+              "// of the key it carried. Only the moved path with the id in place answers; the vendor's own path is a 404 there.",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the gateway answered from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.id, pm.response.text()).to.include('of_485');",
+              "});",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the vendor, on the overridden path with the id in place', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/replicate/moved/file_retrieve/of_485']);",
+              "  });",
+              "  pm.test('the call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-replicate']); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-replicate"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/files/of_485?provider=tkp_ovr_replicate",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files",
+            "of_485"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_ovr_replicate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_ovr_replicate file_delete: DELETE /v1/files/{id} reaches /moved/file_delete/{id} on the replicate base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the calls that reached the fixture's upstream for this base, in order, each with its method, path and the name",
+              "// of the key it carried. Only the moved path with the id in place answers; the vendor's own path is a 404 there.",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the gateway answered from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.deleted, pm.response.text()).to.equal(true);",
+              "});",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the vendor, on the overridden path with the id in place', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['DELETE /pp/ovr/replicate/moved/file_delete/of_485']);",
+              "  });",
+              "  pm.test('the call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-replicate']); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-replicate"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/files/of_485?provider=tkp_ovr_replicate",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files",
+            "of_485"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_ovr_replicate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] POST /api/providers: a bedrock-based provider with a file_retrieve override is refused when it is written (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the provider is refused with a 400 naming the override, the base and the reason', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+              "  pm.expect(pm.response.text()).to.include('request_path_overrides.file_retrieve is not supported on the bedrock base');",
+              "  pm.expect(pm.response.text()).to.include('ARNs');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/providers/harness-bedrock-path-override', method: 'GET' }, function (err, res) { pm.test('nothing was stored', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(404); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/providers",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "providers"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"provider\": \"harness-bedrock-path-override\",\n  \"keys\": [],\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"bedrock\",\n    \"allowed_requests\": {\n      \"file_retrieve\": true\n    },\n    \"request_path_overrides\": {\n      \"file_retrieve\": \"/moved/files/{file_id}\"\n    }\n  }\n}"
+        }
+      }
+    }
+  ]
+}

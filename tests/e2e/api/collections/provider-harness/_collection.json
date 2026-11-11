@@ -207,7 +207,7 @@
           "    } else if (j.object === 'batch' && typeof j.id === 'string') {",
           "        shape = 'openai-batch-create';",
           "        hasContent = !!j.id;",
-          "    } else if (j.type === 'message_batch' && typeof j.id === 'string') {",
+          "    } else if ((j.type === 'message_batch' || j.object === 'message_batch') && typeof j.id === 'string') {",
           "        shape = 'anthropic-batch-create';",
           "        hasContent = !!j.id;",
           "    } else if (typeof j.name === 'string' && j.name.indexOf('batches/') === 0) {",
