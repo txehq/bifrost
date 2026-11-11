@@ -1,0 +1,9 @@
+# expect: no numeric timeout-minutes
+on:
+  pull_request:
+jobs:
+  codex-review:
+    name: codex-review
+    runs-on: ubuntu-latest
+    steps:
+      - run: true

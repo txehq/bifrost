@@ -1,0 +1,13 @@
+# expect: the workflow declares concurrency
+# Without cancel-in-progress a newer queued run still cancels the pending one.
+on:
+  pull_request:
+concurrency:
+  group: api-collections-offline-${{ github.event.pull_request.number }}
+jobs:
+  api-collections-offline:
+    name: API collection offline suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - run: true

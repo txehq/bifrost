@@ -1,0 +1,11 @@
+# expect: job codex-review (required check 'codex-review'): it declares concurrency
+on:
+  pull_request_review:
+jobs:
+  codex-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: codex-review-${{ github.event.pull_request.number }}
+    steps:
+      - run: true

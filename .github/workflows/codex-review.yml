@@ -26,9 +26,12 @@ permissions:
   contents: read
   pull-requests: read
 
-concurrency:
-  group: codex-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+# No concurrency group (TXE-7104). A review, a reply on a review thread or a body edit starts
+# another run on the same head, and a group cancelled one of them: GitHub keeps the cancelled
+# check run on the head beside the passing one and blocks the PR until it is re-run (#157, #214,
+# #226). Every run reads the head and the connector's state from the API when it decides, so
+# overlapping runs reach the same verdict. scripts/check-required-checks-never-cancel.py, in
+# workflow-lint, fails a group here or in the other required check's workflow.
 
 jobs:
   codex-review:
@@ -48,10 +51,11 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           # A clean review emits no pull_request_review event, so a run waits for the
-          # connector's state block on the head. Any review event cancels the run in
-          # progress (concurrency above) and waits again, never deciding early. 25 minutes
+          # connector's state block on the head, never deciding early. A review event starts
+          # its own run beside it; neither cancels the other (no concurrency above). 25 minutes
           # outlasts the nudge job's re-request of a review silent 10 minutes, on its 5-minute
-          # tick, and the review that follows (TXE-5348).
+          # tick, and the review that follows (TXE-5348); it stays a minute inside the job's
+          # timeout, which the lint checks, so the run ends with a verdict, not cancelled.
           CODEX_REVIEW_WAIT_SECONDS: "1500"
         run: bash scripts/codex-review-check.sh "$REPO" "$PR"
 

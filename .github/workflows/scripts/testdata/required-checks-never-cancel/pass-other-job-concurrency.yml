@@ -1,0 +1,17 @@
+# A job that is not a required check, and that the required job does not need, may cancel.
+on:
+  pull_request:
+jobs:
+  api-collections-offline:
+    name: API collection offline suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - run: true
+  benchmarks:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: bench-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - run: true
