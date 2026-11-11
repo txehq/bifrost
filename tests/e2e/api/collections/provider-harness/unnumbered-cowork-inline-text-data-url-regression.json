@@ -1,0 +1,64 @@
+{
+  "name": "Cowork inline text data URL regression",
+  "description": "Base64 text file_data must become an Anthropic text source in Chat Completions and Responses, without an origin file upload.",
+  "item": [
+    {
+      "name": "Anthropic claude-haiku-4-5 Cowork inline text chat/completions",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if ([401,403,429,500,502,503,504].indexOf(pm.response.code) !== -1) { return; }",
+              "pm.test('inline text is readable', function () { pm.expect(pm.response.code, pm.response.text()).to.be.below(400); pm.expect(pm.response.text()).to.include('cobalt-729'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5-20251001\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Return only the document marker.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"note.md\",\n            \"file_data\": \"data:text/markdown;base64,VGhlIGRvY3VtZW50IG1hcmtlciBpcyBjb2JhbHQtNzI5Lg==\",\n            \"file_type\": \"text/markdown\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+        },
+        "url": "{{baseUrl}}/v1/chat/completions"
+      }
+    },
+    {
+      "name": "Anthropic claude-haiku-4-5 Cowork inline text responses",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if ([401,403,429,500,502,503,504].indexOf(pm.response.code) !== -1) { return; }",
+              "pm.test('inline text is readable', function () { pm.expect(pm.response.code, pm.response.text()).to.be.below(400); pm.expect(pm.response.text()).to.include('cobalt-729'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5-20251001\",\n  \"max_output_tokens\": 64,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Return only the document marker.\"\n        },\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"note.md\",\n          \"file_data\": \"data:text/markdown;base64,VGhlIGRvY3VtZW50IG1hcmtlciBpcyBjb2JhbHQtNzI5Lg==\",\n          \"file_type\": \"text/markdown\"\n        }\n      ]\n    }\n  ]\n}"
+        },
+        "url": "{{baseUrl}}/v1/responses"
+      }
+    }
+  ]
+}

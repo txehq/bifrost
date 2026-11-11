@@ -1,0 +1,1365 @@
+{
+  "name": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+  "description": "Three-turn conversations that interleave reasoning with tool calls, replayed across every request shape.\n\nEach chain runs the same conversation: turn 1 reasons and calls `get_weather`; turn 2 replays that assistant turn (thinking/reasoning block intact) plus the tool result and asks for `get_flight_time`; turn 3 replays the whole history - two assistant turns of reasoning and up to two tool results - and asks for a final answer. What is under test is that Bifrost carries reasoning blocks and their signatures back to the provider unmodified through a tool round-trip, twice. Folders 19/20/38/39/42-45 each cover a single reasoning replay; none of them interleaves tool calls across three turns.\n\n`tool_choice` is left on auto for the Anthropic-family chains rather than forcing `get_weather`. Forced tool choice is rejected with manual extended thinking (`thinking.type: enabled`) and only supported under adaptive thinking (https://platform.claude.com/docs/en/build-with-claude/thinking-tool-workflows), and Bedrock adds its own constraints on the pairing - keeping tool_choice unset makes one conversation valid on every surface. Turn 1 asserts a tool call came back, so a model that ignores the prompt fails loudly instead of letting turns 2 and 3 skip silently.",
+  "item": [
+    {
+      "name": "claude-opus-4-7 /anthropic/v1/messages turn 1: thinking block + tool_use captured",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('turn 1 returns a tool_use to build the interleave on', function () {",
+              "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.content, 'expected a content array').to.be.an('array').that.is.not.empty;",
+              "  var kinds = j.content.map(function (b) { return b.type; });",
+              "  pm.expect(kinds, 'no tool_use came back, so turns 2 and 3 would skip and this chain would pass having tested nothing').to.include('tool_use');",
+              "  // A thinking block is only asserted when one is present: adaptive thinking",
+              "  // decides per request whether to think. What is always asserted is that a",
+              "  // thinking block which IS returned carries the signature the replay needs.",
+              "  var thinking = j.content.filter(function (b) { return b.type === 'thinking'; });",
+              "  thinking.forEach(function (b) {",
+              "    pm.expect(b.signature, 'a thinking block came back without a signature, so it cannot be replayed on the next turn').to.be.a('string').that.is.not.empty;",
+              "  });",
+              "});",
+              "pm.collectionVariables.unset('anthropicNativeTurn2Messages46');",
+              "pm.collectionVariables.unset('anthropicNativeTurn3Messages46');",
+              "try {",
+              "  var body = pm.response.json();",
+              "  // Every tool call has to be answered, not just the first one. Current models",
+              "  // emit parallel calls, and a history that replays a call without its output is",
+              "  // rejected outright - OpenAI answers \"No tool output found for function call",
+              "  // <id>\", Anthropic and Bedrock require a tool_result per tool_use. Answering",
+              "  // only calls[0] made these rows flake whenever the model parallelized.",
+              "  var stubOutput46 = function (name) {",
+              "    return name === 'get_flight_time'",
+              "      ? \"{\\\"from\\\":\\\"SFO\\\",\\\"to\\\":\\\"HND\\\",\\\"hours\\\":11.5}\"",
+              "      : \"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\";",
+              "  };",
+              "  var uses = (body.content || []).filter(function (b) { return b.type === 'tool_use' && b.id; });",
+              "  if (uses.length) {",
+              "    var messages = [{ role: 'user', content: [{ type: 'text', text: \"Plan a trip for me, thinking it through before you act. First, what is the weather in Tokyo right now? Use the get_weather tool.\" }] },",
+              "      { role: 'assistant', content: body.content },",
+              "      { role: 'user', content: uses.map(function (u) { return { type: 'tool_result', tool_use_id: u.id, content: stubOutput46(u.name) }; })",
+              "        .concat([{ type: 'text', text: \"Given that weather, how long is the flight from SFO to Tokyo? Use the get_flight_time tool, and think about whether the rain changes the plan.\" }]) }];",
+              "    pm.collectionVariables.set('anthropicNativeTurn2Messages46', JSON.stringify(messages));",
+              "  }",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"claude-opus-4-7\",\"max_tokens\":4096,\"thinking\":{\"type\":\"adaptive\"},\"tools\":[{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"name\":\"get_flight_time\",\"description\":\"Flight duration between two airports\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Plan a trip for me, thinking it through before you act. First, what is the weather in Tokyo right now? Use the get_weather tool.\"}]}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "claude-opus-4-7 /anthropic/v1/messages turn 2: signed thinking replayed across a tool result",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+              "pm.test('turn 2 accepts the replayed signed thinking block', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'Anthropic rejected the replayed thinking block').to.not.include('cannot be modified');",
+              "  pm.expect(pm.response.code, 'turn 2 failed - a modified or dropped thinking signature is the usual cause: ' + body).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.content, 'expected a content array').to.be.an('array').that.is.not.empty;",
+              "});",
+              "pm.collectionVariables.unset('anthropicNativeTurn3Messages46');",
+              "try {",
+              "  var prior = JSON.parse(pm.collectionVariables.get('anthropicNativeTurn2Messages46') || '[]');",
+              "  var body = pm.response.json();",
+              "  var next = prior.concat([{ role: 'assistant', content: body.content }]);",
+              "  // Every tool call has to be answered, not just the first one. Current models",
+              "  // emit parallel calls, and a history that replays a call without its output is",
+              "  // rejected outright - OpenAI answers \"No tool output found for function call",
+              "  // <id>\", Anthropic and Bedrock require a tool_result per tool_use. Answering",
+              "  // only calls[0] made these rows flake whenever the model parallelized.",
+              "  var stubOutput46 = function (name) {",
+              "    return name === 'get_flight_time'",
+              "      ? \"{\\\"from\\\":\\\"SFO\\\",\\\"to\\\":\\\"HND\\\",\\\"hours\\\":11.5}\"",
+              "      : \"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\";",
+              "  };",
+              "  var uses = (body.content || []).filter(function (b) { return b.type === 'tool_use' && b.id; });",
+              "  var followUp = uses.map(function (u) { return { type: 'tool_result', tool_use_id: u.id, content: stubOutput46(u.name) }; });",
+              "  followUp.push({ type: 'text', text: \"Summarize the trip plan in two sentences, mentioning both the weather and the flight time.\" });",
+              "  next = next.concat([{ role: 'user', content: followUp }]);",
+              "  pm.collectionVariables.set('anthropicNativeTurn3Messages46', JSON.stringify(next));",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"claude-opus-4-7\",\"max_tokens\":4096,\"thinking\":{\"type\":\"adaptive\"},\"tools\":[{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"name\":\"get_flight_time\",\"description\":\"Flight duration between two airports\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}}],\"messages\":{{anthropicNativeTurn2Messages46}}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "claude-opus-4-7 /anthropic/v1/messages turn 3: full interleaved history replays cleanly",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+              "pm.test('turn 3 answers after the replayed interleave', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'Anthropic rejected the replayed thinking blocks').to.not.include('cannot be modified');",
+              "  pm.expect(pm.response.code, 'turn 3 failed: ' + body).to.be.below(400);",
+              "  var texts = (pm.response.json().content || []).filter(function (b) { return b.type === 'text'; });",
+              "  pm.expect(texts, 'expected a final text block once both tool results were replayed').to.not.be.empty;",
+              "});",
+              "pm.test('turn 3 really replayed an interleave, not a plain history', function () {",
+              "  var raw = (pm.request.body && pm.request.body.raw) || '';",
+              "  var results = (raw.match(/tool_result/g) || []).length;",
+              "  var thinking = (raw.match(/\"type\"\\s*:\\s*\"thinking\"/g) || []).length;",
+              "  pm.expect(results, 'turn 3 must carry at least the first tool result, otherwise this row tests a single turn').to.be.at.least(1);",
+              "  pm.expect(pm.response.code, 'replaying ' + thinking + ' thinking block(s) alongside ' + results + ' tool result(s) failed: ' + (pm.response.text() || '')).to.be.below(400);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"claude-opus-4-7\",\"max_tokens\":4096,\"thinking\":{\"type\":\"adaptive\"},\"tools\":[{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"name\":\"get_flight_time\",\"description\":\"Flight duration between two airports\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}}],\"messages\":{{anthropicNativeTurn3Messages46}}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-opus-4-7 /v1/chat/completions turn 1: thinking + tool_calls captured",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('turn 1 returns a tool call to build the interleave on', function () {",
+              "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  var msg = j.choices && j.choices[0] && j.choices[0].message;",
+              "  pm.expect(msg, 'expected an assistant message').to.be.an('object');",
+              "  pm.expect(msg.tool_calls, 'no tool_calls came back, so turns 2 and 3 would skip and this chain would pass having tested nothing').to.be.an('array').that.is.not.empty;",
+              "  // Same rule as the Responses rows: only assert reasoning survived when",
+              "  // the provider actually billed reasoning tokens for this turn.",
+              "  var d = (j.usage && j.usage.completion_tokens_details) || {};",
+              "  if ((d.reasoning_tokens || 0) > 0) {",
+              "    pm.expect(msg.reasoning_details, 'reasoning_tokens were billed, so reasoning_details must be populated for the replay turns to carry').to.be.an('array').that.is.not.empty;",
+              "  }",
+              "});",
+              "pm.collectionVariables.unset('anthropicChatTurn2Messages46');",
+              "pm.collectionVariables.unset('anthropicChatTurn3Messages46');",
+              "try {",
+              "  var msg = pm.response.json().choices[0].message;",
+              "  // Every tool call has to be answered, not just the first one. Current models",
+              "  // emit parallel calls, and a history that replays a call without its output is",
+              "  // rejected outright - OpenAI answers \"No tool output found for function call",
+              "  // <id>\", Anthropic and Bedrock require a tool_result per tool_use. Answering",
+              "  // only calls[0] made these rows flake whenever the model parallelized.",
+              "  var stubOutput46 = function (name) {",
+              "    return name === 'get_flight_time'",
+              "      ? \"{\\\"from\\\":\\\"SFO\\\",\\\"to\\\":\\\"HND\\\",\\\"hours\\\":11.5}\"",
+              "      : \"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\";",
+              "  };",
+              "  var calls = (msg.tool_calls || []).filter(function (c) { return c && c.id; });",
+              "  if (calls.length) {",
+              "    var messages = [{ role: 'user', content: \"Plan a trip for me, thinking it through before you act. First, what is the weather in Tokyo right now? Use the get_weather tool.\" },",
+              "      msg]",
+              "      .concat(calls.map(function (c) { return { role: 'tool', tool_call_id: c.id, content: stubOutput46(c.function && c.function.name) }; }))",
+              "      .concat([{ role: 'user', content: \"Given that weather, how long is the flight from SFO to Tokyo? Use the get_flight_time tool, and think about whether the rain changes the plan.\" }]);",
+              "    pm.collectionVariables.set('anthropicChatTurn2Messages46', JSON.stringify(messages));",
+              "  }",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"anthropic/claude-opus-4-7\",\"max_tokens\":4096,\"reasoning\":{\"effort\":\"high\"},\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_flight_time\",\"description\":\"Flight duration between two airports\",\"parameters\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}}}],\"messages\":[{\"role\":\"user\",\"content\":\"Plan a trip for me, thinking it through before you act. First, what is the weather in Tokyo right now? Use the get_weather tool.\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-opus-4-7 /v1/chat/completions turn 2: thinking replayed across a tool result",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+              "pm.test('turn 2 accepts the replayed assistant turn', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'provider rejected the replayed thinking block').to.not.include('cannot be modified');",
+              "  pm.expect(pm.response.code, 'turn 2 failed: ' + body).to.be.below(400);",
+              "  var msg = pm.response.json().choices[0].message;",
+              "  pm.expect(msg, 'expected an assistant message').to.be.an('object');",
+              "});",
+              "pm.collectionVariables.unset('anthropicChatTurn3Messages46');",
+              "try {",
+              "  var prior = JSON.parse(pm.collectionVariables.get('anthropicChatTurn2Messages46') || '[]');",
+              "  var msg = pm.response.json().choices[0].message;",
+              "  var next = prior.concat([msg]);",
+              "  // Every tool call has to be answered, not just the first one. Current models",
+              "  // emit parallel calls, and a history that replays a call without its output is",
+              "  // rejected outright - OpenAI answers \"No tool output found for function call",
+              "  // <id>\", Anthropic and Bedrock require a tool_result per tool_use. Answering",
+              "  // only calls[0] made these rows flake whenever the model parallelized.",
+              "  var stubOutput46 = function (name) {",
+              "    return name === 'get_flight_time'",
+              "      ? \"{\\\"from\\\":\\\"SFO\\\",\\\"to\\\":\\\"HND\\\",\\\"hours\\\":11.5}\"",
+              "      : \"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\";",
+              "  };",
+              "  var calls = (msg.tool_calls || []).filter(function (c) { return c && c.id; });",
+              "  next = next.concat(calls.map(function (c) { return { role: 'tool', tool_call_id: c.id, content: stubOutput46(c.function && c.function.name) }; }));",
+              "  next = next.concat([{ role: 'user', content: \"Summarize the trip plan in two sentences, mentioning both the weather and the flight time.\" }]);",
+              "  pm.collectionVariables.set('anthropicChatTurn3Messages46', JSON.stringify(next));",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"anthropic/claude-opus-4-7\",\"max_tokens\":4096,\"reasoning\":{\"effort\":\"high\"},\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_flight_time\",\"description\":\"Flight duration between two airports\",\"parameters\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}}}],\"messages\":{{anthropicChatTurn2Messages46}}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-opus-4-7 /v1/chat/completions turn 3: full interleaved history replays cleanly",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+              "pm.test('turn 3 answers after the replayed interleave', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'provider rejected the replayed thinking blocks').to.not.include('cannot be modified');",
+              "  pm.expect(pm.response.code, 'turn 3 failed: ' + body).to.be.below(400);",
+              "  var msg = pm.response.json().choices[0].message;",
+              "  var answered = typeof msg.content === 'string' && msg.content.trim() !== '';",
+              "  var calledAgain = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;",
+              "  pm.expect(answered || calledAgain, 'turn 3 produced neither a text answer nor a further tool call: ' + JSON.stringify(msg)).to.be.true;",
+              "});",
+              "pm.test('turn 3 really replayed an interleave, not a plain history', function () {",
+              "  var raw = (pm.request.body && pm.request.body.raw) || '';",
+              "  var results = (raw.match(/\"role\"\\s*:\\s*\"tool\"/g) || []).length;",
+              "  pm.expect(results, 'turn 3 must carry at least the first tool result, otherwise this row tests a single turn').to.be.at.least(1);",
+              "  pm.expect(pm.response.code, 'replaying ' + results + ' tool result(s) with their assistant reasoning failed: ' + (pm.response.text() || '')).to.be.below(400);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"anthropic/claude-opus-4-7\",\"max_tokens\":4096,\"reasoning\":{\"effort\":\"high\"},\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_flight_time\",\"description\":\"Flight duration between two airports\",\"parameters\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}}}],\"messages\":{{anthropicChatTurn3Messages46}}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/chat/completions turn 1: thinking + tool_calls captured",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('turn 1 returns a tool call to build the interleave on', function () {",
+              "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  var msg = j.choices && j.choices[0] && j.choices[0].message;",
+              "  pm.expect(msg, 'expected an assistant message').to.be.an('object');",
+              "  pm.expect(msg.tool_calls, 'no tool_calls came back, so turns 2 and 3 would skip and this chain would pass having tested nothing').to.be.an('array').that.is.not.empty;",
+              "  // Same rule as the Responses rows: only assert reasoning survived when",
+              "  // the provider actually billed reasoning tokens for this turn.",
+              "  var d = (j.usage && j.usage.completion_tokens_details) || {};",
+              "  if ((d.reasoning_tokens || 0) > 0) {",
+              "    pm.expect(msg.reasoning_details, 'reasoning_tokens were billed, so reasoning_details must be populated for the replay turns to carry').to.be.an('array').that.is.not.empty;",
+              "  }",
+              "});",
+              "pm.collectionVariables.unset('bedrockChatTurn2Messages46');",
+              "pm.collectionVariables.unset('bedrockChatTurn3Messages46');",
+              "try {",
+              "  var msg = pm.response.json().choices[0].message;",
+              "  // Every tool call has to be answered, not just the first one. Current models",
+              "  // emit parallel calls, and a history that replays a call without its output is",
+              "  // rejected outright - OpenAI answers \"No tool output found for function call",
+              "  // <id>\", Anthropic and Bedrock require a tool_result per tool_use. Answering",
+              "  // only calls[0] made these rows flake whenever the model parallelized.",
+              "  var stubOutput46 = function (name) {",
+              "    return name === 'get_flight_time'",
+              "      ? \"{\\\"from\\\":\\\"SFO\\\",\\\"to\\\":\\\"HND\\\",\\\"hours\\\":11.5}\"",
+              "      : \"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\";",
+              "  };",
+              "  var calls = (msg.tool_calls || []).filter(function (c) { return c && c.id; });",
+              "  if (calls.length) {",
+              "    var messages = [{ role: 'user', content: \"Plan a trip for me, thinking it through before you act. First, what is the weather in Tokyo right now? Use the get_weather tool.\" },",
+              "      msg]",
+              "      .concat(calls.map(function (c) { return { role: 'tool', tool_call_id: c.id, content: stubOutput46(c.function && c.function.name) }; }))",
+              "      .concat([{ role: 'user', content: \"Given that weather, how long is the flight from SFO to Tokyo? Use the get_flight_time tool, and think about whether the rain changes the plan.\" }]);",
+              "    pm.collectionVariables.set('bedrockChatTurn2Messages46', JSON.stringify(messages));",
+              "  }",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":4096,\"reasoning\":{\"effort\":\"high\"},\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_flight_time\",\"description\":\"Flight duration between two airports\",\"parameters\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}}}],\"messages\":[{\"role\":\"user\",\"content\":\"Plan a trip for me, thinking it through before you act. First, what is the weather in Tokyo right now? Use the get_weather tool.\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/chat/completions turn 2: thinking replayed across a tool result",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+              "pm.test('turn 2 accepts the replayed assistant turn', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'provider rejected the replayed thinking block').to.not.include('cannot be modified');",
+              "  pm.expect(pm.response.code, 'turn 2 failed: ' + body).to.be.below(400);",
+              "  var msg = pm.response.json().choices[0].message;",
+              "  pm.expect(msg, 'expected an assistant message').to.be.an('object');",
+              "});",
+              "pm.collectionVariables.unset('bedrockChatTurn3Messages46');",
+              "try {",
+              "  var prior = JSON.parse(pm.collectionVariables.get('bedrockChatTurn2Messages46') || '[]');",
+              "  var msg = pm.response.json().choices[0].message;",
+              "  var next = prior.concat([msg]);",
+              "  // Every tool call has to be answered, not just the first one. Current models",
+              "  // emit parallel calls, and a history that replays a call without its output is",
+              "  // rejected outright - OpenAI answers \"No tool output found for function call",
+              "  // <id>\", Anthropic and Bedrock require a tool_result per tool_use. Answering",
+              "  // only calls[0] made these rows flake whenever the model parallelized.",
+              "  var stubOutput46 = function (name) {",
+              "    return name === 'get_flight_time'",
+              "      ? \"{\\\"from\\\":\\\"SFO\\\",\\\"to\\\":\\\"HND\\\",\\\"hours\\\":11.5}\"",
+              "      : \"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\";",
+              "  };",
+              "  var calls = (msg.tool_calls || []).filter(function (c) { return c && c.id; });",
+              "  next = next.concat(calls.map(function (c) { return { role: 'tool', tool_call_id: c.id, content: stubOutput46(c.function && c.function.name) }; }));",
+              "  next = next.concat([{ role: 'user', content: \"Summarize the trip plan in two sentences, mentioning both the weather and the flight time.\" }]);",
+              "  pm.collectionVariables.set('bedrockChatTurn3Messages46', JSON.stringify(next));",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":4096,\"reasoning\":{\"effort\":\"high\"},\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_flight_time\",\"description\":\"Flight duration between two airports\",\"parameters\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}}}],\"messages\":{{bedrockChatTurn2Messages46}}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/chat/completions turn 3: full interleaved history replays cleanly",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+              "pm.test('turn 3 answers after the replayed interleave', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'provider rejected the replayed thinking blocks').to.not.include('cannot be modified');",
+              "  pm.expect(pm.response.code, 'turn 3 failed: ' + body).to.be.below(400);",
+              "  var msg = pm.response.json().choices[0].message;",
+              "  var answered = typeof msg.content === 'string' && msg.content.trim() !== '';",
+              "  var calledAgain = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;",
+              "  pm.expect(answered || calledAgain, 'turn 3 produced neither a text answer nor a further tool call: ' + JSON.stringify(msg)).to.be.true;",
+              "});",
+              "pm.test('turn 3 really replayed an interleave, not a plain history', function () {",
+              "  var raw = (pm.request.body && pm.request.body.raw) || '';",
+              "  var results = (raw.match(/\"role\"\\s*:\\s*\"tool\"/g) || []).length;",
+              "  pm.expect(results, 'turn 3 must carry at least the first tool result, otherwise this row tests a single turn').to.be.at.least(1);",
+              "  pm.expect(pm.response.code, 'replaying ' + results + ' tool result(s) with their assistant reasoning failed: ' + (pm.response.text() || '')).to.be.below(400);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\"max_tokens\":4096,\"reasoning\":{\"effort\":\"high\"},\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_flight_time\",\"description\":\"Flight duration between two airports\",\"parameters\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}}}],\"messages\":{{bedrockChatTurn3Messages46}}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "vertex/claude-opus-4-7 /v1/chat/completions turn 1: thinking + tool_calls captured",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('turn 1 returns a tool call to build the interleave on', function () {",
+              "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  var msg = j.choices && j.choices[0] && j.choices[0].message;",
+              "  pm.expect(msg, 'expected an assistant message').to.be.an('object');",
+              "  pm.expect(msg.tool_calls, 'no tool_calls came back, so turns 2 and 3 would skip and this chain would pass having tested nothing').to.be.an('array').that.is.not.empty;",
+              "  // Same rule as the Responses rows: only assert reasoning survived when",
+              "  // the provider actually billed reasoning tokens for this turn.",
+              "  var d = (j.usage && j.usage.completion_tokens_details) || {};",
+              "  if ((d.reasoning_tokens || 0) > 0) {",
+              "    pm.expect(msg.reasoning_details, 'reasoning_tokens were billed, so reasoning_details must be populated for the replay turns to carry').to.be.an('array').that.is.not.empty;",
+              "  }",
+              "});",
+              "pm.collectionVariables.unset('vertexChatTurn2Messages46');",
+              "pm.collectionVariables.unset('vertexChatTurn3Messages46');",
+              "try {",
+              "  var msg = pm.response.json().choices[0].message;",
+              "  // Every tool call has to be answered, not just the first one. Current models",
+              "  // emit parallel calls, and a history that replays a call without its output is",
+              "  // rejected outright - OpenAI answers \"No tool output found for function call",
+              "  // <id>\", Anthropic and Bedrock require a tool_result per tool_use. Answering",
+              "  // only calls[0] made these rows flake whenever the model parallelized.",
+              "  var stubOutput46 = function (name) {",
+              "    return name === 'get_flight_time'",
+              "      ? \"{\\\"from\\\":\\\"SFO\\\",\\\"to\\\":\\\"HND\\\",\\\"hours\\\":11.5}\"",
+              "      : \"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\";",
+              "  };",
+              "  var calls = (msg.tool_calls || []).filter(function (c) { return c && c.id; });",
+              "  if (calls.length) {",
+              "    var messages = [{ role: 'user', content: \"Plan a trip for me, thinking it through before you act. First, what is the weather in Tokyo right now? Use the get_weather tool.\" },",
+              "      msg]",
+              "      .concat(calls.map(function (c) { return { role: 'tool', tool_call_id: c.id, content: stubOutput46(c.function && c.function.name) }; }))",
+              "      .concat([{ role: 'user', content: \"Given that weather, how long is the flight from SFO to Tokyo? Use the get_flight_time tool, and think about whether the rain changes the plan.\" }]);",
+              "    pm.collectionVariables.set('vertexChatTurn2Messages46', JSON.stringify(messages));",
+              "  }",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"vertex/claude-opus-4-7\",\"max_tokens\":4096,\"reasoning\":{\"effort\":\"high\"},\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_flight_time\",\"description\":\"Flight duration between two airports\",\"parameters\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}}}],\"messages\":[{\"role\":\"user\",\"content\":\"Plan a trip for me, thinking it through before you act. First, what is the weather in Tokyo right now? Use the get_weather tool.\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "vertex/claude-opus-4-7 /v1/chat/completions turn 2: thinking replayed across a tool result",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+              "pm.test('turn 2 accepts the replayed assistant turn', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'provider rejected the replayed thinking block').to.not.include('cannot be modified');",
+              "  pm.expect(pm.response.code, 'turn 2 failed: ' + body).to.be.below(400);",
+              "  var msg = pm.response.json().choices[0].message;",
+              "  pm.expect(msg, 'expected an assistant message').to.be.an('object');",
+              "});",
+              "pm.collectionVariables.unset('vertexChatTurn3Messages46');",
+              "try {",
+              "  var prior = JSON.parse(pm.collectionVariables.get('vertexChatTurn2Messages46') || '[]');",
+              "  var msg = pm.response.json().choices[0].message;",
+              "  var next = prior.concat([msg]);",
+              "  // Every tool call has to be answered, not just the first one. Current models",
+              "  // emit parallel calls, and a history that replays a call without its output is",
+              "  // rejected outright - OpenAI answers \"No tool output found for function call",
+              "  // <id>\", Anthropic and Bedrock require a tool_result per tool_use. Answering",
+              "  // only calls[0] made these rows flake whenever the model parallelized.",
+              "  var stubOutput46 = function (name) {",
+              "    return name === 'get_flight_time'",
+              "      ? \"{\\\"from\\\":\\\"SFO\\\",\\\"to\\\":\\\"HND\\\",\\\"hours\\\":11.5}\"",
+              "      : \"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\";",
+              "  };",
+              "  var calls = (msg.tool_calls || []).filter(function (c) { return c && c.id; });",
+              "  next = next.concat(calls.map(function (c) { return { role: 'tool', tool_call_id: c.id, content: stubOutput46(c.function && c.function.name) }; }));",
+              "  next = next.concat([{ role: 'user', content: \"Summarize the trip plan in two sentences, mentioning both the weather and the flight time.\" }]);",
+              "  pm.collectionVariables.set('vertexChatTurn3Messages46', JSON.stringify(next));",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"vertex/claude-opus-4-7\",\"max_tokens\":4096,\"reasoning\":{\"effort\":\"high\"},\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_flight_time\",\"description\":\"Flight duration between two airports\",\"parameters\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}}}],\"messages\":{{vertexChatTurn2Messages46}}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "vertex/claude-opus-4-7 /v1/chat/completions turn 3: full interleaved history replays cleanly",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+              "pm.test('turn 3 answers after the replayed interleave', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'provider rejected the replayed thinking blocks').to.not.include('cannot be modified');",
+              "  pm.expect(pm.response.code, 'turn 3 failed: ' + body).to.be.below(400);",
+              "  var msg = pm.response.json().choices[0].message;",
+              "  var answered = typeof msg.content === 'string' && msg.content.trim() !== '';",
+              "  var calledAgain = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;",
+              "  pm.expect(answered || calledAgain, 'turn 3 produced neither a text answer nor a further tool call: ' + JSON.stringify(msg)).to.be.true;",
+              "});",
+              "pm.test('turn 3 really replayed an interleave, not a plain history', function () {",
+              "  var raw = (pm.request.body && pm.request.body.raw) || '';",
+              "  var results = (raw.match(/\"role\"\\s*:\\s*\"tool\"/g) || []).length;",
+              "  pm.expect(results, 'turn 3 must carry at least the first tool result, otherwise this row tests a single turn').to.be.at.least(1);",
+              "  pm.expect(pm.response.code, 'replaying ' + results + ' tool result(s) with their assistant reasoning failed: ' + (pm.response.text() || '')).to.be.below(400);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"vertex/claude-opus-4-7\",\"max_tokens\":4096,\"reasoning\":{\"effort\":\"high\"},\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}},{\"type\":\"function\",\"function\":{\"name\":\"get_flight_time\",\"description\":\"Flight duration between two airports\",\"parameters\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}}}],\"messages\":{{vertexChatTurn3Messages46}}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai/gpt-5 /v1/responses turn 1: reasoning + tool call captured",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('turn 1 returns a tool call to build the interleave on', function () {",
+              "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.output, 'expected an output array').to.be.an('array').that.is.not.empty;",
+              "  var kinds = j.output.map(function (o) { return o.type; });",
+              "  pm.expect(kinds, 'no function_call came back, so turns 2 and 3 would skip and this chain would pass having tested nothing').to.include('function_call');",
+              "  // Reasoning is asserted only when the provider billed reasoning tokens.",
+              "  // Under adaptive/effort thinking whether the model thinks on a given",
+              "  // request is the model's own decision, so an unconditional assert would",
+              "  // be testing that decision rather than Bifrost's block handling.",
+              "  var d = (j.usage && j.usage.output_tokens_details) || {};",
+              "  if ((d.reasoning_tokens || 0) > 0) {",
+              "    pm.expect(kinds, 'reasoning tokens were billed, so a reasoning item must come back for the replay turns to preserve').to.include('reasoning');",
+              "  }",
+              "});",
+              "pm.collectionVariables.unset('openaiResponsesTurn2Input46');",
+              "pm.collectionVariables.unset('openaiResponsesTurn3Input46');",
+              "try {",
+              "  var body = pm.response.json();",
+              "  // Every tool call has to be answered, not just the first one. Current models",
+              "  // emit parallel calls, and a history that replays a call without its output is",
+              "  // rejected outright - OpenAI answers \"No tool output found for function call",
+              "  // <id>\", Anthropic and Bedrock require a tool_result per tool_use. Answering",
+              "  // only calls[0] made these rows flake whenever the model parallelized.",
+              "  var stubOutput46 = function (name) {",
+              "    return name === 'get_flight_time'",
+              "      ? \"{\\\"from\\\":\\\"SFO\\\",\\\"to\\\":\\\"HND\\\",\\\"hours\\\":11.5}\"",
+              "      : \"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\";",
+              "  };",
+              "  var calls = (body.output || []).filter(function (o) { return o.type === 'function_call' && o.call_id; });",
+              "  if (calls.length) {",
+              "    var input = [{ type: 'message', role: 'user', content: \"Plan a trip for me, thinking it through before you act. First, what is the weather in Tokyo right now? Use the get_weather tool.\" }]",
+              "      .concat(body.output)",
+              "      .concat(calls.map(function (c) { return { type: 'function_call_output', call_id: c.call_id, output: stubOutput46(c.name) }; }))",
+              "      .concat([{ type: 'message', role: 'user', content: \"Given that weather, how long is the flight from SFO to Tokyo? Use the get_flight_time tool, and think about whether the rain changes the plan.\" }]);",
+              "    pm.collectionVariables.set('openaiResponsesTurn2Input46', JSON.stringify(input));",
+              "  }",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-5\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"type\":\"function\",\"name\":\"get_flight_time\",\"description\":\"Flight duration between two airports\",\"parameters\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}}],\"reasoning\":{\"effort\":\"medium\"},\"max_output_tokens\":4096,\"tool_choice\":{\"type\":\"function\",\"name\":\"get_weather\"},\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Plan a trip for me, thinking it through before you act. First, what is the weather in Tokyo right now? Use the get_weather tool.\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai/gpt-5 /v1/responses turn 2: reasoning replayed across a tool result",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Skips when turn 1 captured nothing - the placeholder stays unresolved,",
+              "// so there is no interleave to replay.",
+              "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+              "pm.test('turn 2 accepts the replayed reasoning + tool_call turn', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'provider rejected the replayed reasoning block').to.not.include('cannot be modified');",
+              "  pm.expect(body, 'the thought signature did not survive the round trip').to.not.include('thought_signature');",
+              "  pm.expect(body, 'a replayed block came back malformed').to.not.include('INVALID_ARGUMENT');",
+              "  pm.expect(pm.response.code, 'turn 2 failed: ' + body).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.output, 'expected an output array').to.be.an('array').that.is.not.empty;",
+              "});",
+              "pm.collectionVariables.unset('openaiResponsesTurn3Input46');",
+              "try {",
+              "  var prior = JSON.parse(pm.collectionVariables.get('openaiResponsesTurn2Input46') || '[]');",
+              "  var body = pm.response.json();",
+              "  var next = prior.concat(body.output || []);",
+              "  // Every tool call has to be answered, not just the first one. Current models",
+              "  // emit parallel calls, and a history that replays a call without its output is",
+              "  // rejected outright - OpenAI answers \"No tool output found for function call",
+              "  // <id>\", Anthropic and Bedrock require a tool_result per tool_use. Answering",
+              "  // only calls[0] made these rows flake whenever the model parallelized.",
+              "  var stubOutput46 = function (name) {",
+              "    return name === 'get_flight_time'",
+              "      ? \"{\\\"from\\\":\\\"SFO\\\",\\\"to\\\":\\\"HND\\\",\\\"hours\\\":11.5}\"",
+              "      : \"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\";",
+              "  };",
+              "  var calls = (body.output || []).filter(function (o) { return o.type === 'function_call' && o.call_id; });",
+              "  next = next.concat(calls.map(function (c) { return { type: 'function_call_output', call_id: c.call_id, output: stubOutput46(c.name) }; }));",
+              "  next = next.concat([{ type: 'message', role: 'user', content: \"Summarize the trip plan in two sentences, mentioning both the weather and the flight time.\" }]);",
+              "  pm.collectionVariables.set('openaiResponsesTurn3Input46', JSON.stringify(next));",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-5\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"type\":\"function\",\"name\":\"get_flight_time\",\"description\":\"Flight duration between two airports\",\"parameters\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}}],\"reasoning\":{\"effort\":\"medium\"},\"max_output_tokens\":4096,\"input\":{{openaiResponsesTurn2Input46}}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai/gpt-5 /v1/responses turn 3: full interleaved history replays cleanly",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+              "pm.test('turn 3 answers after the replayed interleave', function () {",
+              "  var body = pm.response.text() || '';",
+              "  // extra_fields.raw_request echoes the outbound body, whose replayed parts legitimately carry thought signatures; only the provider's own answer is searched.",
+              "  var answer = body; try { var parsed = JSON.parse(body); delete parsed.extra_fields; answer = JSON.stringify(parsed); } catch (e) { answer = body; }",
+              "  pm.expect(answer, 'provider rejected the replayed reasoning blocks').to.not.include('cannot be modified');",
+              "  pm.expect(answer, 'a thought signature did not survive two round trips').to.not.include('thought_signature');",
+              "  pm.expect(pm.response.code, 'turn 3 failed: ' + body).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  var messages = (j.output || []).filter(function (o) { return o.type === 'message'; });",
+              "  pm.expect(messages, 'expected a final assistant message once both tool results were replayed').to.not.be.empty;",
+              "});",
+              "pm.test('turn 3 really replayed an interleave, not a plain history', function () {",
+              "  var raw = (pm.request.body && pm.request.body.raw) || '';",
+              "  var results = (raw.match(/function_call_output/g) || []).length;",
+              "  var reasoning = (raw.match(/\"type\"\\s*:\\s*\"reasoning\"/g) || []).length;",
+              "  pm.expect(results, 'turn 3 must carry at least the first tool result, otherwise this row tests a single turn').to.be.at.least(1);",
+              "  pm.expect(pm.response.code, 'replaying ' + reasoning + ' reasoning item(s) alongside ' + results + ' tool result(s) failed: ' + (pm.response.text() || '')).to.be.below(400);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-5\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"type\":\"function\",\"name\":\"get_flight_time\",\"description\":\"Flight duration between two airports\",\"parameters\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}}],\"reasoning\":{\"effort\":\"medium\"},\"max_output_tokens\":4096,\"input\":{{openaiResponsesTurn3Input46}}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "gemini/gemini-2.5-flash /v1/responses turn 1: reasoning + tool call captured",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('turn 1 returns a tool call to build the interleave on', function () {",
+              "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.output, 'expected an output array').to.be.an('array').that.is.not.empty;",
+              "  var kinds = j.output.map(function (o) { return o.type; });",
+              "  pm.expect(kinds, 'no function_call came back, so turns 2 and 3 would skip and this chain would pass having tested nothing').to.include('function_call');",
+              "  // Reasoning is asserted only when the provider billed reasoning tokens.",
+              "  // Under adaptive/effort thinking whether the model thinks on a given",
+              "  // request is the model's own decision, so an unconditional assert would",
+              "  // be testing that decision rather than Bifrost's block handling.",
+              "  var d = (j.usage && j.usage.output_tokens_details) || {};",
+              "  if ((d.reasoning_tokens || 0) > 0) {",
+              "    pm.expect(kinds, 'reasoning tokens were billed, so a reasoning item must come back for the replay turns to preserve').to.include('reasoning');",
+              "  }",
+              "});",
+              "pm.collectionVariables.unset('geminiResponsesTurn2Input46');",
+              "pm.collectionVariables.unset('geminiResponsesTurn3Input46');",
+              "try {",
+              "  var body = pm.response.json();",
+              "  // Every tool call has to be answered, not just the first one. Current models",
+              "  // emit parallel calls, and a history that replays a call without its output is",
+              "  // rejected outright - OpenAI answers \"No tool output found for function call",
+              "  // <id>\", Anthropic and Bedrock require a tool_result per tool_use. Answering",
+              "  // only calls[0] made these rows flake whenever the model parallelized.",
+              "  var stubOutput46 = function (name) {",
+              "    return name === 'get_flight_time'",
+              "      ? \"{\\\"from\\\":\\\"SFO\\\",\\\"to\\\":\\\"HND\\\",\\\"hours\\\":11.5}\"",
+              "      : \"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\";",
+              "  };",
+              "  var calls = (body.output || []).filter(function (o) { return o.type === 'function_call' && o.call_id; });",
+              "  if (calls.length) {",
+              "    var input = [{ type: 'message', role: 'user', content: \"Plan a trip for me, thinking it through before you act. First, what is the weather in Tokyo right now? Use the get_weather tool.\" }]",
+              "      .concat(body.output)",
+              "      .concat(calls.map(function (c) { return { type: 'function_call_output', call_id: c.call_id, output: stubOutput46(c.name) }; }))",
+              "      .concat([{ type: 'message', role: 'user', content: \"Given that weather, how long is the flight from SFO to Tokyo? Use the get_flight_time tool, and think about whether the rain changes the plan.\" }]);",
+              "    pm.collectionVariables.set('geminiResponsesTurn2Input46', JSON.stringify(input));",
+              "  }",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"type\":\"function\",\"name\":\"get_flight_time\",\"description\":\"Flight duration between two airports\",\"parameters\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}}],\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":4096,\"tool_choice\":{\"type\":\"function\",\"name\":\"get_weather\"},\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Plan a trip for me, thinking it through before you act. First, what is the weather in Tokyo right now? Use the get_weather tool.\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "gemini/gemini-2.5-flash /v1/responses turn 2: reasoning replayed across a tool result",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Skips when turn 1 captured nothing - the placeholder stays unresolved,",
+              "// so there is no interleave to replay.",
+              "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+              "pm.test('turn 2 accepts the replayed reasoning + tool_call turn', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'provider rejected the replayed reasoning block').to.not.include('cannot be modified');",
+              "  pm.expect(body, 'the thought signature did not survive the round trip').to.not.include('thought_signature');",
+              "  pm.expect(body, 'a replayed block came back malformed').to.not.include('INVALID_ARGUMENT');",
+              "  pm.expect(pm.response.code, 'turn 2 failed: ' + body).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.output, 'expected an output array').to.be.an('array').that.is.not.empty;",
+              "});",
+              "pm.collectionVariables.unset('geminiResponsesTurn3Input46');",
+              "try {",
+              "  var prior = JSON.parse(pm.collectionVariables.get('geminiResponsesTurn2Input46') || '[]');",
+              "  var body = pm.response.json();",
+              "  var next = prior.concat(body.output || []);",
+              "  // Every tool call has to be answered, not just the first one. Current models",
+              "  // emit parallel calls, and a history that replays a call without its output is",
+              "  // rejected outright - OpenAI answers \"No tool output found for function call",
+              "  // <id>\", Anthropic and Bedrock require a tool_result per tool_use. Answering",
+              "  // only calls[0] made these rows flake whenever the model parallelized.",
+              "  var stubOutput46 = function (name) {",
+              "    return name === 'get_flight_time'",
+              "      ? \"{\\\"from\\\":\\\"SFO\\\",\\\"to\\\":\\\"HND\\\",\\\"hours\\\":11.5}\"",
+              "      : \"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\";",
+              "  };",
+              "  var calls = (body.output || []).filter(function (o) { return o.type === 'function_call' && o.call_id; });",
+              "  next = next.concat(calls.map(function (c) { return { type: 'function_call_output', call_id: c.call_id, output: stubOutput46(c.name) }; }));",
+              "  next = next.concat([{ type: 'message', role: 'user', content: \"Summarize the trip plan in two sentences, mentioning both the weather and the flight time.\" }]);",
+              "  pm.collectionVariables.set('geminiResponsesTurn3Input46', JSON.stringify(next));",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"type\":\"function\",\"name\":\"get_flight_time\",\"description\":\"Flight duration between two airports\",\"parameters\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}}],\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":4096,\"input\":{{geminiResponsesTurn2Input46}}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "gemini/gemini-2.5-flash /v1/responses turn 3: full interleaved history replays cleanly",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+              "pm.test('turn 3 answers after the replayed interleave', function () {",
+              "  var body = pm.response.text() || '';",
+              "  // extra_fields.raw_request echoes the outbound body, whose replayed parts legitimately carry thought signatures; only the provider's own answer is searched.",
+              "  var answer = body; try { var parsed = JSON.parse(body); delete parsed.extra_fields; answer = JSON.stringify(parsed); } catch (e) { answer = body; }",
+              "  pm.expect(answer, 'provider rejected the replayed reasoning blocks').to.not.include('cannot be modified');",
+              "  pm.expect(answer, 'a thought signature did not survive two round trips').to.not.include('thought_signature');",
+              "  pm.expect(pm.response.code, 'turn 3 failed: ' + body).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  var messages = (j.output || []).filter(function (o) { return o.type === 'message'; });",
+              "  pm.expect(messages, 'expected a final assistant message once both tool results were replayed').to.not.be.empty;",
+              "});",
+              "pm.test('turn 3 really replayed an interleave, not a plain history', function () {",
+              "  var raw = (pm.request.body && pm.request.body.raw) || '';",
+              "  var results = (raw.match(/function_call_output/g) || []).length;",
+              "  var reasoning = (raw.match(/\"type\"\\s*:\\s*\"reasoning\"/g) || []).length;",
+              "  pm.expect(results, 'turn 3 must carry at least the first tool result, otherwise this row tests a single turn').to.be.at.least(1);",
+              "  pm.expect(pm.response.code, 'replaying ' + reasoning + ' reasoning item(s) alongside ' + results + ' tool result(s) failed: ' + (pm.response.text() || '')).to.be.below(400);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"type\":\"function\",\"name\":\"get_flight_time\",\"description\":\"Flight duration between two airports\",\"parameters\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}}],\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":4096,\"input\":{{geminiResponsesTurn3Input46}}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-sonnet-4-5 /openai/v1/responses turn 1: reasoning + tool call captured",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('turn 1 returns a tool call to build the interleave on', function () {",
+              "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.output, 'expected an output array').to.be.an('array').that.is.not.empty;",
+              "  var kinds = j.output.map(function (o) { return o.type; });",
+              "  pm.expect(kinds, 'no function_call came back, so turns 2 and 3 would skip and this chain would pass having tested nothing').to.include('function_call');",
+              "  // Reasoning is asserted only when the provider billed reasoning tokens.",
+              "  // Under adaptive/effort thinking whether the model thinks on a given",
+              "  // request is the model's own decision, so an unconditional assert would",
+              "  // be testing that decision rather than Bifrost's block handling.",
+              "  var d = (j.usage && j.usage.output_tokens_details) || {};",
+              "  if ((d.reasoning_tokens || 0) > 0) {",
+              "    pm.expect(kinds, 'reasoning tokens were billed, so a reasoning item must come back for the replay turns to preserve').to.include('reasoning');",
+              "  }",
+              "});",
+              "pm.collectionVariables.unset('anthropicViaOpenaiResponsesTurn2Input46');",
+              "pm.collectionVariables.unset('anthropicViaOpenaiResponsesTurn3Input46');",
+              "try {",
+              "  var body = pm.response.json();",
+              "  // Every tool call has to be answered, not just the first one. Current models",
+              "  // emit parallel calls, and a history that replays a call without its output is",
+              "  // rejected outright - OpenAI answers \"No tool output found for function call",
+              "  // <id>\", Anthropic and Bedrock require a tool_result per tool_use. Answering",
+              "  // only calls[0] made these rows flake whenever the model parallelized.",
+              "  var stubOutput46 = function (name) {",
+              "    return name === 'get_flight_time'",
+              "      ? \"{\\\"from\\\":\\\"SFO\\\",\\\"to\\\":\\\"HND\\\",\\\"hours\\\":11.5}\"",
+              "      : \"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\";",
+              "  };",
+              "  var calls = (body.output || []).filter(function (o) { return o.type === 'function_call' && o.call_id; });",
+              "  if (calls.length) {",
+              "    var input = [{ type: 'message', role: 'user', content: \"Plan a trip for me, thinking it through before you act. First, what is the weather in Tokyo right now? Use the get_weather tool.\" }]",
+              "      .concat(body.output)",
+              "      .concat(calls.map(function (c) { return { type: 'function_call_output', call_id: c.call_id, output: stubOutput46(c.name) }; }))",
+              "      .concat([{ type: 'message', role: 'user', content: \"Given that weather, how long is the flight from SFO to Tokyo? Use the get_flight_time tool, and think about whether the rain changes the plan.\" }]);",
+              "    pm.collectionVariables.set('anthropicViaOpenaiResponsesTurn2Input46', JSON.stringify(input));",
+              "  }",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"anthropic/claude-sonnet-4-5\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"type\":\"function\",\"name\":\"get_flight_time\",\"description\":\"Flight duration between two airports\",\"parameters\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}}],\"reasoning\":{\"effort\":\"high\"},\"max_output_tokens\":4096,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Plan a trip for me, thinking it through before you act. First, what is the weather in Tokyo right now? Use the get_weather tool.\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-sonnet-4-5 /openai/v1/responses turn 2: reasoning replayed across a tool result",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Skips when turn 1 captured nothing - the placeholder stays unresolved,",
+              "// so there is no interleave to replay.",
+              "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+              "pm.test('turn 2 accepts the replayed reasoning + tool_call turn', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'provider rejected the replayed reasoning block').to.not.include('cannot be modified');",
+              "  pm.expect(body, 'the thought signature did not survive the round trip').to.not.include('thought_signature');",
+              "  pm.expect(body, 'a replayed block came back malformed').to.not.include('INVALID_ARGUMENT');",
+              "  pm.expect(pm.response.code, 'turn 2 failed: ' + body).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.output, 'expected an output array').to.be.an('array').that.is.not.empty;",
+              "});",
+              "pm.collectionVariables.unset('anthropicViaOpenaiResponsesTurn3Input46');",
+              "try {",
+              "  var prior = JSON.parse(pm.collectionVariables.get('anthropicViaOpenaiResponsesTurn2Input46') || '[]');",
+              "  var body = pm.response.json();",
+              "  var next = prior.concat(body.output || []);",
+              "  // Every tool call has to be answered, not just the first one. Current models",
+              "  // emit parallel calls, and a history that replays a call without its output is",
+              "  // rejected outright - OpenAI answers \"No tool output found for function call",
+              "  // <id>\", Anthropic and Bedrock require a tool_result per tool_use. Answering",
+              "  // only calls[0] made these rows flake whenever the model parallelized.",
+              "  var stubOutput46 = function (name) {",
+              "    return name === 'get_flight_time'",
+              "      ? \"{\\\"from\\\":\\\"SFO\\\",\\\"to\\\":\\\"HND\\\",\\\"hours\\\":11.5}\"",
+              "      : \"{\\\"city\\\":\\\"Tokyo\\\",\\\"temp_c\\\":18,\\\"condition\\\":\\\"rain\\\"}\";",
+              "  };",
+              "  var calls = (body.output || []).filter(function (o) { return o.type === 'function_call' && o.call_id; });",
+              "  next = next.concat(calls.map(function (c) { return { type: 'function_call_output', call_id: c.call_id, output: stubOutput46(c.name) }; }));",
+              "  next = next.concat([{ type: 'message', role: 'user', content: \"Summarize the trip plan in two sentences, mentioning both the weather and the flight time.\" }]);",
+              "  pm.collectionVariables.set('anthropicViaOpenaiResponsesTurn3Input46', JSON.stringify(next));",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"anthropic/claude-sonnet-4-5\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"type\":\"function\",\"name\":\"get_flight_time\",\"description\":\"Flight duration between two airports\",\"parameters\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}}],\"reasoning\":{\"effort\":\"high\"},\"max_output_tokens\":4096,\"input\":{{anthropicViaOpenaiResponsesTurn2Input46}}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-sonnet-4-5 /openai/v1/responses turn 3: full interleaved history replays cleanly",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+              "pm.test('turn 3 answers after the replayed interleave', function () {",
+              "  var body = pm.response.text() || '';",
+              "  // extra_fields.raw_request echoes the outbound body, whose replayed parts legitimately carry thought signatures; only the provider's own answer is searched.",
+              "  var answer = body; try { var parsed = JSON.parse(body); delete parsed.extra_fields; answer = JSON.stringify(parsed); } catch (e) { answer = body; }",
+              "  pm.expect(answer, 'provider rejected the replayed reasoning blocks').to.not.include('cannot be modified');",
+              "  pm.expect(answer, 'a thought signature did not survive two round trips').to.not.include('thought_signature');",
+              "  pm.expect(pm.response.code, 'turn 3 failed: ' + body).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  var messages = (j.output || []).filter(function (o) { return o.type === 'message'; });",
+              "  pm.expect(messages, 'expected a final assistant message once both tool results were replayed').to.not.be.empty;",
+              "});",
+              "pm.test('turn 3 really replayed an interleave, not a plain history', function () {",
+              "  var raw = (pm.request.body && pm.request.body.raw) || '';",
+              "  var results = (raw.match(/function_call_output/g) || []).length;",
+              "  var reasoning = (raw.match(/\"type\"\\s*:\\s*\"reasoning\"/g) || []).length;",
+              "  pm.expect(results, 'turn 3 must carry at least the first tool result, otherwise this row tests a single turn').to.be.at.least(1);",
+              "  pm.expect(pm.response.code, 'replaying ' + reasoning + ' reasoning item(s) alongside ' + results + ' tool result(s) failed: ' + (pm.response.text() || '')).to.be.below(400);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"anthropic/claude-sonnet-4-5\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}},{\"type\":\"function\",\"name\":\"get_flight_time\",\"description\":\"Flight duration between two airports\",\"parameters\":{\"type\":\"object\",\"properties\":{\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"from\",\"to\"]}}],\"reasoning\":{\"effort\":\"high\"},\"max_output_tokens\":4096,\"input\":{{anthropicViaOpenaiResponsesTurn3Input46}}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    }
+  ]
+}

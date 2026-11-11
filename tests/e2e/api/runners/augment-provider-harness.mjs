@@ -3,6 +3,7 @@
 // maintain by hand in the checked-in Postman collection.
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { readHarnessCollection } from "./lib/provider-harness-source.mjs";
 import { buildTokenParityMatrix } from "./lib/token-parity-matrix.mjs";
 import { buildPromptCachingHitVerificationItems } from "./lib/prompt-caching-extension.mjs";
 import { buildMidConvSystemCacheParityFolder } from "./lib/midconv-system-cache-parity.mjs";
@@ -35,7 +36,9 @@ if (!source || !out) {
   process.exit(2);
 }
 
-const collection = JSON.parse(readFileSync(source, "utf8"));
+// --source is the per-folder directory (collections/provider-harness, TXE-7136) or one
+// collection file; the directory is assembled here, so no assembled copy has to exist.
+const collection = readHarnessCollection(source);
 
 const responseNonEmptyTest = {
   listen: "test",

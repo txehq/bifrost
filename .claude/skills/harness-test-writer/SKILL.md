@@ -1,13 +1,13 @@
 ---
 name: harness-test-writer
-description: Add regression test cases to the Bifrost provider harness (the Postman collection run via `make run-provider-harness-test`) based on a merged PR or a GitHub issue. Fetches the PR/issue, traces the affected wire path in the codebase, checks existing harness coverage, designs cases following harness conventions, inserts them into tests/e2e/api/collections/provider-harness.json without reformatting the file, and validates via the augment and filter scripts. Invoked with /harness-test-writer <PR# | issue# | URL> or /harness-test-writer (prompts for a reference).
+description: Add regression test cases to the Bifrost provider harness (the Postman collection run via `make run-provider-harness-test`) based on a merged PR or a GitHub issue. Fetches the PR/issue, traces the affected wire path in the codebase, checks existing harness coverage, designs cases following harness conventions, adds them as a folder file under tests/e2e/api/collections/provider-harness/ (one file per folder), and validates via the augment and filter scripts. Invoked with /harness-test-writer <PR# | issue# | URL> or /harness-test-writer (prompts for a reference).
 allowed-tools: Read, Grep, Glob, Bash, WebFetch, Task, AskUserQuestion, TodoWrite, Edit, Write
 ---
 
 # Provider Harness Test Writer
 
 Turn a PR or GitHub issue into regression coverage in the provider harness: the Postman
-collection at `tests/e2e/api/collections/provider-harness.json`, executed by newman via
+collection stored one file per folder in `tests/e2e/api/collections/provider-harness/`, executed by newman via
 `make run-provider-harness-test`.
 
 This is NOT the Go test harness in `core/internal/llmtests/` (that one is run via
@@ -71,9 +71,10 @@ Search the collection for the feature's keywords before writing anything:
 
 ```bash
 cd tests/e2e/api
-grep -c '<keyword>' collections/provider-harness.json
+grep -l '<keyword>' collections/provider-harness/*.json
+node runners/provider-harness-folders.mjs build --out /tmp/provider-harness.json
 node -e "
-const c = require('./collections/provider-harness.json');
+const c = require('/tmp/provider-harness.json');
 function walk(items, path) { for (const it of items) {
   if (it.item) walk(it.item, path + '/' + it.name);
   else if (JSON.stringify(it).includes('<keyword>')) console.log(path + ' :: ' + it.name);
@@ -126,38 +127,32 @@ Conventions (match the existing collection exactly):
 Present the designed cases (names, route, body, assertions) to the user for approval
 before editing the collection.
 
-## Step 5 - Insert without reformatting
+## Step 5 - Add the folder as its own file
 
-CRITICAL: `provider-harness.json` is ~1.5MB and is NOT byte-stable under
-`JSON.stringify(JSON.parse(raw), null, 2)` (escape differences). Never rewrite the
-whole file - the diff must contain only your added lines.
-
-Use a Node script that appends the new folder textually before the closing `]` of the
-top-level `item` array:
+The harness is one file per top-level folder (TXE-7136). A new folder is a new file in
+`collections/provider-harness/`, named `<number>-<slug>.json`, holding the folder object
+(`name`, optional `description` and `event`, and `item`). Take a number no other folder
+has; the folder's `name` starts with it (`"491. What it covers (keyword)"`). Never add
+the file to `_order.json`, and never commit an assembled `provider-harness.json`.
 
 ```js
-const raw = fs.readFileSync(PATH, 'utf8');
-const before = JSON.parse(raw);
-// abort if the folder already exists (idempotence)
-const indented = JSON.stringify(folder, null, 2).split('\n').map(l => '    ' + l).join('\n');
-const tail = '\n  ]\n}';
-if (!raw.endsWith(tail)) throw new Error('unexpected file tail');
-const out = raw.slice(0, -tail.length) + ',\n' + indented + tail;
-const after = JSON.parse(out); // must parse; item count must be before + 1
-fs.writeFileSync(PATH, out);
+const file = 'collections/provider-harness/491-what-it-covers.json';
+if (fs.existsSync(file)) throw new Error('folder file already exists');
+fs.writeFileSync(file, JSON.stringify(folder, null, 2) + '\n'); // the canonical format
 ```
 
-Adding cases INSIDE an existing folder is harder to do textually; if that is truly the
-right placement, locate the folder's closing bracket precisely and verify the diff is
-additions-only afterward. Default to a new top-level folder for issue regressions.
+To add cases INSIDE an existing folder, edit that folder's file: parse it, splice the
+rows into `item`, write it back the same way. The files are canonical, so the diff holds
+only the added rows. Default to a new top-level folder for issue regressions.
 
 ## Step 6 - Validate
 
 All from `tests/e2e/api/`:
 
 ```bash
-git diff --stat   # must show only additions in provider-harness.json (+ backlog md if touched)
-node runners/augment-provider-harness.mjs --source collections/provider-harness.json --out /tmp/aug.json
+git status --short collections/provider-harness   # your folder file only (+ backlog md if touched)
+node runners/provider-harness-folders.mjs check     # a free number, canonical format
+node runners/augment-provider-harness.mjs --source collections/provider-harness --out /tmp/aug.json
 node runners/filter-collection.mjs --source /tmp/aug.json --out /tmp/filtered.json --provider <provider>
 node -e "const c=require('/tmp/filtered.json'); const f=c.item.find(i=>i.name.startsWith('<N>.')); console.log('kept:', !!f, f && f.item.length);"
 ```

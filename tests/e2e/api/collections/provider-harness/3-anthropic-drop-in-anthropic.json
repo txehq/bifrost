@@ -1,0 +1,41 @@
+{
+  "name": "3. Anthropic drop-in (/anthropic)",
+  "description": "Mirrors the Anthropic Messages API. Use `x-api-key` and `anthropic-version` headers as you would against api.anthropic.com.",
+  "item": [
+    {
+      "name": "POST /anthropic/v1/messages",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Hello from Anthropic drop-in.\" }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    }
+  ]
+}

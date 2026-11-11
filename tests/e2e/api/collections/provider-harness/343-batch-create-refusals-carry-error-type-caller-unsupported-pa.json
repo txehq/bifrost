@@ -1,0 +1,226 @@
+{
+  "name": "343. Batch create refusals carry error_type: caller_unsupported_parameter for a field the vendor's batch cannot take (batch error type)",
+  "description": "Contract C4 agreement three and C6 (TXE-6972): a batch create the gateway refuses before anything is sent carries extra_fields.error_type, so a client classifies it by one field. A well-formed field the vendor's batch cannot take (a url a generateContent batch cannot run, an Imagen model on an image line, a line naming another model, a second url in one batch, Vertex metadata that cannot be a job label) is caller_unsupported_parameter with the field in error.param. A malformed batch or line (no model, no body) is caller_invalid_request. Every case is answered by the gateway alone: no vendor call is made, so the cases need no vendor quota. Folder 301 asserts the same field on its own refusal rows.",
+  "item": [
+    {
+      "name": "[EXPECT-400] gemini batch error type: a second url in one batch is caller_unsupported_parameter naming the line",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"an image line beside a chat line is a 400 caller_unsupported_parameter naming requests[1].url\", function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect((j.extra_fields || {}).error_type, pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(pm.response.headers.get('x-bifrost-error-type'), 'the header carries the same value').to.eql('caller_unsupported_parameter');",
+              "  pm.expect((j.error || {}).param, pm.response.text()).to.eql(\"requests[1].url\");",
+              "  pm.expect(pm.response.text()).to.include(\"a batch runs one url\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash-image\",\n  \"requests\": [\n    {\n      \"custom_id\": \"bet-url-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash-image\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    },\n    {\n      \"custom_id\": \"bet-url-2\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/images/generations\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash-image\",\n        \"prompt\": \"A lighthouse at dusk\"\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] gemini batch error type: an Imagen model on an image line is caller_unsupported_parameter",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"an Imagen image line is a 400 caller_unsupported_parameter naming requests[0].url\", function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect((j.extra_fields || {}).error_type, pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(pm.response.headers.get('x-bifrost-error-type'), 'the header carries the same value').to.eql('caller_unsupported_parameter');",
+              "  pm.expect((j.error || {}).param, pm.response.text()).to.eql(\"requests[0].url\");",
+              "  pm.expect(pm.response.text()).to.include(\"Imagen\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/imagen-4.0-generate-001\",\n  \"endpoint\": \"/v1/images/generations\",\n  \"requests\": [\n    {\n      \"custom_id\": \"bet-imagen-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/images/generations\",\n      \"body\": {\n        \"model\": \"imagen-4.0-generate-001\",\n        \"prompt\": \"A lighthouse at dusk\"\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] gemini batch error type: a line with no body is caller_invalid_request",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"a line with no body is malformed, not an unsupported parameter: 400 caller_invalid_request naming requests[1].body\", function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect((j.extra_fields || {}).error_type, pm.response.text()).to.eql('caller_invalid_request');",
+              "  pm.expect(pm.response.headers.get('x-bifrost-error-type'), 'the header carries the same value').to.eql('caller_invalid_request');",
+              "  pm.expect((j.error || {}).param, pm.response.text()).to.eql(\"requests[1].body\");",
+              "  pm.expect(pm.response.text()).to.include(\"body is required\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"requests\": [\n    {\n      \"custom_id\": \"bet-body-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    },\n    {\n      \"custom_id\": \"bet-body-2\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] vertex batch error type: a line whose url a generateContent batch cannot run is caller_unsupported_parameter",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"a chat-shaped line addressed to /v1/embeddings in a Vertex Gemini batch is a 400 caller_unsupported_parameter naming requests[0].url, before anything is uploaded\", function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect((j.extra_fields || {}).error_type, pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(pm.response.headers.get('x-bifrost-error-type'), 'the header carries the same value').to.eql('caller_unsupported_parameter');",
+              "  pm.expect((j.error || {}).param, pm.response.text()).to.eql(\"requests[0].url\");",
+              "  pm.expect(pm.response.text()).to.include(\"/v1/embeddings\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"output_folder\": {\n    \"url\": \"gs://{{vertexGcsBucket}}/harness-batch-error-type/output/\"\n  },\n  \"requests\": [\n    {\n      \"custom_id\": \"bet-vertex-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/embeddings\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] vertex batch error type: a metadata key that cannot be a job label is caller_unsupported_parameter",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"a metadata key outside the label rules is a 400 caller_unsupported_parameter naming the entry\", function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect((j.extra_fields || {}).error_type, pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(pm.response.headers.get('x-bifrost-error-type'), 'the header carries the same value').to.eql('caller_unsupported_parameter');",
+              "  pm.expect((j.error || {}).param, pm.response.text()).to.eql(\"metadata.Tokun-Batch\");",
+              "  pm.expect(pm.response.text()).to.include(\"cannot be a Vertex label\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"output_folder\": {\n    \"url\": \"gs://{{vertexGcsBucket}}/harness-batch-error-type/output/\"\n  },\n  \"metadata\": {\n    \"Tokun-Batch\": \"b1\"\n  },\n  \"requests\": [\n    {\n      \"custom_id\": \"bet-vertex-2\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    }
+  ]
+}

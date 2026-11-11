@@ -1,0 +1,50 @@
+{
+  "name": "183. Embedding input errors do not name the wrong provider (embedding-error-wording)",
+  "description": "The OpenAI embedding converter is shared by OpenAI-compatible providers (azure, mistral, ollama, vllm, ...). Its unsupported-input errors used to say \"openai embedding does not support ...\" even when the request targeted another provider. They now say \"this provider does not support ...\". The request is rejected in the converter, so no upstream call is made.",
+  "item": [
+    {
+      "name": "183.1 [EXPECT-4XX] azure/text-embedding-ada-002 - image input error does not name openai",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"azure/text-embedding-ada-002\",\"input\":[[{\"type\":\"image\",\"image\":{\"url\":\"https://example.com/a.png\"}}]]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('azure image embedding: rejected with 400', function () {",
+              "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+              "});",
+              "var text = pm.response.text();",
+              "pm.test('azure image embedding: error names no wrong provider', function () {",
+              "  pm.expect(text, text).to.include('this provider does not support');",
+              "  pm.expect(text, text).to.not.include('openai embedding');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

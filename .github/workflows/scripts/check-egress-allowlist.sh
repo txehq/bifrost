@@ -137,7 +137,9 @@ import sys
 import yaml
 
 REPO_ROOT = os.environ["REPO_ROOT"]
-COLLECTION = os.path.join(REPO_ROOT, "tests/e2e/api/collections/provider-harness.json")
+# The harness is stored one file per folder (TXE-7136). Every JSON file in the directory
+# is scanned; the hosts are a set, so the order the folders are assembled in does not matter.
+COLLECTION = os.path.join(REPO_ROOT, "tests/e2e/api/collections/provider-harness")
 PROVIDER_CONFIG = os.path.join(REPO_ROOT, "tests/integrations/python/config.json")
 PROVIDER_DEFAULT_HOSTS = os.path.join(REPO_ROOT, ".github/workflows/provider-default-hosts.json")
 
@@ -282,13 +284,20 @@ def collection_without_documentation(node, parent_key=None):
     return node
 
 
-def hosts_in_collection(path):
-    with open(path, encoding="utf-8") as fh:
-        collection = json.load(fh)
-    # Re-serialised one value per line so the line-based scan below still sees a
-    # templated URL and a literal one on separate lines.
-    text = json.dumps(collection_without_documentation(collection), indent=1, ensure_ascii=False)
-    return hosts_in_text(text)
+def hosts_in_collection(directory):
+    files = sorted(name for name in os.listdir(directory) if name.endswith(".json"))
+    if not files:
+        print(f"::error::egress check input holds no collection file: {directory}", file=sys.stderr)
+        sys.exit(1)
+    found = set()
+    for name in files:
+        with open(os.path.join(directory, name), encoding="utf-8") as fh:
+            part = json.load(fh)
+        # Re-serialised one value per line so the line-based scan below still sees a
+        # templated URL and a literal one on separate lines.
+        text = json.dumps(collection_without_documentation(part), indent=1, ensure_ascii=False)
+        found |= hosts_in_text(text)
+    return found
 
 
 # Provider endpoints Bifrost builds in Go beyond a provider's one default host

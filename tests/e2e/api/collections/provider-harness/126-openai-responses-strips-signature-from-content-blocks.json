@@ -1,0 +1,49 @@
+{
+  "name": "126. OpenAI Responses strips signature from content blocks",
+  "description": "Gemini sets signature (thoughtSignature) on content blocks. OpenAI rejects signature field on input. Fix: ToOpenAIResponsesRequest strips it.",
+  "item": [
+    {
+      "name": "openai/gpt-4o native /v1/responses: signature stripped from content blocks",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('No signature parameter rejection', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'OpenAI rejected signature parameter: ' + body).to.not.match(/signature/i);",
+              "});",
+              "pm.test('Replay with Gemini signature in content blocks succeeds', function () {",
+              "  pm.expect(pm.response.code, 'responses replay request failed: ' + pm.response.text()).to.be.below(400);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-4o\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"what is in this text\"},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"This is a response\",\"signature\":\"base64encodedSignature\"}]}],\"max_output_tokens\":100}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    }
+  ]
+}

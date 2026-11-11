@@ -1,0 +1,59 @@
+{
+  "name": "Passthrough inference route policy (inference-route-policy)",
+  "description": "x-model-provider may only repeat the passthrough route's provider. The check fails before provider calls.",
+  "item": [
+    {
+      "name": "[EXPECT-400] openai inference-route-policy provider switch refused",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('inference-route-policy provider switch refused', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+              "  pm.expect(pm.response.text()).to.include(\"provider does not match\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-model-provider",
+            "value": "anthropic"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai_passthrough",
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": []\n}"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,253 @@
+{
+  "name": "39. Reasoning/Thinking Multi-Turn Replay — Criss-Cross Expansion",
+  "description": "Expands multi-turn reasoning/thinking replay coverage across the criss-cross matrix, which was previously single-turn-only for every provider/shape combo in section 8.6.4. Unlike folder 38, every case here is expected to ALREADY PASS today - this is breadth/non-regression insurance, not a red-to-green bug pin, and a failure here means something else broke, not a #5186 regression. Group A covers the reverse direction (OpenAI-shaped /openai/v1/responses request served by an Anthropic model) which had zero coverage anywhere in the collection: Anthropic's wire has no signature field on the OpenAI side, so a Claude-origin signature never reaches the client and StripEmptyThinkingBlocks drops the resulting empty block before replay - this direction is not exposed to the same hard-failure OpenAI enforces, by the issue author's own account. Group B covers native /v1/chat/completions Anthropic-origin reasoning_details replay, fixed by the already-merged PR #4943 but never harness-covered until now.",
+  "item": [
+    {
+      "name": "anthropic/claude-sonnet-4-5 /openai/v1/responses (drop-in) reasoning single-turn + capture",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('reverse-direction (OpenAI-shaped request, Anthropic model) reasoning item present', function () {",
+              "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.output, 'expected output array').to.be.an('array').that.is.not.empty;",
+              "});",
+              "pm.collectionVariables.unset('anthropicReasoningReplayInput39');",
+              "try {",
+              "  var body = pm.response.json();",
+              "  var hasReasoning = (body.output || []).some(function (o) { return o.type === 'reasoning'; });",
+              "  if (hasReasoning) {",
+              "    var input = [{ type: 'message', role: 'user', content: \"Think hard: which two of Alpha, Beta, Gamma, Delta are adjacent Greek letters whose English spellings share no vowels? Just name them.\" }]",
+              "      .concat(body.output)",
+              "      .concat([{ type: 'message', role: 'user', content: 'Good. Now explain briefly why the other two pairs do not qualify.' }]);",
+              "    pm.collectionVariables.set('anthropicReasoningReplayInput39', JSON.stringify(input));",
+              "  }",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"anthropic/claude-sonnet-4-5\",\"input\":\"Think hard: which two of Alpha, Beta, Gamma, Delta are adjacent Greek letters whose English spellings share no vowels? Just name them.\",\"reasoning\":{\"effort\":\"high\"},\"max_output_tokens\":4096}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-sonnet-4-5 /openai/v1/responses (drop-in) reasoning replay accepted without corruption",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+              "pm.test('replayed reverse-direction reasoning item accepted without corruption', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'Anthropic rejected the replayed reasoning item').to.not.include('cannot be modified');",
+              "  pm.expect(pm.response.code, 'replay request failed: ' + body).to.be.below(400);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"anthropic/claude-sonnet-4-5\",\"input\":{{anthropicReasoningReplayInput39}},\"reasoning\":{\"effort\":\"high\"},\"max_output_tokens\":4096}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-sonnet-4-5 /openai/v1/responses (drop-in) reasoning streaming",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('reverse-direction reasoning streams to completion', function () {",
+              "  pm.expect(pm.response.code, 'stream request failed: ' + pm.response.text()).to.be.below(400);",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'expected reasoning output_item.added events').to.include('response.output_item.added');",
+              "  pm.expect(body, 'expected the stream to complete').to.include('response.completed');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"anthropic/claude-sonnet-4-5\",\"input\":\"Think hard: which two of Alpha, Beta, Gamma, Delta are adjacent Greek letters whose English spellings share no vowels? Just name them.\",\"reasoning\":{\"effort\":\"high\"},\"max_output_tokens\":4096,\"stream\":true}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-opus-4-7 native /v1/chat/completions thinking capture - #4943",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('native chat completions reasoning_details present for Anthropic-origin thinking - #4943', function () {",
+              "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  var msg = j.choices && j.choices[0] && j.choices[0].message;",
+              "  pm.expect(msg, 'expected an assistant message').to.be.an('object');",
+              "  var d = j.usage && j.usage.completion_tokens_details;",
+              "  var rt = (d && d.reasoning_tokens) || 0;",
+              "  // Opus 4.7 is adaptive-only: whether it thinks at all is the model's own",
+              "  // per-request decision, so requiring reasoning_details unconditionally",
+              "  // asserts that decision rather than anything Bifrost controls. Verified",
+              "  // live - Bifrost sent thinking{type:adaptive,display:summarized} plus",
+              "  // output_config{effort:high} and Anthropic replied content ['text'] with",
+              "  // output_tokens_details.thinking_tokens = 0. Assert the real contract:",
+              "  // reasoning tokens billed means the details must survive the mapping.",
+              "  if (rt > 0) {",
+              "    pm.expect(msg.reasoning_details, 'reasoning_tokens=' + rt + ' were billed, so reasoning_details must be populated (regression of PR #4943 if empty/missing)').to.be.an('array').that.is.not.empty;",
+              "  } else {",
+              "    pm.expect(msg.content, 'no reasoning tokens billed, so the model must at least have answered').to.be.a('string').that.is.not.empty;",
+              "  }",
+              "});",
+              "pm.collectionVariables.unset('anthropicThinkingReplayMessage39');",
+              "try {",
+              "  var body = pm.response.json();",
+              "  var msg = body.choices[0].message;",
+              "  if (msg) {",
+              "    pm.collectionVariables.set('anthropicThinkingReplayMessage39', JSON.stringify(msg));",
+              "  }",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"anthropic/claude-opus-4-7\",\"max_tokens\":4096,\"reasoning\":{\"effort\":\"high\"},\"messages\":[{\"role\":\"user\",\"content\":\"Carefully compute 8473 * 2917 by long multiplication, showing every partial product, then verify the result by a completely different method and reconcile any discrepancy.\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-opus-4-7 native /v1/chat/completions reasoning_details replay accepted - #4943",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+              "pm.test('replayed reasoning_details accepted on native chat completions - #4943', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'Anthropic rejected the replayed reasoning_details').to.not.include('cannot be modified');",
+              "  pm.expect(pm.response.code, 'replay request failed: ' + body).to.be.below(400);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"anthropic/claude-opus-4-7\",\"max_tokens\":4096,\"reasoning\":{\"effort\":\"high\"},\"messages\":[{\"role\":\"user\",\"content\":\"Carefully compute 8473 * 2917 by long multiplication, showing every partial product, then verify the result by a completely different method and reconcile any discrepancy.\"},{{anthropicThinkingReplayMessage39}},{\"role\":\"user\",\"content\":\"Now double that result.\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "name": "125. OpenAI Responses strips function_call_output ID and Name",
+  "description": "Gemini sets ID (func_resp_*) and Name on function_call_output items. OpenAI rejects both on this item type. Fix: ToOpenAIResponsesRequest strips them.",
+  "item": [
+    {
+      "name": "openai/gpt-4o native /v1/responses: function_call_output ID and Name stripped",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('No id/name rejection on function_call_output', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'OpenAI rejected id/name on function_call_output: ' + body).to.not.match(/input\\[\\d+\\]\\.(id|name)/);",
+              "});",
+              "pm.test('Replay with Gemini function_call_output ID and Name succeeds', function () {",
+              "  pm.expect(pm.response.code, 'responses replay request failed: ' + pm.response.text()).to.be.below(400);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-4o\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"get weather\"},{\"type\":\"function_call\",\"call_id\":\"call_123\",\"name\":\"get_weather\"},{\"type\":\"function_call_output\",\"id\":\"func_resp_abc\",\"name\":\"get_weather\",\"call_id\":\"call_123\",\"output\":{\"temperature\":72}}],\"max_output_tokens\":100}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    }
+  ]
+}

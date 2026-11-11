@@ -1,0 +1,487 @@
+{
+  "name": "333. Perplexity chat usage: search context size and per-tool counts, the streamed final frame matches, errors carry error_type (perplexity search usage)",
+  "description": "TXE-6549, contract C5, C10, C6. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, whose perplexity entry points at tests/e2e/api/runners/provider-error-fixture.mjs. The fixture answers /chat/completions for sonar-search-usage with Perplexity's own usage shape: search_context_size (the tier of the per-request search fee), top-level citation_tokens and num_search_queries, a flat cost, and tool_calls_details.<tool>.invocation; streamed, every frame carries a usage and the frame with the finish reason carries the full one. Before TXE-6549 the non-streamed usage had no search_context_size and no per-tool counts, and the stream used the generic OpenAI decode, which has no place for the top-level counts, so the final frame lost num_search_queries, citation_tokens and tool_usage. Rows 1-3 pin the chat routes (non-streamed, streamed, streamed on the OpenAI-compatible route), rows 4-5 the Responses route, which serves Sonar models from chat. Rows 6-7 pin C6: sonar-invalid-model gets Perplexity's 400, whose error.code is a number; the status is kept, streamed or not, and the error carries extra_fields.error_type caller_invalid_request. Perplexity's native /v1/responses (non-Sonar models) is not reached by this change.",
+  "item": [
+    {
+      "name": "333.1 perplexity /v1/chat/completions non-streamed perplexity/sonar-search-usage usage carries search_context_size, per-tool counts, citation tokens and cost (perplexity search usage)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+              "var usage = pm.response.json().usage;",
+              "pm.test('the token counts are the vendor\\'s', function () {",
+              "  pm.expect(usage && { prompt: usage.prompt_tokens, completion: usage.completion_tokens, total: usage.total_tokens }, 'usage: ' + JSON.stringify(usage)).to.eql({ prompt: 12, completion: 40, total: 52 });",
+              "});",
+              "pm.test('search_context_size is the tier the vendor billed', function () {",
+              "  pm.expect(usage && usage.search_context_size, 'usage: ' + JSON.stringify(usage)).to.equal('high');",
+              "});",
+              "pm.test('tool_usage carries the search count and every tool\\'s call count', function () {",
+              "  pm.expect(usage && usage.tool_usage, 'usage: ' + JSON.stringify(usage)).to.eql({ web_search: { num_requests: 3 }, per_tool: { web_search: { num_requests: 3 }, fetch_url: { num_requests: 1 } } });",
+              "});",
+              "pm.test('citation tokens, search queries and reasoning tokens are kept', function () {",
+              "  var d = (usage && usage.completion_tokens_details) || {};",
+              "  pm.expect({ citation: d.citation_tokens, searches: d.num_search_queries, reasoning: d.reasoning_tokens }, 'usage: ' + JSON.stringify(usage)).to.eql({ citation: 300, searches: 3, reasoning: 8 });",
+              "});",
+              "pm.test('the vendor\\'s cost is kept', function () {",
+              "  // The OpenAI-compatible routes send cost as a bare number, the native routes as an object.",
+              "  var cost = usage && usage.cost;",
+              "  pm.expect(typeof cost === 'number' ? cost : cost && cost.total_cost, 'usage: ' + JSON.stringify(usage)).to.equal(0.03026);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"perplexity/sonar-search-usage\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "333.2 perplexity /v1/chat/completions perplexity/sonar-search-usage the final frame carries the non-streamed usage (perplexity search usage)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+              "var frames = raw.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+              "var last = frames.filter(function (f) { return f.usage; }).pop();",
+              "pm.test('a frame carries the usage', function () { pm.expect(last, raw).to.be.an('object'); });",
+              "var usage = last && last.usage;",
+              "pm.test('the token counts are the vendor\\'s', function () {",
+              "  pm.expect(usage && { prompt: usage.prompt_tokens, completion: usage.completion_tokens, total: usage.total_tokens }, 'usage: ' + JSON.stringify(usage)).to.eql({ prompt: 12, completion: 40, total: 52 });",
+              "});",
+              "pm.test('search_context_size is the tier the vendor billed', function () {",
+              "  pm.expect(usage && usage.search_context_size, 'usage: ' + JSON.stringify(usage)).to.equal('high');",
+              "});",
+              "pm.test('tool_usage carries the search count and every tool\\'s call count', function () {",
+              "  pm.expect(usage && usage.tool_usage, 'usage: ' + JSON.stringify(usage)).to.eql({ web_search: { num_requests: 3 }, per_tool: { web_search: { num_requests: 3 }, fetch_url: { num_requests: 1 } } });",
+              "});",
+              "pm.test('citation tokens, search queries and reasoning tokens are kept', function () {",
+              "  var d = (usage && usage.completion_tokens_details) || {};",
+              "  pm.expect({ citation: d.citation_tokens, searches: d.num_search_queries, reasoning: d.reasoning_tokens }, 'usage: ' + JSON.stringify(usage)).to.eql({ citation: 300, searches: 3, reasoning: 8 });",
+              "});",
+              "pm.test('the vendor\\'s cost is kept', function () {",
+              "  // The OpenAI-compatible routes send cost as a bare number, the native routes as an object.",
+              "  var cost = usage && usage.cost;",
+              "  pm.expect(typeof cost === 'number' ? cost : cost && cost.total_cost, 'usage: ' + JSON.stringify(usage)).to.equal(0.03026);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"perplexity/sonar-search-usage\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "333.3 perplexity /openai/v1/chat/completions perplexity/sonar-search-usage the final frame carries the non-streamed usage (perplexity search usage)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+              "var frames = raw.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+              "var last = frames.filter(function (f) { return f.usage; }).pop();",
+              "pm.test('a frame carries the usage', function () { pm.expect(last, raw).to.be.an('object'); });",
+              "var usage = last && last.usage;",
+              "pm.test('the token counts are the vendor\\'s', function () {",
+              "  pm.expect(usage && { prompt: usage.prompt_tokens, completion: usage.completion_tokens, total: usage.total_tokens }, 'usage: ' + JSON.stringify(usage)).to.eql({ prompt: 12, completion: 40, total: 52 });",
+              "});",
+              "pm.test('search_context_size is the tier the vendor billed', function () {",
+              "  pm.expect(usage && usage.search_context_size, 'usage: ' + JSON.stringify(usage)).to.equal('high');",
+              "});",
+              "pm.test('tool_usage carries the search count and every tool\\'s call count', function () {",
+              "  pm.expect(usage && usage.tool_usage, 'usage: ' + JSON.stringify(usage)).to.eql({ web_search: { num_requests: 3 }, per_tool: { web_search: { num_requests: 3 }, fetch_url: { num_requests: 1 } } });",
+              "});",
+              "pm.test('citation tokens, search queries and reasoning tokens are kept', function () {",
+              "  var d = (usage && usage.completion_tokens_details) || {};",
+              "  pm.expect({ citation: d.citation_tokens, searches: d.num_search_queries, reasoning: d.reasoning_tokens }, 'usage: ' + JSON.stringify(usage)).to.eql({ citation: 300, searches: 3, reasoning: 8 });",
+              "});",
+              "pm.test('the vendor\\'s cost is kept', function () {",
+              "  // The OpenAI-compatible routes send cost as a bare number, the native routes as an object.",
+              "  var cost = usage && usage.cost;",
+              "  pm.expect(typeof cost === 'number' ? cost : cost && cost.total_cost, 'usage: ' + JSON.stringify(usage)).to.equal(0.03026);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"perplexity/sonar-search-usage\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "333.4 perplexity /v1/responses (chat fallback) non-streamed perplexity/sonar-search-usage usage carries search_context_size, per-tool counts, citation tokens and cost (perplexity search usage)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+              "var response = pm.response.json();",
+              "var usage = response.usage;",
+              "var toolUsage = response.tool_usage;",
+              "// The Responses API carries tool_usage beside usage, not inside it, streamed or not.",
+              "pm.test('the token counts are the vendor\\'s', function () {",
+              "  pm.expect(usage && { prompt: usage.input_tokens, completion: usage.output_tokens, total: usage.total_tokens }, 'usage: ' + JSON.stringify(usage)).to.eql({ prompt: 12, completion: 40, total: 52 });",
+              "});",
+              "pm.test('search_context_size is the tier the vendor billed', function () {",
+              "  pm.expect(usage && usage.search_context_size, 'usage: ' + JSON.stringify(usage)).to.equal('high');",
+              "});",
+              "pm.test('tool_usage carries the search count and every tool\\'s call count', function () {",
+              "  pm.expect(toolUsage, 'response: ' + JSON.stringify(response)).to.eql({ web_search: { num_requests: 3 }, per_tool: { web_search: { num_requests: 3 }, fetch_url: { num_requests: 1 } } });",
+              "});",
+              "pm.test('citation tokens, search queries and reasoning tokens are kept', function () {",
+              "  var d = (usage && usage.output_tokens_details) || {};",
+              "  pm.expect({ citation: d.citation_tokens, searches: d.num_search_queries, reasoning: d.reasoning_tokens }, 'usage: ' + JSON.stringify(usage)).to.eql({ citation: 300, searches: 3, reasoning: 8 });",
+              "});",
+              "pm.test('the vendor\\'s cost is kept', function () {",
+              "  var cost = usage && usage.cost;",
+              "  pm.expect(typeof cost === 'number' ? cost : cost && cost.total_cost, 'usage: ' + JSON.stringify(usage)).to.equal(0.03026);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"perplexity/sonar-search-usage\",\n  \"input\": \"hi\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "333.5 perplexity /v1/responses (chat fallback) perplexity/sonar-search-usage response.completed carries the non-streamed usage (perplexity search usage)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+              "var events = raw.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+              "var done = events.filter(function (e) { return e.type === 'response.completed'; }).pop();",
+              "pm.test('response.completed arrived', function () { pm.expect(done, raw).to.be.an('object'); });",
+              "var response = (done && done.response) || {};",
+              "var usage = response.usage;",
+              "var toolUsage = response.tool_usage;",
+              "// The Responses API carries tool_usage beside usage, not inside it, streamed or not.",
+              "pm.test('the token counts are the vendor\\'s', function () {",
+              "  pm.expect(usage && { prompt: usage.input_tokens, completion: usage.output_tokens, total: usage.total_tokens }, 'usage: ' + JSON.stringify(usage)).to.eql({ prompt: 12, completion: 40, total: 52 });",
+              "});",
+              "pm.test('search_context_size is the tier the vendor billed', function () {",
+              "  pm.expect(usage && usage.search_context_size, 'usage: ' + JSON.stringify(usage)).to.equal('high');",
+              "});",
+              "pm.test('tool_usage carries the search count and every tool\\'s call count', function () {",
+              "  pm.expect(toolUsage, 'response: ' + JSON.stringify(response)).to.eql({ web_search: { num_requests: 3 }, per_tool: { web_search: { num_requests: 3 }, fetch_url: { num_requests: 1 } } });",
+              "});",
+              "pm.test('citation tokens, search queries and reasoning tokens are kept', function () {",
+              "  var d = (usage && usage.output_tokens_details) || {};",
+              "  pm.expect({ citation: d.citation_tokens, searches: d.num_search_queries, reasoning: d.reasoning_tokens }, 'usage: ' + JSON.stringify(usage)).to.eql({ citation: 300, searches: 3, reasoning: 8 });",
+              "});",
+              "pm.test('the vendor\\'s cost is kept', function () {",
+              "  var cost = usage && usage.cost;",
+              "  pm.expect(typeof cost === 'number' ? cost : cost && cost.total_cost, 'usage: ' + JSON.stringify(usage)).to.equal(0.03026);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"perplexity/sonar-search-usage\",\n  \"input\": \"hi\",\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] 333.6 perplexity /v1/chat/completions perplexity/sonar-invalid-model keeps Perplexity's 400 and carries error_type caller_invalid_request (perplexity search usage)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "pm.test('Perplexity\\'s 400 is the gateway\\'s status', function () {",
+              "  pm.expect(pm.response.code, 'expected the vendor status 400, got ' + pm.response.code + ': ' + raw).to.equal(400);",
+              "});",
+              "pm.test('a JSON error body carrying the vendor\\'s numeric code as a string and error_type caller_invalid_request', function () {",
+              "  var ct = pm.response.headers.get('content-type') || '';",
+              "  pm.expect(ct, 'content-type ' + ct + ': ' + raw).to.include('application/json');",
+              "  pm.expect(raw, 'an SSE frame was sent: ' + raw).to.not.match(/^data:/m);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.error && j.error.code, 'error.code: ' + raw).to.equal('400');",
+              "  pm.expect(j.error && j.error.message, 'error.message: ' + raw).to.include('Invalid model');",
+              "  pm.expect(j.is_bifrost_error, 'a vendor error was reported as Bifrost\\'s own: ' + raw).to.not.equal(true);",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'extra_fields.error_type: ' + raw).to.equal('caller_invalid_request');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"perplexity/sonar-invalid-model\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] 333.7 perplexity /v1/chat/completions perplexity/sonar-invalid-model streamed keeps Perplexity's 400 before the first frame and carries error_type caller_invalid_request (perplexity search usage)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "pm.test('Perplexity\\'s 400 is the gateway\\'s status', function () {",
+              "  pm.expect(pm.response.code, 'expected the vendor status 400, got ' + pm.response.code + ': ' + raw).to.equal(400);",
+              "});",
+              "pm.test('a JSON error body carrying the vendor\\'s numeric code as a string and error_type caller_invalid_request', function () {",
+              "  var ct = pm.response.headers.get('content-type') || '';",
+              "  pm.expect(ct, 'content-type ' + ct + ': ' + raw).to.include('application/json');",
+              "  pm.expect(raw, 'an SSE frame was sent: ' + raw).to.not.match(/^data:/m);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.error && j.error.code, 'error.code: ' + raw).to.equal('400');",
+              "  pm.expect(j.error && j.error.message, 'error.message: ' + raw).to.include('Invalid model');",
+              "  pm.expect(j.is_bifrost_error, 'a vendor error was reported as Bifrost\\'s own: ' + raw).to.not.equal(true);",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'extra_fields.error_type: ' + raw).to.equal('caller_invalid_request');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"perplexity/sonar-invalid-model\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    }
+  ]
+}

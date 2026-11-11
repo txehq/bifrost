@@ -1,0 +1,130 @@
+{
+  "name": "149. Cross-cut gap fills (cross-cut gap fills)",
+  "description": "Cross-cutting rows whose remainder was named in the backlog: OpenAI web search via /v1/chat (url_citation annotations), Vertex Gemini code execution via /v1/chat, and a unary fallback from an unknown primary model. Not here: Bedrock Opus 4.7 sampling (folder 146.5), computer use via /v1/chat (chat tools carry only function and custom, so folder 153.3 covers it through /v1/responses), and real HTTP 5xx / 429 Retry-After propagation (folder 154, against provider-error-fixture.mjs).",
+  "item": [
+    {
+      "name": "149.1 openai/gpt-5-search-api chat web_search_options returns url_citation annotations (web search cross-cut)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-5-search-api\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the capital of France? Cite a source.\"\n    }\n  ],\n  \"web_search_options\": {}\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var m = (j.choices && j.choices[0] && j.choices[0].message) || {};",
+              "pm.test('answer carries url_citation annotations', function () {",
+              "  var ann = (m.annotations || []).filter(function (a) { return a.type === 'url_citation'; });",
+              "  pm.expect(ann.length, 'no url_citation annotations: ' + pm.response.text().slice(0, 800)).to.be.above(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "149.2 vertex/gemini-2.5-flash chat code_execution tool computes 50! (code execution cross-cut)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Compute 50! exactly using code and state the digits.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('reply contains the leading digits of 50!', function () { pm.expect(j.choices[0].message.content || '', pm.response.text().slice(0, 800)).to.include('30414093201713378043612608166064768844377641568960512'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "149.3 openai unary chat falls back from a missing model to gpt-4o-mini (failover)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/nonexistent-model-h147\",\n  \"fallbacks\": [\n    \"openai/gpt-4o-mini\"\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('fallback served the request', function () {",
+              "  pm.expect(j.choices[0].message.content || '', pm.response.text()).to.not.equal('');",
+              "  pm.expect(j.model || '', 'served by an unexpected model: ' + pm.response.text().slice(0, 400)).to.match(/gpt-4o-mini/);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

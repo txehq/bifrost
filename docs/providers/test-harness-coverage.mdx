@@ -6,7 +6,7 @@ icon: "list-check"
 
 ## Overview
 
-Bifrost ships a comprehensive end-to-end test harness (`tests/e2e/api/collections/provider-harness.json`) that exercises every provider's translation surface. This page documents which features are covered for each provider, sourced from each upstream's official docs and verified against what's in the harness collection today.
+Bifrost ships a comprehensive end-to-end test harness (`tests/e2e/api/collections/provider-harness/`, one file per folder) that exercises every provider's translation surface. This page documents which features are covered for each provider, sourced from each upstream's official docs and verified against what's in the harness collection today.
 
 **Total: 725 requests across 12 folders** covering native API, provider-native drop-in routes (`/openai`, `/anthropic`, `/bedrock`, `/genai`), umbrella SDK drop-in shapes (`/langchain`, `/litellm`, `/pydanticai`, `/cursor`, `/cohere`), cross-model routing, passthrough endpoints, an endpoint × provider × modality matrix (chat / embeddings / audio / images), feature variations, and explicit backlog coverage.
 

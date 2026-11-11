@@ -1,0 +1,588 @@
+{
+  "name": "318. MiniMax base_resp errors carry error_type; vendor-caused codes return 502 (minimax base resp)",
+  "description": "Contract C6 for MiniMax (TXE-6588): MiniMax answers its failures inside an HTTP 200 as base_resp{status_code, status_msg} with no result. Bifrost returns an error: a vendor cause (key, balance, rate limit, timeout, server fault) is a 502 with a provider_* error_type, a customer cause (parameters, content filtering 1026/1027) is a 400, and error.code is MiniMax's code verbatim. The fixture's /pp/minimax routes answer chat, speech, image generation and video create with the base_resp code named by the model (base-resp-<code>), and video query with the code named by the task id; /v1/responses reaches MiniMax's chat path. Before TXE-6588 rows 1-3 came back as 401, 402 and 429, rows 4-5 as caller_invalid_request, rows 7, 9 and 10 as 402, 429 and 401, and rows 8 and 11 as caller_invalid_request; row 6 is unchanged. The cases run only against the provider error fixture (providerErrorFixture=1).",
+  "item": [
+    {
+      "name": "318.1 [EXPECT-502] /v1/chat/completions - base_resp 1004 (invalid key) in a 200 is a 502 provider_auth_failed (minimax base resp)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"minimax/base-resp-1004\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a vendor-caused base_resp code is a 502 with a provider_* error_type', function () {",
+              "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.eql(502);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_auth_failed');",
+              "  pm.expect(j.error && j.error.code, 'vendor code: ' + pm.response.text()).to.eql('1004');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "318.2 [EXPECT-502] /v1/chat/completions - base_resp 1008 (insufficient balance) in a 200 is a 502 provider_billing (minimax base resp)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"minimax/base-resp-1008\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('an exhausted MiniMax balance is a 502 provider_billing', function () {",
+              "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.eql(502);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_billing');",
+              "  pm.expect(j.error && j.error.code, 'vendor code: ' + pm.response.text()).to.eql('1008');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "318.3 [EXPECT-502] /v1/chat/completions - base_resp 1002 (rate limit) in a 200 is a 502 provider_rate_limited (minimax base resp)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"minimax/base-resp-1002\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a MiniMax rate limit is a 502 provider_rate_limited', function () {",
+              "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.eql(502);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_rate_limited');",
+              "  pm.expect(j.error && j.error.code, 'vendor code: ' + pm.response.text()).to.eql('1002');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "318.4 [EXPECT-400] /v1/chat/completions - base_resp 1026 (sensitive input) in a 200 is a 400 caller_content_filtered (minimax base resp)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"minimax/base-resp-1026\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a MiniMax content block is a 400 caller_content_filtered', function () {",
+              "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_content_filtered');",
+              "  pm.expect(j.error && j.error.code, 'vendor code: ' + pm.response.text()).to.eql('1026');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "318.5 [EXPECT-400] /v1/responses - base_resp 1027 (sensitive output) in a 200 is a 400 caller_content_filtered (minimax base resp)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"minimax/base-resp-1027\",\n  \"input\": \"hi\",\n  \"max_output_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a MiniMax content block on Responses is a 400 caller_content_filtered', function () {",
+              "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_content_filtered');",
+              "  pm.expect(j.error && j.error.code, 'vendor code: ' + pm.response.text()).to.eql('1027');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "318.6 [EXPECT-400] /v1/chat/completions - base_resp 2013 (invalid parameters) in a 200 stays a 400 caller_invalid_request (minimax base resp)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"minimax/base-resp-2013\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a customer-caused base_resp code stays a 400', function () {",
+              "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_invalid_request');",
+              "  pm.expect(j.error && j.error.code, 'vendor code: ' + pm.response.text()).to.eql('2013');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "318.7 [EXPECT-502] /v1/audio/speech - base_resp 1008 (insufficient balance) in a 200 is a 502 provider_billing (minimax base resp)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"minimax/base-resp-1008\",\n  \"input\": \"hi\",\n  \"voice\": \"English_Graceful_Lady\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('an exhausted MiniMax balance on speech is a 502 provider_billing', function () {",
+              "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.eql(502);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_billing');",
+              "  pm.expect(j.error && j.error.code, 'vendor code: ' + pm.response.text()).to.eql('1008');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "318.8 [EXPECT-400] /v1/audio/speech - base_resp 1026 (sensitive input) in a 200 is a 400 caller_content_filtered (minimax base resp)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"minimax/base-resp-1026\",\n  \"input\": \"hi\",\n  \"voice\": \"English_Graceful_Lady\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a MiniMax content block on speech is a 400 caller_content_filtered', function () {",
+              "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_content_filtered');",
+              "  pm.expect(j.error && j.error.code, 'vendor code: ' + pm.response.text()).to.eql('1026');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "318.9 [EXPECT-502] /v1/images/generations - base_resp 1002 (rate limit) in a 200 is a 502 provider_rate_limited (minimax base resp)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"minimax/base-resp-1002\",\n  \"prompt\": \"a lighthouse at dusk\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a MiniMax rate limit on image generation is a 502 provider_rate_limited', function () {",
+              "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.eql(502);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_rate_limited');",
+              "  pm.expect(j.error && j.error.code, 'vendor code: ' + pm.response.text()).to.eql('1002');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "318.10 [EXPECT-502] /v1/videos - base_resp 1004 (invalid key) in a 200 is a 502 provider_auth_failed (minimax base resp)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"minimax/base-resp-1004\",\n  \"prompt\": \"a lighthouse at dusk\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a MiniMax key failure on video create is a 502 provider_auth_failed', function () {",
+              "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.eql(502);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_auth_failed');",
+              "  pm.expect(j.error && j.error.code, 'vendor code: ' + pm.response.text()).to.eql('1004');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "318.11 [EXPECT-400] GET /v1/videos/{id} - base_resp 1027 (sensitive output) in a 200 is a 400 caller_content_filtered (minimax base resp)",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/base-resp-1027:minimax",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "base-resp-1027:minimax"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a MiniMax content block on video query is a 400 caller_content_filtered', function () {",
+              "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_content_filtered');",
+              "  pm.expect(j.error && j.error.code, 'vendor code: ' + pm.response.text()).to.eql('1027');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

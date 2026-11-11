@@ -19,7 +19,7 @@ import { bodyModelProvider } from "./lib/keyless-providers.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "../../../..");
-const SOURCE = path.join(REPO, "tests/e2e/api/collections/provider-harness.json");
+const SOURCE = path.join(REPO, "tests/e2e/api/collections/provider-harness");
 const AUGMENT = path.join(HERE, "augment-provider-harness.mjs");
 const FILTER = path.join(HERE, "filter-collection.mjs");
 const CHECK = path.join(HERE, "check-harness-skips.mjs");

@@ -1,0 +1,148 @@
+{
+  "name": "184. Bedrock Cohere Embed v3 image input uses images[] (bedrock-cohere-v3-image)",
+  "description": "Image-only embedding input to Bedrock Cohere used to be sent as inputs[], which only Embed v4 accepts; Embed v3 rejected it with \"extraneous key [inputs] is not permitted ... required key [texts] not found\". Lone images now go out as images[] with input_type defaulted to \"image\" (v3 rejects images[] under search_document; v4 accepts both). Bare base64 with a mime_type is sent as a data URI, since Bedrock Cohere rejects bare base64. On the native invoke route with x-bf-passthrough-extra-params, the original images/inputs from the request must not be merged back beside the rebuilt shape (Bedrock rejects a body carrying both).",
+  "item": [
+    {
+      "name": "184.1 bedrock/cohere.embed-english-v3 - image-only input returns one embedding",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock/cohere.embed-english-v3\",\"input\":[[{\"type\":\"image\",\"image\":{\"data\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAOklEQVR4nO3RQREAQAjDwHKS8C8AWSchfPhlBZSZUNOdS+90PR5Y8AfIRMhEyETIRMhEyETIRMhEIR/EvwFs/VkrpgAAAABJRU5ErkJggg==\"}}]]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('bedrock cohere v3 image: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var data = (pm.response.json() || {}).data || [];",
+              "pm.test('bedrock cohere v3 image: one non-empty embedding', function () {",
+              "  pm.expect(data.length, pm.response.text()).to.eql(1);",
+              "  pm.expect((data[0].embedding || []).length, pm.response.text()).to.be.above(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "184.2 bedrock/cohere.embed-english-v3 - bare base64 with mime_type returns one embedding",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock/cohere.embed-english-v3\",\"input\":[[{\"type\":\"image\",\"image\":{\"data\":\"iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAOklEQVR4nO3RQREAQAjDwHKS8C8AWSchfPhlBZSZUNOdS+90PR5Y8AfIRMhEyETIRMhEyETIRMhEIR/EvwFs/VkrpgAAAABJRU5ErkJggg==\",\"mime_type\":\"image/png\"}}]]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('bedrock cohere v3 bare base64 image: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var data = (pm.response.json() || {}).data || [];",
+              "pm.test('bedrock cohere v3 bare base64 image: one non-empty embedding', function () {",
+              "  pm.expect(data.length, pm.response.text()).to.eql(1);",
+              "  pm.expect((data[0].embedding || []).length, pm.response.text()).to.be.above(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "184.3 bedrock/global.cohere.embed-v4:0 - native lone-image inputs[] with passthrough sends one image shape",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"input_type\":\"search_document\",\"inputs\":[{\"content\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAOklEQVR4nO3RQREAQAjDwHKS8C8AWSchfPhlBZSZUNOdS+90PR5Y8AfIRMhEyETIRMhEyETIRMhEIR/EvwFs/VkrpgAAAABJRU5ErkJggg==\"}}]}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/global.cohere.embed-v4:0/invoke",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "global.cohere.embed-v4:0",
+            "invoke"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('bedrock cohere v4 native lone image: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var e = (pm.response.json() || {}).embeddings;",
+              "var vectors = Array.isArray(e) ? e : ((e || {}).float || []);",
+              "pm.test('bedrock cohere v4 native lone image: one non-empty embedding', function () {",
+              "  pm.expect(vectors.length, pm.response.text()).to.eql(1);",
+              "  pm.expect((vectors[0] || []).length, pm.response.text()).to.be.above(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

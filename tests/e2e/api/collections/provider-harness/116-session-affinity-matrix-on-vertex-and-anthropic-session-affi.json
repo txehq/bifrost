@@ -1,0 +1,2984 @@
+{
+  "name": "116. Session affinity matrix on Vertex and Anthropic (session-affinity)",
+  "description": "Wire-level pins for session affinity across every lever that can change where a session lands: what makes a request take part (x-bf-session-id, the Claude Code and Codex session headers, x-bf-session-affinity: off, a provider-prefixed model), what builds the chain the session reorders (routing rules with targets, pins and fallbacks, a real upstream failure that moves the session to a fallback, a one-provider chain that drops a binding), what pins outrank the session's key binding (a rule's pin changed mid-session), and what governance takes away (a virtual key whose key_ids no longer include the bound key). It also pins that a streamed request binds and follows a session like any other (case 14), that a binding lasts only as long as the x-bf-session-ttl it was written with (case 15), that a request pinned to the caller's own key does not rebind the session (case 16), that a Claude Code session on /anthropic/v1/messages is followed the same way (case 17), and that two virtual keys sending one session id keep separate bindings (case 18). Every sequence uses one fresh session id and asserts extra_fields.provider, routing_info.key and routing_info.is_fallback. Streamed rows read the same three facts from the x-bifrost-routing-info-* headers.\n\nStatic rules live in tests/integrations/python/config.json (governance.routing_rules) behind the harness-only header x-harness-session-pin: bind, vertex, rebind, rescue, vertex-only, anthropic-first, anthropic-first-other-model and vertex-badkey. Two of them pin keys that cannot serve the model on purpose: the rescue rule's Anthropic fallback (so the promoted Anthropic attempt fails on the same model, which exact route matching requires) and the vertex-badkey rule (so a request fails at key selection without leaving the bound route). Case 12 pins that a binding names provider and model together, and case 13 that a binding followed into a failure is forgotten. Cases 9, 10, 11 and 18 are single rows that do their own management work through pm.sendRequest: for 9 to 11 the pre-request script creates a second Anthropic key from the same env credential, a run-scoped routing rule keyed by x-harness-session-run, and for case 11 a virtual key; for 18 it creates two virtual keys and binds the session under the first. The test script makes the follow-up inference call with the same session id and deletes everything it created. One row per case is deliberate: the recipe forks a newman process per provider and per modality class and sub-shards a class by row position, and collection variables never cross a process, so state set up in one row cannot be consumed in another. Leftovers of an aborted run carry their run timestamp in their names and are swept by the next run once they are ten minutes old; younger objects belong to a shard that may still be running. The whole folder is attributed to the Vertex fork.",
+  "item": [
+    {
+      "name": "Session matrix 1: Vertex fails on a bogus model and Anthropic rescues - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// One run id for the dynamic rules and keys below, one fresh session per sequence.",
+              "pm.collectionVariables.set('sessionMatrixRun', 'run-' + Date.now());",
+              "pm.collectionVariables.set('smSession1', 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));",
+              "// Sweep leftovers of an aborted earlier run before the first sequence. Matrix 9-11 sweep too, but they\n// sit after 12-17 in collection order, so a stale second anthropic key would serve every sequence first.\n// Only objects older than ten minutes are swept, as in matrix 9-11: another harness run against the\n// same gateway may be mid-matrix, and its objects are live however this run is sharded.\n(function () {\n  var BASE = pm.variables.get('baseUrl');\n  function isStale(name, prefix) {\n    var m = String(name || '').indexOf(prefix) === 0 && String(name).match(/run-(\\d+)/);\n    return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);\n  }\n  function list(path, field, prefix, cb) {\n    pm.sendRequest({ url: BASE + path, method: 'GET' }, function (err, res) {\n      var json = null; try { json = res.json(); } catch (e) { json = null; }\n      cb(((json && json[field]) || []).filter(function (o) { return isStale(o.name, prefix); }));\n    });\n  }\n  function deleteEach(items, pathOf, done) {\n    var i = 0; (function next() { if (i >= items.length) { return done(); } var it = items[i++]; pm.sendRequest({ url: BASE + pathOf(it), method: 'DELETE' }, function () { next(); }); })();\n  }\n  list('/api/governance/routing-rules', 'rules', 'Harness session matrix ', function (rules) {\n    deleteEach(rules, function (r) { return '/api/governance/routing-rules/' + r.id; }, function () {\n      list('/api/governance/virtual-keys', 'virtual_keys', 'harness-session-matrix-', function (vks) {\n        deleteEach(vks, function (v) { return '/api/governance/virtual-keys/' + v.id; }, function () {\n          list('/api/providers/anthropic/keys', 'keys', 'Harness Session Key B ', function (keys) {\n            deleteEach(keys, function (k) { return '/api/providers/anthropic/keys/' + k.id; }, function () {});\n          });\n        });\n      });\n    });\n  });\n})();"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('rescued request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the Vertex attempt on a bogus model was expected to fail and Anthropic to rescue: ' + pm.response.text()).to.eql('anthropic');",
+              "});",
+              "pm.test('is_fallback is true', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Anthropic must have served as the fallback, which is what binds the session there: ' + pm.response.text()).to.eql(true);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the Anthropic rescue has one key that serves this model: ' + pm.response.text()).to.eql('Anthropic API Key');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession1}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "rebind"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 1: the rescued session stays on Anthropic through the pinned Vertex rule - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('follow-up succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('no key pin followed the request onto the wrong provider', function () {",
+              "  pm.expect(pm.response.text()).to.not.include('no supported key found');",
+              "});",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'a session rescued by Anthropic must be served by Anthropic as primary, with the Vertex pin left on the demoted Vertex entry: ' + pm.response.text()).to.eql('anthropic');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Anthropic must be the primary attempt here, not a rescue: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the Anthropic entry carries no pin, so it must not inherit the Vertex rule\\'s key: ' + pm.response.text()).to.eql('Anthropic API Key');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession1}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 2: bind - anthropic/claude-sonnet-4-6 serves the session first - session-affinity",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('smSession2a', 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('bind succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the bind rule did not route to anthropic, so the session is not bound where the next request expects it: ' + pm.response.text()).to.eql('anthropic');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession2a}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "bind"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 2: Anthropic fails as the promoted primary and the demoted Vertex entry serves on its pinned key - vertex/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('rescue succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by vertex', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the promoted Anthropic attempt is pinned to a key that cannot serve this model and must fail at key selection, leaving Vertex to serve: ' + pm.response.text()).to.eql('vertex');",
+              "});",
+              "pm.test('is_fallback is true', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Vertex must have served as the fallback behind the promoted Anthropic entry: ' + pm.response.text()).to.eql(true);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the pin the rule set for Vertex did not travel with it when the session demoted Vertex to a fallback: ' + pm.response.text()).to.eql('Vertex Global (Claude)');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession2a}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "rescue"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 2: the session rebound to Vertex, so the Anthropic-first rule now starts on Vertex on the key that served it - vertex/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('follow-up succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by vertex', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the Vertex fallback that served the rescue becomes the session\\'s provider, so it moves ahead of the Anthropic target: ' + pm.response.text()).to.eql('vertex');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Vertex must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the Vertex entry carries no pin, so only the key the session bound picks Vertex Global (Claude) over Vertex API Key: ' + pm.response.text()).to.eql('Vertex Global (Claude)');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession2a}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "anthropic-first"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 3: bind - anthropic/claude-sonnet-4-6 serves the session first - session-affinity",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('smSession3', 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('bind succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the bind rule did not route to anthropic, so the session is not bound where the next request expects it: ' + pm.response.text()).to.eql('anthropic');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession3}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "bind"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 3: x-bf-session-affinity off lets the pinned Vertex rule stand - vertex/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('opt-out succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by vertex', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'with affinity switched off the routing decision must stand: ' + pm.response.text()).to.eql('vertex');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Vertex must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the target pin must apply to the primary attempt: ' + pm.response.text()).to.eql('Vertex Global (Claude)');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession3}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          },
+          {
+            "key": "x-bf-session-affinity",
+            "value": "off"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 3: the opted-out request left the binding alone, so the session still moves the pinned Vertex rule aside - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('follow-up succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'a request with affinity off neither follows nor rebinds the session, so the Anthropic binding still decides: ' + pm.response.text()).to.eql('anthropic');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Anthropic must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the Anthropic entry carries no pin, so it must not inherit the Vertex rule\\'s key: ' + pm.response.text()).to.eql('Anthropic API Key');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession3}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 4: bind - anthropic/claude-sonnet-4-6 serves the session first - session-affinity",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('smSession4', 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('bind succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the bind rule did not route to anthropic, so the session is not bound where the next request expects it: ' + pm.response.text()).to.eql('anthropic');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession4}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "bind"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 4: a Vertex-only rule cannot follow the Anthropic binding, so it is dropped - vertex/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('one-provider chain succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by vertex', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'a chain without Anthropic must be served by Vertex: ' + pm.response.text()).to.eql('vertex');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Vertex is the only entry: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the Vertex-only rule pins its key: ' + pm.response.text()).to.eql('Vertex Global (Claude)');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession4}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex-only"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 4: the session rebound to Vertex and stays there through the pinned rule - vertex/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('rebound succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by vertex', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the previous served request rebound the session to Vertex, so the Anthropic fallback must not be promoted: ' + pm.response.text()).to.eql('vertex');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Vertex must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the target pin must apply to the primary attempt: ' + pm.response.text()).to.eql('Vertex Global (Claude)');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession4}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 4: the rebound session moves Vertex ahead of the Anthropic-first rule - vertex/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Plan rows: PS-E01.",
+              "pm.test('follow-up succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by vertex', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the session rebound to Vertex on the Vertex-only turn, so it moves Vertex ahead of the Anthropic target; without a binding Anthropic would serve: ' + pm.response.text()).to.eql('vertex');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Vertex must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession4}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "anthropic-first"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 5: bind - anthropic/claude-sonnet-4-6 serves the session first - session-affinity",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('smSession5', 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('bind succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the bind rule did not route to anthropic, so the session is not bound where the next request expects it: ' + pm.response.text()).to.eql('anthropic');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession5}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "bind"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 5: a prefixed vertex/claude-sonnet-4-6 request bypasses the Anthropic binding - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('prefixed request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by vertex', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'a request that names its provider must go there regardless of the session: ' + pm.response.text()).to.eql('vertex');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'no fallback is involved: ' + pm.response.text()).to.eql(false);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession5}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 5: the bare-model request is still served by Anthropic afterwards - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('bare-model follow-up succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the prefixed request must not have rewritten the route binding: ' + pm.response.text()).to.eql('anthropic');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Anthropic must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the Anthropic entry carries no pin, so it must not inherit the Vertex rule\\'s key: ' + pm.response.text()).to.eql('Anthropic API Key');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession5}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 6: bind - anthropic/claude-sonnet-4-6 serves the session first - session-affinity",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('smSession6', 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('bind succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the bind rule did not route to anthropic, so the session is not bound where the next request expects it: ' + pm.response.text()).to.eql('anthropic');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession6}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "bind"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 6: without a session header the pinned Vertex rule stands - vertex/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('sessionless request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by vertex', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'a request with no session must not follow any binding: ' + pm.response.text()).to.eql('vertex');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Vertex must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the target pin must apply to the primary attempt: ' + pm.response.text()).to.eql('Vertex Global (Claude)');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 6: with the session header again the binding still moves the pinned Vertex rule aside - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('follow-up succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the session is still bound to Anthropic, so the sessionless request stood only because it carried no session: ' + pm.response.text()).to.eql('anthropic');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Anthropic must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the Anthropic entry carries no pin, so it must not inherit the Vertex rule\\'s key: ' + pm.response.text()).to.eql('Anthropic API Key');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession6}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 7: Claude Code session header (x-claude-code-session-id): bind - anthropic/claude-sonnet-4-6 serves the session first - session-affinity",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('smSession7a', 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('bind succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the bind rule did not route to anthropic, so the session is not bound where the next request expects it: ' + pm.response.text()).to.eql('anthropic');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-claude-code-session-id",
+            "value": "{{smSession7a}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "bind"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 7: Claude Code session header (x-claude-code-session-id) keeps the session on Anthropic - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Claude Code follow-up succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('no key pin followed the request onto the wrong provider', function () {",
+              "  pm.expect(pm.response.text()).to.not.include('no supported key found');",
+              "});",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the x-claude-code-session-id header must carry the session id, so the binding must be followed: ' + pm.response.text()).to.eql('anthropic');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Anthropic must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the Anthropic entry carries no pin, so it must not inherit the Vertex rule\\'s key: ' + pm.response.text()).to.eql('Anthropic API Key');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-claude-code-session-id",
+            "value": "{{smSession7a}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 7: Codex session header (session_id): bind - anthropic/claude-sonnet-4-6 serves the session first - session-affinity",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('smSession7b', 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('bind succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the bind rule did not route to anthropic, so the session is not bound where the next request expects it: ' + pm.response.text()).to.eql('anthropic');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "session_id",
+            "value": "{{smSession7b}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "bind"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 7: Codex session header (session_id) keeps the session on Anthropic - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Codex follow-up succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('no key pin followed the request onto the wrong provider', function () {",
+              "  pm.expect(pm.response.text()).to.not.include('no supported key found');",
+              "});",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the session_id header must carry the session id, so the binding must be followed: ' + pm.response.text()).to.eql('anthropic');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Anthropic must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the Anthropic entry carries no pin, so it must not inherit the Vertex rule\\'s key: ' + pm.response.text()).to.eql('Anthropic API Key');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "session_id",
+            "value": "{{smSession7b}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 8: bind with x-bf-session-id and a different Claude Code session id - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('smSession8x', 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));",
+              "pm.collectionVariables.set('smSession8y', 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('bind succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the bind rule did not route to anthropic: ' + pm.response.text()).to.eql('anthropic');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession8x}}"
+          },
+          {
+            "key": "x-claude-code-session-id",
+            "value": "{{smSession8y}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "bind"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 8: the alias id alone has no binding, so the pinned Vertex rule stands - vertex/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('alias-only request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by vertex', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the explicit header won at bind time, so the alias id must have no binding: ' + pm.response.text()).to.eql('vertex');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Vertex must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'with no binding the pinned Vertex rule stands with its pin: ' + pm.response.text()).to.eql('Vertex Global (Claude)');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-claude-code-session-id",
+            "value": "{{smSession8y}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 8: the explicit id alone is still bound to Anthropic - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('explicit-only request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the explicit session id is the one that was bound: ' + pm.response.text()).to.eql('anthropic');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Anthropic must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the Anthropic entry carries no pin, so it must not inherit the Vertex rule\\'s key: ' + pm.response.text()).to.eql('Anthropic API Key');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession8x}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 12: bind the session to vertex/claude-sonnet-4-6 through the pinned rule - session-affinity",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('smSession12', 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('bind succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by vertex', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the pinned Vertex rule must serve as primary: ' + pm.response.text()).to.eql('vertex');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Vertex must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the target pin must apply: ' + pm.response.text()).to.eql('Vertex Global (Claude)');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession12}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 12: a Vertex fallback on claude-opus-4-8 is not the bound route, so Anthropic serves - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('other-model request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'a Vertex entry on another model must not be promoted for a session bound to Vertex on this model: ' + pm.response.text()).to.eql('anthropic');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Anthropic must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the model the caller asked for', function () {",
+              "  pm.expect(ri.model, 'the session must not have been moved onto the fallback model: ' + pm.response.text()).to.eql(\"claude-sonnet-4-6\");",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the Anthropic target carries no pin and has one key that serves this model: ' + pm.response.text()).to.eql('Anthropic API Key');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession12}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "anthropic-first-other-model"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 12: the session rebound on Anthropic and now moves the pinned Vertex rule aside - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('follow-up succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('no key pin followed the request onto the wrong provider', function () {",
+              "  pm.expect(pm.response.text()).to.not.include('no supported key found');",
+              "});",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the previous served request rebound the session to Anthropic, so the pinned Vertex rule must be moved aside: ' + pm.response.text()).to.eql('anthropic');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Anthropic must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the Anthropic entry carries no pin, so it must not inherit the Vertex rule\\'s key: ' + pm.response.text()).to.eql('Anthropic API Key');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession12}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 13: bind the session to vertex/claude-sonnet-4-6 through the pinned rule - session-affinity",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('smSession13', 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('bind succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by vertex', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the pinned Vertex rule must serve as primary: ' + pm.response.text()).to.eql('vertex');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Vertex must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the Vertex rule pins its key: ' + pm.response.text()).to.eql('Vertex Global (Claude)');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession13}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-4XX] Session matrix 13: the session follows its Vertex binding into a key-selection failure - vertex/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the pinned key cannot serve the model, so the request fails', function () {",
+              "  pm.expect(pm.response.code, 'expected a 4xx, got ' + pm.response.code + ': ' + pm.response.text()).to.be.within(400, 499);",
+              "  pm.expect(pm.response.text(), 'the failure must come from key selection, not from upstream: ' + pm.response.text()).to.include('no supported key found');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession13}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex-badkey"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 13: the Vertex binding was forgotten, so the Anthropic-first rule stands - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('post-failure request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'a binding followed into a failure must be dropped, so the routing decision must stand instead of promoting Vertex again: ' + pm.response.text()).to.eql('anthropic');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Anthropic must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the Anthropic target carries no pin and has one key that serves this model: ' + pm.response.text()).to.eql('Anthropic API Key');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession13}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "anthropic-first"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 14: a streamed request binds the session - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('smSession14', 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var h = function (name) { return pm.response.headers.get(name); };",
+              "var text = pm.response.text();",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect(h('x-bifrost-routing-info-provider'), 'the bind rule did not route the stream to anthropic, so the session is not bound where the next request expects it: ' + text.slice(0, 400)).to.eql('anthropic');",
+              "});",
+              "pm.test('the stream completed', function () {",
+              "  pm.expect(text).to.include('data: [DONE]');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession14}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "bind"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 14: a streamed request follows the binding past the pinned Vertex rule - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var h = function (name) { return pm.response.headers.get(name); };",
+              "var text = pm.response.text();",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect(h('x-bifrost-routing-info-provider'), 'a session bound by a stream must move the pinned Vertex rule aside for the next stream: ' + text.slice(0, 400)).to.eql('anthropic');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(h('x-bifrost-routing-info-is-fallback'), 'Anthropic must be the primary attempt: ' + text.slice(0, 400)).to.not.eql('true');",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(h('x-bifrost-routing-info-key'), 'the Anthropic entry carries no pin, so it must not inherit the Vertex rule\\'s key: ' + text.slice(0, 400)).to.eql('Anthropic API Key');",
+              "});",
+              "pm.test('the stream completed', function () {",
+              "  pm.expect(text).to.include('data: [DONE]');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession14}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 15: bind with a five-second x-bf-session-ttl - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('smSession15', 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('bind succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the bind rule did not route to anthropic, so the session is not bound where the next request expects it: ' + pm.response.text()).to.eql('anthropic');",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the Anthropic target carries no pin and has one key that serves this model: ' + pm.response.text()).to.eql('Anthropic API Key');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession15}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "bind"
+          },
+          {
+            "key": "x-bf-session-ttl",
+            "value": "5"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 15: before the TTL has passed, the binding still moves the pinned Vertex rule aside - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('pre-expiry request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the binding written with x-bf-session-ttl: 5 must exist and still move the pinned Vertex rule aside, or the expiry below proves nothing: ' + pm.response.text()).to.eql('anthropic');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Anthropic must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the Anthropic entry carries no pin, so it must not inherit the Vertex rule\\'s key: ' + pm.response.text()).to.eql('Anthropic API Key');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession15}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          },
+          {
+            "key": "x-bf-session-ttl",
+            "value": "5"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 15: once the TTL has passed the binding is gone, so the pinned Vertex rule stands - vertex/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Outlive the five-second TTL the binding was last written with.",
+              "setTimeout(function () {}, 6000);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('post-expiry request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by vertex', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'a binding written with x-bf-session-ttl: 5 must be gone after six seconds, leaving the routing decision to stand: ' + pm.response.text()).to.eql('vertex');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Vertex must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the Vertex rule pins its key: ' + pm.response.text()).to.eql('Vertex Global (Claude)');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession15}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 16: bind the session to vertex/claude-sonnet-4-6 through the pinned rule - session-affinity",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('smSession16', 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('bind succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by vertex', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the pinned Vertex rule did not route to vertex, so the session is not bound where the next request expects it: ' + pm.response.text()).to.eql('vertex');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Vertex must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the Vertex rule pins its key: ' + pm.response.text()).to.eql('Vertex Global (Claude)');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession16}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 16: a caller's pin on an Anthropic key keeps that request on Anthropic - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('pinned request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'a caller\\'s pin on a key of the head provider keeps the session from moving the request to Vertex: ' + pm.response.text()).to.eql('anthropic');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Anthropic must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the caller pinned this key: ' + pm.response.text()).to.eql('Anthropic API Key');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession16}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "anthropic-first"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "Anthropic API Key"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 16: the pinned request did not rebind the session, which still starts on Vertex - vertex/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('follow-up succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by vertex', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'a request the caller pinned to Anthropic must not rebind the session, which is still bound to Vertex: ' + pm.response.text()).to.eql('vertex');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Vertex must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the Vertex entry carries no pin, so only the key the session bound picks Vertex Global (Claude) over Vertex API Key: ' + pm.response.text()).to.eql('Vertex Global (Claude)');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession16}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "anthropic-first"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 17: /anthropic/v1/messages with a Claude Code session header binds the session - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('smSession17', 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var h = function (name) { return pm.response.headers.get(name); };",
+              "var text = pm.response.text();",
+              "pm.test('bind succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + text).to.eql(200);",
+              "});",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect(h('x-bifrost-routing-info-provider'), 'the bind rule did not route to anthropic, so the session is not bound where the next request expects it: ' + text.slice(0, 400)).to.eql('anthropic');",
+              "});",
+              "pm.test('the answer is in the Anthropic Messages shape', function () {",
+              "  pm.expect(pm.response.json().type, text.slice(0, 400)).to.eql('message');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "x-claude-code-session-id",
+            "value": "{{smSession17}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "bind"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 8,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 17: a streamed /anthropic/v1/messages request follows the binding past the pinned Vertex rule - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var h = function (name) { return pm.response.headers.get(name); };",
+              "var text = pm.response.text();",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect(h('x-bifrost-routing-info-provider'), 'a Claude Code session on the /anthropic route must move the pinned Vertex rule aside like any other session: ' + text.slice(0, 400)).to.eql('anthropic');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(h('x-bifrost-routing-info-is-fallback'), 'Anthropic must be the primary attempt: ' + text.slice(0, 400)).to.not.eql('true');",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(h('x-bifrost-routing-info-key'), 'the Anthropic entry carries no pin, so it must not inherit the Vertex rule\\'s key: ' + text.slice(0, 400)).to.eql('Anthropic API Key');",
+              "});",
+              "pm.test('the stream completed', function () {",
+              "  pm.expect(text).to.include('message_stop');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "x-claude-code-session-id",
+            "value": "{{smSession17}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 8,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 9: a rule pin moved mid-session outranks the key the session bound - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// ---- in-script management calls (see the folder description) ----\nvar BASE = pm.variables.get('baseUrl');\nvar CHAT_BODY = {\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":8};\nfunction call(method, path, body, cb) {\n  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };\n  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }\n  pm.sendRequest(req, function (err, res) {\n    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }\n    var json = null; try { json = res.json(); } catch (e) { json = null; }\n    cb(res, json);\n  });\n}\nfunction expectOk(label, res) {\n  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });\n  return !!(res && res.code === 200);\n}\nfunction chat(headers, model, cb) {\n  var h = { 'Content-Type': 'application/json' }; for (var k in headers) { h[k] = headers[k]; }\n  var b = JSON.parse(JSON.stringify(CHAT_BODY)); if (model) { b.model = model; }\n  pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(b) } }, function (err, res) {\n    if (err) { pm.test('follow-up chat request reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null, {}); }\n    var json = null; try { json = res.json(); } catch (e) { json = {}; }\n    cb(res, json, ((json || {}).extra_fields || {}).routing_info || {});\n  });\n}\n// Leftovers of an aborted earlier run carry their run timestamp in their names. Only objects older\n// than ten minutes are swept, so a parallel shard's live objects are never touched.\nfunction isStale(name, prefix) {\n  var m = String(name || '').indexOf(prefix) === 0 && String(name).match(/run-(\\d+)/);\n  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);\n}\nfunction deleteEach(items, pathOf, done) {\n  var i = 0; (function next() { if (i >= items.length) { return done(); } var it = items[i++]; call('DELETE', pathOf(it), null, function () { next(); }); })();\n}\nfunction sweepStale(done) {\n  call('GET', '/api/governance/routing-rules', null, function (r1, j1) {\n    var rules = ((j1 && j1.rules) || []).filter(function (r) { return isStale(r.name, 'Harness session matrix '); });\n    deleteEach(rules, function (r) { return '/api/governance/routing-rules/' + r.id; }, function () {\n      call('GET', '/api/governance/virtual-keys', null, function (r2, j2) {\n        var vks = ((j2 && j2.virtual_keys) || []).filter(function (v) { return isStale(v.name, 'harness-session-matrix-'); });\n        deleteEach(vks, function (v) { return '/api/governance/virtual-keys/' + v.id; }, function () {\n          call('GET', '/api/providers/anthropic/keys', null, function (r3, j3) {\n            var keys = ((j3 && j3.keys) || []).filter(function (k) { return isStale(k.name, 'Harness Session Key B '); });\n            deleteEach(keys, function (k) { return '/api/providers/anthropic/keys/' + k.id; }, done);\n          });\n        });\n      });\n    });\n  });\n}\nfunction anthropicKeyA(cb) {\n  call('GET', '/api/providers/anthropic/keys', null, function (res, j) {\n    if (!expectOk('setup: listed anthropic keys', res)) { return cb(null); }\n    var a = ((j && j.keys) || []).filter(function (k) { return k.name === 'Anthropic API Key'; })[0];\n    pm.test('setup: the profile key Anthropic API Key exists', function () { pm.expect(a, 'expected a key named Anthropic API Key: ' + res.text()).to.exist; });\n    cb(a || null);\n  });\n}\nfunction createKeyB(run, cb) {\n  call('POST', '/api/providers/anthropic/keys', { name: 'Harness Session Key B ' + run, value: 'env.ANTHROPIC_API_KEY', models: ['*'], weight: 1 }, function (res, k) {\n    if (!expectOk('setup: created a second anthropic key from the same credential', res)) { return cb(null); }\n    cb(k);\n  });\n}\nfunction createRule(run, suffix, priority, targets, fallbacks, cb) {\n  var body = { name: 'Harness session matrix ' + suffix + ' ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: priority, cel_expression: '\"x-harness-session-run\" in headers && headers[\"x-harness-session-run\"] == \"' + run + '-' + suffix + '\"', targets: targets, scope: 'global' };\n  if (fallbacks) { body.fallbacks = fallbacks; }\n  call('POST', '/api/governance/routing-rules', body, function (res, j) {\n    if (!expectOk('setup: created the ' + suffix + ' rule', res)) { return cb(null); }\n    cb(((j || {}).rule || {}).id || null);\n  });\n}\nfunction del(label, path, cb) { if (!path) { return cb(); } call('DELETE', path, null, function (res) { expectOk('cleanup: ' + label, res); cb(); }); }\n// Priorities must be distinct within a scope; derive them from the clock so two runs, or two\n// shards of one run, never collide on a fixed number.\nvar PRIO = 900000 + (Date.now() % 90000);",
+              "var run = 'run-' + Date.now(); pm.collectionVariables.set('smRun9', run);",
+              "pm.collectionVariables.set('smSession9', 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));",
+              "sweepStale(function () {",
+              "  anthropicKeyA(function (a) {",
+              "    if (!a) { return; }",
+              "    pm.collectionVariables.set('sm9KeyAName', a.name);",
+              "    createKeyB(run, function (k) {",
+              "      if (!k) { return; }",
+              "      pm.collectionVariables.set('sm9KeyBId', k.id); pm.collectionVariables.set('sm9KeyBName', k.name);",
+              "      createRule(run, 'pin', PRIO + 1, [{ provider: 'anthropic', key_id: a.id, weight: 1 }], null, function (id) {",
+              "        if (id) { pm.collectionVariables.set('sm9RuleId', id); }",
+              "      });",
+              "    });",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// ---- in-script management calls (see the folder description) ----\nvar BASE = pm.variables.get('baseUrl');\nvar CHAT_BODY = {\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":8};\nfunction call(method, path, body, cb) {\n  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };\n  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }\n  pm.sendRequest(req, function (err, res) {\n    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }\n    var json = null; try { json = res.json(); } catch (e) { json = null; }\n    cb(res, json);\n  });\n}\nfunction expectOk(label, res) {\n  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });\n  return !!(res && res.code === 200);\n}\nfunction chat(headers, model, cb) {\n  var h = { 'Content-Type': 'application/json' }; for (var k in headers) { h[k] = headers[k]; }\n  var b = JSON.parse(JSON.stringify(CHAT_BODY)); if (model) { b.model = model; }\n  pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(b) } }, function (err, res) {\n    if (err) { pm.test('follow-up chat request reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null, {}); }\n    var json = null; try { json = res.json(); } catch (e) { json = {}; }\n    cb(res, json, ((json || {}).extra_fields || {}).routing_info || {});\n  });\n}\n// Leftovers of an aborted earlier run carry their run timestamp in their names. Only objects older\n// than ten minutes are swept, so a parallel shard's live objects are never touched.\nfunction isStale(name, prefix) {\n  var m = String(name || '').indexOf(prefix) === 0 && String(name).match(/run-(\\d+)/);\n  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);\n}\nfunction deleteEach(items, pathOf, done) {\n  var i = 0; (function next() { if (i >= items.length) { return done(); } var it = items[i++]; call('DELETE', pathOf(it), null, function () { next(); }); })();\n}\nfunction sweepStale(done) {\n  call('GET', '/api/governance/routing-rules', null, function (r1, j1) {\n    var rules = ((j1 && j1.rules) || []).filter(function (r) { return isStale(r.name, 'Harness session matrix '); });\n    deleteEach(rules, function (r) { return '/api/governance/routing-rules/' + r.id; }, function () {\n      call('GET', '/api/governance/virtual-keys', null, function (r2, j2) {\n        var vks = ((j2 && j2.virtual_keys) || []).filter(function (v) { return isStale(v.name, 'harness-session-matrix-'); });\n        deleteEach(vks, function (v) { return '/api/governance/virtual-keys/' + v.id; }, function () {\n          call('GET', '/api/providers/anthropic/keys', null, function (r3, j3) {\n            var keys = ((j3 && j3.keys) || []).filter(function (k) { return isStale(k.name, 'Harness Session Key B '); });\n            deleteEach(keys, function (k) { return '/api/providers/anthropic/keys/' + k.id; }, done);\n          });\n        });\n      });\n    });\n  });\n}\nfunction anthropicKeyA(cb) {\n  call('GET', '/api/providers/anthropic/keys', null, function (res, j) {\n    if (!expectOk('setup: listed anthropic keys', res)) { return cb(null); }\n    var a = ((j && j.keys) || []).filter(function (k) { return k.name === 'Anthropic API Key'; })[0];\n    pm.test('setup: the profile key Anthropic API Key exists', function () { pm.expect(a, 'expected a key named Anthropic API Key: ' + res.text()).to.exist; });\n    cb(a || null);\n  });\n}\nfunction createKeyB(run, cb) {\n  call('POST', '/api/providers/anthropic/keys', { name: 'Harness Session Key B ' + run, value: 'env.ANTHROPIC_API_KEY', models: ['*'], weight: 1 }, function (res, k) {\n    if (!expectOk('setup: created a second anthropic key from the same credential', res)) { return cb(null); }\n    cb(k);\n  });\n}\nfunction createRule(run, suffix, priority, targets, fallbacks, cb) {\n  var body = { name: 'Harness session matrix ' + suffix + ' ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: priority, cel_expression: '\"x-harness-session-run\" in headers && headers[\"x-harness-session-run\"] == \"' + run + '-' + suffix + '\"', targets: targets, scope: 'global' };\n  if (fallbacks) { body.fallbacks = fallbacks; }\n  call('POST', '/api/governance/routing-rules', body, function (res, j) {\n    if (!expectOk('setup: created the ' + suffix + ' rule', res)) { return cb(null); }\n    cb(((j || {}).rule || {}).id || null);\n  });\n}\nfunction del(label, path, cb) { if (!path) { return cb(); } call('DELETE', path, null, function (res) { expectOk('cleanup: ' + label, res); cb(); }); }\n// Priorities must be distinct within a scope; derive them from the clock so two runs, or two\n// shards of one run, never collide on a fixed number.\nvar PRIO = 900000 + (Date.now() % 90000);",
+              "pm.test('first request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the run-scoped rule must route to anthropic: ' + pm.response.text()).to.eql('anthropic');",
+              "});",
+              "pm.test('served on key A', function () {",
+              "  pm.expect(ri.key, 'the rule pins key A: ' + pm.response.text()).to.eql(pm.collectionVariables.get('sm9KeyAName'));",
+              "});",
+              "var ruleId = pm.collectionVariables.get('sm9RuleId'); var keyBId = pm.collectionVariables.get('sm9KeyBId');",
+              "var session = pm.collectionVariables.get('smSession9'); var run = pm.collectionVariables.get('smRun9');",
+              "function cleanup() { del('pin rule deleted', ruleId && '/api/governance/routing-rules/' + ruleId, function () { del('second anthropic key deleted', keyBId && '/api/providers/anthropic/keys/' + keyBId, function () {}); }); }",
+              "if (!ruleId || !keyBId) { cleanup(); return; }",
+              "call('PUT', '/api/governance/routing-rules/' + ruleId, { targets: [{ provider: 'anthropic', key_id: keyBId, weight: 1 }] }, function (res) {",
+              "  if (!expectOk('the rule pin moved to key B', res)) { return cleanup(); }",
+              "  chat({ 'x-bf-session-id': session, 'x-harness-session-run': run + '-pin' }, null, function (res2, j2, ri2) {",
+              "    pm.test('second request succeeded', function () { pm.expect(res2 && res2.code, 'unexpected status: ' + (res2 ? res2.text() : 'no response')).to.eql(200); });",
+              "    pm.test('the same session now serves on key B, since a pin outranks the key binding', function () {",
+              "      pm.expect(ri2.key, 'the updated pin must win over the key the session used before: ' + (res2 ? res2.text() : '')).to.eql(pm.collectionVariables.get('sm9KeyBName'));",
+              "    });",
+              "    cleanup();",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession9}}"
+          },
+          {
+            "key": "x-harness-session-run",
+            "value": "{{smRun9}}-pin"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 10: a session binding outlives the rule that made it - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// ---- in-script management calls (see the folder description) ----\nvar BASE = pm.variables.get('baseUrl');\nvar CHAT_BODY = {\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":8};\nfunction call(method, path, body, cb) {\n  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };\n  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }\n  pm.sendRequest(req, function (err, res) {\n    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }\n    var json = null; try { json = res.json(); } catch (e) { json = null; }\n    cb(res, json);\n  });\n}\nfunction expectOk(label, res) {\n  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });\n  return !!(res && res.code === 200);\n}\nfunction chat(headers, model, cb) {\n  var h = { 'Content-Type': 'application/json' }; for (var k in headers) { h[k] = headers[k]; }\n  var b = JSON.parse(JSON.stringify(CHAT_BODY)); if (model) { b.model = model; }\n  pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(b) } }, function (err, res) {\n    if (err) { pm.test('follow-up chat request reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null, {}); }\n    var json = null; try { json = res.json(); } catch (e) { json = {}; }\n    cb(res, json, ((json || {}).extra_fields || {}).routing_info || {});\n  });\n}\n// Leftovers of an aborted earlier run carry their run timestamp in their names. Only objects older\n// than ten minutes are swept, so a parallel shard's live objects are never touched.\nfunction isStale(name, prefix) {\n  var m = String(name || '').indexOf(prefix) === 0 && String(name).match(/run-(\\d+)/);\n  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);\n}\nfunction deleteEach(items, pathOf, done) {\n  var i = 0; (function next() { if (i >= items.length) { return done(); } var it = items[i++]; call('DELETE', pathOf(it), null, function () { next(); }); })();\n}\nfunction sweepStale(done) {\n  call('GET', '/api/governance/routing-rules', null, function (r1, j1) {\n    var rules = ((j1 && j1.rules) || []).filter(function (r) { return isStale(r.name, 'Harness session matrix '); });\n    deleteEach(rules, function (r) { return '/api/governance/routing-rules/' + r.id; }, function () {\n      call('GET', '/api/governance/virtual-keys', null, function (r2, j2) {\n        var vks = ((j2 && j2.virtual_keys) || []).filter(function (v) { return isStale(v.name, 'harness-session-matrix-'); });\n        deleteEach(vks, function (v) { return '/api/governance/virtual-keys/' + v.id; }, function () {\n          call('GET', '/api/providers/anthropic/keys', null, function (r3, j3) {\n            var keys = ((j3 && j3.keys) || []).filter(function (k) { return isStale(k.name, 'Harness Session Key B '); });\n            deleteEach(keys, function (k) { return '/api/providers/anthropic/keys/' + k.id; }, done);\n          });\n        });\n      });\n    });\n  });\n}\nfunction anthropicKeyA(cb) {\n  call('GET', '/api/providers/anthropic/keys', null, function (res, j) {\n    if (!expectOk('setup: listed anthropic keys', res)) { return cb(null); }\n    var a = ((j && j.keys) || []).filter(function (k) { return k.name === 'Anthropic API Key'; })[0];\n    pm.test('setup: the profile key Anthropic API Key exists', function () { pm.expect(a, 'expected a key named Anthropic API Key: ' + res.text()).to.exist; });\n    cb(a || null);\n  });\n}\nfunction createKeyB(run, cb) {\n  call('POST', '/api/providers/anthropic/keys', { name: 'Harness Session Key B ' + run, value: 'env.ANTHROPIC_API_KEY', models: ['*'], weight: 1 }, function (res, k) {\n    if (!expectOk('setup: created a second anthropic key from the same credential', res)) { return cb(null); }\n    cb(k);\n  });\n}\nfunction createRule(run, suffix, priority, targets, fallbacks, cb) {\n  var body = { name: 'Harness session matrix ' + suffix + ' ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: priority, cel_expression: '\"x-harness-session-run\" in headers && headers[\"x-harness-session-run\"] == \"' + run + '-' + suffix + '\"', targets: targets, scope: 'global' };\n  if (fallbacks) { body.fallbacks = fallbacks; }\n  call('POST', '/api/governance/routing-rules', body, function (res, j) {\n    if (!expectOk('setup: created the ' + suffix + ' rule', res)) { return cb(null); }\n    cb(((j || {}).rule || {}).id || null);\n  });\n}\nfunction del(label, path, cb) { if (!path) { return cb(); } call('DELETE', path, null, function (res) { expectOk('cleanup: ' + label, res); cb(); }); }\n// Priorities must be distinct within a scope; derive them from the clock so two runs, or two\n// shards of one run, never collide on a fixed number.\nvar PRIO = 900000 + (Date.now() % 90000);",
+              "var run = 'run-' + Date.now(); pm.collectionVariables.set('smRun10', run);",
+              "pm.collectionVariables.set('smSession10', 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));",
+              "sweepStale(function () {",
+              "  createRule(run, 'del', PRIO + 2, [{ provider: 'anthropic', weight: 1 }], ['vertex/'], function (id) {",
+              "    if (id) { pm.collectionVariables.set('sm10RuleId', id); }",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// ---- in-script management calls (see the folder description) ----\nvar BASE = pm.variables.get('baseUrl');\nvar CHAT_BODY = {\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":8};\nfunction call(method, path, body, cb) {\n  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };\n  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }\n  pm.sendRequest(req, function (err, res) {\n    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }\n    var json = null; try { json = res.json(); } catch (e) { json = null; }\n    cb(res, json);\n  });\n}\nfunction expectOk(label, res) {\n  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });\n  return !!(res && res.code === 200);\n}\nfunction chat(headers, model, cb) {\n  var h = { 'Content-Type': 'application/json' }; for (var k in headers) { h[k] = headers[k]; }\n  var b = JSON.parse(JSON.stringify(CHAT_BODY)); if (model) { b.model = model; }\n  pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(b) } }, function (err, res) {\n    if (err) { pm.test('follow-up chat request reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null, {}); }\n    var json = null; try { json = res.json(); } catch (e) { json = {}; }\n    cb(res, json, ((json || {}).extra_fields || {}).routing_info || {});\n  });\n}\n// Leftovers of an aborted earlier run carry their run timestamp in their names. Only objects older\n// than ten minutes are swept, so a parallel shard's live objects are never touched.\nfunction isStale(name, prefix) {\n  var m = String(name || '').indexOf(prefix) === 0 && String(name).match(/run-(\\d+)/);\n  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);\n}\nfunction deleteEach(items, pathOf, done) {\n  var i = 0; (function next() { if (i >= items.length) { return done(); } var it = items[i++]; call('DELETE', pathOf(it), null, function () { next(); }); })();\n}\nfunction sweepStale(done) {\n  call('GET', '/api/governance/routing-rules', null, function (r1, j1) {\n    var rules = ((j1 && j1.rules) || []).filter(function (r) { return isStale(r.name, 'Harness session matrix '); });\n    deleteEach(rules, function (r) { return '/api/governance/routing-rules/' + r.id; }, function () {\n      call('GET', '/api/governance/virtual-keys', null, function (r2, j2) {\n        var vks = ((j2 && j2.virtual_keys) || []).filter(function (v) { return isStale(v.name, 'harness-session-matrix-'); });\n        deleteEach(vks, function (v) { return '/api/governance/virtual-keys/' + v.id; }, function () {\n          call('GET', '/api/providers/anthropic/keys', null, function (r3, j3) {\n            var keys = ((j3 && j3.keys) || []).filter(function (k) { return isStale(k.name, 'Harness Session Key B '); });\n            deleteEach(keys, function (k) { return '/api/providers/anthropic/keys/' + k.id; }, done);\n          });\n        });\n      });\n    });\n  });\n}\nfunction anthropicKeyA(cb) {\n  call('GET', '/api/providers/anthropic/keys', null, function (res, j) {\n    if (!expectOk('setup: listed anthropic keys', res)) { return cb(null); }\n    var a = ((j && j.keys) || []).filter(function (k) { return k.name === 'Anthropic API Key'; })[0];\n    pm.test('setup: the profile key Anthropic API Key exists', function () { pm.expect(a, 'expected a key named Anthropic API Key: ' + res.text()).to.exist; });\n    cb(a || null);\n  });\n}\nfunction createKeyB(run, cb) {\n  call('POST', '/api/providers/anthropic/keys', { name: 'Harness Session Key B ' + run, value: 'env.ANTHROPIC_API_KEY', models: ['*'], weight: 1 }, function (res, k) {\n    if (!expectOk('setup: created a second anthropic key from the same credential', res)) { return cb(null); }\n    cb(k);\n  });\n}\nfunction createRule(run, suffix, priority, targets, fallbacks, cb) {\n  var body = { name: 'Harness session matrix ' + suffix + ' ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: priority, cel_expression: '\"x-harness-session-run\" in headers && headers[\"x-harness-session-run\"] == \"' + run + '-' + suffix + '\"', targets: targets, scope: 'global' };\n  if (fallbacks) { body.fallbacks = fallbacks; }\n  call('POST', '/api/governance/routing-rules', body, function (res, j) {\n    if (!expectOk('setup: created the ' + suffix + ' rule', res)) { return cb(null); }\n    cb(((j || {}).rule || {}).id || null);\n  });\n}\nfunction del(label, path, cb) { if (!path) { return cb(); } call('DELETE', path, null, function (res) { expectOk('cleanup: ' + label, res); cb(); }); }\n// Priorities must be distinct within a scope; derive them from the clock so two runs, or two\n// shards of one run, never collide on a fixed number.\nvar PRIO = 900000 + (Date.now() % 90000);",
+              "pm.test('first request succeeded', function () { pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200); });",
+              "var body = pm.response.json(); var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by anthropic as primary', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the run-scoped rule must route to anthropic: ' + pm.response.text()).to.eql('anthropic');",
+              "  pm.expect(!!ri.is_fallback, 'Anthropic must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "var ruleId = pm.collectionVariables.get('sm10RuleId'); var session = pm.collectionVariables.get('smSession10');",
+              "if (!ruleId) { return; }",
+              "del('run-scoped rule deleted mid-session', '/api/governance/routing-rules/' + ruleId, function () {",
+              "  chat({ 'x-bf-session-id': session, 'x-harness-session-pin': 'vertex' }, null, function (res2, j2, ri2) {",
+              "    pm.test('post-delete request succeeded', function () { pm.expect(res2 && res2.code, 'unexpected status: ' + (res2 ? res2.text() : 'no response')).to.eql(200); });",
+              "    pm.test('the binding written under the deleted rule still moves the pinned Vertex rule aside', function () {",
+              "      pm.expect(((j2 || {}).extra_fields || {}).provider, 'a session bound to Anthropic must be served by Anthropic as primary: ' + (res2 ? res2.text() : '')).to.eql('anthropic');",
+              "      pm.expect(!!ri2.is_fallback, 'Anthropic must be the primary attempt').to.eql(false);",
+              "      pm.expect(res2 ? res2.text() : '').to.not.include('no supported key found');",
+              "    });",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession10}}"
+          },
+          {
+            "key": "x-harness-session-run",
+            "value": "{{smRun10}}-del"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 11: a virtual key shrunk mid-session drops the binding to the removed key - anthropic/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// ---- in-script management calls (see the folder description) ----\nvar BASE = pm.variables.get('baseUrl');\nvar CHAT_BODY = {\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":8};\nfunction call(method, path, body, cb) {\n  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };\n  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }\n  pm.sendRequest(req, function (err, res) {\n    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }\n    var json = null; try { json = res.json(); } catch (e) { json = null; }\n    cb(res, json);\n  });\n}\nfunction expectOk(label, res) {\n  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });\n  return !!(res && res.code === 200);\n}\nfunction chat(headers, model, cb) {\n  var h = { 'Content-Type': 'application/json' }; for (var k in headers) { h[k] = headers[k]; }\n  var b = JSON.parse(JSON.stringify(CHAT_BODY)); if (model) { b.model = model; }\n  pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(b) } }, function (err, res) {\n    if (err) { pm.test('follow-up chat request reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null, {}); }\n    var json = null; try { json = res.json(); } catch (e) { json = {}; }\n    cb(res, json, ((json || {}).extra_fields || {}).routing_info || {});\n  });\n}\n// Leftovers of an aborted earlier run carry their run timestamp in their names. Only objects older\n// than ten minutes are swept, so a parallel shard's live objects are never touched.\nfunction isStale(name, prefix) {\n  var m = String(name || '').indexOf(prefix) === 0 && String(name).match(/run-(\\d+)/);\n  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);\n}\nfunction deleteEach(items, pathOf, done) {\n  var i = 0; (function next() { if (i >= items.length) { return done(); } var it = items[i++]; call('DELETE', pathOf(it), null, function () { next(); }); })();\n}\nfunction sweepStale(done) {\n  call('GET', '/api/governance/routing-rules', null, function (r1, j1) {\n    var rules = ((j1 && j1.rules) || []).filter(function (r) { return isStale(r.name, 'Harness session matrix '); });\n    deleteEach(rules, function (r) { return '/api/governance/routing-rules/' + r.id; }, function () {\n      call('GET', '/api/governance/virtual-keys', null, function (r2, j2) {\n        var vks = ((j2 && j2.virtual_keys) || []).filter(function (v) { return isStale(v.name, 'harness-session-matrix-'); });\n        deleteEach(vks, function (v) { return '/api/governance/virtual-keys/' + v.id; }, function () {\n          call('GET', '/api/providers/anthropic/keys', null, function (r3, j3) {\n            var keys = ((j3 && j3.keys) || []).filter(function (k) { return isStale(k.name, 'Harness Session Key B '); });\n            deleteEach(keys, function (k) { return '/api/providers/anthropic/keys/' + k.id; }, done);\n          });\n        });\n      });\n    });\n  });\n}\nfunction anthropicKeyA(cb) {\n  call('GET', '/api/providers/anthropic/keys', null, function (res, j) {\n    if (!expectOk('setup: listed anthropic keys', res)) { return cb(null); }\n    var a = ((j && j.keys) || []).filter(function (k) { return k.name === 'Anthropic API Key'; })[0];\n    pm.test('setup: the profile key Anthropic API Key exists', function () { pm.expect(a, 'expected a key named Anthropic API Key: ' + res.text()).to.exist; });\n    cb(a || null);\n  });\n}\nfunction createKeyB(run, cb) {\n  call('POST', '/api/providers/anthropic/keys', { name: 'Harness Session Key B ' + run, value: 'env.ANTHROPIC_API_KEY', models: ['*'], weight: 1 }, function (res, k) {\n    if (!expectOk('setup: created a second anthropic key from the same credential', res)) { return cb(null); }\n    cb(k);\n  });\n}\nfunction createRule(run, suffix, priority, targets, fallbacks, cb) {\n  var body = { name: 'Harness session matrix ' + suffix + ' ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: priority, cel_expression: '\"x-harness-session-run\" in headers && headers[\"x-harness-session-run\"] == \"' + run + '-' + suffix + '\"', targets: targets, scope: 'global' };\n  if (fallbacks) { body.fallbacks = fallbacks; }\n  call('POST', '/api/governance/routing-rules', body, function (res, j) {\n    if (!expectOk('setup: created the ' + suffix + ' rule', res)) { return cb(null); }\n    cb(((j || {}).rule || {}).id || null);\n  });\n}\nfunction del(label, path, cb) { if (!path) { return cb(); } call('DELETE', path, null, function (res) { expectOk('cleanup: ' + label, res); cb(); }); }\n// Priorities must be distinct within a scope; derive them from the clock so two runs, or two\n// shards of one run, never collide on a fixed number.\nvar PRIO = 900000 + (Date.now() % 90000);",
+              "var run = 'run-' + Date.now(); pm.collectionVariables.set('smRun11', run);",
+              "pm.collectionVariables.set('smSession11', 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));",
+              "sweepStale(function () {",
+              "  anthropicKeyA(function (a) {",
+              "    if (!a) { return; }",
+              "    pm.collectionVariables.set('sm11KeyAId', a.id); pm.collectionVariables.set('sm11KeyAName', a.name);",
+              "    createKeyB(run, function (k) {",
+              "      if (!k) { return; }",
+              "      pm.collectionVariables.set('sm11KeyBId', k.id); pm.collectionVariables.set('sm11KeyBName', k.name);",
+              "      call('POST', '/api/governance/virtual-keys', { name: 'harness-session-matrix-' + run, provider_configs: [{ provider: 'anthropic', weight: 1, allowed_models: ['*'], key_ids: [a.id, k.id] }] }, function (res, j) {",
+              "        if (!expectOk('setup: created a virtual key granting both anthropic keys', res)) { return; }",
+              "        var vk = (j || {}).virtual_key || {}; var value = (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value; var pc = (vk.provider_configs || [])[0] || {};",
+              "        pm.test('setup: the virtual key carries a value and its provider config id', function () { pm.expect(value, res.text()).to.be.a('string').and.not.empty; pm.expect(pc.id, res.text()).to.exist; });",
+              "        pm.collectionVariables.set('sm11VkId', vk.id); pm.collectionVariables.set('smVkValue11', value); pm.collectionVariables.set('sm11VkPcId', String(pc.id));",
+              "        createRule(run, 'vk', PRIO + 3, [{ provider: 'anthropic', key_id: k.id, weight: 1 }], null, function (id) {",
+              "          if (id) { pm.collectionVariables.set('sm11RuleId', id); }",
+              "        });",
+              "      });",
+              "    });",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// ---- in-script management calls (see the folder description) ----\nvar BASE = pm.variables.get('baseUrl');\nvar CHAT_BODY = {\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":8};\nfunction call(method, path, body, cb) {\n  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };\n  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }\n  pm.sendRequest(req, function (err, res) {\n    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }\n    var json = null; try { json = res.json(); } catch (e) { json = null; }\n    cb(res, json);\n  });\n}\nfunction expectOk(label, res) {\n  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });\n  return !!(res && res.code === 200);\n}\nfunction chat(headers, model, cb) {\n  var h = { 'Content-Type': 'application/json' }; for (var k in headers) { h[k] = headers[k]; }\n  var b = JSON.parse(JSON.stringify(CHAT_BODY)); if (model) { b.model = model; }\n  pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(b) } }, function (err, res) {\n    if (err) { pm.test('follow-up chat request reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null, {}); }\n    var json = null; try { json = res.json(); } catch (e) { json = {}; }\n    cb(res, json, ((json || {}).extra_fields || {}).routing_info || {});\n  });\n}\n// Leftovers of an aborted earlier run carry their run timestamp in their names. Only objects older\n// than ten minutes are swept, so a parallel shard's live objects are never touched.\nfunction isStale(name, prefix) {\n  var m = String(name || '').indexOf(prefix) === 0 && String(name).match(/run-(\\d+)/);\n  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);\n}\nfunction deleteEach(items, pathOf, done) {\n  var i = 0; (function next() { if (i >= items.length) { return done(); } var it = items[i++]; call('DELETE', pathOf(it), null, function () { next(); }); })();\n}\nfunction sweepStale(done) {\n  call('GET', '/api/governance/routing-rules', null, function (r1, j1) {\n    var rules = ((j1 && j1.rules) || []).filter(function (r) { return isStale(r.name, 'Harness session matrix '); });\n    deleteEach(rules, function (r) { return '/api/governance/routing-rules/' + r.id; }, function () {\n      call('GET', '/api/governance/virtual-keys', null, function (r2, j2) {\n        var vks = ((j2 && j2.virtual_keys) || []).filter(function (v) { return isStale(v.name, 'harness-session-matrix-'); });\n        deleteEach(vks, function (v) { return '/api/governance/virtual-keys/' + v.id; }, function () {\n          call('GET', '/api/providers/anthropic/keys', null, function (r3, j3) {\n            var keys = ((j3 && j3.keys) || []).filter(function (k) { return isStale(k.name, 'Harness Session Key B '); });\n            deleteEach(keys, function (k) { return '/api/providers/anthropic/keys/' + k.id; }, done);\n          });\n        });\n      });\n    });\n  });\n}\nfunction anthropicKeyA(cb) {\n  call('GET', '/api/providers/anthropic/keys', null, function (res, j) {\n    if (!expectOk('setup: listed anthropic keys', res)) { return cb(null); }\n    var a = ((j && j.keys) || []).filter(function (k) { return k.name === 'Anthropic API Key'; })[0];\n    pm.test('setup: the profile key Anthropic API Key exists', function () { pm.expect(a, 'expected a key named Anthropic API Key: ' + res.text()).to.exist; });\n    cb(a || null);\n  });\n}\nfunction createKeyB(run, cb) {\n  call('POST', '/api/providers/anthropic/keys', { name: 'Harness Session Key B ' + run, value: 'env.ANTHROPIC_API_KEY', models: ['*'], weight: 1 }, function (res, k) {\n    if (!expectOk('setup: created a second anthropic key from the same credential', res)) { return cb(null); }\n    cb(k);\n  });\n}\nfunction createRule(run, suffix, priority, targets, fallbacks, cb) {\n  var body = { name: 'Harness session matrix ' + suffix + ' ' + run, description: 'Provider harness, created at run time and deleted by the same row.', priority: priority, cel_expression: '\"x-harness-session-run\" in headers && headers[\"x-harness-session-run\"] == \"' + run + '-' + suffix + '\"', targets: targets, scope: 'global' };\n  if (fallbacks) { body.fallbacks = fallbacks; }\n  call('POST', '/api/governance/routing-rules', body, function (res, j) {\n    if (!expectOk('setup: created the ' + suffix + ' rule', res)) { return cb(null); }\n    cb(((j || {}).rule || {}).id || null);\n  });\n}\nfunction del(label, path, cb) { if (!path) { return cb(); } call('DELETE', path, null, function (res) { expectOk('cleanup: ' + label, res); cb(); }); }\n// Priorities must be distinct within a scope; derive them from the clock so two runs, or two\n// shards of one run, never collide on a fixed number.\nvar PRIO = 900000 + (Date.now() % 90000);",
+              "pm.test('first request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by anthropic', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the run-scoped rule must route to anthropic: ' + pm.response.text()).to.eql('anthropic');",
+              "});",
+              "pm.test('served on key B', function () {",
+              "  pm.expect(ri.key, 'the rule pins key B: ' + pm.response.text()).to.eql(pm.collectionVariables.get('sm11KeyBName'));",
+              "});",
+              "var ruleId = pm.collectionVariables.get('sm11RuleId'); var vkId = pm.collectionVariables.get('sm11VkId'); var keyBId = pm.collectionVariables.get('sm11KeyBId');",
+              "var keyAId = pm.collectionVariables.get('sm11KeyAId'); var pcId = pm.collectionVariables.get('sm11VkPcId'); var vkValue = pm.collectionVariables.get('smVkValue11'); var session = pm.collectionVariables.get('smSession11');",
+              "function cleanup() { del('virtual key rule deleted', ruleId && '/api/governance/routing-rules/' + ruleId, function () { del('virtual key deleted', vkId && '/api/governance/virtual-keys/' + vkId, function () { del('second anthropic key deleted', keyBId && '/api/providers/anthropic/keys/' + keyBId, function () {}); }); }); }",
+              "if (!ruleId || !vkId || !keyBId || !pcId) { cleanup(); return; }",
+              "call('PUT', '/api/governance/virtual-keys/' + vkId, { provider_configs: [{ id: Number(pcId), provider: 'anthropic', weight: 1, allowed_models: ['*'], key_ids: [keyAId] }] }, function (res) {",
+              "  if (!expectOk('the virtual key was shrunk to key A only', res)) { return cleanup(); }",
+              "  chat({ 'x-bf-session-id': session, 'x-bf-vk': vkValue }, 'anthropic/' + \"claude-sonnet-4-6\", function (res2, j2, ri2) {",
+              "    pm.test('post-shrink request succeeded', function () { pm.expect(res2 && res2.code, 'unexpected status: ' + (res2 ? res2.text() : 'no response')).to.eql(200); });",
+              "    pm.test('the session cannot follow its binding to the removed key and serves on key A', function () {",
+              "      pm.expect(ri2.key, 'the binding to key B must be dropped once governance no longer grants it: ' + (res2 ? res2.text() : '')).to.eql(pm.collectionVariables.get('sm11KeyAName'));",
+              "    });",
+              "    cleanup();",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession11}}"
+          },
+          {
+            "key": "x-harness-session-run",
+            "value": "{{smRun11}}-vk"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{smVkValue11}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session matrix 18: a second virtual key sending the same session id has no binding of its own - vertex/claude-sonnet-4-6 - session-affinity",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// ---- in-script management calls (see the folder description) ----",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var CHAT_BODY = {\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":8};",
+              "function call(method, path, body, cb) {",
+              "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+              "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) {",
+              "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+              "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+              "    cb(res, json);",
+              "  });",
+              "}",
+              "function expectOk(label, res) {",
+              "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+              "  return !!(res && res.code === 200);",
+              "}",
+              "function chat(headers, cb) {",
+              "  var h = { 'Content-Type': 'application/json' }; for (var k in headers) { h[k] = headers[k]; }",
+              "  pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(CHAT_BODY) } }, function (err, res) {",
+              "    if (err) { pm.test('follow-up chat request reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, {}, {}); }",
+              "    var json = null; try { json = res.json(); } catch (e) { json = {}; }",
+              "    cb(res, json || {}, ((json || {}).extra_fields || {}).routing_info || {});",
+              "  });",
+              "}",
+              "// Leftovers of an aborted earlier run carry their run timestamp in their names. Only objects older",
+              "// than ten minutes are swept, so a parallel shard's live objects are never touched.",
+              "function isStale(name) {",
+              "  var m = String(name || '').indexOf('harness-session-matrix-') === 0 && String(name).match(/run-(\\d+)/);",
+              "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+              "}",
+              "function createVK(label, run, cb) {",
+              "  var configs = ['anthropic', 'vertex'].map(function (p) { return { provider: p, weight: 1, allowed_models: ['*'], key_ids: ['*'] }; });",
+              "  call('POST', '/api/governance/virtual-keys', { name: 'harness-session-matrix-18' + label + '-' + run, provider_configs: configs }, function (res, j) {",
+              "    if (!expectOk('setup: created virtual key ' + label, res)) { return cb(null); }",
+              "    var vk = (j || {}).virtual_key || {};",
+              "    cb({ id: vk.id, value: (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value });",
+              "  });",
+              "}",
+              "var run = 'run-' + Date.now();",
+              "var session = 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+              "pm.collectionVariables.set('smSession18', session);",
+              "call('GET', '/api/governance/virtual-keys', null, function (r0, j0) {",
+              "  var stale = ((j0 && j0.virtual_keys) || []).filter(function (v) { return isStale(v.name); });",
+              "  (function sweep() {",
+              "    if (stale.length) { return call('DELETE', '/api/governance/virtual-keys/' + stale.shift().id, null, function () { sweep(); }); }",
+              "    createVK('a', run, function (a) {",
+              "      if (!a) { return; }",
+              "      pm.collectionVariables.set('sm18VkAId', a.id); pm.collectionVariables.set('smVkValue18a', a.value);",
+              "      createVK('b', run, function (b) {",
+              "        if (!b) { return; }",
+              "        pm.collectionVariables.set('sm18VkBId', b.id); pm.collectionVariables.set('smVkValue18b', b.value);",
+              "        chat({ 'x-bf-session-id': session, 'x-harness-session-pin': 'bind', 'x-bf-vk': a.value }, function (res, j) {",
+              "          pm.test('setup: virtual key A bound the session to anthropic', function () {",
+              "            pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+              "            pm.expect((j.extra_fields || {}).provider, res ? res.text() : '').to.eql('anthropic');",
+              "          });",
+              "        });",
+              "      });",
+              "    });",
+              "  })();",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// ---- in-script management calls (see the folder description) ----",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var CHAT_BODY = {\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":8};",
+              "function call(method, path, body, cb) {",
+              "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+              "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) {",
+              "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+              "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+              "    cb(res, json);",
+              "  });",
+              "}",
+              "function expectOk(label, res) {",
+              "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+              "  return !!(res && res.code === 200);",
+              "}",
+              "function chat(headers, cb) {",
+              "  var h = { 'Content-Type': 'application/json' }; for (var k in headers) { h[k] = headers[k]; }",
+              "  pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(CHAT_BODY) } }, function (err, res) {",
+              "    if (err) { pm.test('follow-up chat request reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, {}, {}); }",
+              "    var json = null; try { json = res.json(); } catch (e) { json = {}; }",
+              "    cb(res, json || {}, ((json || {}).extra_fields || {}).routing_info || {});",
+              "  });",
+              "}",
+              "pm.test('virtual key B request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('served by vertex', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'session state is kept per virtual key, so virtual key B has no binding and the pinned Vertex rule stands: ' + pm.response.text()).to.eql('vertex');",
+              "});",
+              "pm.test('is_fallback is false', function () {",
+              "  pm.expect(!!ri.is_fallback, 'Vertex must be the primary attempt: ' + pm.response.text()).to.eql(false);",
+              "});",
+              "pm.test('served on the expected key', function () {",
+              "  pm.expect(ri.key, 'the Vertex rule pins its key: ' + pm.response.text()).to.eql('Vertex Global (Claude)');",
+              "});",
+              "var vkA = pm.collectionVariables.get('sm18VkAId'); var vkB = pm.collectionVariables.get('sm18VkBId');",
+              "function cleanup() {",
+              "  var ids = [vkA, vkB].filter(function (id) { return !!id; });",
+              "  (function next() { if (!ids.length) { return; } call('DELETE', '/api/governance/virtual-keys/' + ids.shift(), null, function (res) { expectOk('cleanup: virtual key deleted', res); next(); }); })();",
+              "}",
+              "chat({ 'x-bf-session-id': pm.collectionVariables.get('smSession18'), 'x-harness-session-pin': 'vertex', 'x-bf-vk': pm.collectionVariables.get('smVkValue18a') }, function (res, j, ri2) {",
+              "  pm.test('virtual key A request succeeded', function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+              "  pm.test('virtual key A still follows its own binding to anthropic', function () {",
+              "    pm.expect((j.extra_fields || {}).provider, 'virtual key B\\'s request must not have touched virtual key A\\'s binding: ' + (res ? res.text() : '')).to.eql('anthropic');",
+              "    pm.expect(!!ri2.is_fallback, res ? res.text() : '').to.eql(false);",
+              "    pm.expect(ri2.key, res ? res.text() : '').to.eql('Anthropic API Key');",
+              "  });",
+              "  cleanup();",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{smSession18}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{smVkValue18b}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    }
+  ]
+}

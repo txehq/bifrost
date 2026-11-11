@@ -1,0 +1,115 @@
+{
+  "name": "158. Passthrough reachability for surfaces without native routes (passthrough surface pins)",
+  "description": "Rows for provider surfaces Bifrost has no native route for, covered through the catch-all passthrough routes, which accept arbitrary upstream paths for gemini (/genai_passthrough) and azure (/azure_passthrough). They prove the forwarding path for those surfaces is real, not that Bifrost models them: creating a Gemini tuning job or an Azure fine-tuning job is paid and is not exercised. Bedrock is not a catch-all passthrough: /bedrock_passthrough forwards only InvokeAgent, Retrieve and ApplyGuardrail, and folder 162 covers those operations. The /tunedModels body is carved out of the generic shape check in __skipShape.",
+  "item": [
+    {
+      "name": "158.1 genai passthrough forwards a tunedModels list to Google (gemini tuned models)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/genai_passthrough/v1beta/tunedModels?pageSize=1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai_passthrough",
+            "v1beta",
+            "tunedModels?pageSize=1"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('Google answered the tunedModels list through passthrough', function () { pm.expect(j, pm.response.text().slice(0, 400)).to.be.an('object'); pm.expect(j.error, 'Google rejected the list: ' + pm.response.text().slice(0, 400)).to.equal(undefined); if (j.tunedModels !== undefined) { pm.expect(j.tunedModels).to.be.an('array'); } });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "158.2 [EXPECT-4XX] genai passthrough forwards an operations lookup for an unknown name and Google answers not found (gemini operations)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/genai_passthrough/v1beta/operations/h156doesnotexist",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai_passthrough",
+            "v1beta",
+            "operations",
+            "h156doesnotexist"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "// Only Google's not-found answers this probe: a 401, 403 or 429 also comes back as a Google error",
+              "// envelope, but it says nothing about the unknown operation reaching Google.",
+              "pm.test('Google error envelope came back through passthrough', function () { pm.expect(j.error, 'not a Google error envelope: ' + pm.response.text().slice(0, 400)).to.be.an('object'); pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.eql(404); pm.expect(j.error.code, pm.response.text().slice(0, 400)).to.eql(404); pm.expect(j.error.status, pm.response.text().slice(0, 400)).to.eql('NOT_FOUND'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "158.3 azure passthrough forwards a fine_tuning jobs list to the Azure resource (azure fine tuning admin)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/azure_passthrough/openai/fine_tuning/jobs?api-version=2024-10-21&limit=1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "azure_passthrough",
+            "openai",
+            "fine_tuning",
+            "jobs?api-version=2024-10-21&limit=1"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('Azure answered the fine-tuning jobs list through passthrough', function () { pm.expect(j.data, pm.response.text().slice(0, 400)).to.be.an('array'); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

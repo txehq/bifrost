@@ -1,0 +1,167 @@
+{
+  "name": "339. MiniMax speech reports billed characters and audio seconds, streamed or not (minimax speech usage) [SERIAL]",
+  "description": "TXE-6629 regression, contract C5. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream (the minimax provider's base_url is the fixture's /pp/minimax). The fixture answers /v1/t2a_v2 with a recorded extra_info: usage_characters 37, audio_length 2500 ms, usage_voice_count 1. Both the streamed speech.audio.done and the non-streamed response's x-bifrost-usage header must carry billed_characters 37 and audio_seconds 3 (audio_seconds is an int, so the milliseconds are rounded up), and usage_voice_count, which has no unified field, must not appear. The non-streamed case reads the x-bifrost-usage header added by TXE-6530. Run the whole folder in order.",
+  "item": [
+    {
+      "name": "minimax/speech-2.8-turbo /v1/audio/speech stream_format sse: speech.audio.done carries billed_characters and audio_seconds (minimax speech usage)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"minimax/speech-2.8-turbo\", \"input\": \"A recorded MiniMax speech request.\", \"voice\": \"English_Graceful_Lady\", \"stream_format\": \"sse\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('minimax speech usage setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function t2a(calls) { return calls.filter(function (c) { return c.path === '/pp/minimax/v1/t2a_v2'; }); }",
+              "// The fixture's recorded extra_info: usage_characters 37, audio_length 2500 ms, usage_voice_count 1.",
+              "function assertUsage(label, usage, text) {",
+              "  pm.test(label + ': billed_characters is MiniMax usage_characters', function () { pm.expect(usage, text).to.be.an('object'); pm.expect(usage.billed_characters, text).to.equal(37); });",
+              "  pm.test(label + ': audio_seconds is audio_length 2500 ms rounded up', function () { pm.expect(usage.audio_seconds, text).to.equal(3); });",
+              "  pm.test(label + ': usage_voice_count has no unified field and is not invented', function () { pm.expect(JSON.stringify(usage), text).to.not.include('voice_count'); });",
+              "}",
+              "var text = pm.response.text();",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+              "var done = null;",
+              "text.split('\\n').forEach(function (line) { if (line.indexOf('data: ') !== 0) { return; } try { var ev = JSON.parse(line.slice(6)); if (ev.type === 'speech.audio.done') { done = ev; } } catch (e) {} });",
+              "pm.test('a speech.audio.done event arrived', function () { pm.expect(done, text).to.not.equal(null); });",
+              "assertUsage('streamed', (done || {}).usage, text);",
+              "wire(function (calls) { pm.test('exactly one upstream call, streamed', function () { var c = t2a(calls); pm.expect(c, JSON.stringify(calls)).to.have.length(1); pm.expect(JSON.parse(c[0].body).stream, c[0].body).to.equal(true); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "minimax/speech-2.8-turbo /v1/audio/speech non-streamed: the x-bifrost-usage header carries the same billed_characters and audio_seconds (minimax speech usage)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"minimax/speech-2.8-turbo\", \"input\": \"A recorded MiniMax speech request.\", \"voice\": \"English_Graceful_Lady\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('minimax speech usage setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function t2a(calls) { return calls.filter(function (c) { return c.path === '/pp/minimax/v1/t2a_v2'; }); }",
+              "// The fixture's recorded extra_info: usage_characters 37, audio_length 2500 ms, usage_voice_count 1.",
+              "function assertUsage(label, usage, text) {",
+              "  pm.test(label + ': billed_characters is MiniMax usage_characters', function () { pm.expect(usage, text).to.be.an('object'); pm.expect(usage.billed_characters, text).to.equal(37); });",
+              "  pm.test(label + ': audio_seconds is audio_length 2500 ms rounded up', function () { pm.expect(usage.audio_seconds, text).to.equal(3); });",
+              "  pm.test(label + ': usage_voice_count has no unified field and is not invented', function () { pm.expect(JSON.stringify(usage), text).to.not.include('voice_count'); });",
+              "}",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "// The audio body has no room for usage; TXE-6530 carries the unified usage in x-bifrost-usage (contract C5).",
+              "var header = pm.response.headers.get('x-bifrost-usage');",
+              "var headers = JSON.stringify(pm.response.headers.toObject());",
+              "pm.test('the x-bifrost-usage header is present', function () { pm.expect(header, headers).to.be.a('string').and.not.empty; });",
+              "var usage = null; try { usage = JSON.parse(header); } catch (e) {}",
+              "assertUsage('non-streamed', usage, headers);",
+              "wire(function (calls) { pm.test('exactly one upstream call, not streamed', function () { var c = t2a(calls); pm.expect(c, JSON.stringify(calls)).to.have.length(1); pm.expect(JSON.parse(c[0].body).stream, c[0].body).to.not.equal(true); }); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

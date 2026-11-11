@@ -1,0 +1,558 @@
+{
+  "name": "184. Direct keys and inference auth under server settings, run alone (direct-key-settings) [SERIAL]",
+  "description": "Wire-level pins for the two client settings that decide whether a caller's direct key counts (DK-11, DK-14). [SERIAL]: these rows change client config every other row depends on, so the harness runs this folder in its own pass after the parallel sweep, alone against the gateway. It reads the stored client config, sends the full config back with allow_direct_keys and enforce_auth_on_inference set per step, and restores and verifies the original at the end. Rows: (1) direct keys off: a direct-key request is served on the gateway's own key, with and without a virtual key; (2) direct keys off and inference auth on: a direct key without a virtual key is refused 401; (3) direct keys on and inference auth on: a direct key without a virtual key satisfies inference auth and is served on the caller's key (openaiKey), while the same request without it is refused 401. Run with FEATURE=\"direct-key-settings\".",
+  "item": [
+    {
+      "name": "[EXPECT-200] openai direct-key-settings read current config",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Plan rows: DK-11, DK-14.",
+              "pm.test('direct-key-settings: read the stored client config', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  var cc = pm.response.json().client_config;",
+              "  pm.expect(cc, pm.response.text()).to.be.an('object');",
+              "  pm.collectionVariables.set('dkSettingsClientConfig', JSON.stringify(cc));",
+              "  pm.collectionVariables.set('dkSettingsOriginal', JSON.stringify({ allow_direct_keys: cc.allow_direct_keys === true, enforce_auth_on_inference: cc.enforce_auth_on_inference === true }));",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config?from_db=true",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ],
+          "query": [
+            {
+              "key": "from_db",
+              "value": "true"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-200] openai direct-key-settings turn direct keys off",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var cc = JSON.parse(pm.collectionVariables.get('dkSettingsClientConfig') || '{}');",
+              "cc.allow_direct_keys = false;",
+              "cc.enforce_auth_on_inference = false;",
+              "pm.variables.set('dkSettingsBody', JSON.stringify({ client_config: cc }));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Plan rows: DK-11.",
+              "pm.test('direct-key-settings: direct keys turned off, inference auth off', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{{dkSettingsBody}}"
+        }
+      }
+    },
+    {
+      "name": "openai with direct keys off, a direct-key request is served on the provider's own keys, with and without a virtual key - direct-key-settings",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Plan rows: DK-11.",
+              "var text = pm.response.text();",
+              "var json = {}; try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+              "var ri = (json.extra_fields || {}).routing_info || {};",
+              "// With allow_direct_keys off the header is ignored: the caller's key never reaches OpenAI (it would",
+              "// be refused), and the request is served on the gateway's own key.",
+              "pm.test('direct keys off: the request is served on a configured key, not the caller\\u2019s', function () {",
+              "  pm.expect(pm.response.code, text).to.eql(200);",
+              "  pm.expect(String(ri.key || ''), text).to.not.include('header-provided');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/v1/chat/completions', method: 'POST',",
+              "  header: { 'Content-Type': 'application/json', 'x-bf-vk': 'sk-bf-test-key', 'x-bf-direct-key': 'true', 'Authorization': 'Bearer sk-harness-direct-key-settings-not-a-key' },",
+              "  body: { mode: 'raw', raw: JSON.stringify({ model: 'openai/gpt-4o-mini', messages: [{ role: 'user', content: 'Reply with the single word: ok' }], max_tokens: 3 }) } }, function (err, res) {",
+              "  var j = {}; try { j = res.json() || {}; } catch (e) { j = {}; }",
+              "  var r = (j.extra_fields || {}).routing_info || {};",
+              "  pm.test('direct keys off, with a virtual key: served on a configured key, not the caller\\u2019s', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+              "    pm.expect(String(r.key || ''), res ? res.text() : '').to.not.include('header-provided');",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-direct-key",
+            "value": "true"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer sk-harness-direct-key-settings-not-a-key"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-200] openai direct-key-settings turn inference auth on with direct keys off",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var cc = JSON.parse(pm.collectionVariables.get('dkSettingsClientConfig') || '{}');",
+              "cc.allow_direct_keys = false;",
+              "cc.enforce_auth_on_inference = true;",
+              "pm.variables.set('dkSettingsBody', JSON.stringify({ client_config: cc }));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Plan rows: DK-11.",
+              "pm.test('direct-key-settings: inference auth turned on, direct keys still off', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{{dkSettingsBody}}"
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-401] openai with direct keys off and inference auth on, a direct key without a virtual key is refused - direct-key-settings",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Plan rows: DK-11.",
+              "// The direct key is not recognised with direct keys off, so the request presented no credential.",
+              "pm.test('direct keys off and inference auth on: the request is refused for lacking a credential', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(401);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-direct-key",
+            "value": "true"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer sk-harness-direct-key-settings-not-a-key"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-200] openai direct-key-settings turn direct keys on with inference auth on",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var cc = JSON.parse(pm.collectionVariables.get('dkSettingsClientConfig') || '{}');",
+              "cc.allow_direct_keys = true;",
+              "cc.enforce_auth_on_inference = true;",
+              "pm.variables.set('dkSettingsBody', JSON.stringify({ client_config: cc }));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Plan rows: DK-14.",
+              "pm.test('direct-key-settings: direct keys and inference auth both on', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{{dkSettingsBody}}"
+        }
+      }
+    },
+    {
+      "name": "openai with inference auth on, a direct key without a virtual key satisfies it and serves on the caller's key - direct-key-settings",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (!pm.variables.get('openaiKey')) { pm.variables.set('dkSettingsNoKey', '1'); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Plan rows: DK-14.",
+              "var text = pm.response.text();",
+              "var json = {}; try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+              "var ri = (json.extra_fields || {}).routing_info || {};",
+              "pm.test('the runner supplies a working OpenAI key as openaiKey (OPENAI_API_KEY)', function () {",
+              "  pm.expect(pm.variables.get('dkSettingsNoKey'), 'openaiKey is empty: this row needs a working key to send as the caller\\u2019s direct key').to.not.equal('1');",
+              "});",
+              "// A direct key counts as the credential inference auth asks for: the request is served on it.",
+              "pm.test('inference auth on: a direct key without a virtual key is served, on the caller\\u2019s key', function () {",
+              "  pm.expect(pm.response.code, text).to.eql(200);",
+              "  pm.expect(String(ri.key || ''), text).to.include('header-provided');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-direct-key",
+            "value": "true"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{openaiKey}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-401] openai with inference auth on, the same request without a direct key or virtual key is refused - direct-key-settings",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Plan rows: DK-14 control. Same request as the row above, minus the direct key: no credential at all.",
+              "var text = pm.response.text();",
+              "var json = {}; try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+              "pm.test('control: without the direct key the request is refused for lacking a credential', function () {",
+              "  pm.expect(pm.response.code, text).to.eql(401);",
+              "  pm.expect(json.type, text).to.equal('virtual_key_required');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-200] openai direct-key-settings restore original config",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var cc = JSON.parse(pm.collectionVariables.get('dkSettingsClientConfig') || '{}');",
+              "pm.variables.set('dkSettingsBody', JSON.stringify({ client_config: cc }));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Plan rows: DK-11, DK-14.",
+              "pm.test('direct-key-settings: original client config restored', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{{dkSettingsBody}}"
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-200] openai direct-key-settings original config restored",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Plan rows: DK-11, DK-14.",
+              "pm.test('direct-key-settings: allow_direct_keys and enforce_auth_on_inference are back to what they were', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  var cc = pm.response.json().client_config || {};",
+              "  pm.expect({ allow_direct_keys: cc.allow_direct_keys === true, enforce_auth_on_inference: cc.enforce_auth_on_inference === true }, pm.response.text()).to.eql(JSON.parse(pm.collectionVariables.get('dkSettingsOriginal') || '{}'));",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config?from_db=true",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ],
+          "query": [
+            {
+              "key": "from_db",
+              "value": "true"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

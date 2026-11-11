@@ -1,0 +1,823 @@
+{
+  "name": "419. Sora 2 on Azure: undeliverable fields refused, extra fields carried, content blocks classified, task object, no cancel, named key (azure sora 2)",
+  "description": "Pins contract C3, C4, C5, C6, C7, C9 and C12 for Sora 2 on Azure (TXE-6532). Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. The azure provider has two keys, azure-sora-a and azure-sora-b, each on its own resource path of the fixture, so the counters in the last row prove which resource and key each call used. Rows 2 and 7 to 8 are refused before any upstream call. Row 9 carries x-bf-passthrough-extra-params. Row 15 is the cancel route; the last row asserts no DELETE reached Azure.",
+  "item": [
+    {
+      "name": "419.1 reset the fixture's hit counters (azure sora 2)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__reset"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('reset', function () { pm.expect(pm.response.code).to.eql(200); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "419.2 [EXPECT-400] POST /v1/videos size 1920x1080 is refused, never rewritten (azure sora 2)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "azure-sora-a"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"azure/sora-2\", \"prompt\": \"a fox\", \"size\": \"1920x1080\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('an unknown size is 400 naming size', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error.param, pm.response.text()).to.eql('size');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "419.3 POST /v1/videos size 720x1280 reaches Azure unchanged (azure sora 2)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "azure-sora-a"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"azure/sora-2\", \"prompt\": \"a fox\", \"size\": \"720x1280\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('720x1280 reaches the vendor unchanged', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.json().size, pm.response.text()).to.eql('720x1280');",
+              "  pm.expect(pm.response.json().provider_status, pm.response.text()).to.eql('queued');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "419.4 POST /v1/videos size 1280x720 reaches Azure unchanged (azure sora 2)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "azure-sora-a"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"azure/sora-2\", \"prompt\": \"a fox\", \"size\": \"1280x720\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('1280x720 reaches the vendor unchanged', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.json().size, pm.response.text()).to.eql('1280x720');",
+              "  pm.expect(pm.response.json().provider_status, pm.response.text()).to.eql('queued');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "419.5 POST /v1/videos size 1024x1792 reaches Azure unchanged (azure sora 2)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "azure-sora-a"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"azure/sora-2\", \"prompt\": \"a fox\", \"size\": \"1024x1792\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('1024x1792 reaches the vendor unchanged', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.json().size, pm.response.text()).to.eql('1024x1792');",
+              "  pm.expect(pm.response.json().provider_status, pm.response.text()).to.eql('queued');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "419.6 POST /v1/videos size 1792x1024 reaches Azure unchanged (azure sora 2)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "azure-sora-a"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"azure/sora-2\", \"prompt\": \"a fox\", \"size\": \"1792x1024\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('1792x1024 reaches the vendor unchanged', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.json().size, pm.response.text()).to.eql('1792x1024');",
+              "  pm.expect(pm.response.json().provider_status, pm.response.text()).to.eql('queued');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "419.7 [EXPECT-400] POST /v1/videos http input_reference is refused, not downloaded (azure sora 2)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "azure-sora-a"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"azure/sora-2\", \"prompt\": \"a fox\", \"input_reference\": \"http://example.com/a.png\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a link is 400 naming input_reference', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error.param, pm.response.text()).to.eql('input_reference');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "419.8 [EXPECT-400] POST /v1/videos aspect_ratio has no Azure field and is refused (azure sora 2)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "azure-sora-a"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"azure/sora-2\", \"prompt\": \"a fox\", \"aspect_ratio\": \"16:9\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('an undeliverable priced field is 400 naming it', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error.param, pm.response.text()).to.eql('aspect_ratio');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "419.9 POST /v1/videos an extra field goes to Azure as a form field (azure sora 2)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "azure-sora-a"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"azure/sora-2\", \"prompt\": \"a fox\", \"size\": \"1280x720\", \"vendor_hint\": \"high\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "419.10 the form Azure received carries the extra field (azure sora 2)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__sent?model=sora-form"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('vendor_hint is a form field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var form = JSON.parse(pm.response.json().data[0].body);",
+              "  pm.expect(form.vendor_hint, pm.response.text()).to.eql('high');",
+              "  pm.expect(form.size, pm.response.text()).to.eql('1280x720');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "419.11 [EXPECT-400] POST /v1/videos a ResponsibleAIPolicyViolation block keeps the status and is the caller content (azure sora 2)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "azure-sora-a"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"azure/sora-2\", \"prompt\": \"blocked content\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('400 caller_content_filtered with the inner code', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text()).to.eql('caller_content_filtered');",
+              "  pm.expect(j.error.code, pm.response.text()).to.eql('invalid_prompt');",
+              "  pm.expect(j.error.inner_code, pm.response.text()).to.eql('ResponsibleAIPolicyViolation');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "419.12 GET /v1/videos/{id} a completed task reports provider_status, seconds and a content artifact with the named key (azure sora 2)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "azure-sora-b"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/video_fixture_sora:azure",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "video_fixture_sora:azure"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the task object is complete', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.status, pm.response.text()).to.eql('completed');",
+              "  pm.expect(j.provider_status, pm.response.text()).to.eql('completed');",
+              "  pm.expect(j.usage.output_seconds, pm.response.text()).to.eql(8);",
+              "  pm.expect(j.videos.length, pm.response.text()).to.eql(1);",
+              "  pm.expect(j.videos[0].type, pm.response.text()).to.eql('content');",
+              "  pm.expect(j.videos[0].content_type, pm.response.text()).to.eql('video/mp4');",
+              "  pm.expect(j.videos[0].url, pm.response.text()).to.eql(undefined);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "419.13 GET /v1/videos/{id}/content downloads with the named key (azure sora 2)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "azure-sora-b"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/video_fixture_sora:azure/content",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "video_fixture_sora:azure",
+            "content"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the bytes come through Bifrost', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.headers.get('Content-Type')).to.include('video/mp4');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "419.14 GET /v1/videos/{id} queries the other resource with the other key (azure sora 2)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "azure-sora-a"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/video_fixture_sora:azure",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "video_fixture_sora:azure"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the query succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "419.15 [EXPECT-400] POST /v1/videos/{id}/cancel on azure is provider_cancel_unsupported (azure sora 2)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "azure-sora-a"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/video_fixture_sora:azure/cancel",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "video_fixture_sora:azure",
+            "cancel"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('azure has no cancel API', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  pm.expect(pm.response.json().extra_fields.error_type, pm.response.text()).to.eql('provider_cancel_unsupported');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "419.16 each request made exactly one upstream call, to the named key's resource, and no DELETE (azure sora 2)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__hits"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the upstream counters are exact', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var hits = pm.response.json().data[0].hits;",
+              "  var sora = {};",
+              "  Object.keys(hits).filter(function (k) { return k.indexOf('sora ') === 0; }).forEach(function (k) { sora[k] = hits[k]; });",
+              "  pm.expect(sora).to.eql({",
+              "    'sora POST a azure-sora-secret-a': 6,",
+              "    'sora GET b azure-sora-secret-b': 1,",
+              "    'sora GET b azure-sora-secret-b content': 1,",
+              "    'sora GET a azure-sora-secret-a': 1",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

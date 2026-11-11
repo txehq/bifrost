@@ -1,0 +1,49 @@
+{
+  "name": "127. OpenAI Responses strips web_search_call ID and status",
+  "description": "Gemini sets ID (msg_*_ws_*) and status on web_search_call items. OpenAI rejects both. Fix: ToOpenAIResponsesRequest strips them.",
+  "item": [
+    {
+      "name": "openai/gpt-4o native /v1/responses: web_search_call ID and status stripped",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('No id/status rejection on web_search_call', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'OpenAI rejected id/status on web_search_call: ' + body).to.not.match(/input\\[\\d+\\]\\.(id|status)/);",
+              "});",
+              "pm.test('Replay with Gemini web_search_call ID and status succeeds', function () {",
+              "  pm.expect(pm.response.code, 'responses replay request failed: ' + pm.response.text()).to.be.below(400);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-4o\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"search web\"},{\"type\":\"web_search_call\",\"id\":\"msg_abc_ws_0\",\"call_id\":\"ws_123\",\"name\":\"web_search\",\"status\":\"in_progress\"}],\"max_output_tokens\":100}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,372 @@
+{
+  "name": "168. Reasoning-only models forced to Responses (reasoning-only-to-responses)",
+  "description": "The compat toggle force_reasoning_only_models_to_responses (on by default) routes /v1/chat/completions requests to the Responses API for models whose datasheet sets supports_reasoning_with_tool_calls: false, such as GPT-6 Sol. Before it existed, compat kept these requests on chat completions and turned reasoning off (dropped, or set to none) whenever tools were present. The plugin marks ChangeRequestType=ResponsesRequest whether or not tools are attached; core converts with ToResponsesRequest() keeping the caller's reasoning object (no reasoning.summary default is added for OpenAI; only Bedrock and Bedrock Mantle narrow a summary to auto), calls OpenAI Responses, and maps the result back to chat. Every case sends the targeted x-bf-compat header and reads extra_fields.raw_request to check what Bifrost sent.\n\n168.1 pins the non-streaming tool route: converted, effort high kept, any summary a valid value, tool call mapped back. 168.2 is the streaming variant. 168.3 pins conversion without tools. 168.4 pins that a model without the flag (gpt-4o-mini) stays on chat completions.",
+  "item": [
+    {
+      "name": "168.1 openai/gpt-6-sol chat with tools is routed to Responses with reasoning kept - reasoning-only-to-responses",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('168.1 exact success status', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "});",
+              "if (pm.response.code !== 200) { return; }",
+              "var body = pm.response.json() || {};",
+              "var ef = body.extra_fields || {};",
+              "var rr = ef.raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('168.1 outbound request captured', function () {",
+              "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+              "});",
+              "if (!rr) { return; }",
+              "pm.test('168.1 chat request was routed to Responses', function () {",
+              "  pm.expect(ef.converted_request_type, 'expected responses: ' + pm.response.text()).to.eql('responses');",
+              "  pm.expect(rr.input, 'outbound body is not Responses-shaped: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('array');",
+              "  pm.expect(rr.reasoning_effort, 'chat-shaped reasoning_effort leaked: ' + JSON.stringify(rr).slice(0, 800)).to.equal(undefined);",
+              "});",
+              "pm.test('168.1 reasoning effort high survives the conversion', function () {",
+              "  pm.expect(rr.reasoning, 'reasoning was dropped: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('object');",
+              "  pm.expect(rr.reasoning.effort).to.eql('high');",
+              "  if (rr.reasoning.summary != null) { pm.expect(['auto', 'concise', 'detailed'], 'invalid reasoning.summary forwarded: ' + JSON.stringify(rr.reasoning)).to.include(rr.reasoning.summary); }",
+              "});",
+              "pm.test('168.1 required get_weather call comes back as a chat tool call', function () {",
+              "  var msg = body.choices && body.choices[0] && body.choices[0].message;",
+              "  pm.expect(msg, 'assistant message missing: ' + pm.response.text()).to.be.an('object');",
+              "  pm.expect(msg.tool_calls, 'tool_calls missing: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+              "  pm.expect(msg.tool_calls[0].function.name).to.eql('get_weather');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-compat",
+            "value": "[\"force_reasoning_only_models_to_responses\"]"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_weather for Paris. Do not answer directly.\"\n    }\n  ],\n  \"reasoning_effort\": \"high\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ],\n          \"additionalProperties\": false\n        },\n        \"strict\": true\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"max_completion_tokens\": 512\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "168.2 openai/gpt-6-sol chat stream with tools is routed to Responses - reasoning-only-to-responses",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('168.2 exact success status', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "});",
+              "if (pm.response.code !== 200) { return; }",
+              "var text = pm.response.text();",
+              "var converted = false, toolName = null, sawDone = false, rr = null;",
+              "text.split('\\n').forEach(function (line) {",
+              "  if (line.indexOf('data: ') !== 0) { return; }",
+              "  var data = line.slice(6).trim();",
+              "  if (data === '[DONE]') { sawDone = true; return; }",
+              "  var chunk;",
+              "  try { chunk = JSON.parse(data); } catch (e) { return; }",
+              "  if ((chunk.extra_fields || {}).converted_request_type === 'responses') { converted = true; }",
+              "  if ((chunk.extra_fields || {}).raw_request) { rr = chunk.extra_fields.raw_request; }",
+              "  (chunk.choices || []).forEach(function (ch) {",
+              "    ((ch.delta || {}).tool_calls || []).forEach(function (t) {",
+              "      if (t.function && t.function.name) { toolName = t.function.name; }",
+              "    });",
+              "  });",
+              "});",
+              "pm.test('168.2 stream chunks report the Responses conversion', function () {",
+              "  pm.expect(converted, 'no chunk carried converted_request_type=responses: ' + text.slice(0, 1500)).to.equal(true);",
+              "});",
+              "pm.test('168.2 required get_weather call streams back as a chat tool-call delta', function () {",
+              "  pm.expect(toolName, 'no tool-call delta: ' + text.slice(0, 1500)).to.eql('get_weather');",
+              "});",
+              "pm.test('168.2 stream terminates with [DONE]', function () {",
+              "  pm.expect(sawDone, 'missing [DONE]: ' + text.slice(-800)).to.equal(true);",
+              "});",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('168.2 outbound request captured on the stream', function () {",
+              "  pm.expect(rr, 'raw_request missing from every chunk: ' + text.slice(-1500)).to.be.an('object');",
+              "});",
+              "pm.test('168.2 reasoning effort high survives the conversion', function () {",
+              "  pm.expect(rr && rr.input, 'outbound body is not Responses-shaped: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('array');",
+              "  pm.expect(rr && rr.reasoning, 'reasoning was dropped: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('object');",
+              "  pm.expect(rr.reasoning.effort).to.eql('high');",
+              "  if (rr.reasoning.summary != null) { pm.expect(['auto', 'concise', 'detailed'], 'invalid reasoning.summary forwarded: ' + JSON.stringify(rr.reasoning)).to.include(rr.reasoning.summary); }",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-compat",
+            "value": "[\"force_reasoning_only_models_to_responses\"]"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_weather for Paris. Do not answer directly.\"\n    }\n  ],\n  \"reasoning_effort\": \"high\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ],\n          \"additionalProperties\": false\n        },\n        \"strict\": true\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"max_completion_tokens\": 512,\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "168.3 openai/gpt-6-sol chat without tools is still routed to Responses - reasoning-only-to-responses",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('168.3 exact success status', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "});",
+              "if (pm.response.code !== 200) { return; }",
+              "var body = pm.response.json() || {};",
+              "var ef = body.extra_fields || {};",
+              "var rr = ef.raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('168.3 outbound request captured', function () {",
+              "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+              "});",
+              "if (!rr) { return; }",
+              "pm.test('168.3 chat request was routed to Responses', function () {",
+              "  pm.expect(ef.converted_request_type, 'expected responses: ' + pm.response.text()).to.eql('responses');",
+              "  pm.expect(rr.input, 'outbound body is not Responses-shaped: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('array');",
+              "  pm.expect(rr.reasoning_effort, 'chat-shaped reasoning_effort leaked: ' + JSON.stringify(rr).slice(0, 800)).to.equal(undefined);",
+              "});",
+              "pm.test('168.3 reasoning effort low survives the conversion', function () {",
+              "  pm.expect(rr.reasoning, 'reasoning was dropped: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('object');",
+              "  pm.expect(rr.reasoning.effort).to.eql('low');",
+              "  if (rr.reasoning.summary != null) { pm.expect(['auto', 'concise', 'detailed'], 'invalid reasoning.summary forwarded: ' + JSON.stringify(rr.reasoning)).to.include(rr.reasoning.summary); }",
+              "});",
+              "pm.test('168.3 assistant text returned', function () {",
+              "  var msg = body.choices && body.choices[0] && body.choices[0].message;",
+              "  pm.expect(msg && msg.content, 'content missing: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-compat",
+            "value": "[\"force_reasoning_only_models_to_responses\"]"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with only OK.\"\n    }\n  ],\n  \"reasoning_effort\": \"low\",\n  \"max_completion_tokens\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "168.4 openai/gpt-4o-mini chat with tools stays on chat completions - reasoning-only-to-responses",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('168.4 exact success status', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "});",
+              "if (pm.response.code !== 200) { return; }",
+              "var body = pm.response.json() || {};",
+              "var ef = body.extra_fields || {};",
+              "pm.test('168.4 model without the datasheet flag is not converted', function () {",
+              "  pm.expect(ef.converted_request_type, 'unexpected conversion: ' + pm.response.text()).to.equal(undefined);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-compat",
+            "value": "[\"force_reasoning_only_models_to_responses\"]"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_weather for Paris. Do not answer directly.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ],\n          \"additionalProperties\": false\n        },\n        \"strict\": true\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"max_tokens\": 64\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "168.5 openai/gpt-6-sol chat stream without tools keeps one id on every chunk - reasoning-only-to-responses",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('168.5 exact success status', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "});",
+              "if (pm.response.code !== 200) { return; }",
+              "var text = pm.response.text();",
+              "var chunks = [], badEvents = [], sawDone = false, converted = false, content = '';",
+              "text.split('\\n').forEach(function (line) {",
+              "  if (line.indexOf('data: ') !== 0) { return; }",
+              "  var data = line.slice(6).trim();",
+              "  if (data === '[DONE]') { sawDone = true; return; }",
+              "  var chunk;",
+              "  try { chunk = JSON.parse(data); } catch (e) { badEvents.push(data.slice(0, 200)); return; }",
+              "  if (chunk.object !== 'chat.completion.chunk') { return; }",
+              "  chunks.push(chunk);",
+              "  if ((chunk.extra_fields || {}).converted_request_type === 'responses') { converted = true; }",
+              "  (chunk.choices || []).forEach(function (ch) {",
+              "    if (ch.delta && typeof ch.delta.content === 'string') { content += ch.delta.content; }",
+              "  });",
+              "});",
+              "pm.test('168.5 every data event is valid JSON', function () {",
+              "  pm.expect(badEvents, 'unparseable data events: ' + JSON.stringify(badEvents)).to.be.empty;",
+              "});",
+              "pm.test('168.5 stream terminates with [DONE]', function () {",
+              "  pm.expect(sawDone, 'missing [DONE]: ' + text.slice(-800)).to.equal(true);",
+              "});",
+              "pm.test('168.5 chat stream was served through Responses', function () {",
+              "  pm.expect(converted, 'no chunk carried converted_request_type=responses, so this case no longer exercises the conversion: ' + text.slice(0, 1500)).to.equal(true);",
+              "});",
+              "pm.test('168.5 every chunk carries the stream id, model and created of the first chunk', function () {",
+              "  pm.expect(chunks.length, 'no chat.completion.chunk events: ' + text.slice(0, 1500)).to.be.above(1);",
+              "  var first = chunks[0];",
+              "  pm.expect(first.id, 'first chunk has no id: ' + JSON.stringify(first)).to.be.a('string').and.not.empty;",
+              "  pm.expect(first.model, 'first chunk has no model: ' + JSON.stringify(first)).to.be.a('string').and.not.empty;",
+              "  pm.expect(first.created, 'first chunk has no created timestamp: ' + JSON.stringify(first)).to.be.a('number').and.above(0);",
+              "  chunks.forEach(function (c, i) {",
+              "    pm.expect(c.id, 'chunk ' + i + ' id differs from the stream id (OpenAI SDK accumulators drop it): ' + JSON.stringify(c)).to.eql(first.id);",
+              "    pm.expect(c.model, 'chunk ' + i + ' model: ' + JSON.stringify(c)).to.eql(first.model);",
+              "    pm.expect(c.created, 'chunk ' + i + ' created: ' + JSON.stringify(c)).to.eql(first.created);",
+              "  });",
+              "});",
+              "pm.test('168.5 streamed assistant text is not empty', function () {",
+              "  pm.expect(content, 'no delta.content in the stream: ' + text.slice(0, 1500)).to.not.be.empty;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-compat",
+            "value": "[\"force_reasoning_only_models_to_responses\"]"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with just: ok\"\n    }\n  ],\n  \"reasoning_effort\": \"low\",\n  \"max_completion_tokens\": 256,\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    }
+  ]
+}

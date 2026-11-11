@@ -1,0 +1,138 @@
+{
+  "name": "43. Gemini Reasoning Signature Replay (PR #5982)",
+  "description": "Multi-turn reasoning replay for Gemini through /v1/responses. Gemini returns a thought signature on reasoning that accompanies a function call, and requires it back unmodified when the tool result is sent - a dropped or rewritten signature is rejected on the continuation, so a converter that keeps only part of a reasoning item fails here and nowhere else. The harness had 71 reasoning rows and not one that replayed reasoning back on a second turn, which is the only shape that exercises this. Case 1 captures a reasoning + function_call turn; case 2 replays it with the tool result.",
+  "item": [
+    {
+      "name": "gemini/gemini-2.5-flash /v1/responses reasoning + tool call captures replay input - PR #5982",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Gemini returns reasoning alongside the tool call', function () {",
+              "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.output, 'expected output array').to.be.an('array').that.is.not.empty;",
+              "  // Asserted, not merely hoped for: the replay row skips when the capture",
+              "  // stored nothing, so without this a run where Gemini did not call the",
+              "  // tool passes green having tested no signature preservation at all.",
+              "  var kinds = j.output.map(function (o) { return o.type; });",
+              "  pm.expect(kinds, 'no function_call came back, so the replay row would silently skip').to.include('function_call');",
+              "  pm.expect(kinds, 'no reasoning item came back, so there is no thought signature to preserve').to.include('reasoning');",
+              "});",
+              "// Only capture when a function call came back: the replay case is about a",
+              "// reasoning item sitting next to a function_call, which is the shape whose",
+              "// thought signature has to survive. Without one there is nothing to pin, so",
+              "// the replay skips rather than false-failing.",
+              "try {",
+              "  var body = pm.response.json();",
+              "  // Every tool call has to be answered, not just the first one. Current models",
+              "  // emit parallel calls, and a history that replays a call without its output is",
+              "  // rejected outright - OpenAI answers \"No tool output found for function call",
+              "  // <id>\", Anthropic and Bedrock require a tool_result per tool_use. Answering",
+              "  // only calls[0] made these rows flake whenever the model parallelized.",
+              "  var calls = (body.output || []).filter(function (o) { return o.type === 'function_call' && o.call_id; });",
+              "  if (calls.length) {",
+              "    var input = [{ type: 'message', role: 'user', content: \"What time is it in Tokyo? Use the get_time tool, thinking it through first.\" }]",
+              "      .concat(body.output)",
+              "      .concat(calls.map(function (c) { return { type: 'function_call_output', call_id: c.call_id, output: '{\"time\": \"21:00 JST\"}' }; }));",
+              "    // Force the shape the converters used to mangle: a reasoning item",
+              "    // carrying BOTH summary text and a signature. Bifrost now sends that",
+              "    // text back as a thought part, which is what this row validates against",
+              "    // the live API - the thinking guide requires thought blocks resent",
+              "    // intact, but does not document constructed thought parts on input, so",
+              "    // only a real call settles whether Gemini accepts them.",
+              "    for (var i = 0; i < input.length; i++) {",
+              "      if (input[i] && input[i].type === 'reasoning') {",
+              "        if (!input[i].summary || !input[i].summary.length) {",
+              "          input[i].summary = [{ type: 'summary_text', text: 'Checking the timezone before calling the tool.' }];",
+              "        }",
+              "      }",
+              "    }",
+              "    pm.collectionVariables.set('geminiReasoningReplayInput5982', JSON.stringify(input));",
+              "    var reasoning = (body.output || []).filter(function (o) { return o.type === 'reasoning'; });",
+              "    pm.collectionVariables.set('geminiReasoningCount5982', String(reasoning.length));",
+              "  }",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"gemini/gemini-2.5-flash\", \"input\": \"What time is it in Tokyo? Use the get_time tool, thinking it through first.\", \"tools\": [{\"type\": \"function\", \"name\": \"get_time\", \"description\": \"Get the current time\", \"parameters\": {\"type\": \"object\", \"properties\": {\"timezone\": {\"type\": \"string\"}}, \"required\": []}}], \"tool_choice\": {\"type\": \"function\", \"name\": \"get_time\"}, \"reasoning\": {\"effort\": \"low\"}, \"max_output_tokens\": 2048}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "gemini/gemini-2.5-flash /v1/responses replay preserves thought signature - PR #5982",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Skip when the capture step did not run: the body placeholder stays\n// unresolved, so there is nothing meaningful to replay.",
+              "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+              "pm.test('Replayed Gemini reasoning + tool call is accepted', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'Gemini rejected the replayed turn - the thought signature did not survive the round trip')",
+              "    .to.not.include('thought_signature');",
+              "  pm.expect(pm.response.code, 'replay request failed: ' + body).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.output, 'expected an output array').to.be.an('array').that.is.not.empty;",
+              "});",
+              "pm.test('Gemini accepts replayed thought text, not just the signature', function () {",
+              "  var t = pm.response.text() || '';",
+              "  pm.expect(t, 'Gemini rejected a constructed thought part on input').to.not.include('INVALID_ARGUMENT');",
+              "  pm.expect(pm.response.code, 'replay with thought text failed: ' + t).to.equal(200);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"gemini/gemini-2.5-flash\", \"input\": {{geminiReasoningReplayInput5982}}, \"tools\": [{\"type\": \"function\", \"name\": \"get_time\", \"description\": \"Get the current time\", \"parameters\": {\"type\": \"object\", \"properties\": {\"timezone\": {\"type\": \"string\"}}, \"required\": []}}], \"reasoning\": {\"effort\": \"low\"}, \"max_output_tokens\": 2048}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    }
+  ]
+}

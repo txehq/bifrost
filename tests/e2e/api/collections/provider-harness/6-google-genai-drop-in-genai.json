@@ -1,0 +1,38 @@
+{
+  "name": "6. Google GenAI drop-in (/genai)",
+  "description": "Mirrors Google GenAI's `generateContent` API. Send the model + action via the `:generateContent` suffix on the path.",
+  "item": [
+    {
+      "name": "POST /genai/v1beta/models/{model}:generateContent",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [{ \"text\": \"Hello from GenAI generateContent.\" }]\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "{{genaiModel}}:generateContent"
+          ]
+        }
+      }
+    }
+  ]
+}

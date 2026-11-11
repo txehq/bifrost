@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import test from 'node:test';
+import { assembleProviderHarness } from './provider-harness-source.mjs';
 
-const collection = JSON.parse(fs.readFileSync(new URL('../../collections/provider-harness.json', import.meta.url), 'utf8'));
+const collection = assembleProviderHarness();
 const collectionScript = collection.event.find(event => event.listen === 'test').script.exec.join('\n');
 // The content check reads the request name the script derives earlier, so the
 // slice carries that definition with it.

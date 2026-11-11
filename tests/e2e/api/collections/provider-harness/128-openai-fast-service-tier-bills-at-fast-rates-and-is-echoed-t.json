@@ -1,0 +1,222 @@
+{
+  "name": "128. OpenAI Fast service tier bills at Fast rates and is echoed to the client (fast-service-tier)",
+  "description": "OpenAI renamed Priority processing to Fast mode on 2026-07-30 (service_tier \"fast\"; \"priority\" still accepted) and bills it at 2x Standard.\nThe datasheet stores those rates under the _priority columns. Before the fix, tierFromResponse only matched priority/flex/ultrafast, so a\nserved \"fast\" response billed at Standard (a customer gpt-6-astra call logged $0.00886 instead of $0.01772), and\nBifrostResponsesResponse.WithDefaults rewrote the unknown tier to \"auto\" on /v1/responses.\n\n128.1/128.2 pin /v1/responses (non-streaming and streaming): the echoed service_tier is fast (or default when OpenAI downgraded, which OpenAI also bills at Standard), never auto.\n128.3 pins /v1/chat/completions. All three send x-bf-expect-cost so the dbverify reporter recomputes the logged cost from the datasheet at the\nserved tier (fast -> _priority columns) and fails on a Standard-rate charge. x-bf-send-back-raw-request proves service_tier fast left for OpenAI unchanged.\nPrompts are tiny and uncached so Fast cost is exactly 2x Standard for the row tokens.",
+  "item": [
+    {
+      "name": "128.1 openai/gpt-6-astra /v1/responses service_tier fast: echoed as fast and billed at Fast rates - fast-service-tier",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Billing is pinned by the dbverify reporter: x-bf-expect-cost recomputes the logs row's",
+              "// cost from the datasheet at the rates of the served tier column (fast -> _priority).",
+              "pm.test('128.1 exact success status', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "});",
+              "if (pm.response.code !== 200) { return; }",
+              "var body = pm.response.json() || {};",
+              "pm.test('128.1 response is response with usage', function () {",
+              "  pm.expect(body.object, JSON.stringify(body).slice(0, 400)).to.eql('response');",
+              "  pm.expect(body.usage, 'usage missing').to.be.an('object');",
+              "});",
+              "pm.test('128.1 body echoes the served tier, never a coerced auto', function () {",
+              "  var served = body.service_tier;",
+              "  pm.expect(served, 'service_tier was rewritten (fast must survive; default only if OpenAI downgraded): ' + JSON.stringify(served)).to.be.oneOf(['fast', 'default']);",
+              "});",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('128.1 service_tier fast reached OpenAI on the wire', function () {",
+              "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honoured').to.be.an('object');",
+              "  pm.expect(rr.service_tier, 'outbound service_tier: ' + JSON.stringify(rr).slice(0, 600)).to.eql('fast');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          },
+          {
+            "key": "x-request-id",
+            "value": "fast-tier-responses-{{$guid}}"
+          },
+          {
+            "key": "x-bf-expect-cost",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-6-astra\",\n  \"input\": \"Reply with only OK.\",\n  \"service_tier\": \"fast\",\n  \"reasoning\": {\n    \"effort\": \"low\"\n  },\n  \"max_output_tokens\": 32\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "128.2 openai/gpt-6-astra /v1/responses streaming service_tier fast: response.completed echoes fast and bills at Fast rates - fast-service-tier",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Billing is pinned by the dbverify reporter: x-bf-expect-cost recomputes the logs row's",
+              "// cost from the datasheet at the rates of the served tier column (fast -> _priority).",
+              "var txt = pm.response.text() || '';",
+              "pm.test('128.2 exact success status', function () { pm.expect(pm.response.code, 'failed: ' + txt).to.equal(200); });",
+              "pm.test('128.2 response is SSE and reaches response.completed', function () {",
+              "  pm.expect(pm.response.headers.get('content-type') || '').to.include('event-stream');",
+              "  pm.expect(txt, txt.slice(-800)).to.include('response.completed');",
+              "});",
+              "if (pm.response.code !== 200) { return; }",
+              "var terminal = null;",
+              "txt.split('\\n').forEach(function (line) {",
+              "  if (line.indexOf('data:') !== 0) { return; }",
+              "  var ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { return; }",
+              "  if (ev && ev.type === 'response.completed') { terminal = ev; }",
+              "});",
+              "pm.test('128.2 terminal event carries the response object', function () {",
+              "  pm.expect(terminal && terminal.response, 'no parsable response.completed: ' + txt.slice(-800)).to.be.an('object');",
+              "});",
+              "if (!terminal || !terminal.response) { return; }",
+              "pm.test('128.2 response.completed echoes the served tier, never a coerced auto', function () {",
+              "  var served = terminal.response.service_tier;",
+              "  pm.expect(served, 'service_tier was rewritten (fast must survive; default only if OpenAI downgraded): ' + JSON.stringify(served)).to.be.oneOf(['fast', 'default']);",
+              "});",
+              "var rr = terminal.extra_fields && terminal.extra_fields.raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('128.2 service_tier fast reached OpenAI on the wire', function () {",
+              "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honoured').to.be.an('object');",
+              "  pm.expect(rr.service_tier, 'outbound service_tier: ' + JSON.stringify(rr).slice(0, 600)).to.eql('fast');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          },
+          {
+            "key": "x-request-id",
+            "value": "fast-tier-responses-stream-{{$guid}}"
+          },
+          {
+            "key": "x-bf-expect-cost",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-6-astra\",\n  \"input\": \"Reply with only OK.\",\n  \"service_tier\": \"fast\",\n  \"reasoning\": {\n    \"effort\": \"low\"\n  },\n  \"max_output_tokens\": 32,\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "128.3 openai/gpt-6-astra /v1/chat/completions service_tier fast: echoed as fast and billed at Fast rates - fast-service-tier",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Billing is pinned by the dbverify reporter: x-bf-expect-cost recomputes the logs row's",
+              "// cost from the datasheet at the rates of the served tier column (fast -> _priority).",
+              "pm.test('128.3 exact success status', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "});",
+              "if (pm.response.code !== 200) { return; }",
+              "var body = pm.response.json() || {};",
+              "pm.test('128.3 response is chat.completion with usage', function () {",
+              "  pm.expect(body.object, JSON.stringify(body).slice(0, 400)).to.eql('chat.completion');",
+              "  pm.expect(body.usage, 'usage missing').to.be.an('object');",
+              "});",
+              "pm.test('128.3 body echoes the served tier, never a coerced auto', function () {",
+              "  var served = body.service_tier;",
+              "  pm.expect(served, 'service_tier was rewritten (fast must survive; default only if OpenAI downgraded): ' + JSON.stringify(served)).to.be.oneOf(['fast', 'default']);",
+              "});",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('128.3 service_tier fast reached OpenAI on the wire', function () {",
+              "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honoured').to.be.an('object');",
+              "  pm.expect(rr.service_tier, 'outbound service_tier: ' + JSON.stringify(rr).slice(0, 600)).to.eql('fast');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          },
+          {
+            "key": "x-request-id",
+            "value": "fast-tier-chat-{{$guid}}"
+          },
+          {
+            "key": "x-bf-expect-cost",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-6-astra\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with only OK.\"\n    }\n  ],\n  \"service_tier\": \"fast\",\n  \"reasoning_effort\": \"low\",\n  \"max_completion_tokens\": 32\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    }
+  ]
+}

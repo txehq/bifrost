@@ -1,0 +1,489 @@
+{
+  "name": "19. Chat-to-Responses Tool Replay (#5101 / PR #5102) (chat-responses-tool-replay)",
+  "description": "Regression coverage for PR #5102 (closes #5101): Vercel-AI-SDK-style clients replay an assistant tool call and its tool result on the second step of a run. When the compat plugin converts /v1/chat/completions to the OpenAI Responses API, the replayed tool call becomes a function_call input item that must NOT carry role - OpenAI rejects role on any non-message input item with 400 unknown_parameter input[N].role. Cases 1-2 drive the real conversion route (x-bf-compat forces convert_chat_to_responses); case 3 pins the wire invariant on the native /v1/responses route with a caller-supplied role-bearing function_call item. Cases 4-5 pin that a chat tool message with array content converts to function_call_output blocks in the Responses spelling (input_text, not the chat text type), which OpenAI and Azure rejected with \"Invalid value: 'text'. Supported values are: 'input_text', ...\" at input[N].output[0].type. Cases 6-8 pin that a chat tool message with empty string content converts to a function_call_output that still carries output \"\"; the field used to be dropped and OpenAI rejected the request with \"Missing required parameter: 'input[N].output'\" (#8568).",
+  "item": [
+    {
+      "name": "bedrock_mantle/openai.gpt-5.6-luna compat chat->responses: replayed tool call accepted (non-streaming) - chat-responses-tool-replay",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Chat->Responses conversion actually fired - #5101', function () {",
+              "  // markForConversion is datasheet-driven: x-bf-compat only ENABLES the check, it cannot",
+              "  // force a conversion. On a chat-capable model (this row used openai/gpt-4o-mini until",
+              "  // #6831 testing caught it) nothing converts and the assertions below pass vacuously.",
+              "  var j = pm.response.json();",
+              "  var ef = j.extra_fields || {};",
+              "  pm.expect(ef.converted_request_type, 'chat->responses conversion did not fire, so the replayed tool call never reached ToResponsesRequest and this row proves nothing').to.eql('responses');",
+              "});",
+              "pm.test('No unknown_parameter input[N].role error - #5101', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'OpenAI rejected a replayed function_call input item (regression of PR #5102)').to.not.match(/input\\[\\d+\\]\\.role/);",
+              "  pm.expect(body).to.not.include('Unknown parameter');",
+              "});",
+              "pm.test('Replayed assistant tool call + tool result synthesized into an answer - #5101', function () {",
+              "  pm.expect(pm.response.code, 'replay request failed: ' + pm.response.text()).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  var msg = j.choices && j.choices[0] && j.choices[0].message;",
+              "  pm.expect(msg, 'no assistant message in response').to.exist;",
+              "  var content = (msg.content || '').toString();",
+              "  pm.expect(content.length, 'expected a synthesized answer from the tool result').to.be.above(0);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-compat",
+            "value": "[\"convert_chat_to_responses\"]"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in San Francisco? Answer in Celsius.\"},{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_replay_5101\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\": \\\"San Francisco\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_replay_5101\",\"content\":\"{\\\"temperature\\\": \\\"22\\\", \\\"unit\\\": \\\"celsius\\\", \\\"description\\\": \\\"Sunny\\\"}\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "bedrock_mantle/openai.gpt-5.6-luna compat chat->responses: replayed tool call accepted (streaming) - chat-responses-tool-replay",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Chat->Responses conversion actually fired - #5101', function () {",
+              "  // markForConversion is datasheet-driven: x-bf-compat only ENABLES the check, it cannot",
+              "  // force a conversion. On a chat-capable model (this row used openai/gpt-4o-mini until",
+              "  // #6831 testing caught it) nothing converts and the assertions below pass vacuously.",
+              "  //",
+              "  // This row streams, so the body is SSE frames rather than one JSON document and",
+              "  // pm.response.json() throws on it. The marker rides extra_fields on the chunks (compat's",
+              "  // PostLLMHook runs per chunk) and is omitempty, so one frame carrying it is enough.",
+              "  var converted = [];",
+              "  (pm.response.text() || '').split('\\n').forEach(function (line) {",
+              "    var t = line.replace(/\\r$/, '');",
+              "    if (t.indexOf('data:') !== 0) { return; }",
+              "    var payload = t.slice(5).trim();",
+              "    if (!payload || payload === '[DONE]') { return; }",
+              "    try {",
+              "      var frame = JSON.parse(payload);",
+              "      var ef = frame.extra_fields || {};",
+              "      if (ef.converted_request_type) { converted.push(ef.converted_request_type); }",
+              "    } catch (e) {}",
+              "  });",
+              "  pm.expect(converted, 'chat->responses conversion did not fire on any streamed chunk, so the replayed tool call never reached ToResponsesRequest and this row proves nothing').to.not.be.empty;",
+              "  converted.forEach(function (marker) {",
+              "    pm.expect(marker, 'a streamed chunk reported a different conversion target').to.eql('responses');",
+              "  });",
+              "});",
+              "pm.test('No unknown_parameter input[N].role error - #5101', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'OpenAI rejected a replayed function_call input item (regression of PR #5102)').to.not.match(/input\\[\\d+\\]\\.role/);",
+              "  pm.expect(body).to.not.include('Unknown parameter');",
+              "});",
+              "pm.test('Streaming replay completes without wire rejection - #5101', function () {",
+              "  pm.expect(pm.response.code, 'streaming replay request failed: ' + pm.response.text()).to.be.below(400);",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'expected SSE data frames').to.include('data:');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-compat",
+            "value": "[\"convert_chat_to_responses\"]"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in San Francisco? Answer in Celsius.\"},{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_replay_5101\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\": \\\"San Francisco\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_replay_5101\",\"content\":\"{\\\"temperature\\\": \\\"22\\\", \\\"unit\\\": \\\"celsius\\\", \\\"description\\\": \\\"Sunny\\\"}\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"stream\":true}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai/gpt-4o-mini native /v1/responses: role-bearing function_call input item accepted - chat-responses-tool-replay",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('No unknown_parameter input[N].role error - #5101', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'OpenAI rejected a replayed function_call input item (regression of PR #5102)').to.not.match(/input\\[\\d+\\]\\.role/);",
+              "  pm.expect(body).to.not.include('Unknown parameter');",
+              "});",
+              "pm.test('Role-bearing function_call input item stripped at the OpenAI seam - #5101', function () {",
+              "  pm.expect(pm.response.code, 'responses replay request failed: ' + pm.response.text()).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.output, 'expected an output array').to.be.an('array').that.is.not.empty;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"What is the weather in San Francisco? Answer in Celsius.\"},{\"type\":\"function_call\",\"role\":\"assistant\",\"status\":\"completed\",\"call_id\":\"call_replay_5101\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\": \\\"San Francisco\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_replay_5101\",\"output\":\"{\\\"temperature\\\": \\\"22\\\", \\\"unit\\\": \\\"celsius\\\"}\"}],\"max_output_tokens\":200}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai/gpt-5.3-codex compat chat->responses: array-content tool result becomes input_text output blocks - chat-responses-tool-replay",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var text = pm.response.text() || '';",
+              "pm.test('openai: chat tool message with array content survives the chat->responses conversion', function () {",
+              "  pm.expect(text, 'Responses rejected the tool result block type').to.not.include(\"Invalid value: 'text'\");",
+              "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+              "});",
+              "pm.test('openai: function_call_output never carries the chat text block spelling', function () {",
+              "  var raw = pm.response.json().extra_fields.raw_request;",
+              "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+              "  var outs = (raw.input || []).filter(function (i) { return i.type === 'function_call_output'; });",
+              "  pm.expect(outs.length, 'expected one function_call_output in the converted request: ' + JSON.stringify(raw)).to.equal(1);",
+              "  // Text-only blocks are flattened to a string on the OpenAI egress (core/providers/openai/types.go); a block array is only kept when it carries something a string cannot.",
+              "  var out = outs[0].output;",
+              "  if (typeof out === 'string') {",
+              "    pm.expect(out, 'flattened tool output lost the tool text: ' + JSON.stringify(outs[0])).to.equal('18C, light rain');",
+              "  } else {",
+              "    pm.expect(Array.isArray(out) && out.length > 0, 'output must be a string or a non-empty block array: ' + JSON.stringify(outs[0])).to.equal(true);",
+              "    out.forEach(function (blk) { pm.expect(blk.type, 'block type on the wire: ' + JSON.stringify(outs[0])).to.equal('input_text'); });",
+              "  }",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-compat",
+            "value": "[\"convert_chat_to_responses\"]"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-5.3-codex\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a weather assistant.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the weather in Paris?\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_paris_blocks\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_paris_blocks\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"18C, light rain\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Thanks. Is that warm?\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "azure/gpt-5.6-sol compat chat->responses: array-content tool result becomes input_text output blocks - chat-responses-tool-replay",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var text = pm.response.text() || '';",
+              "pm.test('azure: chat tool message with array content survives the chat->responses conversion', function () {",
+              "  pm.expect(text, 'Responses rejected the tool result block type').to.not.include(\"Invalid value: 'text'\");",
+              "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+              "});",
+              "pm.test('azure: function_call_output never carries the chat text block spelling', function () {",
+              "  var raw = pm.response.json().extra_fields.raw_request;",
+              "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+              "  var outs = (raw.input || []).filter(function (i) { return i.type === 'function_call_output'; });",
+              "  pm.expect(outs.length, 'expected one function_call_output in the converted request: ' + JSON.stringify(raw)).to.equal(1);",
+              "  // Text-only blocks are flattened to a string on the OpenAI egress (core/providers/openai/types.go); a block array is only kept when it carries something a string cannot.",
+              "  var out = outs[0].output;",
+              "  if (typeof out === 'string') {",
+              "    pm.expect(out, 'flattened tool output lost the tool text: ' + JSON.stringify(outs[0])).to.equal('18C, light rain');",
+              "  } else {",
+              "    pm.expect(Array.isArray(out) && out.length > 0, 'output must be a string or a non-empty block array: ' + JSON.stringify(outs[0])).to.equal(true);",
+              "    out.forEach(function (blk) { pm.expect(blk.type, 'block type on the wire: ' + JSON.stringify(outs[0])).to.equal('input_text'); });",
+              "  }",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-compat",
+            "value": "[\"convert_chat_to_responses\"]"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"azure/gpt-5.6-sol\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a weather assistant.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the weather in Paris?\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_paris_blocks\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_paris_blocks\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"18C, light rain\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Thanks. Is that warm?\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai/gpt-5.3-codex compat chat->responses: empty tool result keeps function_call_output.output (non-streaming) - chat-responses-tool-replay",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text() || '';",
+              "pm.test('openai: empty tool result is not rejected as a missing output', function () {",
+              "  pm.expect(text, 'function_call_output went out without output').to.not.match(/Missing required parameter: 'input\\[\\d+\\]\\.output'/);",
+              "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+              "});",
+              "pm.test('chat->responses conversion actually fired', function () {",
+              "  var ef = pm.response.json().extra_fields || {};",
+              "  pm.expect(ef.converted_request_type, 'conversion did not fire, so this row proves nothing: ' + text).to.eql('responses');",
+              "});",
+              "pm.test('openai: function_call_output carries output \"\" on the wire', function () {",
+              "  var raw = pm.response.json().extra_fields.raw_request;",
+              "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+              "  var outs = (raw.input || []).filter(function (i) { return i.type === 'function_call_output'; });",
+              "  pm.expect(outs.length, 'expected one function_call_output in the converted request: ' + JSON.stringify(raw)).to.equal(1);",
+              "  pm.expect(outs[0], 'output key dropped: ' + JSON.stringify(outs[0])).to.have.property('output');",
+              "  pm.expect(outs[0].output).to.equal('');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-compat",
+            "value": "[\"convert_chat_to_responses\"]"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-5.3-codex\",\"max_tokens\":200,\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Berlin? If the tool returns nothing, say the weather is unknown.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_empty_8568\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\":\\\"Berlin\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_empty_8568\",\"content\":\"\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"location\":{\"type\":\"string\"}}}}}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai/gpt-5.3-codex compat chat->responses: empty tool result keeps function_call_output.output (streaming) - chat-responses-tool-replay",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text() || '';",
+              "pm.test('openai: empty tool result is not rejected as a missing output', function () {",
+              "  pm.expect(text, 'function_call_output went out without output').to.not.match(/Missing required parameter: 'input\\[\\d+\\]\\.output'/);",
+              "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+              "});",
+              "pm.test('openai: stream converted and finished without an error frame', function () {",
+              "  var converted = false;",
+              "  text.split('\\n').forEach(function (line) {",
+              "    var t = line.replace(/\\r$/, '');",
+              "    if (t.indexOf('data:') !== 0) { return; }",
+              "    var payload = t.slice(5).trim();",
+              "    if (!payload || payload === '[DONE]') { return; }",
+              "    try { var ef = JSON.parse(payload).extra_fields || {}; if (ef.converted_request_type === 'responses') { converted = true; } } catch (e) {}",
+              "  });",
+              "  pm.expect(converted, 'conversion did not fire on any chunk, so this row proves nothing: ' + text).to.equal(true);",
+              "  pm.expect(text, 'stream ended with an error frame: ' + text).to.not.include('\"error\"');",
+              "  pm.expect(text, 'stream did not finish: ' + text).to.include('[DONE]');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-compat",
+            "value": "[\"convert_chat_to_responses\"]"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-5.3-codex\",\"max_tokens\":200,\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Berlin? If the tool returns nothing, say the weather is unknown.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_empty_8568\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\":\\\"Berlin\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_empty_8568\",\"content\":\"\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"location\":{\"type\":\"string\"}}}}}],\"stream\":true}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "bedrock_mantle/openai.gpt-5.6-luna compat chat->responses: empty tool result keeps function_call_output.output (non-streaming) - chat-responses-tool-replay",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text() || '';",
+              "pm.test('bedrock_mantle: empty tool result is not rejected as a missing output', function () {",
+              "  pm.expect(text, 'function_call_output went out without output').to.not.match(/Missing required parameter: 'input\\[\\d+\\]\\.output'/);",
+              "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+              "});",
+              "pm.test('chat->responses conversion actually fired', function () {",
+              "  var ef = pm.response.json().extra_fields || {};",
+              "  pm.expect(ef.converted_request_type, 'conversion did not fire, so this row proves nothing: ' + text).to.eql('responses');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-compat",
+            "value": "[\"convert_chat_to_responses\"]"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"max_tokens\":200,\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Berlin? If the tool returns nothing, say the weather is unknown.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_empty_8568\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\":\\\"Berlin\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_empty_8568\",\"content\":\"\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"location\":{\"type\":\"string\"}}}}}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    }
+  ]
+}

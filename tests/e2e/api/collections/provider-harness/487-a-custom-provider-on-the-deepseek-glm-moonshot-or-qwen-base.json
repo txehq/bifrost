@@ -1,0 +1,290 @@
+{
+  "name": "487. A custom provider on the deepseek, glm, moonshot or qwen base is served with its own keys (custom provider own key)",
+  "description": "Fork contract C2 (a request is served by the provider and key it names), TXE-7097. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. Core finds a provider and picks the keys of a request by the name the provider reports (GetProviderKey). A custom provider built on the deepseek, glm, moonshot or qwen base reported its base's name there, so a request to it was served with the base provider's keys, sent to the custom provider's base_url, or failed for want of keys when the base was not configured. The fixture config has one custom provider on each of the four bases (own_deepseek, own_glm, own_moonshot, own_qwen), each with a key of its own and base_url on the fixture's /pp/ownkey; the config also has the standard deepseek and moonshot providers with a different key. Each row sends one chat request and asserts the response names the custom provider and its key, and that the bearer the fixture received is the custom provider's own. core/utils_test.go (TestCustomProviderReportsItsOwnKeyOnEveryBase) covers every base a custom provider can be built on.",
+  "item": [
+    {
+      "name": "487.1 own_deepseek/fx-own-key - a custom provider on the deepseek base answers under its own name and sends its own key (custom provider own key)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"own_deepseek/fx-own-key\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('custom provider own key setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var NAME = 'own_deepseek', KEY_NAME = 'own-deepseek-key', SECRET = 'own-deepseek-secret', PATH = '/pp/ownkey/chat/completions';",
+              "pm.test('200, answered by the custom provider under its own name with its own key', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "  var extra = pm.response.json().extra_fields || {};",
+              "  pm.expect(extra.provider).to.eql(NAME);",
+              "  pm.expect((extra.routing_info || {}).provider).to.eql(NAME);",
+              "  pm.expect((extra.routing_info || {}).key, 'the key the gateway chose').to.eql(KEY_NAME);",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the custom provider base_url, carrying the custom provider key and no other', function () {",
+              "    pm.expect(calls, JSON.stringify(calls).slice(0, 600)).to.have.length(1);",
+              "    pm.expect(calls[0].path).to.equal(PATH);",
+              "    pm.expect(calls[0].bearer, 'the key that reached the custom provider base_url').to.equal(SECRET);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "487.2 own_glm/fx-own-key - a custom provider on the glm base answers under its own name and sends its own key (custom provider own key)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"own_glm/fx-own-key\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('custom provider own key setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var NAME = 'own_glm', KEY_NAME = 'own-glm-key', SECRET = 'own-glm-secret', PATH = '/pp/ownkey/api/paas/v4/chat/completions';",
+              "pm.test('200, answered by the custom provider under its own name with its own key', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "  var extra = pm.response.json().extra_fields || {};",
+              "  pm.expect(extra.provider).to.eql(NAME);",
+              "  pm.expect((extra.routing_info || {}).provider).to.eql(NAME);",
+              "  pm.expect((extra.routing_info || {}).key, 'the key the gateway chose').to.eql(KEY_NAME);",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the custom provider base_url, carrying the custom provider key and no other', function () {",
+              "    pm.expect(calls, JSON.stringify(calls).slice(0, 600)).to.have.length(1);",
+              "    pm.expect(calls[0].path).to.equal(PATH);",
+              "    pm.expect(calls[0].bearer, 'the key that reached the custom provider base_url').to.equal(SECRET);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "487.3 own_moonshot/fx-own-key - a custom provider on the moonshot base answers under its own name and sends its own key (custom provider own key)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"own_moonshot/fx-own-key\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('custom provider own key setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var NAME = 'own_moonshot', KEY_NAME = 'own-moonshot-key', SECRET = 'own-moonshot-secret', PATH = '/pp/ownkey/v1/chat/completions';",
+              "pm.test('200, answered by the custom provider under its own name with its own key', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "  var extra = pm.response.json().extra_fields || {};",
+              "  pm.expect(extra.provider).to.eql(NAME);",
+              "  pm.expect((extra.routing_info || {}).provider).to.eql(NAME);",
+              "  pm.expect((extra.routing_info || {}).key, 'the key the gateway chose').to.eql(KEY_NAME);",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the custom provider base_url, carrying the custom provider key and no other', function () {",
+              "    pm.expect(calls, JSON.stringify(calls).slice(0, 600)).to.have.length(1);",
+              "    pm.expect(calls[0].path).to.equal(PATH);",
+              "    pm.expect(calls[0].bearer, 'the key that reached the custom provider base_url').to.equal(SECRET);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "487.4 own_qwen/fx-own-key - a custom provider on the qwen base answers under its own name and sends its own key (custom provider own key)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"own_qwen/fx-own-key\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('custom provider own key setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var NAME = 'own_qwen', KEY_NAME = 'own-qwen-key', SECRET = 'own-qwen-secret', PATH = '/pp/ownkey/chat/completions';",
+              "pm.test('200, answered by the custom provider under its own name with its own key', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "  var extra = pm.response.json().extra_fields || {};",
+              "  pm.expect(extra.provider).to.eql(NAME);",
+              "  pm.expect((extra.routing_info || {}).provider).to.eql(NAME);",
+              "  pm.expect((extra.routing_info || {}).key, 'the key the gateway chose').to.eql(KEY_NAME);",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('one call reached the custom provider base_url, carrying the custom provider key and no other', function () {",
+              "    pm.expect(calls, JSON.stringify(calls).slice(0, 600)).to.have.length(1);",
+              "    pm.expect(calls[0].path).to.equal(PATH);",
+              "    pm.expect(calls[0].bearer, 'the key that reached the custom provider base_url').to.equal(SECRET);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

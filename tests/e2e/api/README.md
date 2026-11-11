@@ -61,10 +61,15 @@ cp tests/e2e/api/provider_config/azure-stream-preamble.config.json "$azure_fixtu
 go run ./transports/bifrost-http -app-dir "$azure_fixture_dir" -host 127.0.0.1 -port 8790
 ```
 
-Run the cases in a third terminal:
+Run the cases in a third terminal. The harness is stored one file per folder in
+`collections/provider-harness/` (see `AGENTS.md`, "Every wire-visible change ships with a
+provider-harness case"); `build` writes the one file newman takes, to `tmp/provider-harness.json`,
+which git ignores. Run it again after editing a folder file. Every `newman run` in this
+README reads that copy.
 
 ```bash
-newman run tests/e2e/api/collections/provider-harness.json \
+node tests/e2e/api/runners/provider-harness-folders.mjs build
+newman run tmp/provider-harness.json \
   --folder "74. Azure streaming preamble fallback" \
   --env-var baseUrl=http://127.0.0.1:8790 \
   --env-var azureStreamPreambleFixture=1
@@ -336,7 +341,7 @@ go run ./transports/bifrost-http -app-dir "$error_fixture_dir" -host 127.0.0.1 -
 Run the cases in a third terminal:
 
 ```bash
-newman run tests/e2e/api/collections/provider-harness.json \
+newman run tmp/provider-harness.json \
   --folder "154. Provider 5xx failover and 429 retry-hint propagation (provider error fixture)" \
   --env-var baseUrl=http://127.0.0.1:8790 \
   --env-var providerErrorFixture=1
@@ -346,7 +351,7 @@ Folder 336 (OpenAI-compatible chat fields and the encrypted-reasoning retry swit
 same fixture and gateway:
 
 ```bash
-newman run tests/e2e/api/collections/provider-harness.json \
+newman run tmp/provider-harness.json \
   --folder "336. OpenAI-compatible chat sends price-affecting fields as sent or refuses them, and the encrypted-reasoning retry has a switch (compatible chat fields)" \
   --env-var baseUrl=http://127.0.0.1:8790 \
   --env-var providerErrorFixture=1
@@ -369,7 +374,7 @@ Folder 427 (the compat plugin never drops or rewrites a price-affecting field, T
 fixture and gateway:
 
 ```bash
-newman run tests/e2e/api/collections/provider-harness.json \
+newman run tmp/provider-harness.json \
   --folder "427. The compat plugin never drops or rewrites a price-affecting field (compat price fields)" \
   --env-var baseUrl=http://127.0.0.1:8790 \
   --env-var providerErrorFixture=1
@@ -433,7 +438,7 @@ an ordinary gateway rather than the isolated one, for example the python integra
 port 8080, with the fixture running next to it:
 
 ```bash
-newman run tests/e2e/api/collections/provider-harness.json \
+newman run tmp/provider-harness.json \
   --folder "185. Routing retries, first-token cutoffs and refused keys against the provider error fixture (routing-error-fixture)" \
   --env-var baseUrl=http://127.0.0.1:8080 \
   --env-var providerErrorFixture=1 \
@@ -476,7 +481,7 @@ a real request yet; replace them when the staging requests are made.
 Start the fixture and the isolated gateway as in the previous section, then:
 
 ```bash
-newman run tests/e2e/api/collections/provider-harness.json \
+newman run tmp/provider-harness.json \
   --folder "408. Tencent, StepFun and Xiaomi chat on openai-based custom providers: usage, cached tokens and allowed request types (vendor chat channels) [SERIAL]" \
   --env-var baseUrl=http://127.0.0.1:8790 \
   --env-var providerErrorFixture=1 \
@@ -501,7 +506,7 @@ with its query, its `Content-Type` and which key it carried; an audio body is ke
 Start the fixture and the isolated gateway as in the provider error fixture section above, then run:
 
 ```bash
-newman run tests/e2e/api/collections/provider-harness.json \
+newman run tmp/provider-harness.json \
   --folder "403. Deepgram provider: Nova-3 transcription by file or URL, options as query parameters, duration usage (deepgram provider) [SERIAL]" \
   --working-dir . \
   --env-var baseUrl=http://127.0.0.1:8790 \
@@ -532,7 +537,7 @@ requests, and a passthrough stream relayed byte for byte.
 Start the fixture and the isolated gateway as in the previous section, then:
 
 ```bash
-newman run tests/e2e/api/collections/provider-harness.json \
+newman run tmp/provider-harness.json \
   --folder "329. Fork deployment switches: provider job accounting off and passthrough heartbeat off (provider error fixture, job accounting switch)" \
   --env-var baseUrl=http://127.0.0.1:8790 \
   --env-var providerErrorFixture=1
@@ -572,7 +577,7 @@ headers; a transcription call is kept as its definition and the size of its audi
 Start the fixture and the isolated gateway as in the provider error fixture section above, then run:
 
 ```bash
-newman run tests/e2e/api/collections/provider-harness.json \
+newman run tmp/provider-harness.json \
   --folder "400. Azure AI Speech: SSML speech, streamed speech and fast transcription (azure speech provider) [SERIAL]" \
   --working-dir . \
   --env-var baseUrl=http://127.0.0.1:8790 \
@@ -613,7 +618,7 @@ go run ./transports/bifrost-http -app-dir "$vertex_fixture_dir" -host 127.0.0.1 
 Run the cases in a third terminal:
 
 ```bash
-newman run tests/e2e/api/collections/provider-harness.json \
+newman run tmp/provider-harness.json \
   --folder "161. Vertex endpoint selection and header forwarding (vertex endpoint fixture)" \
   --env-var baseUrl=http://127.0.0.1:8793 \
   --env-var vertexEndpointFixture=1
@@ -663,7 +668,7 @@ HTTPS_PROXY=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9 \
 Run the cases in a third terminal:
 
 ```bash
-newman run tests/e2e/api/collections/provider-harness.json \
+newman run tmp/provider-harness.json \
   --folder "162. Bedrock passthrough for operations without native routes (bedrock passthrough fixture)" \
   --env-var baseUrl=http://127.0.0.1:8797 \
   --env-var bedrockEndpointFixture=1
@@ -811,7 +816,7 @@ pillars, each with an `intent` saying what it buys:
 Three things about the manifest are load-bearing:
 
 - **Rows are matched by `(folder, name)` against the *augmented* collection**,
-  not against `provider-harness.json`. The cache-parity rows are generated at
+  not against the source folders in `collections/provider-harness/`. The cache-parity rows are generated at
   augment time by `runners/lib/midconv-system-cache-parity.mjs` and
   `crossprovider-cache-matrix.mjs`, so they exist nowhere in the source
   collection and cannot be tagged in place the way `[PREVIEW]` / `[SKIP]` rows

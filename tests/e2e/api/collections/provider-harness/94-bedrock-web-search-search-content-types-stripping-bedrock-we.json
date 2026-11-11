@@ -1,0 +1,131 @@
+{
+  "name": "94. Bedrock web_search search_content_types stripping (bedrock-web-search-content-types)",
+  "description": "Bedrock Mantle's OpenAI-compatible Responses surface rejects search_content_types on web_search tools with HTTP 400 (\"The 'search_content_types' field is not supported for web search tools.\"). Bifrost now removes only that nested field while preserving the web_search tool and all other supported options. These cases pin the non-streaming and streaming Bedrock Mantle paths used by Codex. The non-streaming case inspects extra_fields.raw_request so a response that merely succeeds after dropping the entire tool cannot pass.",
+  "item": [
+    {
+      "name": "bedrock_mantle/openai.gpt-5.6-luna /v1/responses strips web_search search_content_types but keeps the tool - bedrock-web-search-content-types",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"input\":\"Reply with exactly: OK\",\"max_output_tokens\":32,\"tools\":[{\"type\":\"web_search\",\"search_content_types\":[\"text\",\"image\"]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text() || '';",
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+              "pm.test('bedrock_mantle web_search does not fail on search_content_types', function () {",
+              "  pm.expect(text, 'unsupported nested field reached Mantle: ' + text).to.not.include(\"The 'search_content_types' field is not supported for web search tools.\");",
+              "  pm.expect(pm.response.code, 'request failed: ' + text).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var body = pm.response.json();",
+              "var raw = (body.extra_fields || {}).raw_request;",
+              "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+              "var tools = raw && raw.tools instanceof Array ? raw.tools : [];",
+              "var web = null;",
+              "for (var i = 0; i < tools.length; i++) { if (tools[i].type === 'web_search') { web = tools[i]; break; } }",
+              "pm.test('bedrock_mantle keeps web_search while stripping only search_content_types', function () {",
+              "  pm.expect(raw, 'extra_fields.raw_request missing - is send_back_raw_request honoured? body=' + text).to.be.an('object');",
+              "  pm.expect(web, 'web_search tool was dropped: ' + JSON.stringify(raw)).to.be.an('object');",
+              "  pm.expect(web, 'search_content_types reached Mantle: ' + JSON.stringify(web)).to.not.have.property('search_content_types');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "bedrock_mantle/openai.gpt-5.6-luna /v1/responses streaming strips web_search search_content_types - bedrock-web-search-content-types",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"stream\":true,\"input\":\"Reply with exactly: OK\",\"max_output_tokens\":32,\"tools\":[{\"type\":\"web_search\",\"search_content_types\":[\"text\",\"image\"]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text() || '';",
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+              "pm.test('bedrock_mantle streaming web_search does not fail on search_content_types', function () {",
+              "  pm.expect(text, 'unsupported nested field reached Mantle: ' + text).to.not.include(\"The 'search_content_types' field is not supported for web search tools.\");",
+              "  pm.expect(pm.response.code, 'request failed: ' + text).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "// A 200 stream can still end in an error frame or stop early, so the frames are parsed.",
+              "var events = [];",
+              "text.split('\\n').forEach(function (l) {",
+              "  if (l.indexOf('data: ') !== 0) { return; }",
+              "  var p = l.slice(6).trim();",
+              "  if (!p || p === '[DONE]') { return; }",
+              "  try { events.push(JSON.parse(p)); } catch (e) {}",
+              "});",
+              "pm.test('bedrock_mantle streaming web_search produces SSE events', function () {",
+              "  pm.expect(events.length, 'no SSE events: ' + text.slice(0, 400)).to.be.above(0);",
+              "  var errors = events.filter(function (ev) { return ev.type === 'error' || ev.type === 'response.failed' || ev.type === 'response.incomplete' || (!ev.type && ev.error); });",
+              "  pm.expect(errors.length, 'stream ended in an error or incomplete event: ' + JSON.stringify(errors[0] || null).slice(0, 400)).to.equal(0);",
+              "  pm.expect(events.some(function (ev) { return ev.type === 'response.completed'; }), 'no response.completed, so the stream was cut short: ' + text.slice(-400)).to.equal(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

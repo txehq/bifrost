@@ -1,0 +1,121 @@
+{
+  "name": "74. Azure streaming preamble fallback",
+  "description": "Local fixture regression. Configure an isolated gateway's Azure endpoint and OpenAI base_url to the azure-stream-preamble-fixture.mjs server with max_retries=0. Set azureStreamPreambleFixture=1 to enable these cases. The primary model emits startup metadata and then fails (Azure: rate limit; OpenAI: server_is_overloaded with no HTTP status); the fallback must return hello without leaking failed-attempt events.",
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (pm.variables.get('azureStreamPreambleFixture') !== '1') {",
+          "  pm.execution.skipRequest();",
+          "}"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.test('Azure preamble error falls back without leaking events', function () {",
+          "  var body = pm.response.text();",
+          "  pm.expect(pm.response.code, body).to.equal(200);",
+          "  pm.expect(pm.response.headers.get('Content-Type')).to.include('text/event-stream');",
+          "  pm.expect(body).not.to.include('azure-preamble-failed');",
+          "  pm.expect(body).to.include('azure-preamble-success');",
+          "  var text = '';",
+          "  var terminal = false;",
+          "  body.split('\\n').forEach(function (line) {",
+          "    if (line.indexOf('data:') !== 0) return;",
+          "    var data = line.slice(5).trim();",
+          "    if (!data || data === '[DONE]') return;",
+          "    var event = JSON.parse(data);",
+          "    pm.expect(event.error, data).not.to.be.ok;",
+          "    pm.expect(event.type, data).not.to.equal('response.failed');",
+          "    if (event.response) pm.expect(event.response.error, data).not.to.be.ok;",
+          "    if (event.type === 'response.output_text.delta') text += event.delta || '';",
+          "    if (event.type === 'response.completed') terminal = true;",
+          "    (event.choices || []).forEach(function (choice) {",
+          "      if (choice.delta) text += choice.delta.content || '';",
+          "      if (choice.finish_reason === 'stop') terminal = true;",
+          "    });",
+          "  });",
+          "  pm.expect(text, body).to.equal('hello');",
+          "  pm.expect(terminal, body).to.equal(true);",
+          "});"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "Azure streaming preamble fallback - Chat Completions",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"azure/preamble-error\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true,\"fallbacks\":[\"azure/preamble-success\"]}"
+        },
+        "url": "{{baseUrl}}/v1/chat/completions"
+      }
+    },
+    {
+      "name": "Azure streaming preamble fallback - Responses",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"azure/preamble-error\",\"input\":\"hi\",\"stream\":true,\"fallbacks\":[\"azure/preamble-success\"]}"
+        },
+        "url": "{{baseUrl}}/v1/responses"
+      }
+    },
+    {
+      "name": "OpenAI streaming preamble overload fallback - Chat Completions",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/preamble-error\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true,\"fallbacks\":[\"openai/preamble-success\"]}"
+        },
+        "url": "{{baseUrl}}/v1/chat/completions"
+      }
+    },
+    {
+      "name": "OpenAI streaming preamble overload fallback - Responses",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/preamble-error\",\"input\":\"hi\",\"stream\":true,\"fallbacks\":[\"openai/preamble-success\"]}"
+        },
+        "url": "{{baseUrl}}/v1/responses"
+      }
+    }
+  ]
+}

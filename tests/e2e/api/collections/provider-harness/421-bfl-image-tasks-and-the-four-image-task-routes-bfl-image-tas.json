@@ -1,0 +1,612 @@
+{
+  "name": "421. BFL image tasks and the four image task routes (bfl image tasks)",
+  "description": "Pins TXE-6431 (contract C2, C4 to C7, C9; work item BF16; BFL vendor sheet B2 to B10) on the image task routes. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. The config points the bfl provider at the fixture's /pp/bfl, which answers BFL's AsyncResponse to a submit and BFL's ResultResponse to GET /v1/get_result by task id. Row 2 creates a generation task on flux-pro-1.1 and reads the task object: queued, an id {vendor id}:bfl, the credit cost and megapixels; row 3 reads the bytes BFL received: size as width and height, callback_url as webhook_url, an extra field merged unchanged, no unified name left. Row 4 queries the task: completed, the sample link in data[], expires_at ten minutes after BFL's end_time, the settled cost in credits. Row 5 queries a moderated task: failed, the vendor's code, content_filter with BFL's reasons. Rows 6 to 9 are refused with caller_unsupported_parameter before any upstream call: n 2, client_reference_id (BFL has no external id), callback_url on flux-3-image (no webhook_url), a mask on a model other than fill. Row 10 is the cancel route: 400 provider_cancel_unsupported, BFL has no cancel API. Row 11 reads the fixture: exactly one submit arrived and each query once, so no refused request reached BFL. Before the change none of the four routes existed. Per-model conversion, the nine statuses one to one, the id's polling host and the FLUX 3 link lifetime are pinned by core/providers/bfl's Go tests.",
+  "item": [
+    {
+      "name": "421.1 reset the fixture's counters (bfl image tasks)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__reset",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__reset"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture reset its counters', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "421.2 bfl/flux-pro-1.1 POST /v1/images/generations/tasks creates a task and returns the task object (bfl image tasks)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations/tasks",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations",
+            "tasks"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bfl/flux-pro-1.1\",\n  \"prompt\": \"a red fox in fresh snow\",\n  \"size\": \"1024x768\",\n  \"seed\": 7,\n  \"callback_url\": \"https://hooks.example.test/v/task_421\",\n  \"safety_tolerance\": 2\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create returns a queued image task with the cost and megapixels BFL reported', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.object).to.eql('image.task');",
+              "  pm.expect(j.status).to.eql('queued');",
+              "  pm.expect(j.id).to.eql('bfl-ready%7Cflux-pro-1.1:bfl');",
+              "  pm.expect(j.data).to.eql([]);",
+              "  pm.expect(j.usage.vendor_cost).to.eql({ amount: 4, unit: 'credit' });",
+              "  pm.expect(j.usage.output_megapixels).to.eql(1.05);",
+              "  pm.collectionVariables.set('bflImageTaskId', j.id);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "421.3 the submit BFL received carries the converted fields (bfl image tasks)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__wire",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__wire"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('size became width/height, callback_url became webhook_url, the extra field passed unchanged', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/bfl/') === 0; });",
+              "  pm.expect(calls.length, JSON.stringify(calls)).to.eql(1);",
+              "  pm.expect(calls[0].path).to.eql('/pp/bfl/v1/flux-pro-1.1');",
+              "  var sent = JSON.parse(calls[0].body);",
+              "  pm.expect(sent.prompt).to.eql('a red fox in fresh snow');",
+              "  pm.expect(sent.width).to.eql(1024);",
+              "  pm.expect(sent.height).to.eql(768);",
+              "  pm.expect(sent.seed).to.eql(7);",
+              "  pm.expect(sent.webhook_url).to.eql('https://hooks.example.test/v/task_421');",
+              "  pm.expect(sent.safety_tolerance).to.eql(2);",
+              "  pm.expect(sent).to.not.have.property('callback_url');",
+              "  pm.expect(sent).to.not.have.property('size');",
+              "  pm.expect(sent).to.not.have.property('model');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "421.4 GET /v1/images/tasks/{id} queries the task once and maps the Ready result (bfl image tasks)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/tasks/{{bflImageTaskId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "tasks",
+            "{{bflImageTaskId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a Ready task is completed with the link, its expiry and the settled credits', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id).to.eql(pm.collectionVariables.get('bflImageTaskId'));",
+              "  pm.expect(j.status).to.eql('completed');",
+              "  pm.expect(j.provider_status).to.eql('Ready');",
+              "  pm.expect(j.data).to.eql([{ type: 'url', url: 'https://delivery.example.test/bfl/sample.jpeg', content_type: 'image/jpeg' }]);",
+              "  pm.expect(j.completed_at).to.eql(1762700000);",
+              "  pm.expect(j.expires_at, 'ten minutes for a model other than FLUX 3').to.eql(1762700600);",
+              "  pm.expect(j.usage.vendor_cost).to.eql({ amount: 4, unit: 'credit' });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "421.5 GET /v1/images/tasks/{id} maps a moderated task to failed with content_filter (bfl image tasks)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/tasks/bfl-moderated%7Cflux-pro-1.1:bfl",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "tasks",
+            "bfl-moderated%7Cflux-pro-1.1:bfl"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Content Moderated is failed with the vendor code and its reasons', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.status).to.eql('failed');",
+              "  pm.expect(j.provider_status).to.eql('Content Moderated');",
+              "  pm.expect(j.error.code).to.eql('Content Moderated');",
+              "  pm.expect(j.content_filter).to.eql({ filtered_count: 1, reasons: ['Derivative Works Filter'] });",
+              "  pm.expect(j.data).to.eql([]);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "421.6 [EXPECT-400] /v1/images/generations/tasks refuses n: BFL makes one image per task (bfl image tasks)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations/tasks",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations",
+            "tasks"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bfl/flux-pro-1.1\",\n  \"prompt\": \"two foxes\",\n  \"n\": 2\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('n is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('n');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "421.7 [EXPECT-400] /v1/images/generations/tasks refuses client_reference_id: BFL has no external task id (bfl image tasks)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations/tasks",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations",
+            "tasks"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bfl/flux-pro-1.1\",\n  \"prompt\": \"a fox\",\n  \"client_reference_id\": \"task_421\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('client_reference_id is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('client_reference_id');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "421.8 [EXPECT-400] /v1/images/generations/tasks refuses callback_url: flux-3-image has no webhook_url (bfl image tasks)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations/tasks",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations",
+            "tasks"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bfl/flux-3-image\",\n  \"prompt\": \"a fox\",\n  \"callback_url\": \"https://hooks.example.test/v/task_421\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('callback_url is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('callback_url');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "421.9 [EXPECT-400] /v1/images/edits/tasks refuses mask: only the fill model takes a mask (bfl image tasks)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits/tasks",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits",
+            "tasks"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bfl/flux-kontext-pro\",\n  \"prompt\": \"make it night\",\n  \"images\": [\n    {\n      \"url\": \"https://example.test/fox.png\"\n    }\n  ],\n  \"mask\": \"bWFzaw==\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('mask is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('mask');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "421.10 [EXPECT-400] POST /v1/images/tasks/{id}/cancel is provider_cancel_unsupported (bfl image tasks)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/tasks/{{bflImageTaskId}}/cancel",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "tasks",
+            "{{bflImageTaskId}}",
+            "cancel"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('BFL has no cancel API: 400 provider_cancel_unsupported', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, pm.response.text()).to.eql('provider_cancel_unsupported');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "421.11 the fixture saw one submit and one query per task, nothing from the refused requests (bfl image tasks)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__hits",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__hits"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('no refused request reached BFL', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var hits = pm.response.json().data[0].hits;",
+              "  pm.expect(hits['bfl get_result bfl-ready'], JSON.stringify(hits)).to.eql(1);",
+              "  pm.expect(hits['bfl get_result bfl-moderated'], JSON.stringify(hits)).to.eql(1);",
+              "  var queries = Object.keys(hits).filter(function (k) { return k.indexOf('bfl get_result ') === 0; });",
+              "  pm.expect(queries.length, JSON.stringify(hits)).to.eql(2);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "421.12 BFL received exactly one submit, the create of row 2 (bfl image tasks)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__wire",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__wire"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the refused creates sent nothing to BFL', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/bfl/') === 0; });",
+              "  pm.expect(calls.length, JSON.stringify(calls)).to.eql(1);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

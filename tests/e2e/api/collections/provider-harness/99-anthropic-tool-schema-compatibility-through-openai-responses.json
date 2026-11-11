@@ -1,0 +1,281 @@
+{
+  "name": "99. Anthropic tool-schema compatibility through OpenAI Responses (tool-schema-compat)",
+  "description": "Regression coverage for OpenAI Responses requests routed to Claude. The success cases pin normalization of root oneOf, anyOf, and allOf schemas (including the Codex-style referenced union and streaming path). The rejection cases pin bounded branch expansion and recursion depth as caller-facing HTTP 400 errors. The deferred $ref-sibling case is intentionally excluded.",
+  "item": [
+    {
+      "name": "anthropic/claude-fable-5-1 OpenAI Responses Codex root oneOf schema - tool-schema-compat",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+              "var text = pm.response.text() || '';",
+              "pm.test('Codex root oneOf tool schema is accepted by Claude', function () {",
+              "  pm.expect(text, 'Anthropic rejected the normalized tool schema: ' + text).to.not.include('input_schema does not support oneOf, allOf, or anyOf at the top level');",
+              "  pm.expect(pm.response.code, 'failed: ' + text).to.be.below(400);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-fable-5-1\",\n  \"max_output_tokens\": 64,\n  \"input\": \"Reply briefly. Use the available tool only if useful.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"automation_update\",\n      \"description\": \"Schema compatibility regression tool.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {},\n        \"$defs\": {\n          \"view\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"mode\": {\n                \"type\": \"string\",\n                \"enum\": [\n                  \"view\"\n                ]\n              },\n              \"id\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"mode\",\n              \"id\"\n            ],\n            \"additionalProperties\": false\n          },\n          \"create\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"mode\": {\n                \"type\": \"string\",\n                \"enum\": [\n                  \"create\"\n                ]\n              },\n              \"name\": {\n                \"type\": \"string\"\n              },\n              \"notificationPolicy\": {\n                \"anyOf\": [\n                  {\n                    \"type\": \"string\"\n                  },\n                  {\n                    \"type\": \"null\"\n                  }\n                ]\n              }\n            },\n            \"required\": [\n              \"mode\",\n              \"name\"\n            ],\n            \"additionalProperties\": false\n          },\n          \"createGroup\": {\n            \"oneOf\": [\n              {\n                \"$ref\": \"#/$defs/create\"\n              }\n            ]\n          }\n        },\n        \"oneOf\": [\n          {\n            \"$ref\": \"#/$defs/view\"\n          },\n          {\n            \"$ref\": \"#/$defs/createGroup\"\n          }\n        ]\n      },\n      \"strict\": false\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-fable-5-1 OpenAI Responses streaming Codex root oneOf schema - tool-schema-compat",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+              "var text = pm.response.text() || '';",
+              "pm.test('Streaming Codex root oneOf tool schema is accepted by Claude', function () {",
+              "  pm.expect(text, 'Anthropic rejected the normalized tool schema: ' + text).to.not.include('input_schema does not support oneOf, allOf, or anyOf at the top level');",
+              "  pm.expect(pm.response.code, 'failed: ' + text).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "// A 200 stream can still end in an error frame or stop early, so the frames are parsed.",
+              "var events = [];",
+              "text.split('\\n').forEach(function (l) {",
+              "  if (l.indexOf('data: ') !== 0) { return; }",
+              "  var p = l.slice(6).trim();",
+              "  if (!p || p === '[DONE]') { return; }",
+              "  try { events.push(JSON.parse(p)); } catch (e) {}",
+              "});",
+              "pm.test('Streaming Codex root oneOf tool schema: the stream completes without an error event', function () {",
+              "  pm.expect(events.length, 'no SSE events: ' + text.slice(0, 400)).to.be.above(0);",
+              "  var errors = events.filter(function (ev) { return ev.type === 'error' || ev.type === 'response.failed' || ev.type === 'response.incomplete' || (!ev.type && ev.error); });",
+              "  pm.expect(errors.length, 'stream ended in an error or incomplete event: ' + JSON.stringify(errors[0] || null).slice(0, 400)).to.equal(0);",
+              "  pm.expect(events.some(function (ev) { return ev.type === 'response.completed'; }), 'no response.completed, so the stream was cut short: ' + text.slice(-400)).to.equal(true);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-fable-5-1\",\n  \"max_output_tokens\": 64,\n  \"input\": \"Reply briefly. Use the available tool only if useful.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"automation_update_stream\",\n      \"description\": \"Schema compatibility regression tool.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {},\n        \"$defs\": {\n          \"view\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"mode\": {\n                \"type\": \"string\",\n                \"enum\": [\n                  \"view\"\n                ]\n              },\n              \"id\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"mode\",\n              \"id\"\n            ],\n            \"additionalProperties\": false\n          },\n          \"create\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"mode\": {\n                \"type\": \"string\",\n                \"enum\": [\n                  \"create\"\n                ]\n              },\n              \"name\": {\n                \"type\": \"string\"\n              },\n              \"notificationPolicy\": {\n                \"anyOf\": [\n                  {\n                    \"type\": \"string\"\n                  },\n                  {\n                    \"type\": \"null\"\n                  }\n                ]\n              }\n            },\n            \"required\": [\n              \"mode\",\n              \"name\"\n            ],\n            \"additionalProperties\": false\n          },\n          \"createGroup\": {\n            \"oneOf\": [\n              {\n                \"$ref\": \"#/$defs/create\"\n              }\n            ]\n          }\n        },\n        \"oneOf\": [\n          {\n            \"$ref\": \"#/$defs/view\"\n          },\n          {\n            \"$ref\": \"#/$defs/createGroup\"\n          }\n        ]\n      },\n      \"strict\": false\n    }\n  ],\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-fable-5-1 OpenAI Responses root anyOf schema - tool-schema-compat",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+              "var text = pm.response.text() || '';",
+              "pm.test('Root anyOf tool schema is accepted by Claude', function () {",
+              "  pm.expect(text, 'Anthropic rejected the normalized tool schema: ' + text).to.not.include('input_schema does not support oneOf, allOf, or anyOf at the top level');",
+              "  pm.expect(pm.response.code, 'failed: ' + text).to.be.below(400);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-fable-5-1\",\n  \"max_output_tokens\": 64,\n  \"input\": \"Reply briefly. Use the available tool only if useful.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"choose_side\",\n      \"description\": \"Schema compatibility regression tool.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {},\n        \"anyOf\": [\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"mode\": {\n                \"type\": \"string\",\n                \"enum\": [\n                  \"left\"\n                ]\n              },\n              \"left\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"mode\",\n              \"left\"\n            ],\n            \"additionalProperties\": false\n          },\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"mode\": {\n                \"type\": \"string\",\n                \"enum\": [\n                  \"right\"\n                ]\n              },\n              \"right\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"mode\",\n              \"right\"\n            ],\n            \"additionalProperties\": false\n          }\n        ]\n      },\n      \"strict\": false\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-fable-5-1 OpenAI Responses root allOf property conjunction - tool-schema-compat",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+              "var text = pm.response.text() || '';",
+              "pm.test('Root allOf property conjunction is accepted by Claude', function () {",
+              "  pm.expect(text, 'Anthropic rejected the normalized tool schema: ' + text).to.not.include('input_schema does not support oneOf, allOf, or anyOf at the top level');",
+              "  pm.expect(pm.response.code, 'failed: ' + text).to.be.below(400);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-fable-5-1\",\n  \"max_output_tokens\": 64,\n  \"input\": \"Reply briefly. Use the available tool only if useful.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"short_name\",\n      \"description\": \"Schema compatibility regression tool.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"allOf\": [\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"name\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"name\"\n            ]\n          },\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"name\": {\n                \"maxLength\": 5\n              }\n            }\n          }\n        ]\n      },\n      \"strict\": false\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-4XX] anthropic/claude-fable-5-1 OpenAI Responses branch expansion limit returns 400 - tool-schema-compat",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+              "var text = pm.response.text() || '';",
+              "pm.test('Excessive tool-schema branch expansion returns HTTP 400', function () {",
+              "  pm.expect(pm.response.code, 'expected local schema-complexity rejection: ' + text).to.equal(400);",
+              "  pm.expect(text).to.include('anthropic tool input schema is too complex');",
+              "  pm.expect(text).to.include('branch count');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-fable-5-1\",\n  \"max_output_tokens\": 64,\n  \"input\": \"Reply briefly. Use the available tool only if useful.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"too_many_branches\",\n      \"description\": \"Schema compatibility regression tool.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"allOf\": [\n          {\n            \"anyOf\": [\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"left_1\": {\n                    \"type\": \"string\"\n                  }\n                }\n              },\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"right_1\": {\n                    \"type\": \"string\"\n                  }\n                }\n              }\n            ]\n          },\n          {\n            \"anyOf\": [\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"left_2\": {\n                    \"type\": \"string\"\n                  }\n                }\n              },\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"right_2\": {\n                    \"type\": \"string\"\n                  }\n                }\n              }\n            ]\n          },\n          {\n            \"anyOf\": [\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"left_3\": {\n                    \"type\": \"string\"\n                  }\n                }\n              },\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"right_3\": {\n                    \"type\": \"string\"\n                  }\n                }\n              }\n            ]\n          },\n          {\n            \"anyOf\": [\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"left_4\": {\n                    \"type\": \"string\"\n                  }\n                }\n              },\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"right_4\": {\n                    \"type\": \"string\"\n                  }\n                }\n              }\n            ]\n          },\n          {\n            \"anyOf\": [\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"left_5\": {\n                    \"type\": \"string\"\n                  }\n                }\n              },\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"right_5\": {\n                    \"type\": \"string\"\n                  }\n                }\n              }\n            ]\n          },\n          {\n            \"anyOf\": [\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"left_6\": {\n                    \"type\": \"string\"\n                  }\n                }\n              },\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"right_6\": {\n                    \"type\": \"string\"\n                  }\n                }\n              }\n            ]\n          },\n          {\n            \"anyOf\": [\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"left_7\": {\n                    \"type\": \"string\"\n                  }\n                }\n              },\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"right_7\": {\n                    \"type\": \"string\"\n                  }\n                }\n              }\n            ]\n          }\n        ]\n      },\n      \"strict\": false\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-4XX] anthropic/claude-fable-5-1 OpenAI Responses recursion depth limit returns 400 - tool-schema-compat",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+              "var text = pm.response.text() || '';",
+              "pm.test('Excessive tool-schema recursion depth returns HTTP 400', function () {",
+              "  pm.expect(pm.response.code, 'expected local schema-complexity rejection: ' + text).to.equal(400);",
+              "  pm.expect(text).to.include('anthropic tool input schema is too complex');",
+              "  pm.expect(text).to.include('depth');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-fable-5-1\",\n  \"max_output_tokens\": 64,\n  \"input\": \"Reply briefly. Use the available tool only if useful.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"too_deep\",\n      \"description\": \"Schema compatibility regression tool.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"oneOf\": [\n          {\n            \"anyOf\": [\n              {\n                \"anyOf\": [\n                  {\n                    \"anyOf\": [\n                      {\n                        \"anyOf\": [\n                          {\n                            \"anyOf\": [\n                              {\n                                \"anyOf\": [\n                                  {\n                                    \"anyOf\": [\n                                      {\n                                        \"anyOf\": [\n                                          {\n                                            \"anyOf\": [\n                                              {\n                                                \"anyOf\": [\n                                                  {\n                                                    \"anyOf\": [\n                                                      {\n                                                        \"anyOf\": [\n                                                          {\n                                                            \"anyOf\": [\n                                                              {\n                                                                \"anyOf\": [\n                                                                  {\n                                                                    \"anyOf\": [\n                                                                      {\n                                                                        \"anyOf\": [\n                                                                          {\n                                                                            \"anyOf\": [\n                                                                              {\n                                                                                \"anyOf\": [\n                                                                                  {\n                                                                                    \"anyOf\": [\n                                                                                      {\n                                                                                        \"anyOf\": [\n                                                                                          {\n                                                                                            \"anyOf\": [\n                                                                                              {\n                                                                                                \"anyOf\": [\n                                                                                                  {\n                                                                                                    \"anyOf\": [\n                                                                                                      {\n                                                                                                        \"anyOf\": [\n                                                                                                          {\n                                                                                                            \"anyOf\": [\n                                                                                                              {\n                                                                                                                \"anyOf\": [\n                                                                                                                  {\n                                                                                                                    \"anyOf\": [\n                                                                                                                      {\n                                                                                                                        \"anyOf\": [\n                                                                                                                          {\n                                                                                                                            \"anyOf\": [\n                                                                                                                              {\n                                                                                                                                \"anyOf\": [\n                                                                                                                                  {\n                                                                                                                                    \"anyOf\": [\n                                                                                                                                      {\n                                                                                                                                        \"anyOf\": [\n                                                                                                                                          {\n                                                                                                                                            \"anyOf\": [\n                                                                                                                                              {\n                                                                                                                                                \"type\": \"object\",\n                                                                                                                                                \"properties\": {\n                                                                                                                                                  \"leaf\": {\n                                                                                                                                                    \"type\": \"string\"\n                                                                                                                                                  }\n                                                                                                                                                }\n                                                                                                                                              }\n                                                                                                                                            ]\n                                                                                                                                          }\n                                                                                                                                        ]\n                                                                                                                                      }\n                                                                                                                                    ]\n                                                                                                                                  }\n                                                                                                                                ]\n                                                                                                                              }\n                                                                                                                            ]\n                                                                                                                          }\n                                                                                                                        ]\n                                                                                                                      }\n                                                                                                                    ]\n                                                                                                                  }\n                                                                                                                ]\n                                                                                                              }\n                                                                                                            ]\n                                                                                                          }\n                                                                                                        ]\n                                                                                                      }\n                                                                                                    ]\n                                                                                                  }\n                                                                                                ]\n                                                                                              }\n                                                                                            ]\n                                                                                          }\n                                                                                        ]\n                                                                                      }\n                                                                                    ]\n                                                                                  }\n                                                                                ]\n                                                                              }\n                                                                            ]\n                                                                          }\n                                                                        ]\n                                                                      }\n                                                                    ]\n                                                                  }\n                                                                ]\n                                                              }\n                                                            ]\n                                                          }\n                                                        ]\n                                                      }\n                                                    ]\n                                                  }\n                                                ]\n                                              }\n                                            ]\n                                          }\n                                        ]\n                                      }\n                                    ]\n                                  }\n                                ]\n                              }\n                            ]\n                          }\n                        ]\n                      }\n                    ]\n                  }\n                ]\n              }\n            ]\n          }\n        ]\n      },\n      \"strict\": false\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    }
+  ]
+}

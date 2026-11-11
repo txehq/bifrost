@@ -1,0 +1,46 @@
+{
+  "name": "5. Azure (via /openai deployments)",
+  "description": "Azure OpenAI has no separate top-level route - it's served by the OpenAI integration with the deployment-style path. Replace `{{azureDeployment}}` with the deployment name configured in your Azure resource.",
+  "item": [
+    {
+      "name": "POST /openai/openai/deployments/{deployment}/chat/completions",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "api-key",
+            "value": "{{openaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Hello from Azure deployment.\" }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/openai/deployments/{{azureDeployment}}/chat/completions?api-version={{azureApiVersion}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "openai",
+            "deployments",
+            "{{azureDeployment}}",
+            "chat",
+            "completions"
+          ],
+          "query": [
+            {
+              "key": "api-version",
+              "value": "{{azureApiVersion}}"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

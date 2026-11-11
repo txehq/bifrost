@@ -1,0 +1,770 @@
+{
+  "name": "67. Bedrock Converse redacted reasoning round-trip (converse-redacted-reasoning)",
+  "description": "OpenAI (gpt-5.6-*) and xAI (grok-4.6) on bedrock-runtime Converse return reasoning as\nreasoningContent.redactedContent - one opaque blob - while Anthropic and DeepSeek return\nreasoningContent.reasoningText{text,signature}. The two are mutually exclusive and replaying the\nwrong one is rejected either way: 400 on Anthropic, and on OpenAI/xAI an opaque\n\n  500 \"The system encountered an unexpected error during processing. Try your request again.\"\n\nBifrost modelled only reasoningText, so it dropped the blob on ingress, left the client holding an\nempty unsigned thinking block, and re-emitted that as reasoningContent.reasoningText.text=\"\" on the\nnext turn - earning the 500. Only reachable on turn 2, so every row here is a capture/replay pair.\n\nProduction path: POST /v1/chat/completions (and /v1/responses) -> bedrock provider ->\nconverseReasoningShape() picks the wire shape from the bedrock_reasoning_shape datasheet key,\nfalling back to family detection -> reasoningContent.redactedContent.\n\nThe \"us.\" prefix on each model id is load-bearing: a bare id routes to bedrock-mantle, and only a\ncross-region identifier reaches bedrock-runtime, where Converse lives. The blob is minted and\nvalidated by the model, so it cannot be fixtured - hence capture-then-replay through a collection\nvariable, which runners/lib/chained-vars.mjs detects so sharding keeps each pair together.\n\nThe reasoningText half of the same invariant is already covered for Anthropic-on-Bedrock by\nfolder 46 and is not duplicated here.",
+  "item": [
+    {
+      "name": "bedrock/us.openai.gpt-5.6-luna /v1/chat/completions turn 1: Converse redacted reasoning captured - converse-redacted-reasoning",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock/us.openai.gpt-5.6-luna\",\"max_tokens\":512,\"reasoning\":{\"effort\":\"high\"},\"messages\":[{\"role\":\"user\",\"content\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\"}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.text() || '';",
+              "// A 500 is normally infra noise and skipped, but Bedrock answers THIS defect with",
+              "// a 500 carrying that exact phrase, so it must fail loudly instead of skipping.",
+              "var isRegression = body.indexOf('unexpected error during processing') !== -1;",
+              "pm.test('Converse redacted reasoning reaches the client', function () {",
+              "  pm.expect(body, 'Bedrock rejected the capture turn').to.not.include('unexpected error during processing');",
+              "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.choices, 'expected a choices array').to.be.an('array').that.is.not.empty;",
+              "  var details = (j.choices[0].message && j.choices[0].message.reasoning_details) || [];",
+              "  var enc = details.filter(function (d) { return d && d.type === 'reasoning.encrypted' && d.data; });",
+              "  pm.expect(enc.length, 'no encrypted reasoning detail came back - the redactedContent blob was dropped on ingress, which is the first half of the defect and leaves the replay row nothing to carry').to.be.above(0);",
+              "});",
+              "// Echo the assistant turn back verbatim: echoing is the point, it is what",
+              "// carries the redacted blob out to Bedrock again on the next turn.",
+              "try {",
+              "  var captured = pm.response.json();",
+              "  var msg = captured.choices && captured.choices[0] && captured.choices[0].message;",
+              "  if (msg) {",
+              "    pm.collectionVariables.set(",
+              "      'bedrockConverseRedactedChatMessages',",
+              "      JSON.stringify([",
+              "        { role: \"user\", content: \"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\" },",
+              "        msg,",
+              "        { role: \"user\", content: \"Now restate the meeting time in one sentence.\" }",
+              "      ])",
+              "    );",
+              "  }",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "bedrock/us.openai.gpt-5.6-luna /v1/chat/completions turn 2: redacted reasoning replays without a Converse 500 - converse-redacted-reasoning",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock/us.openai.gpt-5.6-luna\",\"max_tokens\":256,\"reasoning\":{\"effort\":\"high\"},\"messages\":{{bedrockConverseRedactedChatMessages}}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Skip when the capture step did not run: the body placeholder stays",
+              "// unresolved, so there is nothing meaningful to replay.",
+              "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+              "var body = pm.response.text() || '';",
+              "// A 500 is normally infra noise and skipped, but Bedrock answers THIS defect with",
+              "// a 500 carrying that exact phrase, so it must fail loudly instead of skipping.",
+              "var isRegression = body.indexOf('unexpected error during processing') !== -1;",
+              "pm.test('Replayed Converse redacted reasoning is accepted', function () {",
+              "  pm.expect(body, 'Bedrock answered the replayed turn with its opaque 500 - the redacted blob was reshaped into reasoningText, which Converse rejects for every OpenAI and xAI model').to.not.include('unexpected error during processing');",
+              "  pm.expect(body, 'Bedrock refused the reasoningContent field itself, so the replayed block was not in the shape this model accepts').to.not.include('support the reasoningContent');",
+              "  pm.expect(pm.response.code, 'replay request failed: ' + body).to.be.below(400);",
+              "  pm.expect(pm.response.json().choices, 'no choices returned on the replayed turn').to.be.an('array').that.is.not.empty;",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "// The wire-level pin. A 200 alone does not prove the blob went back out in the",
+              "// right shape. Note that a HEALTHY response echoes \"reasoningContent\" inside",
+              "// extra_fields.raw_response, so a bare substring check on the response body can",
+              "// never distinguish success from failure here - assert on what Bifrost SENT.",
+              "var ef = (pm.response.json() || {}).extra_fields || {};",
+              "var rr = ef.raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('replay raw_request captured', function () {",
+              "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+              "});",
+              "if (!rr || typeof rr !== 'object') { return; }",
+              "var sent = JSON.stringify(rr);",
+              "pm.test('the replay went out as redactedContent, never reasoningText', function () {",
+              "  pm.expect(sent, 'the redacted blob never reached Bedrock - it was dropped on ingress or on replay, which is the state that produced the opaque 500').to.include('redactedContent');",
+              "  pm.expect(sent, 'the blob was reshaped into reasoningText, which is exactly the shape Converse rejects for every OpenAI and xAI model').to.not.include('reasoningText');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "bedrock/us.xai.grok-4.6 /v1/responses turn 1: Converse redacted reasoning captured - converse-redacted-reasoning",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock/us.xai.grok-4.6\",\"input\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\",\"reasoning\":{\"effort\":\"high\"},\"max_output_tokens\":2048}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.text() || '';",
+              "// A 500 is normally infra noise and skipped, but Bedrock answers THIS defect with",
+              "// a 500 carrying that exact phrase, so it must fail loudly instead of skipping.",
+              "var isRegression = body.indexOf('unexpected error during processing') !== -1;",
+              "pm.test('Converse redacted reasoning reaches the client as a reasoning item', function () {",
+              "  pm.expect(body, 'Bedrock rejected the capture turn').to.not.include('unexpected error during processing');",
+              "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.output, 'expected an output array').to.be.an('array').that.is.not.empty;",
+              "  var reasoning = j.output.filter(function (o) { return o.type === 'reasoning'; });",
+              "  pm.expect(reasoning.length, 'no reasoning item came back, so the replay row would silently skip having tested nothing').to.be.above(0);",
+              "  var carried = reasoning.filter(function (o) { return o.encrypted_content; });",
+              "  pm.expect(carried.length, 'the reasoning item carries no encrypted_content - the redactedContent blob was dropped on ingress').to.be.above(0);",
+              "});",
+              "try {",
+              "  var captured = pm.response.json();",
+              "  if (captured.output && captured.output.length) {",
+              "    pm.collectionVariables.set(",
+              "      'bedrockConverseRedactedResponsesInput',",
+              "      JSON.stringify(",
+              "        [{ type: \"message\", role: \"user\", content: \"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\" }]",
+              "          .concat(captured.output)",
+              "          .concat([{ type: \"message\", role: \"user\", content: \"Now restate the meeting time in one sentence.\" }])",
+              "      )",
+              "    );",
+              "  }",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "bedrock/us.xai.grok-4.6 /v1/responses turn 2: redacted reasoning replays without a Converse 500 - converse-redacted-reasoning",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock/us.xai.grok-4.6\",\"input\":{{bedrockConverseRedactedResponsesInput}},\"reasoning\":{\"effort\":\"high\"},\"max_output_tokens\":512}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Skip when the capture step did not run: the body placeholder stays",
+              "// unresolved, so there is nothing meaningful to replay.",
+              "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+              "var body = pm.response.text() || '';",
+              "// A 500 is normally infra noise and skipped, but Bedrock answers THIS defect with",
+              "// a 500 carrying that exact phrase, so it must fail loudly instead of skipping.",
+              "var isRegression = body.indexOf('unexpected error during processing') !== -1;",
+              "pm.test('Replayed Converse redacted reasoning is accepted on the Responses path', function () {",
+              "  pm.expect(body, 'Bedrock answered the replayed turn with its opaque 500 - the redacted blob was reshaped into reasoningText, which Converse rejects for every OpenAI and xAI model').to.not.include('unexpected error during processing');",
+              "  pm.expect(body, 'Bedrock refused the reasoningContent field itself, so the replayed block was not in the shape this model accepts').to.not.include('support the reasoningContent');",
+              "  pm.expect(pm.response.code, 'replay request failed: ' + body).to.be.below(400);",
+              "  pm.expect(pm.response.json().output, 'no output returned on the replayed turn').to.be.an('array').that.is.not.empty;",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "// The wire-level pin. A 200 alone does not prove the blob went back out in the",
+              "// right shape. Note that a HEALTHY response echoes \"reasoningContent\" inside",
+              "// extra_fields.raw_response, so a bare substring check on the response body can",
+              "// never distinguish success from failure here - assert on what Bifrost SENT.",
+              "var ef = (pm.response.json() || {}).extra_fields || {};",
+              "var rr = ef.raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('replay raw_request captured', function () {",
+              "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+              "});",
+              "if (!rr || typeof rr !== 'object') { return; }",
+              "var sent = JSON.stringify(rr);",
+              "pm.test('the replay went out as redactedContent, never reasoningText', function () {",
+              "  pm.expect(sent, 'the redacted blob never reached Bedrock - it was dropped on ingress or on replay, which is the state that produced the opaque 500').to.include('redactedContent');",
+              "  pm.expect(sent, 'the blob was reshaped into reasoningText, which is exactly the shape Converse rejects for every OpenAI and xAI model').to.not.include('reasoningText');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "azure/gpt-5.6-luna /bedrock converse turn 1: foreign redactedContent is standard base64 beside a toolUse (#7514) - converse-redacted-reasoning",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-5.6-luna/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "azure%2Fgpt-5.6-luna",
+            "converse"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"Find the capital of the country whose largest city is Istanbul, then get that capital's current weather.\"}]}],\"inferenceConfig\":{\"maxTokens\":2048},\"additionalModelRequestFields\":{\"reasoning_config\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"output_config\":{\"effort\":\"high\"}},\"include\":[\"reasoning.encrypted_content\"],\"reasoning_summary\":\"none\",\"toolConfig\":{\"tools\":[{\"toolSpec\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"inputSchema\":{\"json\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}}],\"toolChoice\":{\"any\":{}}}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Converse types redactedContent as a blob: strict SDKs (aws-sdk-go-v2, boto3)",
+              "// base64-decode it. Azure mints URL-safe Fernet tokens ('-', '_'), which fail that",
+              "// decode with \"illegal base64 data\" unless Bifrost wraps them (#7514).",
+              "var STD_B64 = /^(?:[A-Za-z0-9+\\/]{4})*(?:[A-Za-z0-9+\\/]{2}==|[A-Za-z0-9+\\/]{3}=)?$/;",
+              "var body = pm.response.text() || '';",
+              "var j = null;",
+              "var captured = false;",
+              "pm.test('capture turn returns reasoning and a tool call', function () {",
+              "  pm.expect(pm.response.code, 'capture request failed: ' + body.slice(0, 500)).to.equal(200);",
+              "  j = pm.response.json();",
+              "  var content = ((j.output || {}).message || {}).content || [];",
+              "  pm.expect(content.some(function (c) { return c && c.toolUse; }), 'no toolUse block - the defect needs reasoning and a tool call in one turn: ' + body.slice(0, 500)).to.be.true;",
+              "  var redacted = content.filter(function (c) { return c && c.reasoningContent && c.reasoningContent.redactedContent; });",
+              "  pm.expect(redacted.length, 'no redactedContent came back, so this row would test nothing - encrypted reasoning was not requested or was dropped: ' + body.slice(0, 500)).to.be.above(0);",
+              "  captured = true;",
+              "});",
+              "pm.test('every redactedContent is standard base64 an AWS SDK can decode', function () {",
+              "  var content = ((j || {}).output || {}).message ? j.output.message.content : [];",
+              "  content.forEach(function (c) {",
+              "    if (!c || !c.reasoningContent || c.reasoningContent.redactedContent === undefined) { return; }",
+              "    var blob = c.reasoningContent.redactedContent;",
+              "    pm.expect(STD_B64.test(blob), 'redactedContent is not standard base64, so aws-sdk-go-v2 fails with \"decode base64 blob: illegal base64 data\": ' + String(blob).slice(0, 80)).to.be.true;",
+              "  });",
+              "});",
+              "// Save the conversation only when the capture proved what turn 2 needs, so a",
+              "// failed capture fails here instead of cascading into a misleading replay error.",
+              "try {",
+              "  var msg = j && j.output && j.output.message;",
+              "  var toolUses = msg ? msg.content.filter(function (c) { return c && c.toolUse; }) : [];",
+              "  if (captured && toolUses.length) {",
+              "    pm.collectionVariables.set(",
+              "      'bedrockConverseForeignRedactedMessages',",
+              "      JSON.stringify([",
+              "        { role: \"user\", content: [{ text: \"Find the capital of the country whose largest city is Istanbul, then get that capital's current weather.\" }] },",
+              "        msg,",
+              "        // Answer every toolUse: a parallel call left unanswered is a 400.",
+              "        { role: \"user\", content: toolUses.map(function (c) { return { toolResult: { toolUseId: c.toolUse.toolUseId, content: [{ text: \"Ankara: 18C, clear\" }] } }; }) }",
+              "      ])",
+              "    );",
+              "  }",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "azure/gpt-5.6-luna /bedrock converse turn 2: foreign redactedContent replays to Azure (#7514) - converse-redacted-reasoning",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-5.6-luna/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "azure%2Fgpt-5.6-luna",
+            "converse"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"messages\":{{bedrockConverseForeignRedactedMessages}},\"inferenceConfig\":{\"maxTokens\":2048},\"additionalModelRequestFields\":{\"reasoning_config\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"output_config\":{\"effort\":\"high\"}},\"include\":[\"reasoning.encrypted_content\"],\"reasoning_summary\":\"none\",\"toolConfig\":{\"tools\":[{\"toolSpec\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"inputSchema\":{\"json\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}}],\"toolChoice\":{\"auto\":{}}}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// The client replays the blob exactly as turn 1 rendered it. Bifrost must unwrap",
+              "// it back to the token Azure minted. The unit test",
+              "// TestConverseRedactedContentSurvivesSDKReplay pins the exact bytes; this row pins",
+              "// that the full stack accepts the replayed turn and answers it.",
+              "var body = pm.response.text() || '';",
+              "pm.test('capture turn produced a conversation to replay', function () {",
+              "  pm.expect(pm.request.body.raw.indexOf('{{'), 'turn 1 did not set bedrockConverseForeignRedactedMessages, so nothing was replayed').to.equal(-1);",
+              "});",
+              "pm.test('replayed foreign redactedContent is accepted', function () {",
+              "  pm.expect(pm.response.code, 'replay request failed: ' + body.slice(0, 500)).to.equal(200);",
+              "  pm.expect(body, 'Azure refused the replayed reasoning token').to.not.include('invalid_encrypted_content');",
+              "  var content = ((pm.response.json().output || {}).message || {}).content || [];",
+              "  pm.expect(content, 'no content returned on the replayed turn: ' + body.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "azure/gpt-5.6-luna /bedrock converse turn 2: replayed redactedContent keeps its upstream reasoning item id, no strip-and-retry (#7729) - converse-redacted-reasoning",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var reqId = pm.variables.replaceIn('{{$guid}}');",
+              "pm.variables.set('converseReasoningItemIdRequestId', reqId);",
+              "pm.request.headers.upsert({ key: 'x-request-id', value: reqId });"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Azure binds encrypted reasoning to the item id it issued it under. Converse has no field",
+              "// for that id, so it must ride inside the redactedContent blob Bifrost wraps. Without it the",
+              "// replay minted rs_<UnixNano>, Azure answered 400 \"Encrypted content item_id did not match the",
+              "// target item id\", and the strip-and-retry fail-soft answered 200 with the reasoning dropped.",
+              "// The row above only sees that 200, so this row reads the provider-bound request back from the",
+              "// log. The unit test TestConverseRedactedContentReplayKeepsReasoningItemID pins the exact id.",
+              "var body = pm.response.text() || '';",
+              "var reqId = pm.variables.get('converseReasoningItemIdRequestId');",
+              "var BIFROST_MINTED = /^rs_[0-9]{19}$/;",
+              "pm.test('capture turn produced a conversation to replay', function () {",
+              "  pm.expect(pm.request.body.raw.indexOf('{{'), 'turn 1 did not set bedrockConverseForeignRedactedMessages, so nothing was replayed').to.equal(-1);",
+              "});",
+              "pm.test('replayed turn answered', function () {",
+              "  pm.expect(pm.response.code, 'replay request failed: ' + body.slice(0, 500)).to.equal(200);",
+              "});",
+              "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+              "function checkLog(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+              "    var row = null;",
+              "    var rr = null;",
+              "    if (!err && res.code === 200) {",
+              "      row = res.json();",
+              "      rr = row.raw_request;",
+              "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "    }",
+              "    if (rr) {",
+              "      var trail = row.attempt_trail || [];",
+              "      var engine = String(row.routing_engine_logs || '');",
+              "      pm.test('the replay reached Azure on the first attempt, with no strip-and-retry', function () {",
+              "        var failed = trail.filter(function (a) { return a && a.fail_reason; });",
+              "        pm.expect(failed, 'an attempt failed before the answer, so Azure rejected the replayed reasoning: ' + JSON.stringify(trail)).to.be.empty;",
+              "        pm.expect(engine, 'Bifrost stripped the reasoning and retried, so the model answered without it: ' + engine.slice(0, 400)).to.not.include('Stripped unverifiable encrypted reasoning');",
+              "      });",
+              "      pm.test('the reasoning item reached Azure under its upstream id', function () {",
+              "        var input = Array.isArray(rr.input) ? rr.input : [];",
+              "        var reasoning = input.filter(function (i) { return i && i.type === 'reasoning' && i.encrypted_content; });",
+              "        pm.expect(reasoning.length, 'no reasoning item with encrypted_content reached Azure: ' + JSON.stringify(rr).slice(0, 400)).to.be.above(0);",
+              "        reasoning.forEach(function (i) {",
+              "          pm.expect(BIFROST_MINTED.test(String(i.id)), 'the replay carried Bifrost-minted id ' + i.id + ' instead of the id Azure bound the token to').to.be.false;",
+              "        });",
+              "      });",
+              "      return;",
+              "    }",
+              "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+              "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+              "  });",
+              "}",
+              "checkLog(0);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-store-raw-request-response",
+            "value": "true"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-5.6-luna/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "azure%2Fgpt-5.6-luna",
+            "converse"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"messages\":{{bedrockConverseForeignRedactedMessages}},\"inferenceConfig\":{\"maxTokens\":2048},\"additionalModelRequestFields\":{\"reasoning_config\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"output_config\":{\"effort\":\"high\"}},\"include\":[\"reasoning.encrypted_content\"],\"reasoning_summary\":\"none\",\"toolConfig\":{\"tools\":[{\"toolSpec\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"inputSchema\":{\"json\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}}],\"toolChoice\":{\"auto\":{}}}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "azure/gpt-5.6-luna /bedrock converse turn 1: summarized reasoning comes back as signed reasoningText (#7730) - converse-redacted-reasoning",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// When Azure returns a reasoning item with a summary, the Converse response carries the",
+              "// summary as reasoningText and the encrypted token as its signature. The next row replays",
+              "// that block unchanged, so this row must prove one came back.",
+              "var body = pm.response.text() || '';",
+              "var j = null;",
+              "var signed = [];",
+              "pm.test('capture turn returns signed reasoningText', function () {",
+              "  pm.expect(pm.response.code, 'capture request failed: ' + body.slice(0, 500)).to.equal(200);",
+              "  j = pm.response.json();",
+              "  var content = ((j.output || {}).message || {}).content || [];",
+              "  signed = content.filter(function (c) { return c && c.reasoningContent && c.reasoningContent.reasoningText && c.reasoningContent.reasoningText.signature; });",
+              "  pm.expect(signed.length, 'no reasoningText with a signature came back, so the replay row would test nothing - Azure returned no summary, or the token was dropped: ' + body.slice(0, 500)).to.be.above(0);",
+              "});",
+              "// Save the conversation only when the capture proved what turn 2 needs, so a failed",
+              "// capture fails here instead of cascading into a misleading replay error. The replay",
+              "// carries output.message exactly as Bifrost sent it: its source text is cut out of the",
+              "// response body rather than re-serialized from the parsed copy, so no escape or number",
+              "// is rewritten on the way back. The parsed copy only drives the assertions above.",
+              "function rawJsonAt(text, path) {",
+              "  var i = 0;",
+              "  function ws() { while (i < text.length && ' \\t\\n\\r'.indexOf(text[i]) !== -1) { i++; } }",
+              "  function str() { var s = i; i++; while (i < text.length && text[i] !== '\"') { if (text[i] === '\\\\') { i++; } i++; } i++; return text.slice(s, i); }",
+              "  function skip() {",
+              "    ws();",
+              "    if (text[i] === '\"') { str(); return; }",
+              "    if (text[i] === '{' || text[i] === '[') {",
+              "      var depth = 0;",
+              "      do {",
+              "        if (text[i] === '\"') { str(); continue; }",
+              "        if (text[i] === '{' || text[i] === '[') { depth++; } else if (text[i] === '}' || text[i] === ']') { depth--; }",
+              "        i++;",
+              "      } while (depth > 0 && i < text.length);",
+              "      return;",
+              "    }",
+              "    while (i < text.length && ',}] \\t\\n\\r'.indexOf(text[i]) === -1) { i++; }",
+              "  }",
+              "  for (var p = 0; p < path.length; p++) {",
+              "    ws();",
+              "    if (text[i] !== '{') { return null; }",
+              "    i++;",
+              "    for (;;) {",
+              "      ws();",
+              "      if (i >= text.length || text[i] === '}') { return null; }",
+              "      var key = JSON.parse(str());",
+              "      ws();",
+              "      i++;",
+              "      if (key === path[p]) { break; }",
+              "      skip();",
+              "      ws();",
+              "      if (text[i] === ',') { i++; }",
+              "    }",
+              "  }",
+              "  ws();",
+              "  var start = i;",
+              "  skip();",
+              "  return text.slice(start, i);",
+              "}",
+              "try {",
+              "  var rawMsg = rawJsonAt(body, ['output', 'message']);",
+              "  if (rawMsg && signed.length) {",
+              "    // The signature is brid_<id>:<token> when Bifrost carries the upstream id inside it.",
+              "    var sig = String(signed[0].reasoningContent.reasoningText.signature);",
+              "    var m = /^brid_([^:]+):([\\s\\S]*)$/.exec(sig);",
+              "    pm.collectionVariables.set('bedrockConverseReasoningTextToken', m ? m[2] : sig);",
+              "    pm.collectionVariables.set('bedrockConverseReasoningTextItemId', m ? m[1] : '');",
+              "    pm.collectionVariables.set(",
+              "      'bedrockConverseReasoningTextMessages',",
+              "      '[{\"role\":\"user\",\"content\":[{\"text\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\"}]},' +",
+              "        rawMsg +",
+              "        ',{\"role\":\"user\",\"content\":[{\"text\":\"Now restate the meeting time in one sentence.\"}]}]'",
+              "    );",
+              "  }",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-5.6-luna/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "azure%2Fgpt-5.6-luna",
+            "converse"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\"}]}],\"inferenceConfig\":{\"maxTokens\":2048},\"additionalModelRequestFields\":{\"reasoning_config\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"output_config\":{\"effort\":\"high\"}},\"include\":[\"reasoning.encrypted_content\"],\"reasoning_summary\":\"detailed\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "azure/gpt-5.6-luna /bedrock converse turn 2: replayed reasoningText reaches Azure as encrypted_content under its upstream id (#7730) - converse-redacted-reasoning",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var reqId = pm.variables.replaceIn('{{$guid}}');",
+              "pm.variables.set('converseReasoningTextReplayRequestId', reqId);",
+              "pm.request.headers.upsert({ key: 'x-request-id', value: reqId });"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Replayed unchanged, the reasoningText signature used to stay a content-block signature",
+              "// only: encrypted_content stayed empty, the OpenAI converter dropped the content-only item,",
+              "// and Azure answered 200 without the earlier reasoning. The token must reach Azure as",
+              "// encrypted_content, under the id Azure bound it to. A 200 alone proves none of that, so",
+              "// this row reads the provider-bound request back from the log. The unit test",
+              "// TestConverseReasoningTextReplayReachesOpenAIUpstream pins the exact bytes.",
+              "var body = pm.response.text() || '';",
+              "var reqId = pm.variables.get('converseReasoningTextReplayRequestId');",
+              "var token = pm.collectionVariables.get('bedrockConverseReasoningTextToken');",
+              "var BIFROST_MINTED = /^rs_[0-9]{19}$/;",
+              "pm.test('capture turn produced a conversation to replay', function () {",
+              "  pm.expect(pm.request.body.raw.indexOf('{{'), 'turn 1 did not set bedrockConverseReasoningTextMessages, so nothing was replayed').to.equal(-1);",
+              "});",
+              "pm.test('replayed turn answered', function () {",
+              "  pm.expect(pm.response.code, 'replay request failed: ' + body.slice(0, 500)).to.equal(200);",
+              "});",
+              "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+              "function checkLog(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+              "    var row = null;",
+              "    var rr = null;",
+              "    if (!err && res.code === 200) {",
+              "      row = res.json();",
+              "      rr = row.raw_request;",
+              "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "    }",
+              "    if (rr) {",
+              "      var trail = row.attempt_trail || [];",
+              "      var engine = String(row.routing_engine_logs || '');",
+              "      pm.test('the replay reached Azure on the first attempt, with no strip-and-retry', function () {",
+              "        var failed = trail.filter(function (a) { return a && a.fail_reason; });",
+              "        pm.expect(failed, 'an attempt failed before the answer, so Azure rejected the replayed reasoning: ' + JSON.stringify(trail)).to.be.empty;",
+              "        pm.expect(engine, 'Bifrost stripped the reasoning and retried, so the model answered without it: ' + engine.slice(0, 400)).to.not.include('Stripped unverifiable encrypted reasoning');",
+              "      });",
+              "      pm.test('the reasoningText signature reached Azure as encrypted_content under its upstream id', function () {",
+              "        var input = Array.isArray(rr.input) ? rr.input : [];",
+              "        var reasoning = input.filter(function (i) { return i && i.type === 'reasoning' && i.encrypted_content; });",
+              "        pm.expect(reasoning.length, 'no reasoning item with encrypted_content reached Azure - the replayed reasoningText was dropped: ' + JSON.stringify(rr).slice(0, 400)).to.be.above(0);",
+              "        pm.expect(reasoning.some(function (i) { return i.encrypted_content === token; }), 'the token Azure issued did not come back byte for byte').to.be.true;",
+              "        var wantId = pm.collectionVariables.get('bedrockConverseReasoningTextItemId');",
+              "        pm.expect(wantId, 'turn 1 carried no upstream id in its reasoningText signature, so the id never reached the client').to.be.a('string').and.not.empty;",
+              "        pm.expect(reasoning.some(function (i) { return i.encrypted_content === token && i.id === wantId; }), 'the token did not reach Azure under upstream id ' + wantId + ', got ' + JSON.stringify(reasoning.map(function (i) { return i.id; }))).to.be.true;",
+              "        reasoning.forEach(function (i) {",
+              "          pm.expect(BIFROST_MINTED.test(String(i.id)), 'the replay carried Bifrost-minted id ' + i.id + ' instead of the id Azure bound the token to').to.be.false;",
+              "        });",
+              "      });",
+              "      return;",
+              "    }",
+              "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+              "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+              "  });",
+              "}",
+              "checkLog(0);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-store-raw-request-response",
+            "value": "true"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-5.6-luna/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "azure%2Fgpt-5.6-luna",
+            "converse"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"messages\":{{bedrockConverseReasoningTextMessages}},\"inferenceConfig\":{\"maxTokens\":1024},\"additionalModelRequestFields\":{\"reasoning_config\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"output_config\":{\"effort\":\"high\"}},\"include\":[\"reasoning.encrypted_content\"],\"reasoning_summary\":\"detailed\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

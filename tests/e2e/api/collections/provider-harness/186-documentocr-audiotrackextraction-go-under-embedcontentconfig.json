@@ -1,0 +1,205 @@
+{
+  "name": "186. documentOcr / audioTrackExtraction go under embedContentConfig (embed-content-config)",
+  "description": "Gemini (AI Studio) and Vertex accept documentOcr / audioTrackExtraction only inside embedContentConfig; at the top level of the body or of a :batchEmbedContents entry both return 400 \"Unknown name\". Bifrost used to serialize them at the top level and dropped a caller-supplied embedContentConfig (and, under passthrough, merged it at the Gemini batch top level, which 400s). A nested embedContentConfig must now reach the wire on the body (Vertex) or on each requests[] entry (Gemini).",
+  "item": [
+    {
+      "name": "186.1 vertex/gemini-embedding-2-preview - embedContentConfig is forwarded",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"vertex/gemini-embedding-2-preview\",\"input\":[[{\"type\":\"text\",\"text\":\"alpha kestrel harbor\"}]],\"task_type\":\"RETRIEVAL_DOCUMENT\",\"dimensions\":256,\"embedContentConfig\":{\"documentOcr\":true,\"audioTrackExtraction\":true}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('embedContentConfig: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var body = pm.response.json() || {};",
+              "pm.test('embedContentConfig: dimensions applied', function () {",
+              "  pm.expect((((body.data || [])[0] || {}).embedding || []).length, pm.response.text().slice(0, 300)).to.eql(256);",
+              "});",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('embedContentConfig: raw_request captured', function () {",
+              "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+              "});",
+              "if (!rr || typeof rr !== 'object') { return; }",
+              "var entry = rr;",
+              "pm.test('embedContentConfig: documentOcr and audioTrackExtraction nested', function () {",
+              "  var cfg = (entry || {}).embedContentConfig || {};",
+              "  pm.expect(cfg.documentOcr, JSON.stringify(rr)).to.eql(true);",
+              "  pm.expect(cfg.audioTrackExtraction, JSON.stringify(rr)).to.eql(true);",
+              "});",
+              "pm.test('embedContentConfig: nothing at the top level', function () {",
+              "  pm.expect(entry, JSON.stringify(rr)).to.not.have.property('documentOcr');",
+              "  pm.expect(entry, JSON.stringify(rr)).to.not.have.property('audioTrackExtraction');",
+              "  pm.expect(rr, JSON.stringify(rr)).to.not.have.property('documentOcr');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "186.2 gemini/gemini-embedding-2 - embedContentConfig goes on each requests[] entry",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"gemini/gemini-embedding-2\",\"input\":[[{\"type\":\"text\",\"text\":\"alpha kestrel harbor\"}]],\"task_type\":\"RETRIEVAL_DOCUMENT\",\"dimensions\":256,\"embedContentConfig\":{\"documentOcr\":true,\"audioTrackExtraction\":true}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('embedContentConfig: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var body = pm.response.json() || {};",
+              "pm.test('embedContentConfig: dimensions applied', function () {",
+              "  pm.expect((((body.data || [])[0] || {}).embedding || []).length, pm.response.text().slice(0, 300)).to.eql(256);",
+              "});",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('embedContentConfig: raw_request captured', function () {",
+              "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+              "});",
+              "if (!rr || typeof rr !== 'object') { return; }",
+              "var entry = (rr.requests || [])[0];",
+              "pm.test('embedContentConfig: documentOcr and audioTrackExtraction nested', function () {",
+              "  var cfg = (entry || {}).embedContentConfig || {};",
+              "  pm.expect(cfg.documentOcr, JSON.stringify(rr)).to.eql(true);",
+              "  pm.expect(cfg.audioTrackExtraction, JSON.stringify(rr)).to.eql(true);",
+              "});",
+              "pm.test('embedContentConfig: nothing at the top level', function () {",
+              "  pm.expect(entry, JSON.stringify(rr)).to.not.have.property('documentOcr');",
+              "  pm.expect(entry, JSON.stringify(rr)).to.not.have.property('audioTrackExtraction');",
+              "  pm.expect(rr, JSON.stringify(rr)).to.not.have.property('documentOcr');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "186.3 gemini/gemini-embedding-2 - embedContentConfig with passthrough stays inside requests[]",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"gemini/gemini-embedding-2\",\"input\":[[{\"type\":\"text\",\"text\":\"alpha kestrel harbor\"}]],\"task_type\":\"RETRIEVAL_DOCUMENT\",\"dimensions\":256,\"embedContentConfig\":{\"documentOcr\":true,\"audioTrackExtraction\":true}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('embedContentConfig: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var body = pm.response.json() || {};",
+              "pm.test('embedContentConfig: dimensions applied', function () {",
+              "  pm.expect((((body.data || [])[0] || {}).embedding || []).length, pm.response.text().slice(0, 300)).to.eql(256);",
+              "});",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('embedContentConfig: raw_request captured', function () {",
+              "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+              "});",
+              "if (!rr || typeof rr !== 'object') { return; }",
+              "var entry = (rr.requests || [])[0];",
+              "pm.test('embedContentConfig: documentOcr and audioTrackExtraction nested', function () {",
+              "  var cfg = (entry || {}).embedContentConfig || {};",
+              "  pm.expect(cfg.documentOcr, JSON.stringify(rr)).to.eql(true);",
+              "  pm.expect(cfg.audioTrackExtraction, JSON.stringify(rr)).to.eql(true);",
+              "});",
+              "pm.test('embedContentConfig: nothing at the top level', function () {",
+              "  pm.expect(entry, JSON.stringify(rr)).to.not.have.property('documentOcr');",
+              "  pm.expect(entry, JSON.stringify(rr)).to.not.have.property('audioTrackExtraction');",
+              "  pm.expect(rr, JSON.stringify(rr)).to.not.have.property('documentOcr');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

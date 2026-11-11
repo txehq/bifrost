@@ -1,0 +1,149 @@
+{
+  "name": "182. GenAI embedding params reach non-Gemini providers (genai-embedding-params)",
+  "description": "GenAI :embedContent / :batchEmbedContents converters put taskType / title / outputDimensionality on each input item. Providers with one parameter block per request (openai, vertex, bedrock, cohere) reject per-item params with a 400 (\"applies one set of parameters to the whole request\"). google-genai always uses batchEmbedContents and repeats the same params on every entry, so identical entry params must be hoisted to request level. Entries with differing params stay per item (Gemini honours them) and non-Gemini targets reject them with a 400. Cases send outputDimensionality: 8 and assert 8-dim vectors come back.",
+  "item": [
+    {
+      "name": "182.1 openai/text-embedding-3-small - batchEmbedContents with identical outputDimensionality on every entry",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"requests\":[{\"content\":{\"parts\":[{\"text\":\"Hello world\"}]},\"taskType\":\"RETRIEVAL_DOCUMENT\",\"outputDimensionality\":8},{\"content\":{\"parts\":[{\"text\":\"Goodbye world\"}]},\"taskType\":\"RETRIEVAL_DOCUMENT\",\"outputDimensionality\":8}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/openai/text-embedding-3-small:batchEmbedContents",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "openai",
+            "text-embedding-3-small:batchEmbedContents"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('openai batch params: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var body = pm.response.json() || {};",
+              "var embs = body.embeddings || [];",
+              "pm.test('openai batch params: one embedding per entry', function () {",
+              "  pm.expect(embs.length, pm.response.text()).to.eql(2);",
+              "});",
+              "pm.test('openai batch params: outputDimensionality honoured', function () {",
+              "  embs.forEach(function (e) { pm.expect((e.values || []).length, pm.response.text()).to.eql(8); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "182.2 vertex/text-embedding-005 - embedContent with outputDimensionality and taskType",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"content\":{\"parts\":[{\"text\":\"Hello world\"}]},\"taskType\":\"RETRIEVAL_DOCUMENT\",\"outputDimensionality\":8}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/vertex/text-embedding-005:embedContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "vertex",
+            "text-embedding-005:embedContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('vertex embedContent params: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var body = pm.response.json() || {};",
+              "pm.test('vertex embedContent params: outputDimensionality honoured', function () {",
+              "  pm.expect(((body.embedding || {}).values || []).length, pm.response.text()).to.eql(8);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "182.3 [EXPECT-4XX] openai/text-embedding-3-small - batchEmbedContents with differing params is rejected",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"requests\":[{\"content\":{\"parts\":[{\"text\":\"Hello world\"}]},\"taskType\":\"RETRIEVAL_QUERY\",\"outputDimensionality\":8},{\"content\":{\"parts\":[{\"text\":\"Goodbye world\"}]},\"taskType\":\"RETRIEVAL_DOCUMENT\",\"outputDimensionality\":16}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/openai/text-embedding-3-small:batchEmbedContents",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "openai",
+            "text-embedding-3-small:batchEmbedContents"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('openai differing params: rejected with 400', function () {",
+              "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+              "});",
+              "pm.test('openai differing params: per-item params error', function () {",
+              "  pm.expect(pm.response.text()).to.include('cannot carry its own params');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

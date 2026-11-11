@@ -1,0 +1,59 @@
+{
+  "name": "1. Native Bifrost API",
+  "description": "Bifrost's own OpenAI-shaped surface. Use a `provider/model` string in the `model` field to route to any configured backend.",
+  "item": [
+    {
+      "name": "POST /v1/chat/completions",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Say hello in one short sentence.\" }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "POST /v1/responses",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Say hello in one short sentence.\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    }
+  ]
+}

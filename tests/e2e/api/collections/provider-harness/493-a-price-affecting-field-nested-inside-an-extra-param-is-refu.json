@@ -1,0 +1,538 @@
+{
+  "name": "493. A price-affecting field nested inside an extra param is refused (nested price field)",
+  "description": "Fork contract C4 (a price-affecting field is delivered or refused, never smuggled), TXE-7124. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. Folders 430 and 434 pin that an extra param cannot supply a price-affecting field under its unified name or the vendor's own top-level name. Extra params are merged into the converted body object by object, so on a provider whose body holds price fields inside an object, an extra param named after that object added the nested field when the request left the unified one out: parameters.durationSeconds on a Veo video, generationConfig.imageConfig.imageSize on a Gemini image, voice_setting.speed on MiniMax speech. The vendor billed for a value no unified field showed. schemas.NestedPriceFields lists those paths per provider and operation, and the request worker refuses an extra param that sets one with 400 caller_unsupported_parameter naming the path as the caller spelled it, before a key is chosen. The names are compared the way a vendor that takes camelCase and snake_case reads them. Rows 1 to 7 are refusals on five providers, each asserting that the fixture received nothing. Row 8 is the control: a sibling in the same object that is not a price field still reaches the vendor beside what the converter wrote. Go pins the whole table: core's TestNestedPriceFieldsAreDeclaredAndRefused sends every price-affecting field through every provider's converter and fails when one lands on a nested path that is not listed (62 paths on bedrock, byteplus, elevenlabs, gemini, vertex, google-cloud-tts, minimax and replicate), so Bedrock, ElevenLabs and Vertex, which this fixture config cannot serve these rows for, are covered there.",
+  "item": [
+    {
+      "name": "[EXPECT-400] 493.1 gemini/veo-3.1-generate-preview v1/videos - parameters.durationSeconds with no seconds is refused (nested price field)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/veo-3.1-generate-preview\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"parameters\": {\n    \"durationSeconds\": 8\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('nested price field setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "function wire(cb) { pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "pm.test('refused with 400', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('the refusal is caller_unsupported_parameter, names the nested field as sent and says which unified field to send', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql(\"parameters.durationSeconds\");",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include(\"seconds\");",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('nothing reached the vendor', function () { pm.expect(calls, JSON.stringify(calls).slice(0, 600)).to.have.length(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 493.2 gemini/veo-3.1-generate-preview v1/videos - parameters.duration_seconds (snake_case) beside the unified seconds is refused (nested price field)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/veo-3.1-generate-preview\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"seconds\": \"4\",\n  \"parameters\": {\n    \"duration_seconds\": 8\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('nested price field setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "function wire(cb) { pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "pm.test('refused with 400', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('the refusal is caller_unsupported_parameter, names the nested field as sent and says which unified field to send', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql(\"parameters.duration_seconds\");",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include(\"seconds\");",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('nothing reached the vendor', function () { pm.expect(calls, JSON.stringify(calls).slice(0, 600)).to.have.length(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 493.3 gemini/imagen-4.0-generate-001 v1/images/generations - parameters.sampleCount with no n is refused (nested price field)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/imagen-4.0-generate-001\",\n  \"prompt\": \"a small red circle on a white background\",\n  \"parameters\": {\n    \"sampleCount\": 4\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('nested price field setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "function wire(cb) { pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "pm.test('refused with 400', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('the refusal is caller_unsupported_parameter, names the nested field as sent and says which unified field to send', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql(\"parameters.sampleCount\");",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include(\"n\");",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('nothing reached the vendor', function () { pm.expect(calls, JSON.stringify(calls).slice(0, 600)).to.have.length(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 493.4 gemini/gemini-2.5-flash-image v1/images/generations - generation_config.image_config.image_size, three levels down is refused (nested price field)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash-image\",\n  \"prompt\": \"a small red circle on a white background\",\n  \"generation_config\": {\n    \"image_config\": {\n      \"image_size\": \"4K\"\n    }\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('nested price field setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "function wire(cb) { pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "pm.test('refused with 400', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('the refusal is caller_unsupported_parameter, names the nested field as sent and says which unified field to send', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql(\"generation_config.image_config.image_size\");",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include(\"resolution\");",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('nothing reached the vendor', function () { pm.expect(calls, JSON.stringify(calls).slice(0, 600)).to.have.length(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 493.5 minimax/speech-2.8-turbo v1/audio/speech - voice_setting.speed with no speed is refused (nested price field)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"minimax/speech-2.8-turbo\",\n  \"input\": \"A recorded MiniMax speech request.\",\n  \"voice\": \"English_Graceful_Lady\",\n  \"voice_setting\": {\n    \"speed\": 2\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('nested price field setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "function wire(cb) { pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "pm.test('refused with 400', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('the refusal is caller_unsupported_parameter, names the nested field as sent and says which unified field to send', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql(\"voice_setting.speed\");",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include(\"speed\");",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('nothing reached the vendor', function () { pm.expect(calls, JSON.stringify(calls).slice(0, 600)).to.have.length(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 493.6 replicate/black-forest-labs/flux-schnell v1/images/generations - input.number_of_images with no n is refused (nested price field)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"replicate/black-forest-labs/flux-schnell\",\n  \"prompt\": \"a small red circle on a white background\",\n  \"input\": {\n    \"number_of_images\": 4\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('nested price field setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "function wire(cb) { pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "pm.test('refused with 400', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('the refusal is caller_unsupported_parameter, names the nested field as sent and says which unified field to send', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql(\"input.number_of_images\");",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include(\"n\");",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('nothing reached the vendor', function () { pm.expect(calls, JSON.stringify(calls).slice(0, 600)).to.have.length(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 493.7 byteplus/seedream-4-0-250828 v1/images/generations - sequential_image_generation_options.max_images with no n is refused (nested price field)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/seedream-4-0-250828\",\n  \"prompt\": \"a small red circle on a white background\",\n  \"sequential_image_generation_options\": {\n    \"max_images\": 4\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('nested price field setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "function wire(cb) { pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "pm.test('refused with 400', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('the refusal is caller_unsupported_parameter, names the nested field as sent and says which unified field to send', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql(\"sequential_image_generation_options.max_images\");",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include(\"n\");",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('nothing reached the vendor', function () { pm.expect(calls, JSON.stringify(calls).slice(0, 600)).to.have.length(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "493.8 minimax/speech-2.8-turbo v1/audio/speech - a nested field that is not a price field still reaches the vendor (nested price field)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"minimax/speech-2.8-turbo\",\n  \"input\": \"A recorded MiniMax speech request.\",\n  \"voice\": \"English_Graceful_Lady\",\n  \"speed\": 1.5,\n  \"voice_setting\": {\n    \"vol\": 2\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('nested price field setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "function wire(cb) { pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "pm.test('served', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200); });",
+              "wire(function (calls) {",
+              "  pm.test('MiniMax received the nested extra param beside the voice and the speed the converter wrote', function () {",
+              "    pm.expect(calls, JSON.stringify(calls).slice(0, 600)).to.have.length(1);",
+              "    var setting = JSON.parse(calls[0].body).voice_setting || {};",
+              "    pm.expect(setting.vol).to.eql(2);",
+              "    pm.expect(setting.voice_id).to.eql('English_Graceful_Lady');",
+              "    pm.expect(setting.speed).to.eql(1.5);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

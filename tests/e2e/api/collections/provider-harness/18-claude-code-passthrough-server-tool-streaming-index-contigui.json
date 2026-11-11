@@ -1,0 +1,194 @@
+{
+  "name": "18. Claude Code Passthrough - server-tool streaming index contiguity (#4890)",
+  "item": [
+    {
+      "name": "Claude Code passthrough: web_search streaming has contiguous content_block indices - #4890",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code >= 400) { return; }",
+              "// If newman forwards the custom User-Agent, Bifrost takes the Claude Code passthrough",
+              "// path; if it strips it, this still validates the all-normalized path. Either way the",
+              "// content_block_start indices must be contiguous from 0 (#4890 / #4932).",
+              "pm.test('Claude Code passthrough web_search stream: content_block indices contiguous from 0 - #4890', function () {",
+              "  var raw = pm.response.text() || '';",
+              "  pm.expect(raw, 'stream did not end with message_stop').to.include('message_stop');",
+              "  pm.expect(raw.indexOf('Content block not found'), 'stream reported a missing content block').to.equal(-1);",
+              "  var idxs = [], m, re = /\"content_block_start\"[^}]*?\"index\"\\s*:\\s*(\\d+)/g;",
+              "  while ((m = re.exec(raw)) !== null) { idxs.push(Number(m[1])); }",
+              "  pm.expect(idxs.length, 'no content_block_start events found in stream').to.be.above(0);",
+              "  var srt = idxs.slice().sort(function (a, b) { return a - b; });",
+              "  for (var i = 0; i < srt.length; i++) { pm.expect(srt[i], 'content_block_start indices not contiguous from 0: ' + JSON.stringify(idxs)).to.equal(i); }",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "User-Agent",
+            "value": "claude-cli/1.0"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"claude-opus-4-7\", \"max_tokens\": 1024, \"messages\": [{\"role\": \"user\", \"content\": \"What's the weather in New York City right now?\"}], \"tools\": [{\"type\": \"web_search_20250305\", \"name\": \"web_search\", \"max_uses\": 3}], \"stream\": true}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Claude Code passthrough: zero-result web_search keeps indices in lockstep - #4890 (f2c)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code >= 400) { return; }",
+              "// If newman forwards the custom User-Agent, Bifrost takes the Claude Code passthrough",
+              "// path; if it strips it, this still validates the all-normalized path. Either way the",
+              "// content_block_start indices must be contiguous from 0 (#4890 / #4932).",
+              "pm.test('Claude Code passthrough zero-result web_search: content_block indices still contiguous - #4890', function () {",
+              "  var raw = pm.response.text() || '';",
+              "  pm.expect(raw, 'stream did not end with message_stop').to.include('message_stop');",
+              "  pm.expect(raw.indexOf('Content block not found'), 'stream reported a missing content block').to.equal(-1);",
+              "  var idxs = [], m, re = /\"content_block_start\"[^}]*?\"index\"\\s*:\\s*(\\d+)/g;",
+              "  while ((m = re.exec(raw)) !== null) { idxs.push(Number(m[1])); }",
+              "  pm.expect(idxs.length, 'no content_block_start events found in stream').to.be.above(0);",
+              "  var srt = idxs.slice().sort(function (a, b) { return a - b; });",
+              "  for (var i = 0; i < srt.length; i++) { pm.expect(srt[i], 'content_block_start indices not contiguous from 0: ' + JSON.stringify(idxs)).to.equal(i); }",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "User-Agent",
+            "value": "claude-cli/1.0"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"claude-opus-4-7\", \"max_tokens\": 1024, \"messages\": [{\"role\": \"user\", \"content\": \"Search the web for the exact phrase \\\"zxqw9v7k3mfp2qh8 nonexistent gibberish token 4823\\\" and tell me exactly what search results come back.\"}], \"tools\": [{\"type\": \"web_search_20250305\", \"name\": \"web_search\", \"max_uses\": 3}], \"stream\": true}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Claude Code passthrough: web_fetch streaming has contiguous content_block indices - #4890 (5464)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code >= 400) { return; }",
+              "// If newman forwards the custom User-Agent, Bifrost takes the Claude Code passthrough",
+              "// path; if it strips it, this still validates the all-normalized path. Either way the",
+              "// content_block_start indices must be contiguous from 0 (#4890 / #4932).",
+              "pm.test('Claude Code passthrough web_fetch stream: content_block indices contiguous from 0 - #4890', function () {",
+              "  var raw = pm.response.text() || '';",
+              "  pm.expect(raw, 'stream did not end with message_stop').to.include('message_stop');",
+              "  pm.expect(raw.indexOf('Content block not found'), 'stream reported a missing content block').to.equal(-1);",
+              "  var idxs = [], m, re = /\"content_block_start\"[^}]*?\"index\"\\s*:\\s*(\\d+)/g;",
+              "  while ((m = re.exec(raw)) !== null) { idxs.push(Number(m[1])); }",
+              "  pm.expect(idxs.length, 'no content_block_start events found in stream').to.be.above(0);",
+              "  var srt = idxs.slice().sort(function (a, b) { return a - b; });",
+              "  for (var i = 0; i < srt.length; i++) { pm.expect(srt[i], 'content_block_start indices not contiguous from 0: ' + JSON.stringify(idxs)).to.equal(i); }",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "User-Agent",
+            "value": "claude-cli/1.0"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"claude-opus-4-7\", \"max_tokens\": 1024, \"messages\": [{\"role\": \"user\", \"content\": \"Fetch https://example.com and summarize it in one sentence.\"}], \"tools\": [{\"type\": \"web_fetch_20250910\", \"name\": \"web_fetch\", \"max_uses\": 2}], \"stream\": true}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    }
+  ]
+}

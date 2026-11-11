@@ -1,0 +1,212 @@
+{
+  "name": "105. Routing fallback key pinning",
+  "description": "Creates a request-header-scoped routing rule using a pinned fallback followed by a legacy unpinned fallback. Before the change, the object fallback is rejected by the routing API. After the change, a missing pinned key must skip its attempt rather than silently selecting another key: success must come from fallback index 2. Covers JSON and SSE through the real routing and core retry paths. The temporary rule is deleted after each request. Requires management access (optional managementApiKey environment variable when authentication is enabled) and the configured OpenAI gpt-4o-mini provider. Known-key selection and restricted-write races have deterministic Go coverage.",
+  "item": [
+    {
+      "name": "openai gpt-4o-mini fallback key pinning non-streaming",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var marker = pm.variables.replaceIn('{{$guid}}');",
+              "pm.variables.set('fallbackPinMarker', marker);",
+              "pm.variables.unset('fallbackPinRuleID');",
+              "var headers = {'Content-Type': 'application/json'};",
+              "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+              "if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+              "var rule = {",
+              "  name: 'harness-fallback-key-pin-' + marker,",
+              "  enabled: true,",
+              "  scope: 'global',",
+              "  priority: Date.now() % 1000000000,",
+              "  cel_expression: '\"x-fallback-pin-test\" in headers && headers[\"x-fallback-pin-test\"] == \"' + marker + '\"',",
+              "  targets: [{provider: 'openai', model: 'bifrost-harness-nonexistent-primary', weight: 1}],",
+              "  fallbacks: [",
+              "    {provider: 'openai', model: 'gpt-4o-mini', key_id: '00000000-0000-4000-8000-000000000001'},",
+              "    'openai/gpt-4o-mini'",
+              "  ]",
+              "};",
+              "pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/routing/rules', method: 'POST', header: headers, body: {mode: 'raw', raw: JSON.stringify(rule)}}, function (err, response) {",
+              "  pm.test('routing API accepts mixed pinned and legacy fallback entries', function () {",
+              "    pm.expect(err).to.equal(null);",
+              "    pm.expect(response && response.code, response ? response.text() : 'no response; set managementApiKey when management auth is on').to.equal(200);",
+              "  });",
+              "  if (err || response.code !== 200) { pm.execution.skipRequest(); return; }",
+              "  var created = response.json().rule;",
+              "  pm.variables.set('fallbackPinRuleID', created.id);",
+              "  pm.test('routing API preserves the explicit fallback key ID', function () {",
+              "    pm.expect(created.fallbacks[0].key_id).to.equal('00000000-0000-4000-8000-000000000001');",
+              "    pm.expect(created.fallbacks[1]).to.equal('openai/gpt-4o-mini');",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ruleID = pm.variables.get('fallbackPinRuleID');",
+              "if (ruleID) {",
+              "  var headers = {};",
+              "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+              "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+              "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/routing/rules/' + ruleID, method: 'DELETE', header: headers}, function (err, response) {",
+              "    pm.test('temporary fallback key pinning rule is removed', function () {",
+              "      pm.expect(err).to.equal(null);",
+              "      pm.expect(response.code, response.text()).to.be.below(300);",
+              "    });",
+              "  });",
+              "}",
+              "pm.test('unknown pinned fallback is skipped and the explicit unpinned fallback succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback')).to.equal('true');",
+              "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index')).to.equal('2');",
+              "});",
+              "pm.test(\"chat completion returned\", function () { pm.expect(pm.response.json().choices).to.be.an(\"array\").that.is.not.empty; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-fallback-pin-test",
+            "value": "{{fallbackPinMarker}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai gpt-4o-mini fallback key pinning streaming",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var marker = pm.variables.replaceIn('{{$guid}}');",
+              "pm.variables.set('fallbackPinMarker', marker);",
+              "pm.variables.unset('fallbackPinRuleID');",
+              "var headers = {'Content-Type': 'application/json'};",
+              "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+              "if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+              "var rule = {",
+              "  name: 'harness-fallback-key-pin-' + marker,",
+              "  enabled: true,",
+              "  scope: 'global',",
+              "  priority: Date.now() % 1000000000,",
+              "  cel_expression: '\"x-fallback-pin-test\" in headers && headers[\"x-fallback-pin-test\"] == \"' + marker + '\"',",
+              "  targets: [{provider: 'openai', model: 'bifrost-harness-nonexistent-primary', weight: 1}],",
+              "  fallbacks: [",
+              "    {provider: 'openai', model: 'gpt-4o-mini', key_id: '00000000-0000-4000-8000-000000000001'},",
+              "    'openai/gpt-4o-mini'",
+              "  ]",
+              "};",
+              "pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/routing/rules', method: 'POST', header: headers, body: {mode: 'raw', raw: JSON.stringify(rule)}}, function (err, response) {",
+              "  pm.test('routing API accepts mixed pinned and legacy fallback entries', function () {",
+              "    pm.expect(err).to.equal(null);",
+              "    pm.expect(response && response.code, response ? response.text() : 'no response; set managementApiKey when management auth is on').to.equal(200);",
+              "  });",
+              "  if (err || response.code !== 200) { pm.execution.skipRequest(); return; }",
+              "  var created = response.json().rule;",
+              "  pm.variables.set('fallbackPinRuleID', created.id);",
+              "  pm.test('routing API preserves the explicit fallback key ID', function () {",
+              "    pm.expect(created.fallbacks[0].key_id).to.equal('00000000-0000-4000-8000-000000000001');",
+              "    pm.expect(created.fallbacks[1]).to.equal('openai/gpt-4o-mini');",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var ruleID = pm.variables.get('fallbackPinRuleID');",
+              "if (ruleID) {",
+              "  var headers = {};",
+              "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+              "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+              "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/routing/rules/' + ruleID, method: 'DELETE', header: headers}, function (err, response) {",
+              "    pm.test('temporary fallback key pinning rule is removed', function () {",
+              "      pm.expect(err).to.equal(null);",
+              "      pm.expect(response.code, response.text()).to.be.below(300);",
+              "    });",
+              "  });",
+              "}",
+              "pm.test('unknown pinned fallback is skipped and the explicit unpinned fallback succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback')).to.equal('true');",
+              "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index')).to.equal('2');",
+              "});",
+              "pm.test(\"stream completes\", function () { pm.expect(pm.response.text()).to.include(\"data: [DONE]\"); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-fallback-pin-test",
+            "value": "{{fallbackPinMarker}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    }
+  ]
+}

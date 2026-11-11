@@ -1,0 +1,220 @@
+{
+  "name": "79. Claude Code against Bedrock OpenAI-family models (anthropic route conversion)",
+  "description": "Two defects made every Claude Code session against a Bedrock OpenAI-family model fail on its first message. Both live in the Anthropic -> Responses conversion and both answer with a 400, so neither degrades quietly.\n\nConvertAnthropicMessagesToBifrostMessages is called with keepToolsGrouped = (provider == bedrock). The grouped converter built input messages with ResponsesOutputMessageContentTypeText plus annotations/logprobs, all output-side. The Responses API matches `input` against a union of input-item variants and a user message carrying output_text matches none: \"Invalid 'input': value did not match any expected variant\". The ungrouped converter (bedrock_mantle) always used input_text, which is why only the bedrock provider failed.\n\nSeparately, the converter pins reasoning.summary to \"detailed\" whenever the user agent is claude-cli. Bedrock advertises concise/detailed/auto in its schema but its models serve only \"auto\", answering the others with \"Unsupported parameter: 'reasoning.summary' is not supported with the ... model\" on BOTH bedrock-runtime and bedrock-mantle. The summary is now narrowed to auto for Bedrock targets rather than dropped, since the caller did ask to see reasoning.\n\nThe third case is the regression guard: Claude on the bedrock provider takes the same grouped converter, so the input_text change had to leave it working.",
+  "item": [
+    {
+      "name": "bedrock/openai.gpt-5.6-terra via /anthropic/v1/messages with a claude-cli agent - bedrock-cc-anthropic-conversion",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "User-Agent",
+            "value": "claude-cli/1.0"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock/openai.gpt-5.6-terra\",\"max_tokens\":2048,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"system\":[{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Hi\"}]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.text() || '';",
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+              "pm.test('grouped converter emits input_text and a summary bedrock serves', function () {",
+              "  pm.expect(body, 'input union rejected - output_text on an input message?').to.not.include('did not match any expected variant');",
+              "  pm.expect(body, 'summary style the model cannot serve').to.not.include(\"Unsupported parameter: 'reasoning.summary'\");",
+              "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  var raw = (j.extra_fields || {}).raw_request || {};",
+              "  pm.expect(raw.input, 'raw_request missing - is send_back_raw_request honoured?').to.be.an('array');",
+              "  var types = {};",
+              "  raw.input.forEach(function (item) {",
+              "    (item.content || []).forEach(function (part) { if (part && part.type) { types[part.type] = true; } });",
+              "  });",
+              "  // A user turn carries input_text; output_text is output-side and makes the",
+              "  // Responses input union unmatchable.",
+              "  pm.expect(types['output_text'], 'output_text on an input message: ' + JSON.stringify(types)).to.not.equal(true);",
+              "  pm.expect(types['input_text'], 'expected input_text, got ' + JSON.stringify(types)).to.equal(true);",
+              "  var reasoning = raw.reasoning || {};",
+              "  // Bedrock advertises concise/detailed/auto but serves only auto; the Anthropic",
+              "  // converter pins 'detailed' for every Claude Code request.",
+              "  if (reasoning.summary) { pm.expect(reasoning.summary, 'summary not narrowed for bedrock').to.equal('auto'); }",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "bedrock_mantle/openai.gpt-5.6-terra via /anthropic/v1/messages with a claude-cli agent - bedrock-cc-anthropic-conversion",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "User-Agent",
+            "value": "claude-cli/1.0"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-terra\",\"max_tokens\":2048,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"system\":[{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Hi\"}]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.text() || '';",
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+              "// The ungrouped converter already emitted input_text, so this case isolates the",
+              "// summary narrowing on the other host.",
+              "pm.test('summary is narrowed to auto on the mantle host too', function () {",
+              "  pm.expect(body, 'input union rejected - output_text on an input message?').to.not.include('did not match any expected variant');",
+              "  pm.expect(body, 'summary style the model cannot serve').to.not.include(\"Unsupported parameter: 'reasoning.summary'\");",
+              "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  var raw = (j.extra_fields || {}).raw_request || {};",
+              "  pm.expect(raw.input, 'raw_request missing - is send_back_raw_request honoured?').to.be.an('array');",
+              "  var types = {};",
+              "  raw.input.forEach(function (item) {",
+              "    (item.content || []).forEach(function (part) { if (part && part.type) { types[part.type] = true; } });",
+              "  });",
+              "  // A user turn carries input_text; output_text is output-side and makes the",
+              "  // Responses input union unmatchable.",
+              "  pm.expect(types['output_text'], 'output_text on an input message: ' + JSON.stringify(types)).to.not.equal(true);",
+              "  pm.expect(types['input_text'], 'expected input_text, got ' + JSON.stringify(types)).to.equal(true);",
+              "  var reasoning = raw.reasoning || {};",
+              "  // Bedrock advertises concise/detailed/auto but serves only auto; the Anthropic",
+              "  // converter pins 'detailed' for every Claude Code request.",
+              "  if (reasoning.summary) { pm.expect(reasoning.summary, 'summary not narrowed for bedrock').to.equal('auto'); }",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "bedrock/us.anthropic.claude-sonnet-4-6 via /anthropic/v1/messages keeps working through the grouped converter - bedrock-cc-anthropic-conversion",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "User-Agent",
+            "value": "claude-cli/1.0"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-6\",\"max_tokens\":2048,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"system\":[{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Hi\"}]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.text() || '';",
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+              "// Claude on the bedrock provider shares keepToolsGrouped=true with the models",
+              "// above, so the input_text change had to leave this path intact.",
+              "pm.test('claude on bedrock still answers through the grouped converter', function () {",
+              "  pm.expect(body, 'input union rejected').to.not.include('did not match any expected variant');",
+              "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.content, 'expected content blocks').to.be.an('array').that.is.not.empty;",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

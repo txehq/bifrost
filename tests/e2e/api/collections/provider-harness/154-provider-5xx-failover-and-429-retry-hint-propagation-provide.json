@@ -1,0 +1,390 @@
+{
+  "name": "154. Provider 5xx failover and 429 retry-hint propagation (provider error fixture)",
+  "description": "Local fixture regression, no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json (openai base_url -> the fixture, max_retries 0), and run with providerErrorFixture=1; every case is skipped otherwise. The fixture answers by model name: upstream-503 returns HTTP 503, upstream-429 returns 429 with Retry-After: 7, upstream-429-ms returns 429 with retry-after-ms: 2500, upstream-ok returns a chat completion. Bifrost does not emit a Retry-After HTTP header: the provider hint is carried in the error body as extra_fields.retry_after_ms (clamped to 1s..5m), and that is what 154.3/154.4 pin. 154.1 and 154.7 talk to the fixture directly to reset and read per-model hit counts, which proves a failover tried the primary once and the fallback once.",
+  "item": [
+    {
+      "name": "154.1 fixture hit counters reset",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('counters cleared', function () { pm.expect(j.data[0].reset, pm.response.text()).to.equal(true); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__reset"
+      }
+    },
+    {
+      "name": "154.2 [EXPECT-503] openai upstream 503 propagates as a 503 error without fallbacks (provider 5xx)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/upstream-503\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('upstream 503 reaches the client as a Bifrost error envelope', function () {",
+              "  pm.expect(j.error, pm.response.text()).to.be.an('object');",
+              "  pm.expect(j.error.message, pm.response.text()).to.be.a('string').and.not.empty;",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "154.3 [EXPECT-429] openai upstream 429 with Retry-After 7 propagates with retry_after_ms 7000 (rate limit propagation)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/upstream-429\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('upstream 429 reaches the client as a Bifrost error envelope', function () {",
+              "  pm.expect(j.error, pm.response.text()).to.be.an('object');",
+              "  pm.expect(j.error.message, pm.response.text()).to.be.a('string').and.not.empty;",
+              "});",
+              "pm.test('Retry-After: 7 surfaces as extra_fields.retry_after_ms = 7000', function () {",
+              "  pm.expect(j.extra_fields && j.extra_fields.retry_after_ms, 'retry hint lost: ' + pm.response.text()).to.equal(7000);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "154.4 [EXPECT-429] openai upstream 429 with retry-after-ms 2500 propagates with retry_after_ms 2500 (rate limit propagation)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/upstream-429-ms\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('upstream 429 reaches the client as a Bifrost error envelope', function () {",
+              "  pm.expect(j.error, pm.response.text()).to.be.an('object');",
+              "  pm.expect(j.error.message, pm.response.text()).to.be.a('string').and.not.empty;",
+              "});",
+              "pm.test('retry-after-ms: 2500 surfaces as extra_fields.retry_after_ms = 2500', function () {",
+              "  pm.expect(j.extra_fields && j.extra_fields.retry_after_ms, 'retry hint lost: ' + pm.response.text()).to.equal(2500);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "154.5 openai upstream 503 fails over to the fallback model (failover 5xx)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/upstream-503\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"fallbacks\": [\n    \"openai/upstream-ok\"\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('fallback served the request', function () {",
+              "  pm.expect(j.choices[0].message.content, pm.response.text()).to.equal('hello');",
+              "  pm.expect(j.model || '', pm.response.text()).to.match(/upstream-ok/);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "154.6 openai upstream 429 fails over to the fallback model (failover 429)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/upstream-429\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"fallbacks\": [\n    \"openai/upstream-ok\"\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('fallback served the request after a rate limit', function () {",
+              "  pm.expect(j.choices[0].message.content, pm.response.text()).to.equal('hello');",
+              "  pm.expect(j.model || '', pm.response.text()).to.match(/upstream-ok/);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "154.7 fixture hit counts prove one attempt per model per request (failover 5xx)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var h = pm.response.json().data[0].hits;",
+              "pm.test('each primary was tried exactly once per request and the fallback once per failover', function () {",
+              "  pm.expect(h['upstream-503'], JSON.stringify(h)).to.equal(2);",
+              "  pm.expect(h['upstream-429'], JSON.stringify(h)).to.equal(2);",
+              "  pm.expect(h['upstream-429-ms'], JSON.stringify(h)).to.equal(1);",
+              "  pm.expect(h['upstream-ok'], JSON.stringify(h)).to.equal(2);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__hits"
+      }
+    },
+    {
+      "name": "154.8 [EXPECT-404] fixture treats Object.prototype names as unknown models instead of crashing (fixture robustness)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('constructor is an unknown model, not an inherited function', function () { pm.expect(j.error && j.error.code, pm.response.text()).to.equal('model_not_found'); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/v1/chat/completions', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ model: 'toString' }) } }, function (err, res) {",
+              "  pm.test('a second prototype name (toString) also gets a 404 envelope', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(404); pm.expect(res.json().error.code).to.equal('model_not_found'); });",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err2, res2) {",
+              "    pm.test('the fixture is still serving afterwards', function () { pm.expect(err2, String(err2)).to.equal(null); pm.expect(res2.code).to.equal(200); });",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"constructor\"\n}"
+        },
+        "url": "{{providerErrorFixtureUrl}}/v1/chat/completions"
+      }
+    }
+  ]
+}

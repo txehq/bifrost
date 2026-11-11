@@ -1,0 +1,808 @@
+{
+  "name": "162. Bedrock passthrough for operations without native routes (bedrock passthrough fixture)",
+  "description": "Local fixture regression, no network traffic leaves the machine. Run tests/e2e/api/runners/bedrock-endpoint-fixture.mjs --app-dir <dir> (it writes config.json: one Bedrock key with throwaway credentials in us-west-2, every Bedrock service endpoint overridden to the fixture, the fixture CA as network_config.ca_cert_pem, and the pricing datasheet URLs pointed at the fixture so the gateway starts offline), then start an isolated gateway with -app-dir <dir> and HTTPS_PROXY set to a dead port as a tripwire (the Bedrock client honours HTTPS_PROXY, and loopback is exempt, so only an accidental external call would fail), and run with bedrockEndpointFixture=1; every case is skipped otherwise. /bedrock_passthrough forwards exactly three AWS operations Bifrost has no native route for: InvokeAgent and knowledge-base Retrieve (bedrock-agent-runtime, fixture port 8796) and ApplyGuardrail (bedrock-runtime, fixture port 8798). The cases assert the request is SigV4 signed by the gateway for the key region and the bedrock service, that caller credentials and x-bf headers are not forwarded, that the upstream body, status, Content-Type and AWS error headers come back verbatim, and that every other path, a traversal and a non-POST method are refused with a 400 before any request is built. The /bedrock_passthrough/ bodies are carved out of the generic shape check in __skipShape because they are not inference responses.",
+  "item": [
+    {
+      "name": "162.1 bedrock passthrough InvokeAgent is signed, forwarded to agent-runtime and the event stream returns untouched (bedrock agents)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer attacker-token"
+          },
+          {
+            "key": "X-Amz-Security-Token",
+            "value": "attacker-session"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"inputText\": \"hi\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock_passthrough/agents/AGENT123456/agentAliases/ALIAS12345/sessions/sess-1/text",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock_passthrough",
+            "agents",
+            "AGENT123456",
+            "agentAliases",
+            "ALIAS12345",
+            "sessions",
+            "sess-1",
+            "text"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the upstream content type and request id reach the caller', function () { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/vnd.amazon.eventstream'); pm.expect(pm.response.headers.get('X-Amzn-Requestid')).to.equal('req-agent'); });",
+              "pm.test('the event-stream bytes come back as AWS sent them', function () { var b = pm.response.stream; pm.expect(b[3], 'not the fixture event stream').to.equal(24); pm.expect(Buffer.from(b).toString('utf8')).to.include('fixture-event'); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST'; });",
+              "  pm.test('exactly one request reached the service endpoint', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.port + c.path; }))).to.equal(1); });",
+              "  var call = calls[0] || { port: 0, path: '', headers: {}, body: '' };",
+              "  pm.test('it went to the bedrock-agent-runtime endpoint', function () { pm.expect(call.port).to.equal(8796); pm.expect(call.path).to.match(/^\\/agents\\/AGENT123456\\/agentAliases\\/ALIAS12345\\/sessions\\/sess-1\\/text$/); });",
+              "  pm.test('it is SigV4 signed by the gateway for the key region and the bedrock service', function () { pm.expect(call.headers.authorization, JSON.stringify(call.headers)).to.match(/^AWS4-HMAC-SHA256 Credential=AKIAFIXTUREEXAMPLE0\\/\\d{8}\\/us-west-2\\/bedrock\\/aws4_request/); pm.expect(call.headers['x-amz-date']).to.be.a('string'); });",
+              "  pm.test('caller credentials and gateway headers are not forwarded', function () { pm.expect(call.headers.authorization).to.not.include('attacker'); pm.expect(call.headers['x-amz-security-token']).to.equal(undefined); pm.expect(Object.keys(call.headers).filter(function (h) { return h.indexOf('x-bf-') === 0; }), JSON.stringify(call.headers)).to.eql([]); });",
+              "  pm.test('the request body is forwarded intact', function () { pm.expect(JSON.parse(call.body)).to.eql({ inputText: 'hi' }); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "162.2 bedrock passthrough knowledge-base Retrieve is signed, forwarded to agent-runtime and the results return (bedrock knowledge bases)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer attacker-token"
+          },
+          {
+            "key": "X-Amz-Security-Token",
+            "value": "attacker-session"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"retrievalQuery\": {\n    \"text\": \"what is bifrost\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock_passthrough/knowledgebases/KB12345678/retrieve",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock_passthrough",
+            "knowledgebases",
+            "KB12345678",
+            "retrieve"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('retrievalResults come back as AWS sent them', function () { pm.expect(j.retrievalResults, pm.response.text()).to.be.an('array'); pm.expect(j.retrievalResults[0].content.text).to.equal('fixture chunk'); pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json'); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST'; });",
+              "  pm.test('exactly one request reached the service endpoint', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.port + c.path; }))).to.equal(1); });",
+              "  var call = calls[0] || { port: 0, path: '', headers: {}, body: '' };",
+              "  pm.test('it went to the bedrock-agent-runtime endpoint', function () { pm.expect(call.port).to.equal(8796); pm.expect(call.path).to.match(/^\\/knowledgebases\\/KB12345678\\/retrieve$/); });",
+              "  pm.test('it is SigV4 signed by the gateway for the key region and the bedrock service', function () { pm.expect(call.headers.authorization, JSON.stringify(call.headers)).to.match(/^AWS4-HMAC-SHA256 Credential=AKIAFIXTUREEXAMPLE0\\/\\d{8}\\/us-west-2\\/bedrock\\/aws4_request/); pm.expect(call.headers['x-amz-date']).to.be.a('string'); });",
+              "  pm.test('caller credentials and gateway headers are not forwarded', function () { pm.expect(call.headers.authorization).to.not.include('attacker'); pm.expect(call.headers['x-amz-security-token']).to.equal(undefined); pm.expect(Object.keys(call.headers).filter(function (h) { return h.indexOf('x-bf-') === 0; }), JSON.stringify(call.headers)).to.eql([]); });",
+              "",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "162.3 bedrock passthrough ApplyGuardrail is signed, forwarded to bedrock-runtime and the verdict returns (bedrock guardrails apply)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer attacker-token"
+          },
+          {
+            "key": "X-Amz-Security-Token",
+            "value": "attacker-session"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"source\": \"INPUT\",\n  \"content\": [\n    {\n      \"text\": {\n        \"text\": \"hello\"\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock_passthrough/guardrail/gr1a2b3c4d5e/version/DRAFT/apply",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock_passthrough",
+            "guardrail",
+            "gr1a2b3c4d5e",
+            "version",
+            "DRAFT",
+            "apply"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('the guardrail verdict comes back as AWS sent it', function () { pm.expect(j.action, pm.response.text()).to.equal('NONE'); pm.expect(j.assessments).to.be.an('array'); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST'; });",
+              "  pm.test('exactly one request reached the service endpoint', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.port + c.path; }))).to.equal(1); });",
+              "  var call = calls[0] || { port: 0, path: '', headers: {}, body: '' };",
+              "  pm.test('it went to the bedrock-runtime endpoint', function () { pm.expect(call.port).to.equal(8798); pm.expect(call.path).to.match(/^\\/guardrail\\/gr1a2b3c4d5e\\/version\\/DRAFT\\/apply$/); });",
+              "  pm.test('it is SigV4 signed by the gateway for the key region and the bedrock service', function () { pm.expect(call.headers.authorization, JSON.stringify(call.headers)).to.match(/^AWS4-HMAC-SHA256 Credential=AKIAFIXTUREEXAMPLE0\\/\\d{8}\\/us-west-2\\/bedrock\\/aws4_request/); pm.expect(call.headers['x-amz-date']).to.be.a('string'); });",
+              "  pm.test('caller credentials and gateway headers are not forwarded', function () { pm.expect(call.headers.authorization).to.not.include('attacker'); pm.expect(call.headers['x-amz-security-token']).to.equal(undefined); pm.expect(Object.keys(call.headers).filter(function (h) { return h.indexOf('x-bf-') === 0; }), JSON.stringify(call.headers)).to.eql([]); });",
+              "",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "162.4 [EXPECT-404] bedrock passthrough returns an upstream not-found verbatim with its AWS error headers (bedrock agents)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"inputText\": \"hi\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock_passthrough/agents/AGENTMISSING1/agentAliases/ALIAS12345/sessions/sess-1/text",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock_passthrough",
+            "agents",
+            "AGENTMISSING1",
+            "agentAliases",
+            "ALIAS12345",
+            "sessions",
+            "sess-1",
+            "text"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status, body and exception type are AWS\\'s own', function () { pm.expect(pm.response.json()).to.eql({ message: 'agent not found' }); pm.expect(pm.response.headers.get('X-Amzn-Errortype')).to.include('ResourceNotFoundException'); pm.expect(pm.response.headers.get('X-Amzn-Requestid')).to.equal('req-missing'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "162.5 [EXPECT-400] bedrock passthrough refuses model invocation, which is not an allow-listed operation (bedrock passthrough allow-list)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"prompt\": \"hi\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock_passthrough/model/amazon.titan-text-express-v1/invoke",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock_passthrough",
+            "model",
+            "amazon.titan-text-express-v1",
+            "invoke"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the refusal is the Bedrock passthrough allow-list, and names the three operations it forwards', function () { pm.expect(pm.response.text()).to.include('bedrock passthrough only forwards POST InvokeAgent, Retrieve and ApplyGuardrail requests'); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST'; });",
+              "  pm.test('nothing reached AWS', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.path; }))).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "162.6 [EXPECT-400] bedrock passthrough refuses a traversal path, which normalizes outside the allow-list, before any request is built (bedrock passthrough allow-list)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"inputText\": \"hi\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock_passthrough/agents/..%2Fmodel/agentAliases/a/sessions/s/text",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock_passthrough",
+            "agents",
+            "..%2Fmodel",
+            "agentAliases",
+            "a",
+            "sessions",
+            "s",
+            "text"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the refusal is the Bedrock passthrough allow-list, and names the three operations it forwards', function () { pm.expect(pm.response.text()).to.include('bedrock passthrough only forwards POST InvokeAgent, Retrieve and ApplyGuardrail requests'); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST'; });",
+              "  pm.test('nothing reached AWS', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.path; }))).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "162.7 [EXPECT-400] bedrock passthrough refuses a GET on an allowed path, because only POST is forwarded (bedrock passthrough allow-list)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bedrock_passthrough/knowledgebases/KB12345678/retrieve",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock_passthrough",
+            "knowledgebases",
+            "KB12345678",
+            "retrieve"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = res.json().data[0].requests;",
+              "  pm.test('nothing reached AWS', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.method + ' ' + c.path; }))).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "162.8 bedrock passthrough InvokeAgent forwards a session id containing dots, underscores, colons and hyphens intact (bedrock agents session id)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"inputText\": \"hi\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock_passthrough/agents/AGENT123456/agentAliases/ALIAS12345/sessions/session.v1:a_b-c/text",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock_passthrough",
+            "agents",
+            "AGENT123456",
+            "agentAliases",
+            "ALIAS12345",
+            "sessions",
+            "session.v1:a_b-c",
+            "text"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the gateway answered from the fixture', function () { pm.expect(pm.response.headers.get('X-Amzn-Requestid')).to.equal('req-agent'); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST'; });",
+              "  pm.test('exactly one request reached the agent-runtime endpoint with the session id unchanged', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.port + c.path; }))).to.equal(1); pm.expect(calls[0].port).to.equal(8796); pm.expect(calls[0].path).to.equal('/agents/AGENT123456/agentAliases/ALIAS12345/sessions/session.v1:a_b-c/text'); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "162.9 [EXPECT-400] bedrock passthrough refuses a session id made only of dots, which the dotted-id rule must never let through (bedrock agents session id)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"inputText\": \"hi\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock_passthrough/agents/AGENT123456/agentAliases/ALIAS12345/sessions/.../text",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock_passthrough",
+            "agents",
+            "AGENT123456",
+            "agentAliases",
+            "ALIAS12345",
+            "sessions",
+            "...",
+            "text"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST'; });",
+              "  pm.test('nothing reached AWS', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.path; }))).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "162.10 [EXPECT-400] bedrock passthrough refuses InvokeAgent for a key that holds only a Bedrock API key, which AWS does not accept for Agents Runtime (bedrock api key agents)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "bedrock-api-key-only"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"inputText\": \"hi\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock_passthrough/agents/AGENT123456/agentAliases/ALIAS12345/sessions/sess-1/text",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock_passthrough",
+            "agents",
+            "AGENT123456",
+            "agentAliases",
+            "ALIAS12345",
+            "sessions",
+            "sess-1",
+            "text"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the refusal tells the operator to use a key with AWS credentials', function () { var j = pm.response.json(); pm.expect(j.is_bifrost_error, pm.response.text()).to.equal(true); pm.expect(j.error.message, pm.response.text()).to.include('AWS credentials'); pm.expect(j.error.message).to.include('InvokeAgent'); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST'; });",
+              "  pm.test('nothing reached AWS', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.path; }))).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "162.11 bedrock passthrough ApplyGuardrail sends the same API-key-only key as a bearer token, because it is a bedrock-runtime operation (bedrock api key guardrails)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "bedrock-api-key-only"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"source\": \"INPUT\",\n  \"content\": [\n    {\n      \"text\": {\n        \"text\": \"hello\"\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock_passthrough/guardrail/gr1a2b3c4d5e/version/DRAFT/apply",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock_passthrough",
+            "guardrail",
+            "gr1a2b3c4d5e",
+            "version",
+            "DRAFT",
+            "apply"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the guardrail verdict comes back', function () { pm.expect(pm.response.json().action).to.equal('NONE'); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST'; });",
+              "  pm.test('exactly one request reached the bedrock-runtime endpoint', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.port + c.path; }))).to.equal(1); pm.expect(calls[0].port).to.equal(8798); });",
+              "  pm.test('it carries the Bedrock API key as a bearer token and is not SigV4 signed', function () { pm.expect(calls[0].headers.authorization).to.equal('Bearer fixture-bedrock-api-key'); pm.expect(calls[0].headers['x-amz-date']).to.equal(undefined); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "162.12 bedrock passthrough InvokeAgent streams a slow agent run that outlives the gateway's 3s default request timeout, delivering every piece (bedrock agents streaming)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"inputText\": \"hi\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock_passthrough/agents/AGENTSLOW001/agentAliases/ALIAS12345/sessions/slow-1/text",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock_passthrough",
+            "agents",
+            "AGENTSLOW001",
+            "agentAliases",
+            "ALIAS12345",
+            "sessions",
+            "slow-1",
+            "text"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the upstream content type and request id reach the caller', function () { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/vnd.amazon.eventstream'); pm.expect(pm.response.headers.get('X-Amzn-Requestid')).to.equal('req-slow'); });",
+              "pm.test('all five pieces of the event stream arrive', function () { var body = Buffer.from(pm.response.stream).toString('utf8'); [1, 2, 3, 4, 5].forEach(function (n) { pm.expect(body, 'missing piece ' + n).to.include('slow-chunk-' + n + '|'); }); });",
+              "pm.test('the run lasted longer than the 3s default request timeout, so a total-duration cap is not applied to the stream', function () { pm.expect(pm.response.responseTime, 'finished in ' + pm.response.responseTime + 'ms').to.be.above(3500); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "162.13 [EXPECT-500] bedrock passthrough Retrieve on a knowledge-base id containing the word stream is still cut off by the request timeout (bedrock knowledge bases)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"retrievalQuery\": {\n    \"text\": \"what is bifrost\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock_passthrough/knowledgebases/STREAMSLOWKB/retrieve",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock_passthrough",
+            "knowledgebases",
+            "STREAMSLOWKB",
+            "retrieve"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the 4s Retrieve is cut off by the 3s request timeout, not streamed through', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); var j = pm.response.json(); pm.expect(j.is_bifrost_error, pm.response.text()).to.equal(true); pm.expect(j.error.error, pm.response.text()).to.include('context deadline exceeded'); });",
+              "pm.test('it was refused before the 4s upstream finished', function () { pm.expect(pm.response.responseTime, 'finished in ' + pm.response.responseTime + 'ms').to.be.below(3900); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

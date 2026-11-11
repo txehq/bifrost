@@ -1,0 +1,156 @@
+{
+  "name": "Code mode value boundaries",
+  "description": "Bounds conversion of cyclic, repeated, and oversized values in the in-process interpreter. Local computations only; no provider requests.",
+  "item": [
+    {
+      "name": "[EXPECT-200] openai code-mode-budget cyclic-result",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('code-mode-budget cyclic-result', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.text()).to.include(\"nesting limit\");",
+              "  pm.expect(pm.response.json().is_error).to.equal(true);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "mcp",
+            "tool",
+            "execute"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"id\": \"code-mode-budget-cyclic-result\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = []\\\\nresult.append(result)\\\"}\"\n  }\n}"
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-200] openai code-mode-budget expanded-result",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('code-mode-budget expanded-result', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.text()).to.include(\"size limit\");",
+              "  pm.expect(pm.response.json().is_error).to.equal(true);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "mcp",
+            "tool",
+            "execute"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"id\": \"code-mode-budget-expanded-result\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = [0]\\\\nfor i in range(30):\\\\n    result = [result, result]\\\"}\"\n  }\n}"
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-200] openai code-mode-budget integer-result",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('code-mode-budget integer-result', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.text()).to.include(\"integer exceeds size limit\");",
+              "  pm.expect(pm.response.json().is_error).to.equal(true);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "mcp",
+            "tool",
+            "execute"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"id\": \"code-mode-budget-integer-result\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"result = 1 << 128\\\\nfor i in range(6):\\\\n    result *= result\\\"}\"\n  }\n}"
+        }
+      }
+    }
+  ]
+}

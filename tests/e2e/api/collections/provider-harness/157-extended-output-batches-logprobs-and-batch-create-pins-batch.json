@@ -1,0 +1,423 @@
+{
+  "name": "157. Extended output batches, logprobs and batch create pins (batch and logprobs pins)",
+  "description": "Closes rows that docs research turned from held into buildable. output-300k-2026-03-24 is a real Message Batches beta: it raises max_tokens to 300,000 on Opus 4.7/4.8/5(.5) and Sonnet 4.6/5(.5), is not available on the synchronous Messages API, Bedrock, Vertex or Foundry, and output-128k is retired (docs: platform.claude.com batch-processing). 157.1a/b create a batch with max_tokens 200000 and cancel it immediately; they are [PREVIEW] because the beta needs org access, and 157.1a/b share h157BatchId. Gemini response logprobs: 157.2 is an [EXPECT-4XX] out-of-range pin that proves the field reaches Google; 157.3 is the [PREVIEW] positive case because model support could not be confirmed from the docs. Azure batch create (157.4a/b, [PREVIEW]) needs a Global Batch deployment named by azureBatchDeployment and shares h157AzureBatchId.",
+  "item": [
+    {
+      "name": "157.1a [PREVIEW] anthropic message batch with output-300k-2026-03-24 accepts max_tokens above the 128k standard cap (extended output batch)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "anthropic-beta",
+            "value": "output-300k-2026-03-24"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"requests\": [\n    {\n      \"custom_id\": \"h155-extended-output\",\n      \"params\": {\n        \"model\": \"claude-sonnet-4-6\",\n        \"max_tokens\": 200000,\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word OK.\"\n          }\n        ]\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages",
+            "batches"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('batch accepted with the extended-output beta header', function () { pm.expect(j.type, pm.response.text()).to.equal('message_batch'); pm.expect(j.id, pm.response.text()).to.match(/^msgbatch_/); pm.expect(['in_progress', 'canceling', 'ended'], pm.response.text()).to.include(j.processing_status); });",
+              "pm.collectionVariables.set('h157BatchId', j.id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "157.1b [PREVIEW] anthropic message batch cancel stops the extended-output batch before it bills output (extended output batch)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages/batches/{{h157BatchId}}/cancel",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages",
+            "batches",
+            "{{h157BatchId}}",
+            "cancel"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('cancel accepted for the created batch', function () { pm.expect(j.id, pm.response.text()).to.equal(pm.collectionVariables.get('h157BatchId')); pm.expect(['canceling', 'ended'], pm.response.text()).to.include(j.processing_status); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "157.2 [EXPECT-4XX] gemini-2.5-flash native logprobs above the allowed range reaches Google (response logprobs)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say hi.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseLogprobs\": true,\n    \"logprobs\": 99,\n    \"maxOutputTokens\": 16,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Google names the logprobs setting in its rejection', function () { var t = pm.response.text(); pm.expect(pm.response.code, 'expected Google’s 400 validation error: ' + t).to.equal(400); pm.expect(t, 'an authentication error proves nothing about the parameter: ' + t).to.not.match(/API key|API_KEY_INVALID|UNAUTHENTICATED|PERMISSION_DENIED|authentication credentials/i); pm.expect(t, 'rejection does not name the logprobs/range; field may not have reached Google: ' + t).to.match(/logprob/i); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "157.3 [PREVIEW] gemini-2.5-flash native responseLogprobs returns logprobsResult with top candidates (response logprobs)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say hi.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseLogprobs\": true,\n    \"logprobs\": 3,\n    \"maxOutputTokens\": 16,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var cand = (j.candidates && j.candidates[0]) || {};",
+              "pm.test('candidate carries logprobsResult with top candidates', function () { pm.expect(cand.logprobsResult, 'no logprobsResult (model may not support logprobs): ' + pm.response.text().slice(0, 600)).to.be.an('object'); pm.expect((cand.logprobsResult.topCandidates || []).length, pm.response.text().slice(0, 600)).to.be.above(0); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "157.2b [EXPECT-4XX] gemini-2.5-flash pinned to its provider keeps logprobs on the raw path, so Google rejects a value above the allowed range (response logprobs)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say hi.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseLogprobs\": true,\n    \"logprobs\": 99,\n    \"maxOutputTokens\": 16,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Google rejects the out-of-range logprobs with a 4xx', function () { pm.expect(pm.response.code, 'want a 4xx from Google (a 200 means logprobs were stripped before the call): ' + pm.response.text().slice(0, 600)).to.be.within(400, 499); });",
+              "pm.test('the rejection names logprobs', function () { pm.expect(pm.response.text(), 'rejection does not mention logprobs: ' + pm.response.text().slice(0, 600)).to.match(/logprob/i); });",
+              "var served = pm.response.headers.get('X-Bifrost-Provider');",
+              "pm.test('no other provider answered', function () { if (served) { pm.expect(served, 'served by another provider: ' + pm.response.text().slice(0, 400)).to.equal('gemini'); } });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "157.3b [PREVIEW] gemini-2.5-flash pinned to its provider keeps responseLogprobs on the raw path and returns logprobsResult (response logprobs)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say hi.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseLogprobs\": true,\n    \"logprobs\": 3,\n    \"maxOutputTokens\": 16,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 600)).to.equal(200); });",
+              "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+              "var cand = (j.candidates && j.candidates[0]) || {};",
+              "pm.test('candidate carries logprobsResult with top candidates', function () { pm.expect(cand.logprobsResult, 'no logprobsResult (responseLogprobs stripped on the raw path?): ' + pm.response.text().slice(0, 600)).to.be.an('object'); pm.expect((cand.logprobsResult.topCandidates || []).length, pm.response.text().slice(0, 600)).to.be.above(0); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "157.3c vertex/gemini-2.5-flash /genai responseLogprobs returns logprobsResult with top candidates (response logprobs)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say hi.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseLogprobs\": true,\n    \"logprobs\": 3,\n    \"maxOutputTokens\": 16,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "vertex",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Vertex serves logprobs on gemini-2.5-flash (the raw genai_passthrough answer carries avgLogprobs and logprobsResult). The typed /genai -> Vertex path runs compat drop-params, which strips logprobs while the model catalog does not list them for gemini-2.5-flash.",
+              "var text = pm.response.text() || '';",
+              "pm.test('HTTP 200', function () { pm.expect(pm.response.code, text.slice(0, 600)).to.eql(200); });",
+              "pm.test('the candidate carries logprobsResult with top candidates and avgLogprobs', function () {",
+              "  var c = ((pm.response.json() || {}).candidates || [])[0] || {};",
+              "  var lr = c.logprobsResult;",
+              "  pm.expect(lr, 'no logprobsResult; responseLogprobs/logprobs never reached Vertex or the answer was dropped: ' + text.slice(0, 600)).to.be.an('object');",
+              "  pm.expect(lr.topCandidates, 'topCandidates').to.be.an('array').that.is.not.empty;",
+              "  pm.expect(((lr.topCandidates[0] || {}).candidates || []).length, 'top candidates per step').to.be.at.most(3).and.at.least(1);",
+              "  pm.expect(lr.chosenCandidates, 'chosenCandidates').to.be.an('array').that.is.not.empty;",
+              "  pm.expect(c.avgLogprobs, 'avgLogprobs').to.be.a('number');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "157.4a [PREVIEW] azure batch create with inline requests returns a batch (azure batch create)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"requests\": [\n    {\n      \"custom_id\": \"h155-azure-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"{{azureBatchDeployment}}\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply OK.\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    }\n  ],\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/batches?provider=azure",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "batches?provider=azure"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('azure batch create returns a batch object with an id', function () { pm.expect(j.object, pm.response.text()).to.equal('batch'); pm.expect(j.id, pm.response.text()).to.be.a('string').and.not.empty; });",
+              "pm.collectionVariables.set('h157AzureBatchId', j.id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "157.4b [PREVIEW] azure batch cancel for the created batch (azure batch create)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/batches/{{h157AzureBatchId}}/cancel?provider=azure",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "batches",
+            "{{h157AzureBatchId}}",
+            "cancel?provider=azure"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('azure batch cancel returns the same batch', function () { pm.expect(j.id, pm.response.text()).to.equal(pm.collectionVariables.get('h157AzureBatchId')); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

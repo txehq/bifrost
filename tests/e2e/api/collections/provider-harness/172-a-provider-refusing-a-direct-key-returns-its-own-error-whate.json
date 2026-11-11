@@ -1,0 +1,693 @@
+{
+  "name": "172. A provider refusing a direct key returns its own error whatever max_retries is (direct-key-refusal)",
+  "description": "A direct key (x-bf-direct-key: true plus the caller's own provider key, enabled by client.allow_direct_keys) is a one-key pool. When the provider refused it and the provider's max_retries left a retry in the budget, the dead pool collapsed into 502 upstream_credentials_exhausted, which tells the caller the gateway's keys ran out and invites a retry with the same bad key. A refused direct key now returns the provider's own error whatever max_retries is; a configured key pinned within the budget still collapses into the 502.\n\nThe row creates a run-scoped OpenAI-backed custom provider with max_retries 1 and no keys, sends a chat completion with a throwaway direct key, and requires OpenAI's own 401 with a single attempt in the log row's attempt trail, then deletes the provider. Free: OpenAI rejects the key before any tokens.\n\nRows 2 to 4 run the same refusal on each drop-in route, with the caller's key in that route's own header: /openai/v1/chat/completions (Authorization) and /anthropic/v1/messages (x-api-key) answer with the provider's own 401, /genai generateContent (x-goog-api-key) with Gemini's own 4xx; streamed, the refusal arrives as an HTTP error before any event. With a fallback in the body, a run-scoped OpenAI-backed provider serves on its gateway key, streamed or not: the caller's key goes to the first route only. Each of rows 2 to 4 then sends the runner's working key for that provider (openaiKey, anthropicKey, genaiKey), streamed and not, and requires a 200 from the route's provider on the caller's key. Run with FEATURE=\"direct-key-refusal\".",
+  "item": [
+    {
+      "name": "[EXPECT-401] openai direct key refused on a provider with max_retries 1 keeps the provider error - direct-key-refusal",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// ---- in-script management calls (see the folder description) ----",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var PREFIX = 'harness-directrefusal-';",
+              "function call(method, path, body, cb) {",
+              "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+              "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) {",
+              "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+              "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+              "    cb(res, json);",
+              "  });",
+              "}",
+              "function expectOk(label, res) {",
+              "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+              "  return !!(res && res.code === 200);",
+              "}",
+              "function isStale(name) {",
+              "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+              "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+              "}",
+              "var provider = PREFIX + 'run-' + Date.now();",
+              "pm.collectionVariables.set('directRefusalProvider', provider);",
+              "pm.collectionVariables.set('directRefusalKey', 'sk-harness-direct-refusal-' + pm.variables.replaceIn('{{$guid}}'));",
+              "pm.collectionVariables.set('directRefusalRequestId', 'direct-key-refusal-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));",
+              "call('GET', '/api/providers', null, function (res, j) {",
+              "  var stale = ((j && j.providers) || []).filter(function (p) { return isStale(p.name); });",
+              "  var i = 0;",
+              "  (function next() {",
+              "    if (i < stale.length) { return call('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); }",
+              "    // max_retries 1 leaves a retry in the budget: the case where a refused key used to collapse into",
+              "    // 502 upstream_credentials_exhausted. The provider needs no keys of its own: a direct key replaces them.",
+              "    call('POST', '/api/providers', { provider: provider, custom_provider_config: { base_provider_type: 'openai', is_key_less: false }, network_config: { max_retries: 1 } }, function (r1) {",
+              "      expectOk('setup: created the run-scoped OpenAI-backed provider with max_retries 1', r1);",
+              "    });",
+              "  })();",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "// ---- in-script management calls (see the folder description) ----",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var PREFIX = 'harness-directrefusal-';",
+              "function call(method, path, body, cb) {",
+              "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+              "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) {",
+              "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+              "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+              "    cb(res, json);",
+              "  });",
+              "}",
+              "function expectOk(label, res) {",
+              "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+              "  return !!(res && res.code === 200);",
+              "}",
+              "var provider = pm.collectionVariables.get('directRefusalProvider');",
+              "var reqId = pm.collectionVariables.get('directRefusalRequestId');",
+              "var text = pm.response.text();",
+              "pm.test('the provider refusing the caller\\u2019s own key answers with its own 401', function () {",
+              "  pm.expect(pm.response.code, 'a refused direct key is the caller\\u2019s error, not exhausted gateway keys: ' + text).to.eql(401);",
+              "  pm.expect(text, 'expected OpenAI\\u2019s own rejection').to.include('Incorrect API key');",
+              "  pm.expect(text).to.not.include('upstream_credentials_exhausted');",
+              "});",
+              "// The log row is written by the batching writer, so poll for it until it has settled.",
+              "function checkLog(attempt) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(reqId), method: 'GET' }, function (err, res) {",
+              "    var j = null; if (!err && res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+              "    if (j && j.status && j.status !== 'processing') {",
+              "      pm.test('the refused key is tried once: there is no other key to reach', function () {",
+              "        pm.expect((j.attempt_trail || []).length, JSON.stringify(j.attempt_trail || [])).to.eql(1);",
+              "      });",
+              "      return finish();",
+              "    }",
+              "    if (attempt < 15) { return setTimeout(function () { checkLog(attempt + 1); }, 1000); }",
+              "    pm.test('the refused key is tried once: there is no other key to reach', function () { pm.expect.fail('log ' + reqId + ' never settled: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+              "    finish();",
+              "  });",
+              "}",
+              "function finish() { call('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (res) { expectOk('cleanup: deleted the run-scoped provider', res); }); }",
+              "checkLog(0);"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-direct-key",
+            "value": "true"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{directRefusalKey}}"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{directRefusalRequestId}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{directRefusalProvider}}/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-401] openai direct key on /openai/v1/chat/completions keeps OpenAI's own 401, and a fallback runs on the gateway's key - direct-key-refusal",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// ---- in-script management calls (see the folder description) ----",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var PREFIX = 'harness-directroute-';",
+              "function call(method, path, body, cb) {",
+              "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+              "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) {",
+              "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+              "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+              "    cb(res, json);",
+              "  });",
+              "}",
+              "function expectOk(label, res) {",
+              "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+              "  return !!(res && res.code === 200);",
+              "}",
+              "function isStale(name) {",
+              "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+              "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+              "}",
+              "var run = 'run-' + Date.now();",
+              "// The fallback: a run-scoped OpenAI-backed provider with a working gateway key. The caller's key is",
+              "// a throwaway, so whatever serves the request did it on a key of the gateway's.",
+              "var state = { run: run, fb: PREFIX + 'fb-' + run, directKey: 'sk-harness-direct-route-' + pm.variables.replaceIn('{{$guid}}') };",
+              "state.fbKey = state.fb + '-key';",
+              "pm.collectionVariables.set('dkRoute1' + 'State', JSON.stringify(state));",
+              "pm.collectionVariables.set('dkRoute1' + 'Key', state.directKey);",
+              "call('GET', '/api/providers', null, function (r0, j0) {",
+              "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+              "  (function sweep() {",
+              "    if (stale.length) { return call('DELETE', '/api/providers/' + encodeURIComponent(stale.shift().name), null, function () { sweep(); }); }",
+              "    call('POST', '/api/providers', { provider: state.fb, custom_provider_config: { base_provider_type: 'openai', is_key_less: false } }, function (res) {",
+              "      if (!expectOk('setup: created the run-scoped fallback provider', res)) { return; }",
+              "      call('POST', '/api/providers/' + encodeURIComponent(state.fb) + '/keys', { name: state.fbKey, value: 'env.OPENAI_API_KEY', models: ['*'], weight: 1 }, function (r2) {",
+              "        expectOk('setup: created the fallback provider\\u2019s gateway key', r2);",
+              "      });",
+              "    });",
+              "  })();",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "// Plan rows: DK-18.",
+              "// ---- in-script management calls (see the folder description) ----",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var state = JSON.parse(pm.collectionVariables.get('dkRoute1' + 'State') || '{}');",
+              "var PROVIDER = 'OpenAI', PATH_NAME = '/openai/v1/chat/completions', PATH = '/openai/v1/chat/completions', STREAM_PATH = PATH;",
+              "var KEY_HEADER = 'Authorization', KEY_PREFIX = 'Bearer ', EXTRA_HEADERS = {};",
+              "var REFUSAL_STATUS = function (c) { return c === 401; }, REFUSAL_TEXT = 'Incorrect API key';",
+              "function body() { return { model: 'openai/gpt-4o-mini', messages: [{ role: 'user', content: 'Reply with the single word: ok' }], max_tokens: 3 }; }",
+              "function cleanup() { call('DELETE', '/api/providers/' + encodeURIComponent(state.fb), null, function (res) { pm.test('cleanup: deleted the run-scoped fallback provider', function () { pm.expect(res && res.code).to.eql(200); }); }); }",
+              "function call(method, path, body, cb) {",
+              "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+              "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) { cb(err ? null : res); });",
+              "}",
+              "// One request on the route with the caller's key, streamed or not, with or without the fallback.",
+              "function send(stream, withFallback, cb, callerKey) {",
+              "  var h = { 'Content-Type': 'application/json', 'x-bf-direct-key': 'true' }; h[KEY_HEADER] = KEY_PREFIX + (callerKey || state.directKey);",
+              "  for (var k in EXTRA_HEADERS) { h[k] = EXTRA_HEADERS[k]; }",
+              "  var b = body(); if (stream) { b.stream = true; } if (withFallback) { b.fallbacks = [state.fb + '/gpt-4o-mini']; }",
+              "  pm.sendRequest({ url: BASE + (stream ? STREAM_PATH : PATH), method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(b) } }, function (err, res) {",
+              "    if (err) { pm.test('request reached the gateway', function () { pm.expect.fail(String(err)); }); }",
+              "    cb(err ? null : res);",
+              "  });",
+              "}",
+              "function refused(label, code, text) {",
+              "  pm.test(label, function () {",
+              "    pm.expect(code, 'the caller\\u2019s key must reach ' + PROVIDER + ', which refuses it: ' + text).to.satisfy(REFUSAL_STATUS);",
+              "    pm.expect(text, 'expected the rejection ' + PROVIDER + ' itself sends').to.include(REFUSAL_TEXT);",
+              "  });",
+              "}",
+              "// A streamed success must be an SSE body that ran to its terminal event with no error frame.",
+              "function streamedOk(res) {",
+              "  var t = res ? res.text() : '';",
+              "  pm.expect(res && res.headers.get('content-type'), 'not an SSE response: ' + t.slice(0, 300)).to.include('text/event-stream');",
+              "  var errs = t.split('\\n').filter(function (l) { if (l.indexOf('data: ') !== 0) { return false; } try { var j = JSON.parse(l.slice(6)); return !!(j.error || j.type === 'error'); } catch (e) { return false; } });",
+              "  pm.expect(errs.length, 'stream carried an error frame: ' + (errs[0] || '').slice(0, 300)).to.equal(0);",
+              "  pm.expect(/^data: \\[DONE\\]\\s*$/m.test(t), 'stream did not reach its terminal event: ' + t.slice(-300)).to.equal(true);",
+              "}",
+              "function rescued(label, res, stream) {",
+              "  pm.test(label, function () {",
+              "    var text = res ? res.text().slice(0, 400) : 'no response';",
+              "    pm.expect(res && res.code, text).to.eql(200);",
+              "    pm.expect(res.headers.get('x-bifrost-routing-info-provider'), text).to.eql(state.fb);",
+              "    pm.expect(res.headers.get('x-bifrost-routing-info-is-fallback'), text).to.eql('true');",
+              "    pm.expect(res.headers.get('x-bifrost-routing-info-key'), 'the fallback runs on the gateway\\u2019s key: ' + text).to.eql(state.fbKey);",
+              "    if (stream) { streamedOk(res); }",
+              "  });",
+              "}",
+              "refused(PROVIDER + ' refuses the caller\\u2019s key on ' + PATH_NAME + ' with its own error', pm.response.code, pm.response.text());",
+              "send(true, false, function (res2) {",
+              "  refused('streamed, the refusal arrives as an HTTP error before any event', res2 ? res2.code : 0, res2 ? res2.text() : 'no response');",
+              "  // A fallback never gets the caller's key: it serves on the gateway's, so it serves at all.",
+              "  send(false, true, function (res3) {",
+              "    rescued('with a fallback, the fallback serves on the gateway\\u2019s key after the caller\\u2019s key is refused', res3);",
+              "    send(true, true, function (res4) {",
+              "      rescued('streamed, the fallback serves the same way', res4, true);",
+              "      healthy();",
+              "    });",
+              "  });",
+              "});",
+              "// A working caller key (the runner's openaiKey) serves on the route's own provider, streamed and not.",
+              "function healthy() {",
+              "  var working = pm.variables.get('openaiKey');",
+              "  if (!working) {",
+              "    pm.test('the runner passes a working caller key as openaiKey', function () { pm.expect.fail('openaiKey is empty: run with USE_INFISICAL=1 or the provider key set, so a direct key can serve'); });",
+              "    return cleanup();",
+              "  }",
+              "  function onKey(label, res, stream) {",
+              "    pm.test(label, function () {",
+              "      var text = res ? res.text().slice(0, 400) : 'no response';",
+              "      pm.expect(res && res.code, text).to.eql(200);",
+              "      pm.expect(res.headers.get('x-bifrost-routing-info-provider'), text).to.eql('openai');",
+              "      pm.expect(res.headers.get('x-bifrost-routing-info-key'), 'served on the caller\\u2019s key: ' + text).to.eql('header-provided');",
+              "      pm.expect(res.headers.get('x-bifrost-routing-info-is-fallback') === 'true', text).to.eql(false);",
+              "      if (stream) { streamedOk(res); }",
+              "    });",
+              "  }",
+              "  send(false, false, function (res5) {",
+              "    onKey('a working caller key is served by ' + PROVIDER + ' on that key', res5);",
+              "    send(true, false, function (res6) {",
+              "      onKey('streamed, a working caller key is served by ' + PROVIDER + ' on that key', res6, true);",
+              "      cleanup();",
+              "    }, working);",
+              "  }, working);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-direct-key",
+            "value": "true"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{dkRoute1Key}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-401] anthropic direct key on /anthropic/v1/messages keeps Anthropic's own 401, and a fallback runs on the gateway's key - direct-key-refusal",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// ---- in-script management calls (see the folder description) ----",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var PREFIX = 'harness-directroute-';",
+              "function call(method, path, body, cb) {",
+              "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+              "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) {",
+              "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+              "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+              "    cb(res, json);",
+              "  });",
+              "}",
+              "function expectOk(label, res) {",
+              "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+              "  return !!(res && res.code === 200);",
+              "}",
+              "function isStale(name) {",
+              "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+              "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+              "}",
+              "var run = 'run-' + Date.now();",
+              "// The fallback: a run-scoped OpenAI-backed provider with a working gateway key. The caller's key is",
+              "// a throwaway, so whatever serves the request did it on a key of the gateway's.",
+              "var state = { run: run, fb: PREFIX + 'fb-' + run, directKey: 'sk-harness-direct-route-' + pm.variables.replaceIn('{{$guid}}') };",
+              "state.fbKey = state.fb + '-key';",
+              "pm.collectionVariables.set('dkRoute2' + 'State', JSON.stringify(state));",
+              "pm.collectionVariables.set('dkRoute2' + 'Key', state.directKey);",
+              "call('GET', '/api/providers', null, function (r0, j0) {",
+              "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+              "  (function sweep() {",
+              "    if (stale.length) { return call('DELETE', '/api/providers/' + encodeURIComponent(stale.shift().name), null, function () { sweep(); }); }",
+              "    call('POST', '/api/providers', { provider: state.fb, custom_provider_config: { base_provider_type: 'openai', is_key_less: false } }, function (res) {",
+              "      if (!expectOk('setup: created the run-scoped fallback provider', res)) { return; }",
+              "      call('POST', '/api/providers/' + encodeURIComponent(state.fb) + '/keys', { name: state.fbKey, value: 'env.OPENAI_API_KEY', models: ['*'], weight: 1 }, function (r2) {",
+              "        expectOk('setup: created the fallback provider\\u2019s gateway key', r2);",
+              "      });",
+              "    });",
+              "  })();",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "// Plan rows: DK-18.",
+              "// ---- in-script management calls (see the folder description) ----",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var state = JSON.parse(pm.collectionVariables.get('dkRoute2' + 'State') || '{}');",
+              "var PROVIDER = 'Anthropic', PATH_NAME = '/anthropic/v1/messages', PATH = '/anthropic/v1/messages', STREAM_PATH = PATH;",
+              "var KEY_HEADER = 'x-api-key', KEY_PREFIX = '', EXTRA_HEADERS = { 'anthropic-version': '2023-06-01' };",
+              "var REFUSAL_STATUS = function (c) { return c === 401; }, REFUSAL_TEXT = 'authentication_error';",
+              "function body() { return { model: 'anthropic/claude-haiku-4-5', max_tokens: 8, messages: [{ role: 'user', content: 'Reply with the single word: ok' }] }; }",
+              "function cleanup() { call('DELETE', '/api/providers/' + encodeURIComponent(state.fb), null, function (res) { pm.test('cleanup: deleted the run-scoped fallback provider', function () { pm.expect(res && res.code).to.eql(200); }); }); }",
+              "function call(method, path, body, cb) {",
+              "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+              "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) { cb(err ? null : res); });",
+              "}",
+              "// One request on the route with the caller's key, streamed or not, with or without the fallback.",
+              "function send(stream, withFallback, cb, callerKey) {",
+              "  var h = { 'Content-Type': 'application/json', 'x-bf-direct-key': 'true' }; h[KEY_HEADER] = KEY_PREFIX + (callerKey || state.directKey);",
+              "  for (var k in EXTRA_HEADERS) { h[k] = EXTRA_HEADERS[k]; }",
+              "  var b = body(); if (stream) { b.stream = true; } if (withFallback) { b.fallbacks = [state.fb + '/gpt-4o-mini']; }",
+              "  pm.sendRequest({ url: BASE + (stream ? STREAM_PATH : PATH), method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(b) } }, function (err, res) {",
+              "    if (err) { pm.test('request reached the gateway', function () { pm.expect.fail(String(err)); }); }",
+              "    cb(err ? null : res);",
+              "  });",
+              "}",
+              "function refused(label, code, text) {",
+              "  pm.test(label, function () {",
+              "    pm.expect(code, 'the caller\\u2019s key must reach ' + PROVIDER + ', which refuses it: ' + text).to.satisfy(REFUSAL_STATUS);",
+              "    pm.expect(text, 'expected the rejection ' + PROVIDER + ' itself sends').to.include(REFUSAL_TEXT);",
+              "  });",
+              "}",
+              "// A streamed success must be an SSE body that ran to its terminal event with no error frame.",
+              "function streamedOk(res) {",
+              "  var t = res ? res.text() : '';",
+              "  pm.expect(res && res.headers.get('content-type'), 'not an SSE response: ' + t.slice(0, 300)).to.include('text/event-stream');",
+              "  var errs = t.split('\\n').filter(function (l) { if (l.indexOf('data: ') !== 0) { return false; } try { var j = JSON.parse(l.slice(6)); return !!(j.error || j.type === 'error'); } catch (e) { return false; } });",
+              "  pm.expect(errs.length, 'stream carried an error frame: ' + (errs[0] || '').slice(0, 300)).to.equal(0);",
+              "  pm.expect(/\"type\"\\s*:\\s*\"message_stop\"/.test(t), 'stream did not reach its terminal event: ' + t.slice(-300)).to.equal(true);",
+              "}",
+              "function rescued(label, res, stream) {",
+              "  pm.test(label, function () {",
+              "    var text = res ? res.text().slice(0, 400) : 'no response';",
+              "    pm.expect(res && res.code, text).to.eql(200);",
+              "    pm.expect(res.headers.get('x-bifrost-routing-info-provider'), text).to.eql(state.fb);",
+              "    pm.expect(res.headers.get('x-bifrost-routing-info-is-fallback'), text).to.eql('true');",
+              "    pm.expect(res.headers.get('x-bifrost-routing-info-key'), 'the fallback runs on the gateway\\u2019s key: ' + text).to.eql(state.fbKey);",
+              "    if (stream) { streamedOk(res); }",
+              "  });",
+              "}",
+              "refused(PROVIDER + ' refuses the caller\\u2019s key on ' + PATH_NAME + ' with its own error', pm.response.code, pm.response.text());",
+              "send(true, false, function (res2) {",
+              "  refused('streamed, the refusal arrives as an HTTP error before any event', res2 ? res2.code : 0, res2 ? res2.text() : 'no response');",
+              "  // A fallback never gets the caller's key: it serves on the gateway's, so it serves at all.",
+              "  send(false, true, function (res3) {",
+              "    rescued('with a fallback, the fallback serves on the gateway\\u2019s key after the caller\\u2019s key is refused', res3);",
+              "    send(true, true, function (res4) {",
+              "      rescued('streamed, the fallback serves the same way', res4, true);",
+              "      healthy();",
+              "    });",
+              "  });",
+              "});",
+              "// A working caller key (the runner's anthropicKey) serves on the route's own provider, streamed and not.",
+              "function healthy() {",
+              "  var working = pm.variables.get('anthropicKey');",
+              "  if (!working) {",
+              "    pm.test('the runner passes a working caller key as anthropicKey', function () { pm.expect.fail('anthropicKey is empty: run with USE_INFISICAL=1 or the provider key set, so a direct key can serve'); });",
+              "    return cleanup();",
+              "  }",
+              "  function onKey(label, res, stream) {",
+              "    pm.test(label, function () {",
+              "      var text = res ? res.text().slice(0, 400) : 'no response';",
+              "      pm.expect(res && res.code, text).to.eql(200);",
+              "      pm.expect(res.headers.get('x-bifrost-routing-info-provider'), text).to.eql('anthropic');",
+              "      pm.expect(res.headers.get('x-bifrost-routing-info-key'), 'served on the caller\\u2019s key: ' + text).to.eql('header-provided');",
+              "      pm.expect(res.headers.get('x-bifrost-routing-info-is-fallback') === 'true', text).to.eql(false);",
+              "      if (stream) { streamedOk(res); }",
+              "    });",
+              "  }",
+              "  send(false, false, function (res5) {",
+              "    onKey('a working caller key is served by ' + PROVIDER + ' on that key', res5);",
+              "    send(true, false, function (res6) {",
+              "      onKey('streamed, a working caller key is served by ' + PROVIDER + ' on that key', res6, true);",
+              "      cleanup();",
+              "    }, working);",
+              "  }, working);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "x-bf-direct-key",
+            "value": "true"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{dkRoute2Key}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_tokens\": 8,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-4XX] gemini direct key on /genai generateContent keeps Gemini's own refusal, and a fallback runs on the gateway's key - direct-key-refusal",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// ---- in-script management calls (see the folder description) ----",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var PREFIX = 'harness-directroute-';",
+              "function call(method, path, body, cb) {",
+              "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+              "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) {",
+              "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+              "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+              "    cb(res, json);",
+              "  });",
+              "}",
+              "function expectOk(label, res) {",
+              "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+              "  return !!(res && res.code === 200);",
+              "}",
+              "function isStale(name) {",
+              "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+              "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+              "}",
+              "var run = 'run-' + Date.now();",
+              "// The fallback: a run-scoped OpenAI-backed provider with a working gateway key. The caller's key is",
+              "// a throwaway, so whatever serves the request did it on a key of the gateway's.",
+              "var state = { run: run, fb: PREFIX + 'fb-' + run, directKey: 'sk-harness-direct-route-' + pm.variables.replaceIn('{{$guid}}') };",
+              "state.fbKey = state.fb + '-key';",
+              "pm.collectionVariables.set('dkRoute3' + 'State', JSON.stringify(state));",
+              "pm.collectionVariables.set('dkRoute3' + 'Key', state.directKey);",
+              "call('GET', '/api/providers', null, function (r0, j0) {",
+              "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+              "  (function sweep() {",
+              "    if (stale.length) { return call('DELETE', '/api/providers/' + encodeURIComponent(stale.shift().name), null, function () { sweep(); }); }",
+              "    call('POST', '/api/providers', { provider: state.fb, custom_provider_config: { base_provider_type: 'openai', is_key_less: false } }, function (res) {",
+              "      if (!expectOk('setup: created the run-scoped fallback provider', res)) { return; }",
+              "      call('POST', '/api/providers/' + encodeURIComponent(state.fb) + '/keys', { name: state.fbKey, value: 'env.OPENAI_API_KEY', models: ['*'], weight: 1 }, function (r2) {",
+              "        expectOk('setup: created the fallback provider\\u2019s gateway key', r2);",
+              "      });",
+              "    });",
+              "  })();",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "// Plan rows: DK-18.",
+              "// ---- in-script management calls (see the folder description) ----",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var state = JSON.parse(pm.collectionVariables.get('dkRoute3' + 'State') || '{}');",
+              "var PROVIDER = 'Gemini', PATH_NAME = '/genai generateContent', PATH = '/genai/v1beta/models/gemini/' + pm.variables.get('genaiModel') + ':generateContent', STREAM_PATH = '/genai/v1beta/models/gemini/' + pm.variables.get('genaiModel') + ':streamGenerateContent?alt=sse';",
+              "// The model names its provider: a bare model is catalog-routed, and the catalog's other Gemini providers would",
+              "// rescue the refusal as fallbacks on the gateway's keys.",
+              "var KEY_HEADER = 'x-goog-api-key', KEY_PREFIX = '', EXTRA_HEADERS = {};",
+              "// Gemini answers an unknown key with 400 API_KEY_INVALID rather than 401.",
+              "var REFUSAL_STATUS = function (c) { return c >= 400 && c <= 499; }, REFUSAL_TEXT = 'API key';",
+              "function body() { return { contents: [{ role: 'user', parts: [{ text: 'Reply with the single word: ok' }] }], generationConfig: { maxOutputTokens: 8 } }; }",
+              "function cleanup() { call('DELETE', '/api/providers/' + encodeURIComponent(state.fb), null, function (res) { pm.test('cleanup: deleted the run-scoped fallback provider', function () { pm.expect(res && res.code).to.eql(200); }); }); }",
+              "function call(method, path, body, cb) {",
+              "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+              "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) { cb(err ? null : res); });",
+              "}",
+              "// One request on the route with the caller's key, streamed or not, with or without the fallback.",
+              "function send(stream, withFallback, cb, callerKey) {",
+              "  var h = { 'Content-Type': 'application/json', 'x-bf-direct-key': 'true' }; h[KEY_HEADER] = KEY_PREFIX + (callerKey || state.directKey);",
+              "  for (var k in EXTRA_HEADERS) { h[k] = EXTRA_HEADERS[k]; }",
+              "  var b = body(); if (withFallback) { b.fallbacks = [state.fb + '/gpt-4o-mini']; }",
+              "  pm.sendRequest({ url: BASE + (stream ? STREAM_PATH : PATH), method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(b) } }, function (err, res) {",
+              "    if (err) { pm.test('request reached the gateway', function () { pm.expect.fail(String(err)); }); }",
+              "    cb(err ? null : res);",
+              "  });",
+              "}",
+              "function refused(label, code, text) {",
+              "  pm.test(label, function () {",
+              "    pm.expect(code, 'the caller\\u2019s key must reach ' + PROVIDER + ', which refuses it: ' + text).to.satisfy(REFUSAL_STATUS);",
+              "    pm.expect(text, 'expected the rejection ' + PROVIDER + ' itself sends').to.include(REFUSAL_TEXT);",
+              "  });",
+              "}",
+              "function rescued(label, res) {",
+              "  pm.test(label, function () {",
+              "    var text = res ? res.text().slice(0, 400) : 'no response';",
+              "    pm.expect(res && res.code, text).to.eql(200);",
+              "    pm.expect(res.headers.get('x-bifrost-routing-info-provider'), text).to.eql(state.fb);",
+              "    pm.expect(res.headers.get('x-bifrost-routing-info-is-fallback'), text).to.eql('true');",
+              "    pm.expect(res.headers.get('x-bifrost-routing-info-key'), 'the fallback runs on the gateway\\u2019s key: ' + text).to.eql(state.fbKey);",
+              "  });",
+              "}",
+              "// A streamed 200 can still end in an error event or stop early, so a streamed success must be",
+              "// SSE whose frames carry no error and whose candidate finished.",
+              "function streamCompleted(label, res) {",
+              "  pm.test(label, function () {",
+              "    var text = res ? res.text() : '';",
+              "    pm.expect(res && (res.headers.get('content-type') || ''), 'not an SSE body: ' + text.slice(0, 300)).to.include('text/event-stream');",
+              "    var frames = [];",
+              "    text.split('\\n').forEach(function (l) {",
+              "      if (l.indexOf('data:') !== 0) { return; }",
+              "      var p = l.slice(5).trim();",
+              "      if (!p || p === '[DONE]') { return; }",
+              "      try { frames.push(JSON.parse(p)); } catch (e) { frames.push({ unparsed: p }); }",
+              "    });",
+              "    pm.expect(frames.length, 'no SSE frames: ' + text.slice(0, 300)).to.be.above(0);",
+              "    var bad = frames.filter(function (f) { return f.error || f.unparsed; });",
+              "    pm.expect(bad.length, 'error or unparseable frame: ' + JSON.stringify(bad[0] || null).slice(0, 300)).to.equal(0);",
+              "    var finished = frames.some(function (f) { return (f.candidates || []).some(function (c) { return c && (c.finishReason === 'STOP' || c.finishReason === 'MAX_TOKENS'); }); });",
+              "    pm.expect(finished, 'no candidate finished, so the stream was cut short or blocked: ' + text.slice(-300)).to.equal(true);",
+              "  });",
+              "}",
+              "refused(PROVIDER + ' refuses the caller\\u2019s key on ' + PATH_NAME + ' with its own error', pm.response.code, pm.response.text());",
+              "send(true, false, function (res2) {",
+              "  refused('streamed, the refusal arrives as an HTTP error before any event', res2 ? res2.code : 0, res2 ? res2.text() : 'no response');",
+              "  // A fallback never gets the caller's key: it serves on the gateway's, so it serves at all.",
+              "  send(false, true, function (res3) {",
+              "    rescued('with a fallback, the fallback serves on the gateway\\u2019s key after the caller\\u2019s key is refused', res3);",
+              "    send(true, true, function (res4) {",
+              "      rescued('streamed, the fallback serves the same way', res4);",
+              "      streamCompleted('streamed, the fallback\\u2019s stream completes without an error event', res4);",
+              "      healthy();",
+              "    });",
+              "  });",
+              "});",
+              "// A working caller key (the runner's genaiKey) serves on the route's own provider, streamed and not.",
+              "function healthy() {",
+              "  var working = pm.variables.get('genaiKey');",
+              "  if (!working) {",
+              "    pm.test('the runner passes a working caller key as genaiKey', function () { pm.expect.fail('genaiKey is empty: run with USE_INFISICAL=1 or the provider key set, so a direct key can serve'); });",
+              "    return cleanup();",
+              "  }",
+              "  function onKey(label, res) {",
+              "    pm.test(label, function () {",
+              "      var text = res ? res.text().slice(0, 400) : 'no response';",
+              "      pm.expect(res && res.code, text).to.eql(200);",
+              "      pm.expect(res.headers.get('x-bifrost-routing-info-provider'), text).to.eql('gemini');",
+              "      pm.expect(res.headers.get('x-bifrost-routing-info-key'), 'served on the caller\\u2019s key: ' + text).to.eql('header-provided');",
+              "      pm.expect(res.headers.get('x-bifrost-routing-info-is-fallback') === 'true', text).to.eql(false);",
+              "    });",
+              "  }",
+              "  send(false, false, function (res5) {",
+              "    onKey('a working caller key is served by ' + PROVIDER + ' on that key', res5);",
+              "    send(true, false, function (res6) {",
+              "      onKey('streamed, a working caller key is served by ' + PROVIDER + ' on that key', res6);",
+              "      streamCompleted('streamed, the caller\\u2019s key stream completes without an error event', res6);",
+              "      cleanup();",
+              "    }, working);",
+              "  }, working);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-direct-key",
+            "value": "true"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{dkRoute3Key}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini/{{genaiModel}}:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini",
+            "{{genaiModel}}:generateContent"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 8\n  }\n}"
+        }
+      }
+    }
+  ]
+}

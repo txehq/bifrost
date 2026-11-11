@@ -1,0 +1,915 @@
+{
+  "name": "413. BytePlus Seedance video: task object, strict seconds and size, task control fields, cancel only while queued (byteplus seedance task contract)",
+  "description": "Pins TXE-6426 (contract C4, C5, C7, C9) for the byteplus provider on the unified video routes. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. The fixture plays Ark's task API under /pp/byteplus: a query answers the task whose state its id names, and every query and DELETE is counted. Rows 2 to 7: a fractional seconds, a seconds outside 2 to 15, a size that names no Seedance tier and ratio exactly, a deadline outside Ark's range, client_reference_id and output_storage_uri are each refused with 400 caller_unsupported_parameter naming the field; before the change seconds was rounded, size was replaced by the nearest ratio and the two control fields were forwarded to Ark as unknown fields. Row 8 proves none of the six reached Ark. Rows 9 and 10: a create with the unified fields reaches Ark as ratio, resolution, a last_frame content item, callback_url and execution_expires_after. Rows 11 to 14: the task object carries provider_status, Ark's completion_tokens as usage.output_tokens, expires_at 24 hours after completion and a content_filter on a task Ark failed for its content; cancelled and expired are their own statuses (both read failed before). Rows 15 to 17: cancel on a queued task is one query and one DELETE and returns the task cancelled. Rows 18 to 20: cancel on a succeeded task is 400 provider_cancel_unsupported after one query and no DELETE, so the finished task's record is never removed.",
+  "item": [
+    {
+      "name": "413.1 reset the fixture's counters and wire capture before the refused creates (byteplus seedance task contract)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__reset"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture reset its counters', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.json().data[0].reset).to.eql(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.2 [EXPECT-400] byteplus POST /v1/videos refuses a fractional seconds instead of rounding it (byteplus seedance task contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-0-fast-260128\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"seconds\": \"5.5\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('seconds is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('seconds');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.3 [EXPECT-400] byteplus POST /v1/videos refuses a seconds outside every Seedance model's range (byteplus seedance task contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-0-fast-260128\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"seconds\": \"16\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('seconds is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('seconds');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.4 [EXPECT-400] byteplus POST /v1/videos refuses a size that names no Seedance tier and ratio exactly (byteplus seedance task contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-0-fast-260128\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"size\": \"1000x720\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('size is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('size');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.5 [EXPECT-400] byteplus POST /v1/videos refuses a deadline outside Ark's execution_expires_after range (byteplus seedance task contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-0-fast-260128\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"expires_after_seconds\": 600\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('expires_after_seconds is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('expires_after_seconds');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.6 [EXPECT-400] byteplus POST /v1/videos refuses client_reference_id, which Ark has no field for (byteplus seedance task contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-0-fast-260128\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"client_reference_id\": \"task_1\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('client_reference_id is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('client_reference_id');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.7 [EXPECT-400] byteplus POST /v1/videos refuses output_storage_uri, which Ark has no field for (byteplus seedance task contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-0-fast-260128\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"output_storage_uri\": \"s3://harness-bucket/task_1/\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('output_storage_uri is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('output_storage_uri');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.8 fixture wire capture proves no refused create reached Ark (byteplus seedance task contract)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__wire"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/byteplus/') === 0; });",
+              "pm.test('no request reached the byteplus upstream', function () {",
+              "  pm.expect(calls, JSON.stringify(calls)).to.eql([]);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.9 byteplus POST /v1/videos takes the unified video and task control fields (byteplus seedance task contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-0-fast-260128\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"seconds\": \"5\",\n  \"aspect_ratio\": \"9:16\",\n  \"resolution\": \"1080p\",\n  \"last_frame\": \"https://example.test/last.png\",\n  \"callback_url\": \"https://hooks.example.test/v/task_1\",\n  \"expires_after_seconds\": 7200\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create returns a queued task', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('cgt-fixture-video-task:byteplus');",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('queued');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.10 fixture wire capture shows the unified fields under Ark's names (byteplus seedance task contract)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__wire"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path === '/pp/byteplus/api/v3/contents/generations/tasks'; });",
+              "pm.test('one create reached Ark with ratio, resolution, the last frame, the callback and the deadline', function () {",
+              "  pm.expect(calls.length, JSON.stringify(calls)).to.eql(1);",
+              "  var b = JSON.parse(calls[0].body);",
+              "  pm.expect(b.duration, calls[0].body).to.eql(5);",
+              "  pm.expect(b.ratio, calls[0].body).to.eql('9:16');",
+              "  pm.expect(b.resolution, calls[0].body).to.eql('1080p');",
+              "  pm.expect(b.callback_url, calls[0].body).to.eql('https://hooks.example.test/v/task_1');",
+              "  pm.expect(b.execution_expires_after, calls[0].body).to.eql(7200);",
+              "  var last = b.content.filter(function (c) { return c.role === 'last_frame'; });",
+              "  pm.expect(last.length, calls[0].body).to.eql(1);",
+              "  pm.expect(last[0].image_url.url, calls[0].body).to.eql('https://example.test/last.png');",
+              "  ['aspect_ratio', 'last_frame', 'expires_after_seconds', 'seconds'].forEach(function (k) {",
+              "    pm.expect(b, 'unified name on the wire: ' + calls[0].body).to.not.have.property(k);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.11 byteplus GET /v1/videos/{id} reports Ark's succeeded task as completed with provider_status (byteplus seedance task contract)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/cgt-fixture-succeeded:byteplus",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "cgt-fixture-succeeded:byteplus"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status completed, provider_status succeeded', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('cgt-fixture-succeeded:byteplus');",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('completed');",
+              "  pm.expect(j.provider_status, 'provider_status: ' + pm.response.text()).to.eql('succeeded');",
+              "});",
+              "pm.test('usage, artifact link and its expiry come from Ark', function () {",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.usage && j.usage.output_tokens, 'usage: ' + pm.response.text()).to.eql(108900);",
+              "  pm.expect(j.completed_at, 'completed_at: ' + pm.response.text()).to.eql(1762700090);",
+              "  pm.expect(j.expires_at, 'expires_at: ' + pm.response.text()).to.eql(1762700090 + 86400);",
+              "  pm.expect(j.videos && j.videos.length, 'videos: ' + pm.response.text()).to.eql(1);",
+              "  pm.expect(j.videos[0].type, 'videos[0].type: ' + pm.response.text()).to.eql('url');",
+              "  pm.expect(j.videos[0].url, 'videos[0].url: ' + pm.response.text()).to.eql('https://fixture.invalid/seedance/video.mp4');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.12 byteplus GET /v1/videos/{id} reports Ark's cancelled task as cancelled with provider_status (byteplus seedance task contract)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/cgt-fixture-cancelled:byteplus",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "cgt-fixture-cancelled:byteplus"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status cancelled, provider_status cancelled', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('cgt-fixture-cancelled:byteplus');",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('cancelled');",
+              "  pm.expect(j.provider_status, 'provider_status: ' + pm.response.text()).to.eql('cancelled');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.13 byteplus GET /v1/videos/{id} reports Ark's expired task as expired with provider_status (byteplus seedance task contract)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/cgt-fixture-expired:byteplus",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "cgt-fixture-expired:byteplus"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status expired, provider_status expired', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('cgt-fixture-expired:byteplus');",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('expired');",
+              "  pm.expect(j.provider_status, 'provider_status: ' + pm.response.text()).to.eql('expired');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.14 byteplus GET /v1/videos/{id} reports Ark's failed task as failed with provider_status (byteplus seedance task contract)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/cgt-fixture-failed:byteplus",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "cgt-fixture-failed:byteplus"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status failed, provider_status failed', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('cgt-fixture-failed:byteplus');",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('failed');",
+              "  pm.expect(j.provider_status, 'provider_status: ' + pm.response.text()).to.eql('failed');",
+              "});",
+              "pm.test('a task Ark failed for its content carries content_filter', function () {",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.error && j.error.code, 'error: ' + pm.response.text()).to.eql('OutputVideoSensitiveContentDetected');",
+              "  pm.expect(j.content_filter, 'content_filter: ' + pm.response.text()).to.eql({ filtered_count: 1, reasons: ['OutputVideoSensitiveContentDetected'] });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.15 reset the fixture's counters and wire capture before the cancel of a queued task (byteplus seedance task contract)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__reset"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture reset its counters', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.json().data[0].reset).to.eql(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.16 byteplus POST /v1/videos/{id}/cancel cancels a queued task (byteplus seedance task contract)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/cgt-fixture-queued:byteplus/cancel",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "cgt-fixture-queued:byteplus",
+            "cancel"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the task comes back cancelled, with the state Ark last reported', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('cgt-fixture-queued:byteplus');",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('cancelled');",
+              "  pm.expect(j.provider_status, 'provider_status: ' + pm.response.text()).to.eql('queued');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.17 fixture hit counts prove the cancel was one query and one DELETE (byteplus seedance task contract)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__hits"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var h = pm.response.json().data[0].hits;",
+              "var seedance = {};",
+              "Object.keys(h).forEach(function (k) { if (k.indexOf('seedance.') === 0) { seedance[k] = h[k]; } });",
+              "pm.test('one query and one DELETE reached Ark', function () {",
+              "  pm.expect(seedance, JSON.stringify(h)).to.eql({ 'seedance.retrieve cgt-fixture-queued': 1, 'seedance.delete cgt-fixture-queued': 1 });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.18 reset the fixture's counters and wire capture before the cancel of a finished task (byteplus seedance task contract)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__reset"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture reset its counters', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.json().data[0].reset).to.eql(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.19 [EXPECT-400] byteplus POST /v1/videos/{id}/cancel refuses a task that is not queued (byteplus seedance task contract)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/cgt-fixture-succeeded:byteplus/cancel",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "cgt-fixture-succeeded:byteplus",
+            "cancel"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the cancel is refused as provider_cancel_unsupported', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_cancel_unsupported');",
+              "  pm.expect(j.extra_fields.request_type, 'request_type: ' + pm.response.text()).to.eql('video_cancel');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.20 fixture hit counts prove the finished task was queried once and never deleted (byteplus seedance task contract)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__hits"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var h = pm.response.json().data[0].hits;",
+              "var seedance = {};",
+              "Object.keys(h).forEach(function (k) { if (k.indexOf('seedance.') === 0) { seedance[k] = h[k]; } });",
+              "pm.test('one query and no DELETE reached Ark', function () {",
+              "  pm.expect(seedance, JSON.stringify(h)).to.eql({ 'seedance.retrieve cgt-fixture-succeeded': 1 });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

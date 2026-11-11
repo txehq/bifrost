@@ -1,0 +1,268 @@
+{
+  "name": "115. raw_request on the embedding success path (bedrock + vertex) (embedding-raw-request)",
+  "description": "Bedrock and Vertex embeddings reported `extra_fields.raw_request` on every error return but never on success. Both hand-roll their response unmarshal rather than calling `HandleProviderResponseCtx` — Bedrock because the response struct differs per model family (Titan / Cohere / Nova), Vertex because it differs per endpoint (`:predict` / `:embedContent`) — and when that was written only the response half was carried over. The result: with `x-bf-send-back-raw-request: true`, a failing embedding call returned the request bytes and a succeeding one silently dropped them.\n\nEvery other embedding path already did this — OpenAI (via the shared `HandleOpenAIEmbeddingRequest`), Cohere and Gemini all set it — so these two were the outliers, not the rule.\n\nThe fix is the established `providerUtils.ParseAndSetRawRequest` (56 call sites), which stores the body as a compacted `json.RawMessage` so the exact bytes and key order survive. 115.A1 asserts that ordering directly, since a decode through `map[string]interface{}` would sort the keys and that is precisely what the helper exists to avoid.\n\nThree Bedrock rows rather than one because Titan, Cohere and Nova unmarshal down three separate branches of the same switch and the capture sits after it — one family passing says nothing about the others. Each row also checks the reported body is the **converted provider envelope** (`inputText`, `taskType`, `texts[]`, `instances[]`), not the OpenAI-dialect request that arrived. Run with FEATURE=embedding-raw-request.",
+  "item": [
+    {
+      "name": "115.A Bedrock embedding raw_request, across all three model families",
+      "item": [
+        {
+          "name": "115.A1 bedrock/amazon.titan-embed-text-v2:0 - raw_request is reported on a successful embedding",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"a red square\",\n  \"dimensions\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Pins that raw_request survives the embedding success path on Bedrock (Titan family).",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('embedding succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 300)).to.eql(200);",
+                  "});",
+                  "var body; try { body = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + txt.slice(0, 300)); return; }",
+                  "",
+                  "// The embedding path unmarshals per model family instead of going through",
+                  "// HandleProviderResponse, and used to report raw_request only on the error returns -",
+                  "// so a successful call silently dropped it while a failing one carried it.",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "pm.test('raw_request is reported on a successful embedding', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request is honored on errors but not on success: ' + txt.slice(0, 300)).to.not.be.undefined;",
+                  "  pm.expect(rr, 'raw_request present but null').to.not.be.null;",
+                  "});",
+                  "// The provider body is Titan's own envelope, not the OpenAI request that came in: proof the",
+                  "// converted bytes are what gets reported, and that key order survives (inputText before",
+                  "// dimensions is the order the converter emits; a map decode would sort them the other way).",
+                  "pm.test('it carries the converted Titan body, key order intact', function () {",
+                  "  var asText = typeof rr === 'string' ? rr : JSON.stringify(rr);",
+                  "  pm.expect(asText, 'not the Titan envelope: ' + asText.slice(0, 200)).to.include('inputText');",
+                  "  pm.expect(asText, 'dimensions did not reach the provider body').to.include('dimensions');",
+                  "  pm.expect(asText.indexOf('inputText'), 'key order was not preserved').to.be.below(asText.indexOf('dimensions'));",
+                  "  pm.expect(asText, 'the OpenAI-dialect field name leaked into the provider body').to.not.include('\"input\"');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "115.A2 bedrock/amazon.nova-2-multimodal-embeddings-v1:0 - raw_request survives the Nova family branch",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/amazon.nova-2-multimodal-embeddings-v1:0\",\n  \"input\": \"a red square\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Same pin as 115.A1 for the Nova branch of the family switch.",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('embedding succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 300)).to.eql(200);",
+                  "});",
+                  "var body; try { body = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + txt.slice(0, 300)); return; }",
+                  "",
+                  "// The embedding path unmarshals per model family instead of going through",
+                  "// HandleProviderResponse, and used to report raw_request only on the error returns -",
+                  "// so a successful call silently dropped it while a failing one carried it.",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "pm.test('raw_request is reported on a successful embedding', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request is honored on errors but not on success: ' + txt.slice(0, 300)).to.not.be.undefined;",
+                  "  pm.expect(rr, 'raw_request present but null').to.not.be.null;",
+                  "});",
+                  "// Titan, Cohere and Nova unmarshal down three different branches of the same switch; the",
+                  "// capture sits after it, so one family passing does not prove the others do.",
+                  "pm.test('it carries the Nova taskType envelope', function () {",
+                  "  var asText = typeof rr === 'string' ? rr : JSON.stringify(rr);",
+                  "  pm.expect(asText, 'not the Nova envelope: ' + asText.slice(0, 200)).to.include('SINGLE_EMBEDDING');",
+                  "  pm.expect(asText, 'embeddingPurpose is required by AWS and must be in the reported body').to.include('embeddingPurpose');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "115.A3 bedrock/global.cohere.embed-v4:0 - raw_request survives the Cohere family branch",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": [\n    \"a red square\",\n    \"a blue circle\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Same pin as 115.A1 for the Cohere branch of the family switch.",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('embedding succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 300)).to.eql(200);",
+                  "});",
+                  "var body; try { body = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + txt.slice(0, 300)); return; }",
+                  "",
+                  "// The embedding path unmarshals per model family instead of going through",
+                  "// HandleProviderResponse, and used to report raw_request only on the error returns -",
+                  "// so a successful call silently dropped it while a failing one carried it.",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "pm.test('raw_request is reported on a successful embedding', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request is honored on errors but not on success: ' + txt.slice(0, 300)).to.not.be.undefined;",
+                  "  pm.expect(rr, 'raw_request present but null').to.not.be.null;",
+                  "});",
+                  "pm.test('it carries the Cohere texts[] envelope', function () {",
+                  "  var asText = typeof rr === 'string' ? rr : JSON.stringify(rr);",
+                  "  pm.expect(asText, 'not the Cohere envelope: ' + asText.slice(0, 200)).to.include('texts');",
+                  "  pm.expect(asText, 'input_type is defaulted by the converter and must be reported').to.include('input_type');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "115.B Vertex embedding raw_request",
+      "item": [
+        {
+          "name": "115.B1 vertex/text-embedding-005 - raw_request is reported on a successful embedding",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/text-embedding-005\",\n  \"input\": \"a red square\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Pins that raw_request survives the embedding success path on Vertex.",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('embedding succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 300)).to.eql(200);",
+                  "});",
+                  "var body; try { body = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + txt.slice(0, 300)); return; }",
+                  "",
+                  "// The embedding path unmarshals per model family instead of going through",
+                  "// HandleProviderResponse, and used to report raw_request only on the error returns -",
+                  "// so a successful call silently dropped it while a failing one carried it.",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "pm.test('raw_request is reported on a successful embedding', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request is honored on errors but not on success: ' + txt.slice(0, 300)).to.not.be.undefined;",
+                  "  pm.expect(rr, 'raw_request present but null').to.not.be.null;",
+                  "});",
+                  "// Vertex has the same shape of gap as Bedrock, for the same reason: its response differs",
+                  "// between :predict and :embedContent, so it hand-rolls the unmarshal too.",
+                  "pm.test('it carries the Vertex instances[] body', function () {",
+                  "  var asText = typeof rr === 'string' ? rr : JSON.stringify(rr);",
+                  "  pm.expect(asText, 'not the Vertex predict envelope: ' + asText.slice(0, 200)).to.include('instances');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

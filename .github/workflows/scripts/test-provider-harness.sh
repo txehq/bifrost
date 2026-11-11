@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# CI runner for the Bifrost provider harness (tests/e2e/api/collections/provider-harness.json).
+# CI runner for the Bifrost provider harness (tests/e2e/api/collections/provider-harness/, one file per folder).
 #
 # Local developers run `make run-provider-harness-test`, which auto-starts Bifrost
 # via `make dev`, sources secrets from Infisical/.env, and renders an in-place

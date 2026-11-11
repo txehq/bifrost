@@ -292,7 +292,7 @@ jobs:
   # Run all tests in parallel before any releases
   #
   # test-core no longer runs the core module's `go test` suite. It validates the
-  # core build, then runs the provider harness (tests/e2e/api/collections/provider-harness.json)
+  # core build, then runs the provider harness (tests/e2e/api/collections/provider-harness/, one file per folder)
   # end-to-end against a locally built bifrost-http binary - see
   # .github/workflows/scripts/test-provider-harness.sh. The harness runs on the
   # host and talks to real provider APIs, so every provider endpoint the

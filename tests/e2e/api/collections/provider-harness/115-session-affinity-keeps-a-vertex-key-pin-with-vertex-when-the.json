@@ -1,0 +1,240 @@
+{
+  "name": "115. Session affinity keeps a Vertex key pin with Vertex when the session stays on Anthropic (session-pin)",
+  "description": "A routing rule can pin a provider key on its target (the production rule was 'Claude Models -> Vertex' with key btaiops-prod-project-global and an Anthropic fallback on the incoming model). Core committed that pin to the request-wide api-key-id, and only then did session affinity run: a session last served by Anthropic moved Anthropic to the front of the chain, so the Anthropic attempt looked the Vertex key up among Anthropic's keys and died with 'no supported key found with id ... for provider: anthropic' before Anthropic was ever called. The Vertex fallback then served unpinned when it could, and when it could not the caller got that key error as a 400. Fixed in core/sessionaffinity.go: a pin belongs to the route it was decided for, so resolveSessionRoute carries pins through the session's reorder. The demoted Vertex entry keeps the rule's pin as its fallback key, which the fallback loop re-applies when Vertex is tried, and the promoted Anthropic attempt selects a key normally (or brings its own pin when the rule gave its fallback one). The trail records the move. Only requests that carry a session id take part, which is why Edge, Claude Code and Codex traffic saw it and plain API callers did not.\n\nThese cases rely on two rules in tests/integrations/python/config.json (governance.routing_rules) scoped to the harness-only header x-harness-session-pin, so they match nothing else in the suite. Each pair shares one fresh x-bf-session-id: the bind request is routed to Anthropic by the first rule, which binds the session there; the pinned request then matches the second rule (Vertex target with provider_key_name 'Vertex Global (Claude)', fallback anthropic/), affinity moves Anthropic first, and the case asserts Anthropic served. Before the fix the answer came from vertex (fallback rescue) or was the key error itself; after it, anthropic. Pinned on /v1/chat/completions and on /v1/responses, the route the report came in on.",
+  "item": [
+    {
+      "name": "Session pin: bind - anthropic/claude-sonnet-4-6 serves the session first (chat) - session-pin",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// One fresh session per run: the pair below must share it, and a stale binding from an",
+              "// earlier run would make the pinned request pass or fail for reasons unrelated to this fix.",
+              "pm.collectionVariables.set('sessionPinChatId', 'session-pin-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('bind request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "pm.test('the session was bound by an Anthropic response', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the bind rule did not route to anthropic, so the session is not bound where the pinned request expects it: ' + pm.response.text()).to.eql('anthropic');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{sessionPinChatId}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "bind"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session pin: pinned Vertex key - anthropic/claude-sonnet-4-6 keeps serving instead of no supported key found (chat) - session-pin",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('pinned request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "pm.test('the Vertex key pin did not follow the request onto Anthropic', function () {",
+              "  pm.expect(pm.response.text(), 'key selection looked the pinned Vertex key up among Anthropic keys').to.not.include('no supported key found');",
+              "});",
+              "var body = pm.response.json();",
+              "pm.test('Anthropic served the session, not the Vertex fallback', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'a vertex answer means the Anthropic attempt died on the pin and only the fallback rescued the request: ' + pm.response.text()).to.eql('anthropic');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{sessionPinChatId}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session pin: bind - anthropic/claude-sonnet-4-6 serves the session first (responses) - session-pin",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// One fresh session per run: the pair below must share it, and a stale binding from an",
+              "// earlier run would make the pinned request pass or fail for reasons unrelated to this fix.",
+              "pm.collectionVariables.set('sessionPinResponsesId', 'session-pin-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('bind request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = pm.response.json();",
+              "pm.test('the session was bound by an Anthropic response', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'the bind rule did not route to anthropic, so the session is not bound where the pinned request expects it: ' + pm.response.text()).to.eql('anthropic');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{sessionPinResponsesId}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "bind"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"input\": \"Reply with the single word: ok\",\n  \"max_output_tokens\": 16\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Session pin: pinned Vertex key - anthropic/claude-sonnet-4-6 keeps serving instead of no supported key found (responses) - session-pin",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('pinned request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "pm.test('the Vertex key pin did not follow the request onto Anthropic', function () {",
+              "  pm.expect(pm.response.text(), 'key selection looked the pinned Vertex key up among Anthropic keys').to.not.include('no supported key found');",
+              "});",
+              "var body = pm.response.json();",
+              "pm.test('Anthropic served the session, not the Vertex fallback', function () {",
+              "  pm.expect((body.extra_fields || {}).provider, 'a vertex answer means the Anthropic attempt died on the pin and only the fallback rescued the request: ' + pm.response.text()).to.eql('anthropic');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-session-id",
+            "value": "{{sessionPinResponsesId}}"
+          },
+          {
+            "key": "x-harness-session-pin",
+            "value": "vertex"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"input\": \"Reply with the single word: ok\",\n  \"max_output_tokens\": 16\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    }
+  ]
+}

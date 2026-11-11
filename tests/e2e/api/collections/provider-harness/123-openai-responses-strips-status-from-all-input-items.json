@@ -1,0 +1,100 @@
+{
+  "name": "123. OpenAI Responses strips status from all input items",
+  "description": "Gemini streaming sets status on all item types (message, reasoning, function_call, function_call_output, web_search_call). OpenAI rejects status on input. Fix: ToOpenAIResponsesRequest strips status from all items.",
+  "item": [
+    {
+      "name": "openai/gpt-4o native /v1/responses: status stripped from message",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('No status parameter rejection - status on message', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'OpenAI rejected status parameter: ' + body).to.not.match(/input\\[\\d+\\]\\.status/);",
+              "  pm.expect(body.toLowerCase(), 'OpenAI rejected status parameter: ' + body).to.not.include('unknown parameter');",
+              "});",
+              "pm.test('Replay with Gemini status on message succeeds', function () {",
+              "  pm.expect(pm.response.code, 'responses replay request failed: ' + pm.response.text()).to.be.below(400);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-4o\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"status\":\"completed\",\"content\":\"what is 2+2\"}],\"max_output_tokens\":100}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "gemini -> openai/gpt-4o fallback /v1/responses: status stripped at OpenAI seam",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('No status parameter rejection on fallback', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'OpenAI rejected status parameter: ' + body).to.not.match(/input\\[\\d+\\]\\.status/);",
+              "});",
+              "pm.test('Fallback succeeded', function () {",
+              "  pm.expect(pm.response.code, 'responses replay request failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "pm.test('OpenAI fallback actually served request - status on message', function () {",
+              "  var j = pm.response.json();",
+              "  var ef = j.extra_fields || {};",
+              "  var ri = ef.routing_info || {};",
+              "  pm.expect(ri.is_fallback, 'gemini primary did not fall back: ' + JSON.stringify(ef)).to.eql(true);",
+              "  pm.expect(ri.provider || ef.provider, 'fallback served by unexpected provider: ' + JSON.stringify(ef)).to.eql('openai');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"gemini/does-not-exist-model-123\",\"fallbacks\":[\"openai/gpt-4o\"],\"input\":[{\"type\":\"message\",\"role\":\"user\",\"status\":\"completed\",\"content\":\"what is 2+2\"}],\"max_output_tokens\":100}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    }
+  ]
+}

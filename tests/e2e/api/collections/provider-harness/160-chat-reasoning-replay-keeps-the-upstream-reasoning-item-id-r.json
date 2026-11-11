@@ -1,0 +1,187 @@
+{
+  "name": "160. Chat reasoning replay keeps the upstream reasoning item id (reasoning item id fixture)",
+  "description": "Local fixture regression like folder 154: run with providerErrorFixture=1 against the isolated gateway. openai/gpt-5-pro is a Responses-only model, so a chat request converts to /v1/responses upstream (x-bf-compat convert_chat_to_responses). The fixture issues a reasoning item (id rs_fixture_original) with an encrypted token and, like OpenAI, rejects a replay whose id does not match the token. 160.2 pins that the chat response carries the id on every reasoning_details entry; 160.3 replays them and must be accepted; 160.4 reads the fixture counters. 160.2 and 160.3 share h160Details and must run in order. Before the fix the chat shape dropped the id and replay minted a fresh rs_ id, which the fixture answers with a 400.",
+  "item": [
+    {
+      "name": "160.1 fixture counters reset",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('counters cleared', function () { pm.expect(j.data[0].reset, pm.response.text()).to.equal(true); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__reset"
+      }
+    },
+    {
+      "name": "160.2 openai/gpt-5-pro chat turn 1 returns reasoning_details carrying the upstream reasoning item id (reasoning item id)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-compat",
+            "value": "[\"convert_chat_to_responses\"]"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-5-pro\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var m = j.choices[0].message;",
+              "pm.test('the request was converted to the responses upstream', function () { pm.expect(j.extra_fields.converted_request_type, pm.response.text().slice(0, 400)).to.equal('responses'); });",
+              "pm.test('every reasoning_details entry carries the upstream item id', function () {",
+              "  pm.expect(m.reasoning_details, 'no reasoning_details: ' + pm.response.text().slice(0, 600)).to.be.an('array').and.not.empty;",
+              "  var types = {};",
+              "  m.reasoning_details.forEach(function (d) { types[d.type] = true; pm.expect(d.id, 'id lost on ' + d.type + ': ' + JSON.stringify(d)).to.equal('rs_fixture_original'); });",
+              "  pm.expect(types['reasoning.encrypted'], 'no encrypted detail: ' + JSON.stringify(m.reasoning_details)).to.equal(true);",
+              "});",
+              "pm.collectionVariables.set('h160Details', JSON.stringify(m.reasoning_details));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "160.3 openai/gpt-5-pro chat turn 2 replays reasoning_details and is accepted by an id-pairing upstream (reasoning item id)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-compat",
+            "value": "[\"convert_chat_to_responses\"]"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-5-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"assistant\",\"content\":\"hello\",\"reasoning_details\":{{h160Details}}},{\"role\":\"user\",\"content\":\"again\"}],\"max_tokens\":16}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('replay was accepted (a regenerated id is rejected upstream as a 400)', function () { pm.expect(pm.response.code, 'replay rejected: ' + pm.response.text().slice(0, 500)).to.equal(200); });",
+              "pm.test('the turn produced content', function () { var j = pm.response.json(); pm.expect(j.choices[0].message.content, pm.response.text().slice(0, 400)).to.equal('hello'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "160.4 fixture saw the original id on replay and never a mismatch (reasoning item id)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var h = pm.response.json().data[0].hits;",
+              "pm.test('replay carried the original reasoning item id', function () {",
+              "  pm.expect(h['replay-id-ok'], JSON.stringify(h)).to.equal(1);",
+              "  pm.expect(h['replay-id-mismatch'] || 0, JSON.stringify(h)).to.equal(0);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__hits"
+      }
+    }
+  ]
+}

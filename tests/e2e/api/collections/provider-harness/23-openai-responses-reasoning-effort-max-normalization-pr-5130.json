@@ -1,0 +1,141 @@
+{
+  "name": "23. OpenAI Responses reasoning.effort max normalization (PR #5130)",
+  "description": "PR #5130: `normalizeOpenAIReasoningEffort` treats gpt-5.6 as natively supporting reasoning.effort \"max\"/\"xhigh\" (passed through unchanged), while earlier GPT-5.x models get \"max\" downgraded (gpt-5.2/5.5 → xhigh, others → high) instead of forwarding a value the upstream rejects. Also adds `reasoning.context` and `reasoning.mode` schema fields that are now serialized to OpenAI instead of being stripped. The response reasoning object echoes what OpenAI actually received, which is what these cases assert on.",
+  "item": [
+    {
+      "name": "openai/gpt-5.6 native /v1/responses reasoning.effort=max passes through (echoed as max) - PR #5130",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-5.6\",\n  \"input\": \"Reply with the single word: ok\",\n  \"reasoning\": {\n    \"effort\": \"max\"\n  },\n  \"max_output_tokens\": 512\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('gpt-5.6 effort max: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var r = pm.response.json();",
+              "pm.test('gpt-5.6 effort max: echoed as max (was downgraded before PR #5130)', function () {",
+              "  pm.expect(r.reasoning, 'no reasoning echo: ' + pm.response.text()).to.be.an('object');",
+              "  pm.expect(r.reasoning.effort).to.eql('max');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "openai/gpt-5 native /v1/responses reasoning.effort=max downgraded to high (no upstream 400) - PR #5130",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-5\",\n  \"input\": \"Reply with the single word: ok\",\n  \"reasoning\": {\n    \"effort\": \"max\"\n  },\n  \"max_output_tokens\": 512\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('gpt-5 effort max: 2xx (a 400 means max was forwarded to a model that rejects it)', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var r = pm.response.json();",
+              "pm.test('gpt-5 effort max: normalized to high', function () {",
+              "  pm.expect(r.reasoning, 'no reasoning echo: ' + pm.response.text()).to.be.an('object');",
+              "  pm.expect(r.reasoning.effort).to.eql('high');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "openai/gpt-5.6 native /v1/responses reasoning.context + reasoning.mode forwarded - PR #5130",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-5.6\",\n  \"input\": \"Reply with the single word: ok\",\n  \"reasoning\": {\n    \"effort\": \"low\",\n    \"context\": \"current_turn\",\n    \"mode\": \"standard\"\n  },\n  \"max_output_tokens\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('gpt-5.6 reasoning.context/mode: accepted upstream (2xx)', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var r = pm.response.json();",
+              "pm.test('gpt-5.6 reasoning.context/mode: echo consistent when present', function () {",
+              "  if (r.reasoning && r.reasoning.context) { pm.expect(r.reasoning.context).to.eql('current_turn'); }",
+              "  if (r.reasoning && r.reasoning.mode) { pm.expect(r.reasoning.mode).to.eql('standard'); }",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
