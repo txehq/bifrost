@@ -274,10 +274,19 @@ func geminiInlinedInputPosition(response GeminiInlinedResponse) (count, index in
 }
 
 // isGeminiInlinedEmbeddingResponse reports whether an inline response answers an embedding
-// request: it carries an EmbedContentResponse, or the metadata the create sent says so.
+// request: it carries an EmbedContentResponse, or it carries no response at all (a failed
+// line) and the metadata the create sent says so.
+//
+// What the response holds decides before the metadata does, for the reason given on
+// geminiInlinedInputPosition: a generateContent response whose caller-supplied metadata
+// names the embeddings operation would otherwise be settled as a failed embedding line,
+// with no usage, while the vendor billed it.
 func isGeminiInlinedEmbeddingResponse(response GeminiInlinedResponse) bool {
 	if response.EmbedResponse != nil {
 		return true
+	}
+	if response.Response != nil {
+		return false
 	}
 	return response.Metadata != nil && response.Metadata.Endpoint == string(schemas.BatchEndpointEmbeddings)
 }
@@ -292,6 +301,10 @@ func geminiInlinedLineEndpoint(response GeminiInlinedResponse) (schemas.BatchEnd
 	endpoint := schemas.BatchEndpoint("")
 	if response.Metadata != nil {
 		endpoint = schemas.BatchEndpoint(response.Metadata.Endpoint)
+	}
+	if endpoint == schemas.BatchEndpointEmbeddings && response.Response != nil {
+		// A generateContent response is not an embedding line, whatever its metadata says.
+		endpoint = ""
 	}
 	return endpoint, endpoint != "" || response.Error == nil
 }
