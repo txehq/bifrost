@@ -543,21 +543,53 @@ func TestResponsesMergesExtraFields(t *testing.T) {
 		}
 	}
 
-	t.Run("non-streamed", func(t *testing.T) {
-		server := newXAICapturingServer(t, "application/json",
-			`{"id":"resp_1","object":"response","created_at":1,"model":"grok-4.5","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
-		if _, bifrostErr := newXAITestProvider(server.URL).Responses(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, request()); bifrostErr != nil {
-			t.Fatalf("responses failed: %+v", bifrostErr.Error)
+	// The merge is xAI's for the length of its own call: afterwards the context holds the
+	// caller's setting again, so a fallback provider on the same context is not sent
+	// max_turns unless the caller asked for extra params to pass.
+	requirePassthrough := func(t *testing.T, ctx *schemas.BifrostContext, want bool) {
+		t.Helper()
+		if got, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); got != want {
+			t.Fatalf("extra-params passthrough left on the context = %v, want the caller's %v", got, want)
 		}
-		requireMaxTurns(t, server)
+	}
+
+	for name, callerSetting := range map[string]bool{"non-streamed": false, "non-streamed, caller enabled passthrough": true} {
+		t.Run(name, func(t *testing.T) {
+			server := newXAICapturingServer(t, "application/json",
+				`{"id":"resp_1","object":"response","created_at":1,"model":"grok-4.5","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if callerSetting {
+				ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+			}
+			if _, bifrostErr := newXAITestProvider(server.URL).Responses(ctx, key, request()); bifrostErr != nil {
+				t.Fatalf("responses failed: %+v", bifrostErr.Error)
+			}
+			requireMaxTurns(t, server)
+			requirePassthrough(t, ctx, callerSetting)
+		})
+	}
+	t.Run("a failed call restores the setting too", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = fmt.Fprint(w, `{"code":"service_unavailable","error":"overloaded"}`)
+		}))
+		t.Cleanup(server.Close)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := newXAITestProvider(server.URL).Responses(ctx, key, request()); bifrostErr == nil {
+			t.Fatal("want xAI's 503")
+		}
+		requirePassthrough(t, ctx, false)
 	})
 	t.Run("streamed", func(t *testing.T) {
 		server := newXAICapturingServer(t, "text/event-stream",
 			"event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"model\":\"grok-4.5\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
-		stream, bifrostErr := newXAITestProvider(server.URL).ResponsesStream(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), passthroughStreamCostPostHook, nil, key, request())
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stream, bifrostErr := newXAITestProvider(server.URL).ResponsesStream(ctx, passthroughStreamCostPostHook, nil, key, request())
 		if bifrostErr != nil {
 			t.Fatalf("stream setup failed: %+v", bifrostErr.Error)
 		}
+		requirePassthrough(t, ctx, false)
 		for range stream {
 		}
 		requireMaxTurns(t, server)

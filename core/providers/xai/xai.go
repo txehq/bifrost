@@ -246,9 +246,10 @@ func normalizeXAIChatUsage(response *schemas.BifrostChatResponse) {
 // Responses performs a responses request to the xAI API. The caller's fields outside the
 // unified structure (max_turns and any other xAI field) are always merged into the body,
 // whether or not the extra-params header was sent: dropping one silently would change what
-// the request costs (fork, TXE-7043, contract C4).
+// the request costs (fork, TXE-7043, contract C4). The merge is switched on for this call
+// only, so a fallback to another provider is not sent xAI's fields.
 func (provider *XAIProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer providerUtils.ForceExtraParamsPassthrough(ctx)()
 	response, bifrostErr := openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
@@ -274,7 +275,8 @@ func (provider *XAIProvider) Responses(ctx *schemas.BifrostContext, key schemas.
 // ResponsesStream performs a streaming responses request to the xAI API. Extra fields are
 // merged as in Responses.
 func (provider *XAIProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	// The request body is built before this call returns, so the switch is needed no longer.
+	defer providerUtils.ForceExtraParamsPassthrough(ctx)()
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.streamingClient,
