@@ -1,9 +1,9 @@
 {
-  "name": "475. Character-priced embeddings advance a virtual key dollar budget (embedding character pricing) [SERIAL]",
+  "name": "478. Character-priced embeddings advance a virtual key dollar budget (embedding character pricing) [SERIAL]",
   "description": "TXE-7081. Vertex text embeddings bill by character, and Bifrost reports usage.billed_characters with no token count (contract C5). Embedding cost used to read only prompt_tokens, so such a call cost nothing and a virtual key's dollar budget never moved. Now an embedding with billed_characters is priced at the model's input_cost_per_character. The folder makes a virtual key with a $0.05 daily budget and a VK-scoped override of $0.01 per character on text-embedding-005, so the first call costs about $0.20 and exhausts the budget, and the second is refused with 402 policy_budget_exceeded. The override is VK-scoped so nothing else in the suite is repriced; the teardown removes both.",
   "item": [
     {
-      "name": "475.1 Setup - Create a VK with a $0.05 budget - vertex/text-embedding-005",
+      "name": "478.1 Setup - Create a VK with a $0.05 budget - vertex/text-embedding-005",
       "event": [
         {
           "listen": "prerequest",
@@ -61,7 +61,7 @@
       }
     },
     {
-      "name": "475.2 Setup - VK-scoped override of $0.01 per character [EXPECT-201] - vertex/text-embedding-005",
+      "name": "478.2 Setup - VK-scoped override of $0.01 per character [EXPECT-201] - vertex/text-embedding-005",
       "event": [
         {
           "listen": "prerequest",
@@ -124,7 +124,7 @@
       }
     },
     {
-      "name": "475.3 /v1/embeddings through the VK - billed characters are charged - vertex/text-embedding-005",
+      "name": "478.3 /v1/embeddings through the VK - billed characters are charged - vertex/text-embedding-005",
       "event": [
         {
           "listen": "prerequest",
@@ -181,7 +181,7 @@
       }
     },
     {
-      "name": "475.4 [EXPECT-402] /v1/embeddings through the VK - the character charge exhausted the budget - vertex/text-embedding-005",
+      "name": "478.4 [EXPECT-402] /v1/embeddings through the VK - the character charge exhausted the budget - vertex/text-embedding-005",
       "event": [
         {
           "listen": "prerequest",
@@ -239,7 +239,7 @@
       }
     },
     {
-      "name": "475.5 Teardown - Delete the character override - vertex/text-embedding-005",
+      "name": "478.5 Teardown - Delete the character override - vertex/text-embedding-005",
       "event": [
         {
           "listen": "prerequest",
@@ -287,7 +287,7 @@
       }
     },
     {
-      "name": "475.6 Teardown - Delete VK - vertex/text-embedding-005",
+      "name": "478.6 Teardown - Delete VK - vertex/text-embedding-005",
       "event": [
         {
           "listen": "prerequest",
