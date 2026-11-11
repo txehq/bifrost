@@ -260,7 +260,7 @@ curl -X POST http://localhost:8080/v1/videos \
 | `output_format` | `output_format` | `mp4` (default) or `mov`. Seedance 2.5 only. |
 | `seconds` | `duration` | Whole seconds from `2` to `15`, or `-1` to let the model choose the length. A fractional value or one outside that range is refused with a `400`; it is never rounded. Ark refuses a value its model does not take. |
 | `size` | `resolution` + `ratio` | Must name a tier and ratio exactly: the short side is `480`, `720` or `1080` and the long side is that tier at `21:9`, `16:9`, `4:3`, `1:1`, `3:4` or `9:16`, so `1280x720` is `720p` at `16:9`. Any other size is refused with a `400`; no nearest tier or ratio is picked. |
-| `resolution`, `aspect_ratio` | `resolution`, `ratio` | The direct way to choose them. `aspect_ratio` also accepts `adaptive`. Sent together with a `size` that disagrees, the request is refused with a `400`. |
+| `resolution`, `aspect_ratio` | `resolution`, `ratio` | The direct way to choose them. `aspect_ratio` also accepts `adaptive`. Sent together with a `size`, each overrides the value the size implies; the `size` itself must still be exact. |
 | `last_frame` | `content[]` image item with role `last_frame` | |
 | `reference_images` | `content[]` image items with role `reference_image` | Can't be combined with first or last frame images |
 | `callback_url` | `callback_url` | Sent to Ark unchanged. Ark's callbacks are unsigned. |

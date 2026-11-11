@@ -61,19 +61,21 @@ func ToBytePlusVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGeneration
 	}
 	req.Duration = duration
 	// Fork (TXE-6426, contract C4): resolution and ratio come from the unified resolution and
-	// aspect_ratio, or from a size that names one Seedance tier and ratio exactly. A size that
-	// disagrees with a field sent beside it is refused, never overridden.
+	// aspect_ratio, or from a size that names one Seedance tier and ratio exactly. A unified field
+	// sent beside a size overrides the value the size implies (TXE-7065); the size itself must
+	// still be exact.
 	resolution, ratio := strings.TrimSpace(string(params.Resolution)), strings.TrimSpace(string(params.AspectRatio))
 	if params.Size != "" {
 		sizeResolution, sizeRatio, bifrostErr := bytePlusVideoSize(params.Size)
 		if bifrostErr != nil {
 			return nil, providerUtils.ConverterBifrostError(bifrostErr)
 		}
-		if (resolution != "" && !strings.EqualFold(resolution, sizeResolution)) || (ratio != "" && ratio != sizeRatio) {
-			return nil, providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError("size", fmt.Sprintf(
-				"size %q is %s at %s, which disagrees with the resolution or aspect_ratio sent with it; send size alone, or resolution and aspect_ratio", params.Size, sizeResolution, sizeRatio)))
+		if resolution == "" {
+			resolution = sizeResolution
 		}
-		resolution, ratio = sizeResolution, sizeRatio
+		if ratio == "" {
+			ratio = sizeRatio
+		}
 	}
 	if resolution != "" {
 		req.Resolution = &resolution

@@ -129,8 +129,7 @@ func TestSeedanceCreateRefusesWhatArkCannotTakeAsGiven(t *testing.T) {
 		{"size with no exact ratio", "size", &schemas.VideoGenerationParameters{Size: "1000x720"}},
 		{"size with no tier", "size", &schemas.VideoGenerationParameters{Size: "1600x900"}},
 		{"size that is not WIDTHxHEIGHT", "size", &schemas.VideoGenerationParameters{Size: "720p"}},
-		{"size disagreeing with resolution", "size", &schemas.VideoGenerationParameters{Size: "1280x720", Resolution: "1080p"}},
-		{"size disagreeing with aspect_ratio", "size", &schemas.VideoGenerationParameters{Size: "1280x720", AspectRatio: "1:1"}},
+		{"inexact size beside the unified fields", "size", &schemas.VideoGenerationParameters{Size: "1000x720", Resolution: "1080p", AspectRatio: "1:1"}},
 		{"deadline below Ark's range", "expires_after_seconds", &schemas.VideoGenerationParameters{TaskControlParameters: schemas.TaskControlParameters{ExpiresAfterSeconds: schemas.Ptr(3599)}}},
 		{"deadline above Ark's range", "expires_after_seconds", &schemas.VideoGenerationParameters{TaskControlParameters: schemas.TaskControlParameters{ExpiresAfterSeconds: schemas.Ptr(259201)}}},
 	}
