@@ -3135,6 +3135,13 @@ func TestCopyQueryFirstValues(t *testing.T) {
 	if lowered["status"] != "a" {
 		t.Fatalf("lowercased first value = %q, want a", lowered["status"])
 	}
+	// The lower-case spelling's first value wins over another spelling sent before it, and
+	// a name sent only in another spelling is still found under its lower-case key.
+	variants := map[string]string{}
+	CopyQueryFirstValues(queryTestCtx("/v1/realtime?Model=a&model=b&model=c&MODEL=d&Only=x&ONLY=y").Request.URI().QueryArgs(), variants, true)
+	if want := map[string]string{"model": "b", "only": "x"}; !reflect.DeepEqual(variants, want) {
+		t.Fatalf("lowercased case variants = %v, want %v", variants, want)
+	}
 	if wantRepeated := map[string][]string{"status": {"a", "c", "b"}}; !reflect.DeepEqual(repeated, wantRepeated) {
 		t.Fatalf("lowercased repeated = %v, want %v", repeated, wantRepeated)
 	}
@@ -3186,8 +3193,10 @@ func TestConvertToBifrostContext_RepeatedQueryParameterReadsAsPeek(t *testing.T)
 	if query["status"] != "x" || query["status"] != string(ctx.QueryArgs().Peek("status")) {
 		t.Fatalf("routing rules read status=%q, handlers read %q, want x for both", query["status"], ctx.QueryArgs().Peek("status"))
 	}
-	if query["provider"] != "a" {
-		t.Fatalf("routing rules read provider=%q, want the first value a", query["provider"])
+	// Handlers look the name up in lower case, so the lower-case spelling's first value
+	// wins over another spelling sent before it.
+	if query["provider"] != "b" || query["provider"] != string(ctx.QueryArgs().Peek("provider")) {
+		t.Fatalf("routing rules read provider=%q, handlers read %q, want b for both", query["provider"], ctx.QueryArgs().Peek("provider"))
 	}
 }
 
@@ -3201,6 +3210,29 @@ func TestBuildHTTPRequestFromFastHTTP_RepeatedQueryParameter(t *testing.T) {
 	}
 	if want := map[string][]string{"status": {"completed", "failed"}}; !reflect.DeepEqual(req.RepeatedQuery, want) {
 		t.Fatalf("RepeatedQuery = %v, want %v", req.RepeatedQuery, want)
+	}
+}
+
+// BenchmarkCopyQueryFirstValues is the per-request cost of copying the query string for the
+// transport plugins and for the routing rules (TXE-7042): no query, an ordinary query, and
+// one with a repeated name, which is the only case that allocates beyond the map entries.
+func BenchmarkCopyQueryFirstValues(b *testing.B) {
+	for name, uri := range map[string]string{
+		"none":     "/v1/chat/completions",
+		"ordinary": "/v1/chat/completions?api-version=2025-04-01-preview&trace=1",
+		"repeated": "/v1/videos?provider=azure&status=completed&status=failed&limit=2",
+	} {
+		for _, lower := range []bool{false, true} {
+			b.Run(fmt.Sprintf("%s/lower=%t", name, lower), func(b *testing.B) {
+				args := queryTestCtx(uri).Request.URI().QueryArgs()
+				dst := make(map[string]string, 8)
+				b.ReportAllocs()
+				for b.Loop() {
+					clear(dst)
+					CopyQueryFirstValues(args, dst, lower)
+				}
+			})
+		}
 	}
 }
 
