@@ -226,7 +226,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"model\": \"vertex/veo-3.1-generate-001\",\n  \"prompt\": \"a red circle\",\n  \"callback_url\": \"https://hooks.tokun.sh/v/task_417\"\n}"
+          "raw": "{\n  \"model\": \"vertex/veo-3.1-generate-001\",\n  \"prompt\": \"a red circle\",\n  \"callback_url\": \"https://hooks.example/v/task_417\"\n}"
         },
         "url": {
           "raw": "{{baseUrl}}/v1/videos",
