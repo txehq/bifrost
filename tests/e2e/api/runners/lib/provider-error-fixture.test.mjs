@@ -549,6 +549,20 @@ test("the DashScope video routes answer by task id and record the async header",
     "POST /pp/dashscope/api/v1/tasks/ds-pending/cancel",
     "POST /pp/dashscope/api/v1/tasks/ds-running/cancel",
   ]);
+
+  // The task list: two pages of two in DashScope's page shape; page_no=2 is the last.
+  const list = async (query) => (await fetch(`${base}/pp/dashscope/api/v1/tasks${query}`)).json();
+  const first = await list("?page_size=2&status=SUCCEEDED");
+  assert.deepEqual(first.data.map((d) => d.task_id), ["ds-succeeded", "ds-running"]);
+  assert.deepEqual([first.total, first.total_page, first.page_no, first.page_size], [3, 2, 1, 2]);
+  const last = await list("?page_no=2");
+  assert.deepEqual(last.data.map((d) => [d.task_id, d.status]), [["ds-canceled", "CANCELED"]]);
+  assert.equal(last.page_no, 2);
+  const listed = (await (await fetch(`${base}/__wire`)).json()).data[0].calls.slice(-2);
+  assert.deepEqual(listed.map((c) => `${c.method} ${c.path} ${c.query}`), [
+    "GET /pp/dashscope/api/v1/tasks ?page_size=2&status=SUCCEEDED",
+    "GET /pp/dashscope/api/v1/tasks ?page_no=2",
+  ]);
 });
 
 // TXE-6527: the OpenAI-compatible chat paths record the body the vendor received, so a harness row can read

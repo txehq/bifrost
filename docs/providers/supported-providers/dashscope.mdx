@@ -9,15 +9,14 @@ icon: "d"
 The `dashscope` provider is Alibaba Cloud Model Studio's native DashScope API, which serves Wan video, Qwen-Image and Z-Image images, Qwen3-TTS speech and Qwen3-ASR transcription. Qwen chat stays on the [`qwen`](/providers/supported-providers/qwen) provider, which speaks DashScope's OpenAI-compatible mode.
 
 <Note>
-Wan video is implemented: create, query, cancel and download. Every other operation returns `UnsupportedOperationError` (HTTP 400, `error.code` `unsupported_operation`) without calling DashScope. Image, speech and transcription are added operation by operation in later releases.
+Wan video is implemented: create, query, list, cancel and download. Every other operation returns `UnsupportedOperationError` (HTTP 400, `error.code` `unsupported_operation`) without calling DashScope. Image, speech and transcription are added operation by operation in later releases.
 </Note>
 
 ### Supported Operations
 
 | Operation | Non-Streaming | Streaming | Base |
 |-----------|---------------|-----------|------|
-| Video create, query, cancel, download (Wan) | ✅ | - | `workspace_base_url` |
-| Video list | ❌ (planned) | - | `workspace_base_url` |
+| Video create, query, list, cancel, download (Wan) | ✅ | - | `workspace_base_url` |
 | Video delete, remix, edit | ❌ | - | - |
 | Image generation and edit (Qwen-Image, Z-Image) | ❌ (planned) | ❌ | `base_url` |
 | Speech (Qwen3-TTS) | ❌ (planned) | ❌ (planned) | `base_url` |
@@ -152,6 +151,24 @@ The create response carries the id and `status` `queued` only. DashScope returns
 ### Cancel
 
 DashScope cancels a task only while it is `PENDING`. For a task in any other state it answers 400 `UnsupportedOperation`, which Bifrost returns as 400 with `error_type` `provider_cancel_unsupported` and DashScope's message. A cancelled task object carries `status` `cancelled` and no `provider_status`, because DashScope's cancel response reports no state.
+
+### List
+
+`GET /v1/videos?provider=dashscope` calls DashScope's task list, `GET /api/v1/tasks`.
+
+| Query parameter | Sent to DashScope as |
+|-----------------|----------------------|
+| `limit` | `page_size` |
+| `page_no`, `start_time`, `end_time`, `model_name`, `status`, and any other DashScope filter | the same name and value, unchanged; a repeated parameter stays repeated |
+| `after`, `order` | 400, before any call: DashScope pages by number and has no order parameter |
+
+DashScope pages by number. While there is a further page, the response has `has_more` `true` and `next`, the number of the following page: send it back as `page_no`. `has_more` is read from DashScope's own `page_no` and `total_page`. `start_time` and `end_time` are DashScope's `YYYYMMDDhhmmss`.
+
+```bash
+curl "http://localhost:8080/v1/videos?provider=dashscope&limit=20&model_name=wan2.6-t2v&status=SUCCEEDED&page_no=2"
+```
+
+Each entry carries `id` (with the `:dashscope` suffix), `model`, `status` by the table above, `created_at` (DashScope's `gmt_create`) and, for a finished task, `completed_at` (`end_time`). DashScope's list has no prompt, size or link: query the task for those. The list is of every asynchronous task of the account in DashScope's 24-hour window, image tasks included; `model_name` narrows it.
 
 ## Authentication
 

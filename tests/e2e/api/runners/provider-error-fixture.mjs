@@ -680,7 +680,20 @@ const dashScopeTasks = {
 	"ds-canceled": { output: { task_status: "CANCELED", ...dashScopeEnded } },
 	"ds-expired": { output: { task_status: "UNKNOWN" } },
 };
-const dashScopeAnswer = (method, path) => {
+// DashScope's task list, GET /api/v1/tasks: three tasks over two pages of two, in DashScope's documented page
+// shape (times in Unix milliseconds). page_no=2 is the last page; any other request is the first.
+const dashScopeListed = [
+	{ api_key_id: "1", caller_parent_id: "fixture", caller_uid: "fixture", gmt_create: 1762755532331, start_time: 1762755539290, end_time: 1762755819407, region: "ap-southeast-1", request_id: "fixture-dashscope-create", status: "SUCCEEDED", task_id: "ds-succeeded", user_api_unique_key: "apikey:v1:video:generation:wan2.6-t2v", model_name: "wan2.6-t2v" },
+	{ api_key_id: "1", caller_parent_id: "fixture", caller_uid: "fixture", gmt_create: 1762755600000, start_time: 1762755601000, region: "ap-southeast-1", request_id: "fixture-dashscope-create", status: "RUNNING", task_id: "ds-running", user_api_unique_key: "apikey:v1:video:generation:wan3.0-video", model_name: "wan3.0-video" },
+	{ api_key_id: "1", caller_parent_id: "fixture", caller_uid: "fixture", gmt_create: 1762755700000, start_time: 1762755701000, end_time: 1762755710000, region: "ap-southeast-1", request_id: "fixture-dashscope-create", status: "CANCELED", task_id: "ds-canceled", user_api_unique_key: "apikey:v1:video:generation:wan2.7-t2v", model_name: "wan2.7-t2v" },
+];
+const dashScopeListAnswer = (query) => {
+	const last = new URLSearchParams(query).get("page_no") === "2";
+	return { request_id: "fixture-dashscope-list", data: last ? dashScopeListed.slice(2) : dashScopeListed.slice(0, 2), total: 3, total_page: 2, page_no: last ? 2 : 1, page_size: 2 };
+};
+
+const dashScopeAnswer = (method, path, query) => {
+	if (method === "GET" && path === "/api/v1/tasks") return { status: 200, body: dashScopeListAnswer(query) };
 	if (method === "POST" && path === "/api/v1/services/aigc/video-generation/video-synthesis") {
 		return { status: 200, body: { output: { task_status: "PENDING", task_id: "ds-pending" }, request_id: "fixture-dashscope-create" } };
 	}
@@ -1490,14 +1503,14 @@ const handleRequest = (req, res) => {
 	// bases at /pp/dashscope. Every request is kept in /__wire with its method and its X-DashScope-Async header (no
 	// other header, so no key reaches a report). A create answers a PENDING task. The task id of a query or a
 	// cancel picks the answer (see dashScopeTasks): only ds-pending can be cancelled, as at DashScope, which
-	// answers 400 UnsupportedOperation for a task in any other state.
+	// answers 400 UnsupportedOperation for a task in any other state. GET /api/v1/tasks is the task list.
 	if (path.startsWith("/pp/dashscope/")) {
 		const body = [];
 		req.on("data", (c) => body.push(c));
 		req.on("end", () => {
 			const url = new URL(req.url, "http://localhost");
 			wireCalls.push({ method: req.method, path, query: url.search, body: Buffer.concat(body).toString("utf8"), async: req.headers["x-dashscope-async"] || "" });
-			const answer = dashScopeAnswer(req.method, path.slice("/pp/dashscope".length));
+			const answer = dashScopeAnswer(req.method, path.slice("/pp/dashscope".length), url.search);
 			send(answer.status, {}, JSON.stringify(answer.body));
 		});
 		return undefined;
