@@ -3491,3 +3491,120 @@ func TestQueryStringIsCopiedInOnePlace(t *testing.T) {
 		t.Errorf("%d files walk the query string, the allow list names %d: drop the entries that no longer apply", found, len(allowed))
 	}
 }
+
+// applyPluginQueryChanges does what the transport does around a plugin that assigns the
+// given query names: copy the query for the plugin, assign, write the changes back.
+func applyPluginQueryChanges(ctx *fasthttp.RequestCtx, change map[string]string) {
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	args := ctx.Request.URI().QueryArgs()
+	req.RepeatedQuery = CopyQueryFirstValues(args, req.Query, false)
+	for name, value := range change {
+		req.SetQuery(name, value)
+	}
+	ApplyQueryChanges(args, req)
+}
+
+// ForwardedQueryString returns the caller's bytes while the parsed query is as it was
+// sent, and the parsed query once a transport plugin changed it (fork, TXE-7087).
+func TestForwardedQueryString(t *testing.T) {
+	tests := []struct {
+		name   string
+		sent   string
+		change map[string]string // HTTPRequest.Query entries a plugin set
+		want   string
+	}{
+		{name: "no query", sent: "", want: ""},
+		{name: "untouched query keeps order, repeats, encoding and a bare name", sent: "b=%7e1&a&b=2%20x&c=", want: "b=%7e1&a&b=2%20x&c="},
+		{name: "a value set to what it already holds is not a change", sent: "a=1%2B1&b=2", change: map[string]string{"a": "1+1"}, want: "a=1%2B1&b=2"},
+		{name: "a replaced value is forwarded in place", sent: "key=caller&x=1", change: map[string]string{"key": "plugin"}, want: "key=plugin&x=1"},
+		{name: "an added name is forwarded last", sent: "x=1", change: map[string]string{"added": "yes"}, want: "x=1&added=yes"},
+		{name: "a name added to an empty query is forwarded", sent: "", change: map[string]string{"added": "a b"}, want: "added=a+b"},
+		{name: "a replaced repeated name carries the plugin's one value", sent: "s=a&x=1&s=b", change: map[string]string{"s": "pinned"}, want: "x=1&s=pinned"},
+		{name: "a repeated name assigned its own first value carries that one value", sent: "s=a&x=1&s=b", change: map[string]string{"s": "a"}, want: "x=1&s=a"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			uri := "/openai_passthrough/v1/files"
+			if tc.sent != "" {
+				uri += "?" + tc.sent
+			}
+			ctx := queryTestCtx(uri)
+			// Read before the change as well: a caller that reads twice must not pin the answer.
+			if got := ForwardedQueryString(ctx); got != tc.sent {
+				t.Fatalf("before any change: got %q, want the query as sent %q", got, tc.sent)
+			}
+			applyPluginQueryChanges(ctx, tc.change)
+			if got := ForwardedQueryString(ctx); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestForwardedQueryStringIsReadInOnePlace fails when a transport source file reads a
+// query string as bytes itself, or builds a passthrough request in a new place, instead
+// of going through ForwardedQueryString (fork, TXE-7087). fasthttp's URI.QueryString is
+// the string the caller sent: it does not carry a transport plugin's change, so a route
+// that forwards it sends the vendor a parameter the plugin had pinned with the caller's
+// value. The files that build a BifrostPassthroughRequest are listed so that a new one is
+// added to handlers.TestForwardedQueryReachesTheVendorAsThePluginLeftIt with it.
+func TestForwardedQueryStringIsReadInOnePlace(t *testing.T) {
+	checks := []struct {
+		pattern *regexp.Regexp
+		allowed map[string]bool
+		message string
+	}{
+		{
+			pattern: regexp.MustCompile(`\.QueryString\(\)`),
+			allowed: map[string]bool{filepath.Join("lib", "query.go"): true},
+			message: "reads a query string as bytes; forward lib.ForwardedQueryString(ctx), read one name with Peek",
+		},
+		{
+			pattern: regexp.MustCompile(`BifrostPassthroughRequest\{`),
+			allowed: map[string]bool{
+				filepath.Join("integrations", "router.go"):    true,
+				filepath.Join("integrations", "anthropic.go"): true,
+			},
+			message: "builds a passthrough request; set RawQuery from lib.ForwardedQueryString(ctx), add the route to handlers.TestForwardedQueryReachesTheVendorAsThePluginLeftIt, then list the file here",
+		},
+	}
+	found := make([]int, len(checks))
+	root := ".."
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == "ui" || d.Name() == "node_modules" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, path)
+		src, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		for i, check := range checks {
+			if check.pattern.Match(src) {
+				found[i]++
+				if !check.allowed[rel] {
+					t.Errorf("%s %s", rel, check.message)
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, check := range checks {
+		if found[i] != len(check.allowed) {
+			t.Errorf("%d files match %s, the allow list names %d: drop the entries that no longer apply", found[i], check.pattern, len(check.allowed))
+		}
+	}
+}

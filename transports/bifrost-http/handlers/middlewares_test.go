@@ -14,6 +14,8 @@ import (
 	"maps"
 	"math"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"runtime"
 	"slices"
@@ -26,12 +28,14 @@ import (
 	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
 
 	"github.com/andybalholm/brotli"
+	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	"github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/capsohq/bifrost/framework/encrypt"
 	"github.com/capsohq/bifrost/framework/temptoken"
 	"github.com/capsohq/bifrost/framework/tracing"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/fasthttp/router"
 	"github.com/klauspost/compress/zstd"
@@ -5743,5 +5747,200 @@ func TestRunTransportPostHooksCapturedCarriesRepeatedQuery(t *testing.T) {
 	}
 	if got := captured.RepeatedQuery["status"]; !slices.Equal(got, []string{"completed", "failed"}) {
 		t.Fatalf("snapshot status=%q after the hook, want it unchanged", got)
+	}
+}
+
+// passthroughQueryAccount configures every provider a forwarding route may select.
+// Anthropic and xAI point at the test's recording upstream; the rest keep their defaults,
+// because passthroughQueryReceipt stops their requests before any upstream is dialled.
+type passthroughQueryAccount struct{ upstream string }
+
+func (passthroughQueryAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, schemas.Gemini, schemas.Azure, schemas.Bedrock, schemas.Runware, schemas.XAI}, nil
+}
+
+func (passthroughQueryAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "operator-" + string(p), Value: *schemas.NewSecretVar("operator-key-" + string(p)), Models: schemas.WhiteList{"*"}, Weight: 1}}, nil
+}
+
+func (a passthroughQueryAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	nc := schemas.DefaultNetworkConfig
+	if a.upstream != "" && (p == schemas.Anthropic || p == schemas.XAI) {
+		nc.BaseURL = a.upstream
+		nc.AllowPrivateNetwork = true
+	}
+	return &schemas.ProviderConfig{NetworkConfig: nc, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// passthroughQueryReceipt witnesses the request a forwarding route hands to core. With
+// refuse set it answers 403 there, so a provider whose upstream a test cannot replace
+// (Bedrock builds its host from the region, the ChatGPT route has a fixed one) is never
+// dialled.
+type passthroughQueryReceipt struct {
+	refuse   bool
+	requests []*schemas.BifrostPassthroughRequest
+}
+
+func (*passthroughQueryReceipt) GetName() string { return "passthrough-query-receipt" }
+func (*passthroughQueryReceipt) Cleanup() error  { return nil }
+func (*passthroughQueryReceipt) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+
+func (p *passthroughQueryReceipt) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	if req.PassthroughRequest != nil {
+		snapshot := *req.PassthroughRequest
+		p.requests = append(p.requests, &snapshot)
+	}
+	if !p.refuse {
+		return req, nil, nil
+	}
+	status := fasthttp.StatusForbidden
+	return req, &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "stopped by the test receipt"}}}, nil
+}
+
+func (*passthroughQueryReceipt) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+
+// passthroughQueryPin is the plugin of the TXE-7087 tests: it replaces the caller's value
+// of "pinned" and adds "added", the two changes a plugin that pins a vendor-bound
+// parameter makes.
+func passthroughQueryPin() *repeatedQueryPlugin {
+	return &repeatedQueryPlugin{
+		fakePreAuthPlugin: fakePreAuthPlugin{name: "pinner"},
+		mutate: func(req *schemas.HTTPRequest) {
+			req.SetQuery("pinned", "plugin")
+			req.SetQuery("added", "yes")
+		},
+	}
+}
+
+// TestPassthroughRoutesForwardThePluginsQuery is the class check for TXE-7087. A transport
+// plugin's change to HTTPRequest.Query is written to the request's parsed query, and every
+// passthrough route used to forward the caller's raw query string instead, so a parameter
+// a plugin pinned left for the vendor with the caller's value.
+//
+// It builds the routers the server builds (NewIntegrationHandler), takes every route each
+// of them reports through PassthroughRoutes, which is the list RegisterRoutes registers,
+// and sends one request through each behind the real transport interceptor. A passthrough
+// router added to NewIntegrationHandler is therefore covered without being named here, and
+// a route that forwards the caller's string fails with the caller's value. With a plugin
+// that changes nothing, the caller's bytes are forwarded as sent.
+func TestPassthroughRoutesForwardThePluginsQuery(t *testing.T) {
+	SetLogger(&mockLogger{})
+	const sent = "pinned=caller&kept=%7e1&kept=2%20x&flag"
+	cases := []struct {
+		name   string
+		plugin *repeatedQueryPlugin
+		want   string
+	}{
+		{name: "a plugin pins one parameter and adds another", plugin: passthroughQueryPin(), want: "pinned=plugin&kept=~1&kept=2+x&flag&added=yes"},
+		{name: "a plugin that changes nothing leaves the caller's bytes", plugin: &repeatedQueryPlugin{fakePreAuthPlugin: fakePreAuthPlugin{name: "reader"}}, want: sent},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			receipt := &passthroughQueryReceipt{refuse: true}
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: passthroughQueryAccount{}, LLMPlugins: []schemas.LLMPlugin{receipt}, Logger: bifrost.NewNoOpLogger()})
+			require.NoError(t, err)
+			defer client.Shutdown()
+
+			config := preAuthTestConfig(tc.plugin)
+			config.ClientConfig = &configstore.ClientConfig{}
+			handler := NewIntegrationHandler(client, config, nil, nil, nil, nil, nil)
+			r := router.New()
+			handler.RegisterRoutes(r, TransportInterceptorMiddleware(config))
+
+			routers, routes := 0, 0
+			for _, extension := range handler.extensions {
+				lister, ok := extension.(interface {
+					PassthroughRoutes() []integrations.PassthroughRoute
+				})
+				if !ok || len(lister.PassthroughRoutes()) == 0 {
+					continue
+				}
+				routers++
+				for _, route := range lister.PassthroughRoutes() {
+					routes++
+					path := strings.Replace(route.Path, "{path:*}", "v1/anything", 1)
+					t.Run(route.Method+" "+route.Path, func(t *testing.T) {
+						receipt.requests = nil
+						ctx := repeatedQueryTestCtx(route.Method, path+"?"+sent)
+						if route.Method != fasthttp.MethodGet && route.Method != fasthttp.MethodHead {
+							ctx.Request.Header.SetContentType("application/json")
+							ctx.Request.SetBodyString(`{}`)
+						}
+						r.Handler(ctx)
+						require.Len(t, receipt.requests, 1, "the route must reach core once; status %d, body %s", ctx.Response.StatusCode(), ctx.Response.Body())
+						require.Equal(t, tc.want, receipt.requests[0].RawQuery, "query forwarded to the vendor")
+					})
+				}
+			}
+			// The seven passthrough routers of NewIntegrationHandler; fewer means the walk
+			// above stopped seeing them, not that a route was removed on purpose.
+			require.GreaterOrEqual(t, routers, 7, "passthrough routers found through PassthroughRoutes")
+			require.Greater(t, routes, routers, "every router registers several methods or prefixes")
+		})
+	}
+}
+
+// TestForwardedQueryReachesTheVendorAsThePluginLeftIt follows a plugin's query change to a
+// recording upstream on each of the three places the transport forwards a query string
+// (fork, TXE-7087): a passthrough route, the native Anthropic Messages forward to a
+// provider with its own Messages endpoint, and the Claude Code OAuth forward, which
+// carries the query inside the upstream path.
+func TestForwardedQueryReachesTheVendorAsThePluginLeftIt(t *testing.T) {
+	SetLogger(&mockLogger{})
+	var reached atomic.Value
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached.Store(r.URL.Path + "?" + r.URL.RawQuery)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: passthroughQueryAccount{upstream: upstream.URL}, Logger: bifrost.NewNoOpLogger()})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	const sent = "pinned=caller&kept=a&kept=b"
+	const want = "pinned=plugin&kept=a&kept=b&added=yes"
+	routes := []struct {
+		name    string
+		uri     string
+		body    string
+		headers map[string]string
+		path    string
+	}{
+		{name: "passthrough route", uri: "/anthropic_passthrough/v1/messages", body: `{"model":"claude-test","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`, path: "/v1/messages"},
+		{name: "native Anthropic Messages forward", uri: "/anthropic/v1/messages", body: `{"model":"xai/grok-test","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`, headers: map[string]string{"anthropic-version": "2023-06-01"}, path: "/v1/messages"},
+		{name: "Claude Code OAuth forward", uri: "/anthropic/v1/messages", body: `{"model":"claude-opus-4-8","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`, headers: map[string]string{"User-Agent": "claude-cli/2.0.0 (external, cli)", "Authorization": "Bearer sk-ant-oat01-caller-token", "anthropic-version": "2023-06-01"}, path: "/v1/messages"},
+	}
+	for _, route := range routes {
+		for _, pinned := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s, plugin changes the query %t", route.name, pinned), func(t *testing.T) {
+				plugin := &repeatedQueryPlugin{fakePreAuthPlugin: fakePreAuthPlugin{name: "reader"}}
+				wantQuery := sent
+				if pinned {
+					plugin, wantQuery = passthroughQueryPin(), want
+				}
+				config := preAuthTestConfig(plugin)
+				config.ClientConfig = &configstore.ClientConfig{}
+				r := router.New()
+				NewIntegrationHandler(client, config, nil, nil, nil, nil, nil).RegisterRoutes(r, TransportInterceptorMiddleware(config))
+
+				reached.Store("")
+				ctx := repeatedQueryTestCtx(fasthttp.MethodPost, route.uri+"?"+sent)
+				ctx.Request.Header.SetContentType("application/json")
+				for name, value := range route.headers {
+					ctx.Request.Header.Set(name, value)
+				}
+				ctx.Request.SetBodyString(route.body)
+				r.Handler(ctx)
+
+				require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+				require.Equal(t, route.path+"?"+wantQuery, reached.Load(), "request line the vendor received")
+			})
+		}
 	}
 }

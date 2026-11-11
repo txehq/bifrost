@@ -726,22 +726,38 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...schemas.
 		}
 	}
 
-	if g.passthroughCfg != nil {
+	if routes := g.PassthroughRoutes(); len(routes) > 0 {
 		catchAll := lib.ChainMiddlewares(g.handlePassthrough, middlewares...)
-		if len(g.passthroughCfg.AllowedRoutes) > 0 {
-			// Restricted mode: only the explicitly allowed method+path pairs are forwarded.
-			for _, allowed := range g.passthroughCfg.AllowedRoutes {
-				r.Handle(strings.ToUpper(allowed.Method), allowed.Path, catchAll)
-			}
-		} else {
-			// Register for all methods that need forwarding
-			for _, method := range []string{fasthttp.MethodGet, fasthttp.MethodPost, fasthttp.MethodPut, fasthttp.MethodDelete, fasthttp.MethodPatch, fasthttp.MethodHead} {
-				for _, prefix := range g.passthroughCfg.StripPrefix {
-					r.Handle(method, prefix+"/{path:*}", catchAll)
-				}
-			}
+		for _, route := range routes {
+			r.Handle(route.Method, route.Path, catchAll)
 		}
 	}
+}
+
+// PassthroughRoutes lists the method and path pattern of every route this router forwards
+// to a provider unparsed; it is empty for a router with no passthrough. RegisterRoutes
+// registers exactly this list, and TestPassthroughRoutesForwardThePluginsQuery sends a
+// request through each entry, so a passthrough route added here is covered by that test
+// without being named in it (fork, TXE-7087).
+func (g *GenericRouter) PassthroughRoutes() []PassthroughRoute {
+	if g.passthroughCfg == nil {
+		return nil
+	}
+	var routes []PassthroughRoute
+	if len(g.passthroughCfg.AllowedRoutes) > 0 {
+		// Restricted mode: only the explicitly allowed method+path pairs are forwarded.
+		for _, allowed := range g.passthroughCfg.AllowedRoutes {
+			routes = append(routes, PassthroughRoute{Method: strings.ToUpper(allowed.Method), Path: allowed.Path})
+		}
+		return routes
+	}
+	// Every method that needs forwarding, under every prefix.
+	for _, method := range []string{fasthttp.MethodGet, fasthttp.MethodPost, fasthttp.MethodPut, fasthttp.MethodDelete, fasthttp.MethodPatch, fasthttp.MethodHead} {
+		for _, prefix := range g.passthroughCfg.StripPrefix {
+			routes = append(routes, PassthroughRoute{Method: method, Path: prefix + "/{path:*}"})
+		}
+	}
+	return routes
 }
 
 // createHandler creates a fasthttp handler for the given route configuration.
@@ -3806,13 +3822,17 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	if cfg.ModelFreePath != nil && cfg.ModelFreePath(string(ctx.Method()), path) {
 		bifrostCtx.SetValue(schemas.BifrostContextKeySkipModelCheck, true)
 	}
-	isStreaming := cfg.streams(string(ctx.Method()), path, bodyStream || passthroughQueryStreams(string(ctx.Method()), string(ctx.URI().QueryString())))
+	// The query the transport plugins left, not the caller's string: a parameter a plugin
+	// pinned or added must reach the vendor, and decide streaming, as it does on every
+	// other route (fork, TXE-7087).
+	rawQuery := lib.ForwardedQueryString(ctx)
+	isStreaming := cfg.streams(string(ctx.Method()), path, bodyStream || passthroughQueryStreams(string(ctx.Method()), rawQuery))
 
 	passthroughReq := &schemas.BifrostPassthroughRequest{
 		Method:      string(ctx.Method()),
 		Path:        path,
 		APIVersion:  apiVersion,
-		RawQuery:    string(ctx.URI().QueryString()),
+		RawQuery:    rawQuery,
 		UpstreamURL: cfg.UpstreamURL,
 		Body:        body,
 		SafeHeaders: safeHeaders,
