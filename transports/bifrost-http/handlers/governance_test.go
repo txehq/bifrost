@@ -6050,6 +6050,83 @@ func TestVirtualKeyMetadataRoundTrip(t *testing.T) {
 	}
 }
 
+// TestVirtualKeyAllowlistsRoundTrip drives the handlers end to end for the storage and Pub/Sub
+// topic allowlists (TXE-7088): create stores them normalized, an update that omits a list leaves
+// it alone, a list replaces it as a whole, [] clears it, and an invalid entry is refused with a
+// 400 that names it on both create and update, leaving the stored lists as they were.
+func TestVirtualKeyAllowlistsRoundTrip(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+	ctx := context.Background()
+
+	createCtx := newTestRequestCtx(`{"name":"vk-allowlists","allowed_storage_prefixes":["GS://bucket/tenant-a/","gs://bucket/tenant-a","s3://tenant-a-bucket"],"allowed_pubsub_topics":["projects/p/topics/tenant-a"]}`)
+	handler.createVirtualKey(createCtx)
+	require.Equal(t, fasthttp.StatusOK, createCtx.Response.StatusCode(), "create resp=%s", createCtx.Response.Body())
+	var created struct {
+		VirtualKey struct {
+			ID                     string   `json:"id"`
+			AllowedStoragePrefixes []string `json:"allowed_storage_prefixes"`
+			AllowedPubSubTopics    []string `json:"allowed_pubsub_topics"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(createCtx.Response.Body(), &created))
+	assert.Equal(t, []string{"gs://bucket/tenant-a", "s3://tenant-a-bucket"}, created.VirtualKey.AllowedStoragePrefixes, "create stores the prefixes normalized, each once")
+	assert.Equal(t, []string{"projects/p/topics/tenant-a"}, created.VirtualKey.AllowedPubSubTopics)
+
+	putVK := func(t *testing.T, body string, wantStatus int) []byte {
+		t.Helper()
+		putCtx := newTestRequestCtx(body)
+		putCtx.SetUserValue("vk_id", created.VirtualKey.ID)
+		handler.updateVirtualKey(putCtx)
+		require.Equal(t, wantStatus, putCtx.Response.StatusCode(), "PUT body=%s resp=%s", body, putCtx.Response.Body())
+		return putCtx.Response.Body()
+	}
+	stored := func(t *testing.T) ([]string, []string) {
+		t.Helper()
+		vk, err := store.GetVirtualKey(ctx, created.VirtualKey.ID)
+		require.NoError(t, err)
+		return vk.AllowedStoragePrefixes, vk.AllowedPubSubTopics
+	}
+
+	putVK(t, `{"description":"touched"}`, fasthttp.StatusOK)
+	prefixes, topics := stored(t)
+	assert.Equal(t, []string{"gs://bucket/tenant-a", "s3://tenant-a-bucket"}, prefixes, "an update that omits a list must not change it")
+	assert.Equal(t, []string{"projects/p/topics/tenant-a"}, topics)
+
+	putVK(t, `{"allowed_storage_prefixes":["s3://tenant-a-bucket/in/"]}`, fasthttp.StatusOK)
+	prefixes, topics = stored(t)
+	assert.Equal(t, []string{"s3://tenant-a-bucket/in"}, prefixes, "a list replaces as a whole")
+	assert.Equal(t, []string{"projects/p/topics/tenant-a"}, topics, "the other list is left alone")
+
+	for body, want := range map[string]string{
+		`{"allowed_storage_prefixes":["https://storage.googleapis.com/bucket/x"]}`: "must start with gs:// or s3://",
+		`{"allowed_storage_prefixes":["gs://bucket/*"]}`:                           "not a pattern",
+		`{"allowed_storage_prefixes":["gs://bucket/a/../b"]}`:                      "'.' or '..'",
+		`{"allowed_pubsub_topics":["tenant-a"]}`:                                   "invalid Pub/Sub topic",
+	} {
+		resp := putVK(t, body, fasthttp.StatusBadRequest)
+		assert.Contains(t, string(resp), want, body)
+	}
+	prefixes, topics = stored(t)
+	assert.Equal(t, []string{"s3://tenant-a-bucket/in"}, prefixes, "a refused update must not change the lists")
+	assert.Equal(t, []string{"projects/p/topics/tenant-a"}, topics)
+
+	putVK(t, `{"allowed_storage_prefixes":[],"allowed_pubsub_topics":[]}`, fasthttp.StatusOK)
+	prefixes, topics = stored(t)
+	assert.Empty(t, prefixes, "[] clears the list: the key is no longer restricted")
+	assert.Empty(t, topics)
+
+	for _, bad := range []string{
+		`{"name":"vk-bad-prefix","allowed_storage_prefixes":["bucket/tenant-a"]}`,
+		`{"name":"vk-bad-topic","allowed_pubsub_topics":["projects/p/topics/"]}`,
+	} {
+		badCtx := newTestRequestCtx(bad)
+		handler.createVirtualKey(badCtx)
+		assert.Equal(t, fasthttp.StatusBadRequest, badCtx.Response.StatusCode(), "create body=%s resp=%s", bad, badCtx.Response.Body())
+	}
+}
+
 // TestGetVirtualKeysMetadataFilter pins the list contract: metadata_<key>=<value> query params
 // route to the filtered store path and AND together, and an invalid key is a 400 rather than an
 // ignored filter that would return every key.

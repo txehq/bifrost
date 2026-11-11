@@ -521,6 +521,18 @@ VirtualKey:
       type: string
     description:
       type: string
+    allowed_storage_prefixes:
+      type: array
+      description: >-
+        The object storage a request made with this key may name, as buckets or folders (gs://<bucket>[/<folder>] or s3://<bucket>[/<folder>]). Omitted when the key is not restricted.
+      items:
+        type: string
+    allowed_pubsub_topics:
+      type: array
+      description: >-
+        The Pub/Sub topics a request made with this key may name, as full topic names (projects/<project>/topics/<topic>). Omitted when the key is not restricted.
+      items:
+        type: string
     metadata:
       type: object
       description: >-
@@ -637,6 +649,22 @@ CreateVirtualKeyRequest:
       type: string
     description:
       type: string
+    allowed_storage_prefixes:
+      type: array
+      description: >-
+        Limits the object storage a request made with this key may name. Each entry is a bucket or a folder, gs://<bucket>[/<folder>] or s3://<bucket>[/<folder>], with no wildcard and no '.' or '..' segment; at most 64 entries. When set, every storage location a request names, read or written, in any form, must lie under one of the entries, or the request is refused with 403. Omit for no restriction.
+      maxItems: 64
+      items:
+        type: string
+        maxLength: 1024
+    allowed_pubsub_topics:
+      type: array
+      description: >-
+        Limits the Pub/Sub topics a request made with this key may name. Each entry is a full topic name, projects/<project>/topics/<topic>; at most 64 entries. Omit for no restriction.
+      maxItems: 64
+      items:
+        type: string
+        maxLength: 1024
     metadata:
       type: object
       description: >-
@@ -761,6 +789,22 @@ UpdateVirtualKeyRequest:
       type: string
     description:
       type: string
+    allowed_storage_prefixes:
+      type: [array, 'null']
+      description: >-
+        Replaces the key's allowed storage as a whole. Omit (or send null) to leave it unchanged; send [] to clear it, after which the key is not restricted. Each entry is a bucket or a folder, gs://<bucket>[/<folder>] or s3://<bucket>[/<folder>]; at most 64 entries.
+      maxItems: 64
+      items:
+        type: string
+        maxLength: 1024
+    allowed_pubsub_topics:
+      type: [array, 'null']
+      description: >-
+        Replaces the key's allowed Pub/Sub topics as a whole. Omit (or send null) to leave it unchanged; send [] to clear it. Each entry is a full topic name, projects/<project>/topics/<topic>; at most 64 entries.
+      maxItems: 64
+      items:
+        type: string
+        maxLength: 1024
     metadata:
       type: [object, 'null']
       description: >-

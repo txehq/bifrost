@@ -125,6 +125,8 @@ export interface VirtualKey {
 	// Custom key/value attribution (cost center, owner, ...). Snapshotted onto each log row, so logs
 	// can be filtered by it. Absent when the key has none.
 	metadata?: Record<string, string>;
+	allowed_storage_prefixes?: string[]; // Buckets or folders (gs:// or s3://) the key may name; absent when not restricted
+	allowed_pubsub_topics?: string[]; // Full Pub/Sub topic names the key may name; absent when not restricted
 	created_at: string;
 	updated_at: string;
 	// The third owner a key can have, alongside a team and a customer. Business units are an
@@ -261,6 +263,8 @@ export interface CreateVirtualKeyRequest {
 	expires_at?: string; // RFC3339 UTC timestamp; omit for a key that never expires
 	disable_content_logging?: boolean; // Omit to inherit the client setting; true forces content off, false forces it on
 	metadata?: Record<string, string>; // Custom key/value attribution; omit for none
+	allowed_storage_prefixes?: string[]; // Limit the storage this key may name; omit for no restriction
+	allowed_pubsub_topics?: string[]; // Limit the Pub/Sub topics this key may name; omit for no restriction
 	delete_after_expire?: boolean; // Omit to inherit client.delete_expired_virtual_keys; true/false override it; requires expires_at
 }
 
@@ -283,6 +287,8 @@ export interface UpdateVirtualKeyRequest {
 	expires_at?: string; // RFC3339 UTC timestamp sets a new expiry, "" clears it, omit to leave unchanged
 	disable_content_logging?: boolean | null; // null clears back to inherit, true/false set it, omit to leave unchanged
 	metadata?: Record<string, string>; // Replaces the metadata as a whole: {} clears it, omit to leave unchanged
+	allowed_storage_prefixes?: string[]; // Replaces the list as a whole: [] clears it, omit to leave unchanged
+	allowed_pubsub_topics?: string[]; // Replaces the list as a whole: [] clears it, omit to leave unchanged
 	delete_after_expire?: boolean | null; // null clears back to inherit, true/false set it, omit to leave unchanged; a value requires an expiry
 }
 

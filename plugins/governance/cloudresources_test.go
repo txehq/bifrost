@@ -178,6 +178,10 @@ func TestVirtualKeyStorageAllowlistCoversEveryStorageConfig(t *testing.T) {
 			"one inside, one out":   {&schemas.FileStorageConfig{GCS: &schemas.GCSStorageConfig{Bucket: "shared-bucket", Prefix: "tenant-a"}, S3: &schemas.S3StorageConfig{Bucket: "other-bucket"}}, false},
 			"a prefix that climbs":  {&schemas.FileStorageConfig{S3: &schemas.S3StorageConfig{Bucket: "shared-bucket", Prefix: "tenant-a/../tenant-b"}}, false},
 			"no storage config set": {nil, true},
+			// A prefix with no trailing slash is a folder for an upload or a lookup, and a name
+			// prefix for a list, where "tenant-a" also lists "tenant-ab/".
+			"a folder named without its slash": {&schemas.FileStorageConfig{S3: &schemas.S3StorageConfig{Bucket: "shared-bucket", Prefix: "tenant-a"}}, !strings.Contains(field.Name, "List")},
+			"a name prefix past the folder":    {&schemas.FileStorageConfig{S3: &schemas.S3StorageConfig{Bucket: "shared-bucket", Prefix: "tenant-a/in"}}, true},
 		} {
 			req := &schemas.BifrostRequest{}
 			slot := reflect.ValueOf(req).Elem().Field(i)
@@ -194,16 +198,37 @@ func TestVirtualKeyStorageAllowlistCoversEveryStorageConfig(t *testing.T) {
 				require.NotNil(t, shortCircuit, "%s, %s: the bucket and folder are outside the key's storage", field.Name, name)
 			}
 		}
-		// Bedrock also takes the bucket and folder as extra params.
-		if extra := field.Type.Elem(); func() bool { _, ok := extra.FieldByName("ExtraParams"); return ok }() {
-			req := &schemas.BifrostRequest{}
-			slot := reflect.ValueOf(req).Elem().Field(i)
-			slot.Set(reflect.New(field.Type.Elem()))
-			slot.Elem().FieldByName("Provider").Set(reflect.ValueOf(schemas.Bedrock))
-			slot.Elem().FieldByName("ExtraParams").Set(reflect.ValueOf(map[string]interface{}{"s3_bucket": "other-bucket", "s3_prefix": "in"}))
-			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), req)
-			require.NoError(t, err)
-			require.NotNil(t, shortCircuit, "%s: a bucket in extra params is outside the key's storage", field.Name)
+		// Bedrock also takes the bucket and folder as extra params, which stand in for the
+		// storage_config or override it piece by piece. Every bucket is paired with every prefix.
+		if _, ok := field.Type.Elem().FieldByName("ExtraParams"); ok {
+			inside := &schemas.FileStorageConfig{S3: &schemas.S3StorageConfig{Bucket: "shared-bucket", Prefix: "tenant-a/in"}}
+			for name, tc := range map[string]struct {
+				config  *schemas.FileStorageConfig
+				extra   map[string]interface{}
+				allowed bool
+			}{
+				"a bucket in extra params":                       {nil, map[string]interface{}{"s3_bucket": "other-bucket", "s3_prefix": "in"}, false},
+				"an inside bucket and prefix in extra params":    {nil, map[string]interface{}{"s3_bucket": "shared-bucket", "s3_prefix": "tenant-a/in"}, true},
+				"a prefix in extra params over an inside config": {inside, map[string]interface{}{"s3_prefix": "tenant-b/in"}, false},
+				"a bucket in extra params over an inside config": {inside, map[string]interface{}{"s3_bucket": "other-bucket"}, false},
+				"extra params that say the same as the config":   {inside, map[string]interface{}{"s3_bucket": "shared-bucket", "s3_prefix": "tenant-a/in"}, true},
+			} {
+				req := &schemas.BifrostRequest{}
+				slot := reflect.ValueOf(req).Elem().Field(i)
+				slot.Set(reflect.New(field.Type.Elem()))
+				slot.Elem().FieldByName("Provider").Set(reflect.ValueOf(schemas.Bedrock))
+				if tc.config != nil {
+					slot.Elem().FieldByName("StorageConfig").Set(reflect.ValueOf(tc.config))
+				}
+				slot.Elem().FieldByName("ExtraParams").Set(reflect.ValueOf(tc.extra))
+				_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), req)
+				require.NoError(t, err)
+				if tc.allowed {
+					assert.Nil(t, shortCircuit, "%s, %s", field.Name, name)
+				} else {
+					require.NotNil(t, shortCircuit, "%s, %s: outside the key's storage", field.Name, name)
+				}
+			}
 		}
 	}
 	require.GreaterOrEqual(t, found, 5, "the file operations with a storage_config were not found by reflection")

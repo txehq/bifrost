@@ -87,23 +87,26 @@ func isStorageURI(id string) bool {
 // fileStorageConfigType is the storage_config of the file operations.
 var fileStorageConfigType = reflect.TypeOf((*schemas.FileStorageConfig)(nil))
 
+// storageConfigLocation is the storage a file operation runs in. A list reads every object
+// whose name starts with its prefix, as a string: the prefix "tenant-a" also lists "tenant-ab/".
+// So a list's location is raw, compared as a string that must begin inside an allowed folder,
+// while an upload's or a lookup's is a folder.
+type storageConfigLocation struct {
+	location string
+	raw      bool // a list's name prefix, not a folder
+}
+
 // storageConfigLocations returns the storage a file operation runs in: the bucket and folder of
-// its storage_config, or of Bedrock's s3_bucket and s3_prefix extra params, as a location. It
-// reads every request type that carries a storage_config (upload, list, retrieve, content,
-// delete), found by its field so a file operation added later is read too.
-func storageConfigLocations(req *schemas.BifrostRequest) []string {
-	var locations []string
-	add := func(scheme, bucket, prefix string) {
-		bucket = strings.TrimSpace(bucket)
-		if hasPrefixFold(bucket, scheme) {
-			bucket = bucket[len(scheme):]
-		}
-		name, inBucket, _ := strings.Cut(bucket, "/")
-		if name == "" {
-			return
-		}
-		locations = append(locations, strings.TrimRight(scheme+name+"/"+strings.Trim(inBucket+prefix, "/"), "/"))
-	}
+// its storage_config and of Bedrock's s3_bucket and s3_prefix extra params. It reads every
+// request type that carries a storage_config (upload, list, retrieve, content, delete), found
+// by its field so a file operation added later is read too.
+//
+// Bedrock lets the extra params stand in for the storage_config, or override it, piece by
+// piece, differently per operation. Rather than repeat each operation's rule, every bucket the
+// request names is paired with every prefix it names: a pair the provider does not use costs a
+// compare, one this check left out would run unchecked.
+func storageConfigLocations(req *schemas.BifrostRequest) []storageConfigLocation {
+	var locations []storageConfigLocation
 	root := reflect.ValueOf(req).Elem()
 	for i := 0; i < root.NumField(); i++ {
 		field := root.Field(i)
@@ -115,30 +118,80 @@ func storageConfigLocations(req *schemas.BifrostRequest) []string {
 		if !config.IsValid() || config.Type() != fileStorageConfigType {
 			continue
 		}
+		raw := strings.Contains(root.Type().Field(i).Name, "List")
+		add := func(scheme string, buckets, prefixes []string) {
+			for _, bucket := range buckets {
+				bucket = strings.TrimSpace(bucket)
+				if hasPrefixFold(bucket, scheme) {
+					bucket = bucket[len(scheme):]
+				}
+				name, inBucket, _ := strings.Cut(bucket, "/")
+				if name == "" {
+					continue
+				}
+				for _, prefix := range prefixes {
+					object := strings.TrimLeft(inBucket+prefix, "/")
+					if !raw {
+						object = strings.TrimRight(object, "/")
+					}
+					location := scheme + name
+					if object != "" || raw {
+						location += "/" + object
+					}
+					locations = append(locations, storageConfigLocation{location: location, raw: raw})
+				}
+			}
+		}
+		var s3Buckets []string
+		s3Prefixes := []string{""}
 		if storage, _ := config.Interface().(*schemas.FileStorageConfig); storage != nil {
 			if storage.GCS != nil {
-				add("gs://", storage.GCS.Bucket, storage.GCS.Prefix)
+				add("gs://", []string{storage.GCS.Bucket}, []string{storage.GCS.Prefix})
 			}
 			if storage.S3 != nil {
-				add("s3://", storage.S3.Bucket, storage.S3.Prefix)
+				s3Buckets = append(s3Buckets, storage.S3.Bucket)
+				s3Prefixes = append(s3Prefixes, storage.S3.Prefix)
 			}
 		}
 		if extra := request.FieldByName("ExtraParams"); extra.IsValid() && extra.Kind() == reflect.Map {
 			if params, ok := extra.Interface().(map[string]interface{}); ok {
-				bucket, _ := params["s3_bucket"].(string)
-				prefix, _ := params["s3_prefix"].(string)
-				add("s3://", bucket, prefix)
+				if bucket, ok := params["s3_bucket"].(string); ok {
+					s3Buckets = append(s3Buckets, bucket)
+				}
+				if prefix, ok := params["s3_prefix"].(string); ok {
+					s3Prefixes = append(s3Prefixes, prefix)
+				}
 			}
 		}
+		// The empty prefix stands for "no prefix given" and is dropped when one was.
+		if len(s3Prefixes) > 1 {
+			s3Prefixes = s3Prefixes[1:]
+		}
+		add("s3://", s3Buckets, s3Prefixes)
 	}
 	return locations
 }
 
-// requestStorageLocations returns every storage location a request names, as gs:// or s3://
-// URIs: the stored objects among its references (requestFileRefs and the objects its own shape
-// addresses, in whatever URL form they were written) and the bucket and folder of a file
-// operation. unverifiable is true when a reference could not be read or resolved, in which case
-// the list is not the whole answer.
+// storageConfigAllowed reports whether a file operation's storage lies inside the prefixes. A
+// folder is a location like any other. A list's raw name prefix must begin inside an allowed
+// folder: "s3://b/tenant-a/" and "s3://b/tenant-a/in" are inside "s3://b/tenant-a",
+// "s3://b/tenant-a" is not, since it also lists "tenant-ab/".
+func storageConfigAllowed(prefixes []string, config storageConfigLocation) bool {
+	if !config.raw {
+		return storageLocationAllowed(prefixes, config.location)
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(config.location, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// requestStorageLocations returns every storage location a request names among its references,
+// as gs:// or s3:// URIs: the stored objects of requestFileRefs and the objects its own shape
+// addresses, in whatever URL form they were written. unverifiable is true when a reference
+// could not be read or resolved, in which case the list is not the whole answer.
 func requestStorageLocations(req *schemas.BifrostRequest) (locations []string, unverifiable bool) {
 	for _, ref := range providerObjectReferences(req) {
 		if ref.unreadable {
@@ -152,12 +205,6 @@ func requestStorageLocations(req *schemas.BifrostRequest) (locations []string, u
 				locations = append(locations, id)
 			}
 		}
-	}
-	for _, location := range storageConfigLocations(req) {
-		if unresolvableStorageURI(location) {
-			unverifiable = true
-		}
-		locations = append(locations, location)
 	}
 	return locations, unverifiable
 }
@@ -279,6 +326,14 @@ func (p *GovernancePlugin) enforceCloudResourceAllowlists(ctx *schemas.BifrostCo
 		for _, location := range locations {
 			if !storageLocationAllowed(prefixes, location) {
 				return refuse(403, fmt.Sprintf("storage location '%s' is outside the storage this virtual key may use", location))
+			}
+		}
+		for _, config := range storageConfigLocations(req) {
+			if unresolvableStorageURI(config.location) {
+				return refuse(400, "this virtual key is limited to its allowed storage, and the bucket and prefix this request names cannot be verified against it: they hold a wildcard, a '.' or '..' segment, or an S3 access point")
+			}
+			if !storageConfigAllowed(prefixes, config) {
+				return refuse(403, fmt.Sprintf("storage location '%s' is outside the storage this virtual key may use", config.location))
 			}
 		}
 	}
