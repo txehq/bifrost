@@ -51,6 +51,10 @@ MiniMax has two video APIs, and Bifrost picks one by model (fork, TXE-6428):
 
 `callback_url` is forwarded unchanged on both. `seed`, `audio`, `client_reference_id`, `expires_after_seconds` and `output_storage_uri` cannot reach MiniMax and are refused with 400 `caller_unsupported_parameter`; an out-of-range value is refused, never clamped. Extra fields are merged into the body, so MiniMax options such as `extra.prompt_expansion_mode` (H3-Max) and `prompt_optimizer` (v1) arrive unchanged.
 
+The OpenAI SDK route `/openai/v1/videos` reaches the same converter. Send the unified fields and `callback_url` at the top level. Nest MiniMax's own fields under `extra_params` with the `x-bf-passthrough-extra-params: true` header, for example `"extra_params": {"prompt_optimizer": false}`. A multipart request carries `input_reference` (the first frame), `seconds` and `size`.
+
+`GET /v1/videos` forwards MiniMax's own list query (`page_num`, `page_size`, `filter.*`) as sent; `limit` sets `page_size`, and `has_more` follows MiniMax's `total`.
+
 `POST /v1/videos/{id}/cancel` queries the v2 task first and sends `DELETE` only while it is `queued`, because MiniMax's `DELETE` deletes a finished task. Any other state returns 400 `provider_cancel_unsupported` without a `DELETE`.
 
 ## Text completions
