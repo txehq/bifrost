@@ -382,6 +382,24 @@ func BenchmarkCheckExtraParamPriceFields(b *testing.B) {
 		{"image_object_extra_not_a_price_field", Gemini, imageReq(&ImageGenerationParameters{ExtraParams: map[string]interface{}{"parameters": map[string]interface{}{"addWatermark": false}}})},
 		{"image_nested_refused", Gemini, imageReq(&ImageGenerationParameters{ExtraParams: map[string]interface{}{"parameters": map[string]interface{}{"sampleCount": 4}}})},
 	}
+	// TXE-7076: Gemini's taskType is its name for task_type on embeddings. The row adds one
+	// entry to the vendor name table every provider's extra params are scanned against.
+	embeddingReq := func(params *EmbeddingParameters) *BifrostRequest {
+		text := "hi"
+		return &BifrostRequest{RequestType: EmbeddingRequest, EmbeddingRequest: &BifrostEmbeddingRequest{
+			Input: EmbeddingInput{{Content: EmbeddingContent{{Type: EmbeddingContentPartTypeText, Text: &text}}}}, Params: params}}
+	}
+	nestedCases = append(nestedCases, []struct {
+		name     string
+		provider ModelProvider
+		req      *BifrostRequest
+	}{
+		{"embedding_no_extra_params", Gemini, embeddingReq(&EmbeddingParameters{Dimensions: Ptr(256), TaskType: Ptr("RETRIEVAL_DOCUMENT")})},
+		{"embedding_vendor_extra_param", Gemini, embeddingReq(&EmbeddingParameters{ExtraParams: map[string]interface{}{"title": "Industrial catalogue"}})},
+		{"embedding_vendor_name_beside_field", Gemini, embeddingReq(&EmbeddingParameters{TaskType: Ptr("RETRIEVAL_DOCUMENT"), ExtraParams: map[string]interface{}{"taskType": "RETRIEVAL_DOCUMENT"}})},
+		{"embedding_vendor_name_alone", Gemini, embeddingReq(&EmbeddingParameters{ExtraParams: map[string]interface{}{"taskType": "RETRIEVAL_DOCUMENT"}})},
+		{"embedding_vendor_name_other_provider", OpenAI, embeddingReq(&EmbeddingParameters{ExtraParams: map[string]interface{}{"taskType": "RETRIEVAL_DOCUMENT"}})},
+	}...)
 	for _, tc := range nestedCases {
 		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
