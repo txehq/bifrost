@@ -11456,6 +11456,15 @@ func guardModel(provider schemas.ModelProvider) string {
 	return guardAllowedModel
 }
 
+// guardSpeechVoice is the voice a speech request names. Google Cloud Text-to-Speech takes
+// only a voice named <language>-<REGION>-<family>-<variant> whose family is the model.
+func guardSpeechVoice(provider schemas.ModelProvider, model string) string {
+	if provider == schemas.GoogleCloudTTS {
+		return "en-GB-" + model + "-A"
+	}
+	return "guard-voice"
+}
+
 // guardOperation sends one request type, with the planted extra params, through a
 // provider. It returns false when the provider does not serve the operation.
 type guardOperation struct {
@@ -11516,8 +11525,10 @@ func guardOperationsWith(guardExtraParams func() map[string]interface{}) []guard
 	speech := func(p schemas.ModelProvider, model string) *schemas.BifrostSpeechRequest {
 		return &schemas.BifrostSpeechRequest{
 			Provider: p, Model: model,
-			Input:  &schemas.SpeechInput{Input: text},
-			Params: &schemas.SpeechParameters{ExtraParams: guardExtraParams()},
+			Input: &schemas.SpeechInput{Input: text},
+			// A voice the provider's own checks take: Google Cloud Text-to-Speech refuses a
+			// request with no voice of the model's family before anything is sent.
+			Params: &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{Voice: schemas.Ptr(guardSpeechVoice(p, model))}, ExtraParams: guardExtraParams()},
 		}
 	}
 	transcription := func(p schemas.ModelProvider, model string) *schemas.BifrostTranscriptionRequest {
