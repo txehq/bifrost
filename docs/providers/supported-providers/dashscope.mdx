@@ -113,6 +113,7 @@ The request shape depends on the model family, which Bifrost reads from the mode
 | `seed` | `parameters.seed` | `parameters.seed` | `parameters.seed` |
 
 - "400" is `error_type` `caller_unsupported_parameter` with the field in `error.param`, returned before any call to DashScope. Bifrost never drops a field, replaces it or moves a value into range.
+- With `x-bf-passthrough-extra-params: true`, an extra param named `input` or `parameters` is merged into the object of that name in DashScope's body. A key Bifrost writes there itself (`input.prompt`, `negative_prompt`, `img_url`, `media`; `parameters.size`, `resolution`, `ratio`, `duration`, `audio`, `seed`, `watermark`, `prompt_extend`) is refused with 400 `caller_unsupported_parameter` naming it, for example `parameters.size`: send the request's own field. Any other nested key travels to DashScope.
 - `resolution` is sent in upper case (`720p` becomes `720P`). `seconds` must be a whole number; `5.5` is a 400.
 - `size` for Wan 2.6 and earlier must be one of DashScope's documented sizes: `832x480`, `480x832`, `624x624`, `1280x720`, `720x1280`, `960x960`, `1088x832`, `832x1088`, `1920x1080`, `1080x1920`, `1440x1440`, `1632x1248`, `1248x1632`. Which of them one model offers is checked by DashScope.
 - `output_format`, `video_uri` and the four task control fields (`callback_url`, `client_reference_id`, `expires_after_seconds`, `output_storage_uri`) are a 400: DashScope has no parameter for them.

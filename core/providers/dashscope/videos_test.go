@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -277,6 +278,10 @@ func TestDashScopeVideoCreateRefusesUndeliverableFields(t *testing.T) {
 		{"wan3.0 size", "wan3.0-video", schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{Size: "1280x720"}, schemas.ErrorTypeCallerUnsupportedParameter, "size"},
 		{"fractional seconds are not rounded", "wan3.0-video", schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("5.5")}, schemas.ErrorTypeCallerUnsupportedParameter, "seconds"},
 		{"a resolution that is not a string", "wan3.0-video", schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"resolution": 1024}}, schemas.ErrorTypeCallerUnsupportedParameter, "resolution"},
+		{"a size nested under a parameters extra", "wan2.6-t2v", schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"parameters": map[string]any{"size": "1920*1080"}}}, schemas.ErrorTypeCallerUnsupportedParameter, "parameters.size"},
+		{"a resolution nested under a parameters extra", "wan3.0-video", schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"parameters": map[string]any{"shot_type": "multi", "resolution": "1080P"}}}, schemas.ErrorTypeCallerUnsupportedParameter, "parameters.resolution"},
+		{"a duration nested under a parameters extra", "wan2.7-t2v", schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"parameters": map[string]any{"duration": 15}}}, schemas.ErrorTypeCallerUnsupportedParameter, "parameters.duration"},
+		{"media nested under an input extra", "wan3.0-video", schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"input": map[string]any{"media": []any{map[string]any{"type": "reference_video", "url": "https://cdn.example.com/v.mp4"}}}}}, schemas.ErrorTypeCallerUnsupportedParameter, "input.media"},
 		{"video_uri", "wan3.0-video", schemas.VideoGenerationInput{Prompt: "p", VideoURI: schemas.Ptr("https://cdn.example.com/v.mp4")}, nil, schemas.ErrorTypeCallerUnsupportedParameter, "video_uri"},
 		{"a model whose request fields are not known", "happyhorse-1.0", schemas.VideoGenerationInput{Prompt: "p"}, nil, schemas.ErrorTypeCallerModelUnknown, ""},
 		{"a watermark that is not a boolean", "wan3.0-video", schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"watermark": "yes"}}, schemas.ErrorTypeCallerInvalidRequest, ""},
@@ -308,6 +313,47 @@ func TestDashScopeVideoCreateRefusesUndeliverableFields(t *testing.T) {
 				t.Errorf("a refused request made %d upstream calls", n)
 			}
 		})
+	}
+}
+
+// TestDashScopeOwnedBodyFieldsCoverTheTypedBody keeps the nested-extra refusal list equal to
+// the body the converter writes: a field added to the input or parameters type is refused
+// under an extra param of that name without anyone remembering to list it. A nested key the
+// converter does not write still travels.
+func TestDashScopeOwnedBodyFieldsCoverTheTypedBody(t *testing.T) {
+	jsonNames := func(v any) []string {
+		var names []string
+		typ := reflect.TypeOf(v)
+		for i := 0; i < typ.NumField(); i++ {
+			name, _, _ := strings.Cut(typ.Field(i).Tag.Get("json"), ",")
+			if name != "" && name != "-" {
+				names = append(names, name)
+			}
+		}
+		slices.Sort(names)
+		return names
+	}
+	typed := map[string][]string{"input": jsonNames(DashScopeVideoInput{}), "parameters": jsonNames(DashScopeVideoParameters{})}
+	if len(dashScopeOwnedBodyFields) != len(typed) {
+		t.Fatalf("dashScopeOwnedBodyFields lists %d objects, want %d", len(dashScopeOwnedBodyFields), len(typed))
+	}
+	for _, object := range dashScopeOwnedBodyFields {
+		listed := slices.Clone(object.fields)
+		slices.Sort(listed)
+		if !slices.Equal(listed, typed[object.name]) {
+			t.Errorf("%s: refused %v, the body type has %v", object.name, listed, typed[object.name])
+		}
+	}
+
+	req, err := ToDashScopeVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Provider: schemas.DashScope, Model: "wan3.0-video", Input: &schemas.VideoGenerationInput{Prompt: "p"},
+		Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"parameters": map[string]any{"shot_type": "multi"}}},
+	})
+	if err != nil {
+		t.Fatalf("a nested key the converter does not write was refused: %v", err)
+	}
+	if nested, _ := req.ExtraParams["parameters"].(map[string]any); nested["shot_type"] != "multi" {
+		t.Errorf("extra params = %v, want parameters.shot_type kept for the merger", req.ExtraParams)
 	}
 }
 

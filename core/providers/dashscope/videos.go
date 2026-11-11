@@ -120,6 +120,17 @@ var wanLegacySizes = []string{
 
 // unsupportedVideoParameter is the converter's refusal of a field the model's family cannot
 // take: 400 caller_unsupported_parameter with the field in error.param, no upstream call.
+// dashScopeOwnedBodyFields are the keys of the body's input and parameters objects that the
+// converter writes from the request's own fields: every field of DashScopeVideoInput and
+// DashScopeVideoParameters. TestDashScopeOwnedBodyFieldsCoverTheTypedBody keeps the two equal.
+var dashScopeOwnedBodyFields = []struct {
+	name   string
+	fields []string
+}{
+	{"input", []string{"prompt", "negative_prompt", "img_url", "media"}},
+	{"parameters", []string{"size", "resolution", "ratio", "duration", "audio", "seed", "watermark", "prompt_extend"}},
+}
+
 func unsupportedVideoParameter(param, format string, args ...any) error {
 	return providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError(param, fmt.Sprintf(format, args...)))
 }
@@ -312,6 +323,23 @@ func ToDashScopeVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGeneratio
 	if *vendorParams != (DashScopeVideoParameters{}) {
 		req.Parameters = vendorParams
 	}
+	// An extra param named input or parameters is merged into the body's object of that name.
+	// A key this converter writes there from the request's own fields is refused: nested, it
+	// is out of sight of core's price-field check, which reads the top-level names, and the
+	// vendor would be sent (and bill for) a size, a tier or a duration the request does not show.
+	for _, object := range dashScopeOwnedBodyFields {
+		nested, ok := extras[object.name].(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, field := range object.fields {
+			if _, ok := nested[field]; ok {
+				return nil, unsupportedVideoParameter(object.name+"."+field,
+					"dashscope: %s.%s is set from the request's own fields, not from an extra param", object.name, field)
+			}
+		}
+	}
+
 	if len(extras) > 0 {
 		req.ExtraParams = extras
 	}
