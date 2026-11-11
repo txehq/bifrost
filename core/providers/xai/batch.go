@@ -473,8 +473,8 @@ func xaiResultBody(response map[string]json.RawMessage) (map[string]any, bool) {
 
 // toBatchChatBody converts xAI's chat completion to the OpenAI chat body the sync route
 // returns: usage normalized by normalizeXAIChatUsage (reasoning tokens folded into
-// completion_tokens, cost from cost_in_usd_ticks), plus usage.vendor_cost carrying
-// cost_in_usd_ticks unchanged (contract C5).
+// completion_tokens, cost from cost_in_usd_ticks, and usage.vendor_cost carrying
+// cost_in_usd_ticks unchanged, contract C5), the same normalizer the sync route runs.
 func toBatchChatBody(raw []byte) (map[string]any, error) {
 	var chat schemas.BifrostChatResponse
 	if err := sonic.Unmarshal(raw, &chat); err != nil {
@@ -492,15 +492,6 @@ func toBatchChatBody(raw []byte) (map[string]any, error) {
 	delete(body, "extra_fields")
 	if chat.Usage == nil {
 		delete(body, "usage")
-		return body, nil
-	}
-	if chat.Usage.CostInUsdTicks != nil {
-		if usage, ok := body["usage"].(map[string]any); ok {
-			usage["vendor_cost"] = schemas.VendorCost{
-				Amount: float64(*chat.Usage.CostInUsdTicks),
-				Unit:   schemas.VendorCostUnitUSDTicks,
-			}
-		}
 	}
 	return body, nil
 }
