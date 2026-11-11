@@ -164,7 +164,7 @@ last row reads `GET /__hits`. Run it as the content-length truncation folder abo
 
 ## Addresses a vendor's response names
 
-Folder 489 pins TXE-7090. A vendor's answer names addresses the gateway then requests: Replicate's `urls.get`
+Folder 490 pins TXE-7090. A vendor's answer names addresses the gateway then requests: Replicate's `urls.get`
 (the poll) and `urls.stream`, the `next` link of a deployments page, and the URL of an output image that the
 GenAI route fetches to inline. The gateway uses the provider's client only for an address on the origin of the
 provider's configured base URL; any other goes out on the SSRF-hardened client, which refuses a loopback or

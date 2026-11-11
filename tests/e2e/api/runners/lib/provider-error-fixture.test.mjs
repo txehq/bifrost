@@ -151,7 +151,7 @@ test("media tasks name the gapped file at a public address and the internal one 
   assert.equal(hits[`media.gapped@127.0.0.1:${post.port}`], 1);
 });
 
-// Folder 489: a Replicate answer names addresses a gateway then requests. Each is named on the fixture's own
+// Folder 490: a Replicate answer names addresses a gateway then requests. Each is named on the fixture's own
 // origin (or at a public-looking address for an output image) and on another loopback origin, which a
 // gateway must refuse to follow; every request is counted under the Host it was asked at.
 test("replicate answers name poll, stream, next-page and image addresses on the origin or another loopback host", async (t) => {

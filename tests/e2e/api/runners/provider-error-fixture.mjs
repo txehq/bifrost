@@ -867,7 +867,7 @@ const wireAnswer = (path, body, bytes) => {
 		if (body.stream === true) return { status: 200, stream: anthropicMessageStream(body.model) };
 		return { status: 200, body: JSON.stringify(anthropicMessage(body.model)) };
 	}
-	// Folder 489 (TXE-7090): predictions whose addresses are the vendor's to name. The model's last path
+	// Folder 490 (TXE-7090): predictions whose addresses are the vendor's to name. The model's last path
 	// segment is "<what>-<where>". poll-origin and poll-loopback name urls.get on the provider's own origin
 	// and on another loopback origin (the same fixture by the name localhost). stream-origin and
 	// stream-loopback do the same with urls.stream. picture-public and picture-loopback are polled on the
@@ -1452,7 +1452,7 @@ const handleRequest = (req, res) => {
 		}, VIDEO_GAP_MS);
 		return undefined;
 	}
-	// The poll of a folder 489 prediction, counted under the Host it was asked at. A picture prediction's
+	// The poll of a folder 490 prediction, counted under the Host it was asked at. A picture prediction's
 	// output is at the address its name says; any other prediction's is a delivery URL nobody fetches.
 	if (req.method === "GET" && path.startsWith("/pp/replicate/v1/predictions/pred_")) {
 		const id = path.slice(path.lastIndexOf("/") + 1);
@@ -1462,13 +1462,13 @@ const handleRequest = (req, res) => {
 				: "https://replicate.delivery/fixture/out.png";
 		return send(200, {}, JSON.stringify({ id, status: "succeeded", output }));
 	}
-	// The stream of a folder 489 prediction: one output event and the done event, in Replicate's SSE shape.
+	// The stream of a folder 490 prediction: one output event and the done event, in Replicate's SSE shape.
 	if (req.method === "GET" && path.startsWith("/pp/replicate/v1/streams/pred_")) {
 		countHit(`replicate.stream@${String(req.headers.host).split(":")[0]}`);
 		res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
 		return res.end("event: output\nid: 1\ndata: fixture stream text\n\nevent: done\nid: 2\ndata: {}\n\n");
 	}
-	// Folder 489: Replicate's deployments list for a key that uses the deployments endpoint. The first page
+	// Folder 490: Replicate's deployments list for a key that uses the deployments endpoint. The first page
 	// names the next one: on the provider's own origin for the key "fixture-deploy-origin", on another
 	// loopback origin for "fixture-deploy-loopback". Each page is counted by key, page and Host.
 	if (req.method === "GET" && path === "/pp/replicate/v1/deployments") {
@@ -1480,7 +1480,7 @@ const handleRequest = (req, res) => {
 		const host = key === "fixture-deploy-loopback" ? "localhost" : "127.0.0.1";
 		return send(200, {}, JSON.stringify({ next: `http://${host}:${port}/pp/replicate/v1/deployments?page=2`, previous: null, results: [deployment(`${key}-page-1`)] }));
 	}
-	// The image files a folder 489 prediction names, counted under the Host they were asked at.
+	// The image files a folder 490 prediction names, counted under the Host they were asked at.
 	if (req.method === "GET" && (path === "/pp/media/image.png" || path === "/pp/media/internal.png")) {
 		countHit(`media.${path === "/pp/media/image.png" ? "image" : "internal"}@${String(req.headers.host).split(":")[0]}`);
 		res.writeHead(200, { "Content-Type": "image/png" });

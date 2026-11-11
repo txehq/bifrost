@@ -328837,11 +328837,11 @@
       ]
     },
     {
-      "name": "489. Addresses a vendor's answer names are followed on the provider's origin or a public host, and refused on a loopback one (vendor named address)",
-      "description": "Local fixture regression for TXE-7090, no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs and an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, whose replicate provider has the fixture as base URL, the fixture's media tunnel as proxy_config, and two extra keys that use the deployments endpoint, and run with providerErrorFixture=1; every case is skipped otherwise. A vendor's answer names addresses the gateway then requests: Replicate's urls.get (the poll), urls.stream, the next link of a deployments page, and the URL of an output image that the GenAI route fetches to inline. The gateway uses the provider's client only for an address on the origin of the provider's configured base URL; any other goes out on the SSRF-hardened client, which refuses a loopback or private address and reaches a public one through the provider's proxy. The fixture names the same resource on its own origin (or, for the image, at http://203.0.113.10, reached through the media tunnel) and on another loopback origin (itself by the host name localhost, or its own loopback address for the image). 489.2 and 489.3 poll; 489.4 and 489.5 read the stream of a chat completion; 489.6 and 489.7 inline an image through POST /genai .../models/replicate/owner/<model>:generateContent; 489.8 lists models with one key whose next page is on the origin and one whose next page is on localhost. 489.9 reads the counters: every origin and public address was asked for once and no loopback one was. Before the change the gateway requested whatever address the answer named, with the key attached, and fetched the image on a client with no address check. HuggingFace speech is not here: its model lookup goes to a fixed https://huggingface.co, which an offline gateway cannot reach, so no fixture row can get as far as the audio URL; the Go tests cover it.",
+      "name": "490. Addresses a vendor's answer names are followed on the provider's origin or a public host, and refused on a loopback one (vendor named address)",
+      "description": "Local fixture regression for TXE-7090, no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs and an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, whose replicate provider has the fixture as base URL, the fixture's media tunnel as proxy_config, and two extra keys that use the deployments endpoint, and run with providerErrorFixture=1; every case is skipped otherwise. A vendor's answer names addresses the gateway then requests: Replicate's urls.get (the poll), urls.stream, the next link of a deployments page, and the URL of an output image that the GenAI route fetches to inline. The gateway uses the provider's client only for an address on the origin of the provider's configured base URL; any other goes out on the SSRF-hardened client, which refuses a loopback or private address and reaches a public one through the provider's proxy. The fixture names the same resource on its own origin (or, for the image, at http://203.0.113.10, reached through the media tunnel) and on another loopback origin (itself by the host name localhost, or its own loopback address for the image). 490.2 and 490.3 poll; 490.4 and 490.5 read the stream of a chat completion; 490.6 and 490.7 inline an image through POST /genai .../models/replicate/owner/<model>:generateContent; 490.8 lists models with one key whose next page is on the origin and one whose next page is on localhost. 490.9 reads the counters: every origin and public address was asked for once and no loopback one was. Before the change the gateway requested whatever address the answer named, with the key attached, and fetched the image on a client with no address check. HuggingFace speech is not here: its model lookup goes to a fixed https://huggingface.co, which an offline gateway cannot reach, so no fixture row can get as far as the audio URL; the Go tests cover it.",
       "item": [
         {
-          "name": "489.1 fixture hit counters reset before the replicate poll rows (vendor named address)",
+          "name": "490.1 fixture hit counters reset before the replicate poll rows (vendor named address)",
           "event": [
             {
               "listen": "prerequest",
@@ -328880,7 +328880,7 @@
           }
         },
         {
-          "name": "489.2 replicate/owner/poll-origin POST /v1/images/generations: a poll address on the provider's own origin is polled and the image returned (vendor named address)",
+          "name": "490.2 replicate/owner/poll-origin POST /v1/images/generations: a poll address on the provider's own origin is polled and the image returned (vendor named address)",
           "event": [
             {
               "listen": "prerequest",
@@ -328933,7 +328933,7 @@
           }
         },
         {
-          "name": "489.3 [EXPECT-502] replicate/owner/poll-loopback POST /v1/images/generations: a poll address on another loopback host is refused (vendor named address)",
+          "name": "490.3 [EXPECT-502] replicate/owner/poll-loopback POST /v1/images/generations: a poll address on another loopback host is refused (vendor named address)",
           "event": [
             {
               "listen": "prerequest",
@@ -328988,7 +328988,7 @@
           }
         },
         {
-          "name": "489.4 replicate/owner/stream-origin POST /v1/chat/completions stream: a stream address on the provider's own origin is read (vendor named address)",
+          "name": "490.4 replicate/owner/stream-origin POST /v1/chat/completions stream: a stream address on the provider's own origin is read (vendor named address)",
           "event": [
             {
               "listen": "prerequest",
@@ -329042,7 +329042,7 @@
           }
         },
         {
-          "name": "489.5 [EXPECT-500] replicate/owner/stream-loopback POST /v1/chat/completions stream: a stream address on another loopback host is refused (vendor named address)",
+          "name": "490.5 [EXPECT-500] replicate/owner/stream-loopback POST /v1/chat/completions stream: a stream address on another loopback host is refused (vendor named address)",
           "event": [
             {
               "listen": "prerequest",
@@ -329096,7 +329096,7 @@
           }
         },
         {
-          "name": "489.6 replicate/owner/picture-public POST /genai generateContent: an image answered by URL at a public address is fetched through the provider's proxy and inlined (vendor named address)",
+          "name": "490.6 replicate/owner/picture-public POST /genai generateContent: an image answered by URL at a public address is fetched through the provider's proxy and inlined (vendor named address)",
           "event": [
             {
               "listen": "prerequest",
@@ -329153,7 +329153,7 @@
           }
         },
         {
-          "name": "489.7 [EXPECT-400] replicate/owner/picture-loopback POST /genai generateContent: an image answered by URL on a loopback address is not fetched (vendor named address)",
+          "name": "490.7 [EXPECT-400] replicate/owner/picture-loopback POST /genai generateContent: an image answered by URL on a loopback address is not fetched (vendor named address)",
           "event": [
             {
               "listen": "prerequest",
@@ -329211,7 +329211,7 @@
           }
         },
         {
-          "name": "489.8 replicate GET /v1/models: a deployments next page on the provider's own origin is followed, one on another loopback host is refused (vendor named address)",
+          "name": "490.8 replicate GET /v1/models: a deployments next page on the provider's own origin is followed, one on another loopback host is refused (vendor named address)",
           "event": [
             {
               "listen": "prerequest",
@@ -329269,7 +329269,7 @@
           }
         },
         {
-          "name": "489.9 fixture counters for the vendor-named address rows: every origin and public address asked once, no loopback one asked (vendor named address)",
+          "name": "490.9 fixture counters for the vendor-named address rows: every origin and public address asked once, no loopback one asked (vendor named address)",
           "event": [
             {
               "listen": "prerequest",
