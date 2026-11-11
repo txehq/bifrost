@@ -989,6 +989,7 @@ func TestBytePlusImageGenerationStreamErrors(t *testing.T) {
 		{"internal error ends the stream", []string{seedreamStreamImage0, `{"type":"image_generation.partial_failed","model":"seedream-4-5-251128","created":1,"image_index":1,"error":{"code":"InternalServiceError","message":"internal"}}`}, "InternalServiceError", "server_error", ""},
 		{"every image failed", []string{seedreamStreamFailed, `{"type":"image_generation.completed","model":"seedream-4-5-251128","created":1,"usage":{"generated_images":0,"output_tokens":0,"total_tokens":0}}`}, "OutputImageSensitiveContentDetected", "content_filter", schemas.ErrorTypeCallerContentFiltered},
 		{"request-level error event", []string{`{"error":{"code":"BadRequest","message":"missing required parameter"}}`}, "BadRequest", "invalid_request_error", ""},
+		{"completed with nothing delivered or refused", []string{`{"type":"image_generation.completed","model":"seedream-4-5-251128","created":1,"usage":{"generated_images":0,"output_tokens":0,"total_tokens":0}}`}, "", "provider_empty_result", schemas.ErrorTypeProviderEmptyResult},
 		{"request-level moderation event", []string{`{"error":{"code":"InputTextSensitiveContentDetected","message":"sensitive"}}`}, "InputTextSensitiveContentDetected", "invalid_request_error", schemas.ErrorTypeCallerContentFiltered},
 	}
 	for _, tc := range cases {
@@ -1009,8 +1010,15 @@ func TestBytePlusImageGenerationStreamErrors(t *testing.T) {
 				t.Fatal("expected an error chunk")
 			}
 			last := chunks[len(chunks)-1].BifrostError
-			if last == nil || last.Error == nil || last.Error.Code == nil || *last.Error.Code != tc.wantCode {
-				t.Fatalf("last chunk should be an error with code %s, got %+v", tc.wantCode, chunks[len(chunks)-1])
+			if last == nil || last.Error == nil {
+				t.Fatalf("last chunk should be an error, got %+v", chunks[len(chunks)-1])
+			}
+			gotCode := ""
+			if last.Error.Code != nil {
+				gotCode = *last.Error.Code
+			}
+			if gotCode != tc.wantCode {
+				t.Fatalf("error code = %q, want %q", gotCode, tc.wantCode)
 			}
 			if last.Error.Type == nil || *last.Error.Type != tc.wantType {
 				t.Errorf("error type = %v, want %s", last.Error.Type, tc.wantType)

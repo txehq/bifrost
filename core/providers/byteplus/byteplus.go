@@ -802,6 +802,11 @@ func (provider *BytePlusProvider) doImageStream(ctx *schemas.BifrostContext, pos
 
 			case bytePlusImageStreamCompleted:
 				if last == nil {
+					if firstFailure == nil {
+						// Nothing delivered and nothing refused: Ark's empty result, as without a stream.
+						sendError(schemas.NewProviderEmptyResultError("byteplus returned no images and no image errors"))
+						return
+					}
 					sendError(bytePlusImageStreamError(firstFailure, true))
 					return
 				}
