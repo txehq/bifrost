@@ -14310,45 +14310,26 @@ var resourceOverrideCalls = map[schemas.RequestType]resourceOverrideCall{
 }
 
 // resourceOverrideGaps are the calls a base serves without honouring their override: it
-// sends xAI's or the vendor's own path, or the override with the placeholder still in it.
-// Each entry names the ticket that fixes it. An entry is removed when its base honours the
-// override (the test fails on a stale entry), and nothing else may be added here: a pair
-// that templates its call belongs in providerUtils.ResourcePathOverrideBases instead.
-// TXE-7085: batch and file calls. TXE-7346: model, video and container calls, which the
-// openai base templates since TXE-7020.
+// sends the vendor's own path, or the override with the placeholder still in it. Each entry
+// names the ticket that fixes it, and the test fails on a stale entry. The batch and file
+// calls have none since TXE-7085: a base that templates them is in
+// providerUtils.ResourcePathOverrideBases, and one that cannot (bedrock: ids are job ARNs and
+// S3 URIs, calls go to signed AWS endpoints) is in providerUtils.ResourcePathOverrideRefusedBases,
+// which refuses the override when the provider is written. What is left are the model and
+// video calls the openai base templates since TXE-7020, which TXE-7096 brings to the other
+// bases; nothing else may be added here.
 var resourceOverrideGaps = map[schemas.ModelProvider]map[schemas.RequestType]string{
-	schemas.Anthropic: {
-		schemas.BatchRetrieveRequest: "TXE-7085", schemas.BatchCancelRequest: "TXE-7085", schemas.BatchResultsRequest: "TXE-7085",
-		schemas.FileRetrieveRequest: "TXE-7085", schemas.FileDeleteRequest: "TXE-7085", schemas.FileContentRequest: "TXE-7085",
-		schemas.ModelRetrieveRequest: "TXE-7346",
-	},
-	schemas.Gemini: {
-		schemas.BatchRetrieveRequest: "TXE-7085", schemas.BatchCancelRequest: "TXE-7085", schemas.BatchResultsRequest: "TXE-7085",
-		schemas.FileRetrieveRequest: "TXE-7085", schemas.FileDeleteRequest: "TXE-7085",
-		schemas.ModelRetrieveRequest: "TXE-7346", schemas.VideoRetrieveRequest: "TXE-7346", schemas.VideoDownloadRequest: "TXE-7346",
-	},
-	schemas.XAI:    {schemas.ModelRetrieveRequest: "TXE-7346", schemas.VideoRetrieveRequest: "TXE-7346", schemas.VideoDownloadRequest: "TXE-7346"},
-	schemas.Cohere: {schemas.ModelRetrieveRequest: "TXE-7346"},
-	schemas.ModelArk: {
-		schemas.FileRetrieveRequest: "TXE-7085", schemas.FileDeleteRequest: "TXE-7085", schemas.FileContentRequest: "TXE-7085",
-		schemas.VideoRetrieveRequest: "TXE-7346", schemas.VideoDownloadRequest: "TXE-7346", schemas.VideoDeleteRequest: "TXE-7346",
-	},
+	schemas.Anthropic: {schemas.ModelRetrieveRequest: "TXE-7096"},
+	schemas.Gemini:    {schemas.ModelRetrieveRequest: "TXE-7096", schemas.VideoRetrieveRequest: "TXE-7096", schemas.VideoDownloadRequest: "TXE-7096"},
+	schemas.XAI:       {schemas.ModelRetrieveRequest: "TXE-7096", schemas.VideoRetrieveRequest: "TXE-7096", schemas.VideoDownloadRequest: "TXE-7096"},
+	schemas.Cohere:    {schemas.ModelRetrieveRequest: "TXE-7096"},
+	schemas.ModelArk:  {schemas.VideoRetrieveRequest: "TXE-7096", schemas.VideoDownloadRequest: "TXE-7096", schemas.VideoDeleteRequest: "TXE-7096"},
 	schemas.Volcengine: {
-		schemas.FileRetrieveRequest: "TXE-7085", schemas.FileDeleteRequest: "TXE-7085", schemas.FileContentRequest: "TXE-7085",
-		schemas.VideoRetrieveRequest: "TXE-7346", schemas.VideoDownloadRequest: "TXE-7346", schemas.VideoDeleteRequest: "TXE-7346",
+		schemas.VideoRetrieveRequest: "TXE-7096", schemas.VideoDownloadRequest: "TXE-7096", schemas.VideoDeleteRequest: "TXE-7096",
 	},
-	schemas.Replicate: {
-		schemas.FileRetrieveRequest: "TXE-7085", schemas.FileDeleteRequest: "TXE-7085",
-		schemas.VideoRetrieveRequest: "TXE-7346", schemas.VideoDownloadRequest: "TXE-7346",
-	},
-	schemas.Minimax: {schemas.VideoRetrieveRequest: "TXE-7346", schemas.VideoDownloadRequest: "TXE-7346", schemas.VideoDeleteRequest: "TXE-7346"},
-	schemas.Kling:   {schemas.VideoRetrieveRequest: "TXE-7346", schemas.VideoDownloadRequest: "TXE-7346"},
-	// Bedrock's ids are job ARNs and S3 URIs and its calls go to AWS endpoints; the probe's
-	// id is refused before any call, so these never reach the wire here.
-	schemas.Bedrock: {
-		schemas.BatchRetrieveRequest: "TXE-7085", schemas.BatchCancelRequest: "TXE-7085", schemas.BatchResultsRequest: "TXE-7085",
-		schemas.FileRetrieveRequest: "TXE-7085", schemas.FileDeleteRequest: "TXE-7085", schemas.FileContentRequest: "TXE-7085",
-	},
+	schemas.Replicate: {schemas.VideoRetrieveRequest: "TXE-7096", schemas.VideoDownloadRequest: "TXE-7096"},
+	schemas.Minimax:   {schemas.VideoRetrieveRequest: "TXE-7096", schemas.VideoDownloadRequest: "TXE-7096", schemas.VideoDeleteRequest: "TXE-7096"},
+	schemas.Kling:     {schemas.VideoRetrieveRequest: "TXE-7096", schemas.VideoDownloadRequest: "TXE-7096"},
 }
 
 // resourceOverridePath is the override every probe configures for requestType (given its
@@ -14364,8 +14345,11 @@ func resourceOverridePath(requestType schemas.RequestType, segments []string) st
 // A call a base serves must reach the override's path with the id in place, unless it is a
 // recorded gap (resourceOverrideGaps). A base that honours any such override must be in
 // providerUtils.ResourcePathOverrideBases, so its overrides are checked when the provider is
-// written, and a base listed there may have no gap. A new base, or a new request type in
-// the table, that ignores an override or loses the id fails here.
+// written, and a base listed there may have no gap. A base that cannot template them is in
+// providerUtils.ResourcePathOverrideRefusedBases with its reason: a provider on it is never
+// written with such an override, and here it must send nothing to an override's path and
+// carry no gap. A new base, or a new request type in the table, that ignores an override or
+// loses the id fails here.
 func TestCustomProviderResourcePathOverrides(t *testing.T) {
 	upstream := newGuardUpstream(t)
 	client := &Bifrost{logger: NewNoOpLogger()}
@@ -14398,6 +14382,22 @@ func TestCustomProviderResourcePathOverrides(t *testing.T) {
 				t.Fatalf("construct: %v", err)
 			}
 			keys := []schemas.Key{guardKey(base)}
+			templatesAny := len(providerUtils.ResourcePathOverrideBases[base]) > 0
+			refusal, refused := providerUtils.ResourcePathOverrideRefusedBases[base]
+			// Core picks the keys of a batch or file call by the provider's own key. A custom
+			// provider that reported its base's name there would be served with the base
+			// provider's keys, or with none, and never reach its override (replicate,
+			// modelark and volcengine did before TXE-7085).
+			if got := provider.GetProviderKey(); (templatesAny || refused) && got != name {
+				t.Errorf("a custom provider on the %s base reports the provider key %q, want its own name %q", base, got, name)
+			}
+			if refused {
+				for _, requestType := range providerUtils.BatchAndFileResourceRequestTypes {
+					if ticket, gap := resourceOverrideGaps[base][requestType]; gap || providerUtils.TemplatesResourcePath(base, requestType) {
+						t.Errorf("%s refuses %s overrides when written (%s), so the pair may be neither in ResourcePathOverrideBases nor carry a gap (%s)", base, requestType, refusal, ticket)
+					}
+				}
+			}
 			for _, requestType := range requestTypes {
 				listed := providerUtils.TemplatesResourcePath(base, requestType)
 				ids := resourceOverrideIDs[:len(providerUtils.ResourcePathPlaceholders[requestType])]
@@ -14427,6 +14427,12 @@ func TestCustomProviderResourcePathOverrides(t *testing.T) {
 				}
 				ticket, gap := resourceOverrideGaps[base][requestType]
 				switch {
+				case refused && slices.Contains(providerUtils.BatchAndFileResourceRequestTypes, requestType):
+					// The override is refused on write; a provider built past that check
+					// still must not follow it.
+					if honoured {
+						t.Errorf("%s %s reached the override's path, but the base refuses such overrides when written (%s)", base, requestType, refusal)
+					}
 				case gap && listed:
 					t.Errorf("%s %s is in ResourcePathOverrideBases but carries a gap (%s)", base, requestType, ticket)
 				case gap && (honoured || !served):

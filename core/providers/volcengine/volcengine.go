@@ -40,6 +40,9 @@ type VolcengineProvider struct {
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 	providerKey         schemas.ModelProvider // Provider identifier for error/response metadata
+	// customProviderConfig is the custom provider's configuration, read for the path
+	// overrides of the file calls that name a file by id.
+	customProviderConfig *schemas.CustomProviderConfig
 }
 
 // NewVolcengineProvider creates a new Volcengine provider instance.
@@ -75,19 +78,20 @@ func newVolcengineCompatibleProvider(config *schemas.ProviderConfig, logger sche
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &VolcengineProvider{
-		logger:              logger,
-		client:              client,
-		streamingClient:     providerUtils.BuildStreamingClient(client),
-		networkConfig:       config.NetworkConfig,
-		sendBackRawRequest:  config.SendBackRawRequest,
-		sendBackRawResponse: config.SendBackRawResponse,
-		providerKey:         providerKey,
+		logger:               logger,
+		client:               client,
+		streamingClient:      providerUtils.BuildStreamingClient(client),
+		networkConfig:        config.NetworkConfig,
+		sendBackRawRequest:   config.SendBackRawRequest,
+		sendBackRawResponse:  config.SendBackRawResponse,
+		providerKey:          providerKey,
+		customProviderConfig: config.CustomProviderConfig,
 	}, nil
 }
 
 // GetProviderKey returns the provider identifier for Volcengine.
 func (provider *VolcengineProvider) GetProviderKey() schemas.ModelProvider {
-	return provider.providerKey
+	return providerUtils.GetProviderName(provider.providerKey, provider.customProviderConfig)
 }
 
 var volcengineVisionEmbeddingModelPrefixes = []string{
@@ -1215,6 +1219,10 @@ func (provider *VolcengineProvider) FileRetrieve(ctx *schemas.BifrostContext, ke
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := providerUtils.ResourceRequestURL(provider.networkConfig.BaseURL, providerUtils.GetPathFromContext(ctx, fmt.Sprintf("%s/%s", volcenginePathFiles, escapedFileID)), provider.customProviderConfig, escapedFileID, schemas.FileRetrieveRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
@@ -1225,7 +1233,7 @@ func (provider *VolcengineProvider) FileRetrieve(ctx *schemas.BifrostContext, ke
 		resp := fasthttp.AcquireResponse()
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, fmt.Sprintf("%s/%s", volcenginePathFiles, escapedFileID)))
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 		if key.Value.GetValue() != "" {
@@ -1284,6 +1292,10 @@ func (provider *VolcengineProvider) FileDelete(ctx *schemas.BifrostContext, keys
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := providerUtils.ResourceRequestURL(provider.networkConfig.BaseURL, providerUtils.GetPathFromContext(ctx, fmt.Sprintf("%s/%s", volcenginePathFiles, escapedFileID)), provider.customProviderConfig, escapedFileID, schemas.FileDeleteRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
@@ -1294,7 +1306,7 @@ func (provider *VolcengineProvider) FileDelete(ctx *schemas.BifrostContext, keys
 		resp := fasthttp.AcquireResponse()
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, fmt.Sprintf("%s/%s", volcenginePathFiles, escapedFileID)))
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
 		if key.Value.GetValue() != "" {
@@ -1369,6 +1381,10 @@ func (provider *VolcengineProvider) FileContent(ctx *schemas.BifrostContext, key
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := providerUtils.ResourceRequestURL(provider.networkConfig.BaseURL, providerUtils.GetPathFromContext(ctx, fmt.Sprintf("%s/%s/content", volcenginePathFiles, escapedFileID)), provider.customProviderConfig, escapedFileID, schemas.FileContentRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
@@ -1376,7 +1392,7 @@ func (provider *VolcengineProvider) FileContent(ctx *schemas.BifrostContext, key
 		resp := fasthttp.AcquireResponse()
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, fmt.Sprintf("%s/%s/content", volcenginePathFiles, escapedFileID)))
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodGet)
 		if key.Value.GetValue() != "" {
 			req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())

@@ -25113,7 +25113,18 @@ func TestValidateCustomProvider_ResourcePathOverrides(t *testing.T) {
 			require.Error(t, err, "%s on %s", requestType, base)
 			assert.Contains(t, err.Error(), "request_path_overrides."+string(requestType), "%s on %s", requestType, base)
 		}
-		require.NoError(t, ValidateCustomProvider(withOverrides(schemas.Anthropic, map[schemas.RequestType]string{requestType: "/v1/files"}), "my-anthropic"), "%s on a base that does not read it", requestType)
+		// A base that serves these calls but cannot move them refuses the override, with or
+		// without the placeholder (TXE-7085); a blank one is no override.
+		for base, reason := range providerUtils.ResourcePathOverrideRefusedBases {
+			for _, override := range []string{"/v1/files", "/v1/x/" + providerUtils.ResourcePathPlaceholders[requestType]} {
+				err := ValidateCustomProvider(withOverrides(base, map[schemas.RequestType]string{requestType: override}), schemas.ModelProvider("my-"+string(base)))
+				require.Error(t, err, "%s on %s", requestType, base)
+				assert.Contains(t, err.Error(), "request_path_overrides."+string(requestType)+" is not supported on the "+string(base)+" base", "%s on %s", requestType, base)
+				assert.Contains(t, err.Error(), reason, "%s on %s", requestType, base)
+			}
+			require.NoError(t, ValidateCustomProvider(withOverrides(base, map[schemas.RequestType]string{requestType: " "}), schemas.ModelProvider("my-"+string(base))), "%s blank on %s", requestType, base)
+		}
+		require.NoError(t, ValidateCustomProvider(withOverrides(schemas.Cohere, map[schemas.RequestType]string{requestType: "/v1/files"}), "my-cohere"), "%s on a base that serves no such call", requestType)
 		require.NoError(t, ValidateCustomProvider(withOverrides(schemas.OpenAI, map[schemas.RequestType]string{requestType: ""}), "tkp_bigmodel"), "%s blank", requestType)
 	}
 }

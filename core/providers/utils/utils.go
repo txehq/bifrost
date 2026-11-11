@@ -2235,18 +2235,25 @@ func GetResourceRequestPathForIDs(defaultPath string, customProviderConfig *sche
 // through GetResourceRequestPath or GetResourceRequestPathForIDs. A custom provider on such a
 // base has its overrides for those request types checked when it is written
 // (TemplatesResourcePath, ValidateResourcePathOverride). The openai base templates every
-// listed request type; xai its batch and file calls (TXE-7084).
+// listed request type; the other bases that serve batches or files template the batch and
+// file calls they serve (xai: TXE-7084; anthropic, gemini, modelark, volcengine, replicate:
+// TXE-7085).
 //
 // The cross-base test (core TestCustomProviderResourcePathOverrides) runs every listed call
 // on every base. It fails when a pair listed here ignores an override or loses the id, and
 // when a base honours a request type that is missing here. A pair a base serves without
 // honouring the override is a recorded gap there, with its ticket.
 var ResourcePathOverrideBases = map[schemas.ModelProvider][]schemas.RequestType{
-	schemas.OpenAI: resourceRequestTypes(),
-	schemas.XAI: {
+	schemas.OpenAI:    resourceRequestTypes(),
+	schemas.XAI:       BatchAndFileResourceRequestTypes,
+	schemas.Anthropic: BatchAndFileResourceRequestTypes,
+	schemas.Gemini: {
 		schemas.BatchRetrieveRequest, schemas.BatchCancelRequest, schemas.BatchResultsRequest,
-		schemas.FileRetrieveRequest, schemas.FileDeleteRequest, schemas.FileContentRequest,
+		schemas.FileRetrieveRequest, schemas.FileDeleteRequest,
 	},
+	schemas.ModelArk:   {schemas.FileRetrieveRequest, schemas.FileDeleteRequest, schemas.FileContentRequest},
+	schemas.Volcengine: {schemas.FileRetrieveRequest, schemas.FileDeleteRequest, schemas.FileContentRequest},
+	schemas.Replicate:  {schemas.FileRetrieveRequest, schemas.FileDeleteRequest},
 }
 
 // resourceRequestTypes lists every request type of ResourcePathPlaceholders, sorted.
@@ -2263,6 +2270,60 @@ func resourceRequestTypes() []schemas.RequestType {
 // request_path_overrides entry for requestType as a template (ResourcePathOverrideBases).
 func TemplatesResourcePath(base schemas.ModelProvider, requestType schemas.RequestType) bool {
 	return slices.Contains(ResourcePathOverrideBases[base], requestType)
+}
+
+// ResourceRequestURL is the URL of a call that names one resource by its id, for a provider
+// whose default URL is baseURL + defaultPath (defaultPath already holds the escaped id). With
+// no path overrides, which is every built-in provider, that is what it returns. Otherwise the
+// first of requestTypes with a non-blank request_path_overrides entry supplies the template
+// (GetResourceRequestPath): a path on baseURL, or a full URL. An override without its
+// placeholder is a configuration error, never a request to a path that lost the id.
+func ResourceRequestURL(baseURL string, defaultPath string, customProviderConfig *schemas.CustomProviderConfig, escapedID string, requestTypes ...schemas.RequestType) (string, *schemas.BifrostError) {
+	if customProviderConfig == nil || len(customProviderConfig.RequestPathOverrides) == 0 {
+		return baseURL + defaultPath, nil
+	}
+	path, isCompleteURL, err := GetResourceRequestPath(defaultPath, customProviderConfig, escapedID, requestTypes...)
+	if err != nil {
+		// The stored override may be a full URL with credentials: name the request type and
+		// the placeholder, never the override (ResourcePathErrorForCaller, TXE-7020).
+		return "", NewConfigurationError(ResourcePathErrorForCaller(err))
+	}
+	if isCompleteURL {
+		return path, nil
+	}
+	return baseURL + path, nil
+}
+
+// BatchAndFileResourceRequestTypes are the request types of ResourcePathPlaceholders that
+// name a batch or a file by id: the calls every base that serves batches or files templates
+// (TXE-7084, TXE-7085), and the ones a base in ResourcePathOverrideRefusedBases refuses.
+var BatchAndFileResourceRequestTypes = []schemas.RequestType{
+	schemas.BatchRetrieveRequest, schemas.BatchCancelRequest, schemas.BatchResultsRequest,
+	schemas.FileRetrieveRequest, schemas.FileDeleteRequest, schemas.FileContentRequest,
+}
+
+// ResourcePathOverrideRefusedBases are the base types that serve calls naming a batch or a
+// file by id but cannot move them with a path template, each with the reason. A custom
+// provider on one of them is refused when it is written with an override for such a call
+// (ResourcePathOverrideRefusal), so the override is never stored and silently ignored. The
+// cross-base test checks that such a base sends no call to an override's path.
+var ResourcePathOverrideRefusedBases = map[schemas.ModelProvider]string{
+	schemas.Bedrock: "its batch and file ids are job ARNs and S3 URIs and its calls go to signed AWS endpoints, so there is no path on the provider's base URL for a template to replace",
+}
+
+// ResourcePathOverrideRefusal is the error for a request_path_overrides entry that base
+// cannot honour: a non-blank override, for a batch or file request type
+// (BatchAndFileResourceRequestTypes), on a base in ResourcePathOverrideRefusedBases.
+// Everything else returns nil.
+func ResourcePathOverrideRefusal(base schemas.ModelProvider, requestType schemas.RequestType, override string) error {
+	reason, refused := ResourcePathOverrideRefusedBases[base]
+	if !refused || strings.TrimSpace(override) == "" {
+		return nil
+	}
+	if !slices.Contains(BatchAndFileResourceRequestTypes, requestType) {
+		return nil
+	}
+	return fmt.Errorf("request_path_overrides.%s is not supported on the %s base: %s", requestType, base, reason)
 }
 
 type RequestBodyGetter interface {

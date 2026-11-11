@@ -73,7 +73,7 @@ func NewReplicateProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 
 // GetProviderKey returns the provider identifier for Replicate.
 func (provider *ReplicateProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.Replicate
+	return providerUtils.GetProviderName(schemas.Replicate, provider.customProviderConfig)
 }
 
 // buildRequestURL builds the request URL with custom provider config support
@@ -3207,6 +3207,10 @@ func (provider *ReplicateProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := providerUtils.ResourceRequestURL(provider.networkConfig.BaseURL, "/v1/files/"+escapedFileID, provider.customProviderConfig, escapedFileID, schemas.FileRetrieveRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
@@ -3219,7 +3223,7 @@ func (provider *ReplicateProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedFileID)
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
@@ -3288,6 +3292,10 @@ func (provider *ReplicateProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := providerUtils.ResourceRequestURL(provider.networkConfig.BaseURL, "/v1/files/"+escapedFileID, provider.customProviderConfig, escapedFileID, schemas.FileDeleteRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
@@ -3300,7 +3308,7 @@ func (provider *ReplicateProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedFileID)
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
 
