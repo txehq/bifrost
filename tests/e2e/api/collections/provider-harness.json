@@ -296865,10 +296865,11 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('the content block is a 400 with MiniMax code 1026', function () {",
+                  "pm.test('the content block is a 400 caller_content_filtered with MiniMax code 1026', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
                   "  var j = pm.response.json();",
                   "  pm.expect(j.error && j.error.code, 'error.code: ' + pm.response.text()).to.eql('1026');",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_content_filtered');",
                   "});"
                 ]
               }
