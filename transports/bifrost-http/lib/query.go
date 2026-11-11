@@ -170,24 +170,24 @@ func CopyQueryAllValues(args *fasthttp.Args, skip func(name []byte) bool) map[st
 // is the fault this replaced on GET /v1/models and GET /v1/files.
 // TestUnreadQueryParametersBecomeExtraParamsInOnePlace fails on such a handler.
 func QueryExtraParams(args *fasthttp.Args, skip func(name []byte) bool) map[string]interface{} {
+	// One pass and no intermediate map: a request with nothing to forward allocates
+	// nothing, and a name sent once costs its key, its value and the map entry, as the
+	// loops this replaced did. Only a repeated name allocates a slice.
 	var extra map[string]interface{}
-	for name, values := range CopyQueryAllValues(args, skip) {
-		kept := values[:0]
-		for _, value := range values {
-			if value != "" {
-				kept = append(kept, value)
-			}
-		}
-		if len(kept) == 0 {
+	for name, value := range args.All() {
+		if len(value) == 0 || (skip != nil && skip(name)) {
 			continue
 		}
 		if extra == nil {
 			extra = make(map[string]interface{})
 		}
-		if len(kept) == 1 {
-			extra[name] = kept[0]
-		} else {
-			extra[name] = kept
+		switch sent := extra[string(name)].(type) {
+		case nil:
+			extra[string(name)] = string(value)
+		case string:
+			extra[string(name)] = []string{sent, string(value)}
+		case []string:
+			extra[string(name)] = append(sent, string(value))
 		}
 	}
 	return extra
