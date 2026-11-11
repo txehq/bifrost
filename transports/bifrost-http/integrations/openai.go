@@ -15,6 +15,7 @@ import (
 	"github.com/bytedance/sonic"
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/providers/openai"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
@@ -4210,59 +4211,207 @@ func parseOpenAIVideoGenerationMultipartRequest(ctx *fasthttp.RequestCtx, req in
 	}
 	videoGenerationReq.Prompt = promptValues[0]
 
-	// Extract optional input_reference file (image that guides generation)
-	if inputRefFiles := form.File["input_reference"]; len(inputRefFiles) > 0 {
-		fileHeader := inputRefFiles[0]
-		file, err := fileHeader.Open()
+	// Every other field: the typed video parameters, the task control fields, and the rest as
+	// extra params or a refusal (fork, TXE-7126, contract C4: a field is never dropped).
+	return parseOpenAIVideoGenerationFormFields(ctx, form, videoGenerationReq)
+}
+
+// openAIVideoFormFileFields are the multipart file fields a video create reads: the first frame,
+// the last frame and the reference images, each sent to the provider as a data URL.
+var openAIVideoFormFileFields = map[string]bool{
+	"input_reference": true, "last_frame": true, "reference_images": true, "reference_images[]": true,
+}
+
+// openAIVideoFormValueFields are the multipart value fields a video create reads into its typed
+// request. Any other value field is an extra param under x-bf-passthrough-extra-params, and refused
+// with 400 caller_unsupported_parameter without it.
+var openAIVideoFormValueFields = map[string]bool{
+	"model": true, "prompt": true, "fallbacks": true, "video_uri": true,
+	"seconds": true, "size": true, "negative_prompt": true, "seed": true, "type": true,
+	"output_format": true, "audio": true, "upscale_factor": true, "target_megapixels": true,
+	"aspect_ratio": true, "resolution": true, "last_frame": true,
+	"reference_images": true, "reference_images[]": true,
+	schemas.TaskControlFieldCallbackURL:         true,
+	schemas.TaskControlFieldClientReferenceID:   true,
+	schemas.TaskControlFieldExpiresAfterSeconds: true,
+	schemas.TaskControlFieldOutputStorageURI:    true,
+}
+
+// parseOpenAIVideoGenerationFormFields reads a multipart video create's fields other than model
+// and prompt, the way the JSON body's fields are read (fork, TXE-7126). Before it, a multipart
+// request kept only seconds, size, negative_prompt, seed and video_uri: the unified fields, the
+// task control fields and every vendor field were dropped without an error.
+func parseOpenAIVideoGenerationFormFields(ctx *fasthttp.RequestCtx, form *multipart.Form, req *openai.OpenAIVideoGenerationRequest) error {
+	for name := range form.File {
+		if !openAIVideoFormFileFields[name] {
+			return providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError(name,
+				fmt.Sprintf("file field %q is not a video generation input; send input_reference, last_frame or reference_images", name)))
+		}
+	}
+	readFile := func(header *multipart.FileHeader) ([]byte, error) {
+		file, err := header.Open()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		defer file.Close()
-
-		// Read file data
-		fileData, err := io.ReadAll(file)
+		return io.ReadAll(file)
+	}
+	if files := form.File["input_reference"]; len(files) > 0 {
+		data, err := readFile(files[0])
 		if err != nil {
 			return err
 		}
-
-		videoGenerationReq.InputReference = fileData
+		req.InputReference = data
 	}
 
-	// Extract optional parameters
-	if secondsValues := form.Value["seconds"]; len(secondsValues) > 0 && secondsValues[0] != "" {
-		seconds := secondsValues[0]
-		videoGenerationReq.Seconds = &seconds
-	}
-
-	if sizeValues := form.Value["size"]; len(sizeValues) > 0 && sizeValues[0] != "" {
-		size := sizeValues[0]
-		videoGenerationReq.Size = size
-	}
-
-	if negativePromptValues := form.Value["negative_prompt"]; len(negativePromptValues) > 0 && negativePromptValues[0] != "" {
-		negativePrompt := negativePromptValues[0]
-		videoGenerationReq.NegativePrompt = &negativePrompt
-	}
-
-	if seedValues := form.Value["seed"]; len(seedValues) > 0 && seedValues[0] != "" {
-		seed, err := strconv.Atoi(seedValues[0])
-		if err != nil {
-			return errors.New("invalid seed value")
+	value := func(name string) (string, bool) {
+		values := form.Value[name]
+		if len(values) == 0 || values[0] == "" {
+			return "", false
 		}
-		videoGenerationReq.Seed = &seed
+		return values[0], true
+	}
+	integer := func(name string) (*int, error) {
+		v, ok := value(name)
+		if !ok {
+			return nil, nil
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError(name,
+				name+" must be a whole number"))
+		}
+		return &n, nil
+	}
+	// text copies the value only when the field is present: a pointer to a local the
+	// absent branch also declares would be moved to the heap on every call.
+	text := func(name string) *string {
+		values := form.Value[name]
+		if len(values) == 0 || values[0] == "" {
+			return nil
+		}
+		present := values[0]
+		return &present
 	}
 
-	if videoURIValues := form.Value["video_uri"]; len(videoURIValues) > 0 && videoURIValues[0] != "" {
-		videoURI := videoURIValues[0]
-		videoGenerationReq.VideoURI = &videoURI
+	params := &req.VideoGenerationParameters
+	params.Seconds = text("seconds")
+	if v, ok := value("size"); ok {
+		params.Size = v
+	}
+	params.NegativePrompt = text("negative_prompt")
+	params.Type = text("type")
+	params.OutputFormat = text("output_format")
+	if v, ok := value("audio"); ok {
+		audio, err := strconv.ParseBool(v)
+		if err != nil {
+			// The value is not echoed: a refusal stays small whatever the caller sent.
+			return providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError("audio",
+				"audio must be true or false"))
+		}
+		params.Audio = &audio
+	}
+	var err error
+	if params.Seed, err = integer("seed"); err != nil {
+		return err
+	}
+	if params.UpscaleFactor, err = integer("upscale_factor"); err != nil {
+		return err
+	}
+	if params.TargetMegapixels, err = integer("target_megapixels"); err != nil {
+		return err
+	}
+	if params.ExpiresAfterSeconds, err = integer(schemas.TaskControlFieldExpiresAfterSeconds); err != nil {
+		return err
+	}
+	params.CallbackURL = text(schemas.TaskControlFieldCallbackURL)
+	params.ClientReferenceID = text(schemas.TaskControlFieldClientReferenceID)
+	params.OutputStorageURI = text(schemas.TaskControlFieldOutputStorageURI)
+	if v, ok := value("aspect_ratio"); ok {
+		params.AspectRatio = schemas.TolerantString(v)
+	}
+	if v, ok := value("resolution"); ok {
+		params.Resolution = schemas.TolerantString(v)
 	}
 
-	// Extract fallbacks
+	// last_frame and reference_images are a URL or data URL as a value, or an uploaded file.
+	if v, ok := value("last_frame"); ok {
+		params.LastFrame = schemas.TolerantString(v)
+	}
+	if files := form.File["last_frame"]; len(files) > 0 {
+		if params.LastFrame != "" {
+			return providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError("last_frame",
+				"send last_frame once, as a file or as a URL"))
+		}
+		data, err := readFile(files[0])
+		if err != nil {
+			return err
+		}
+		params.LastFrame = schemas.TolerantString(providerUtils.FileBytesToBase64DataURL(data))
+	}
+	for _, name := range []string{"reference_images", "reference_images[]"} {
+		for _, v := range form.Value[name] {
+			if v != "" {
+				params.ReferenceImages = append(params.ReferenceImages, v)
+			}
+		}
+		for _, header := range form.File[name] {
+			data, err := readFile(header)
+			if err != nil {
+				return err
+			}
+			params.ReferenceImages = append(params.ReferenceImages, providerUtils.FileBytesToBase64DataURL(data))
+		}
+	}
+
+	if videoURI := text("video_uri"); videoURI != nil {
+		req.VideoURI = videoURI
+	}
 	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
-		videoGenerationReq.Fallbacks = fallbackValues
+		req.Fallbacks = fallbackValues
 	}
 
+	// The rest are extra params when the caller opted in, as a JSON body's extra_params are. A
+	// value that is a JSON boolean, number, object or array is sent as that type (a form carries
+	// only text, and a vendor flag such as MiniMax's prompt_optimizer is a boolean); any other
+	// value is sent as text.
+	passthrough := string(ctx.Request.Header.Peek("x-bf-passthrough-extra-params")) == "true"
+	var extra map[string]interface{}
+	for name, values := range form.Value {
+		if openAIVideoFormValueFields[name] || len(values) == 0 {
+			continue
+		}
+		if !passthrough {
+			return providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError(name,
+				fmt.Sprintf("form field %q is not a video generation field; to send a provider's own field, set x-bf-passthrough-extra-params: true", name)))
+		}
+		if extra == nil {
+			extra = make(map[string]interface{})
+		}
+		extra[name] = openAIVideoFormValue(values[0])
+	}
+	if extra != nil {
+		req.ExtraParams = extra
+		req.VideoGenerationParameters.ExtraParams = extra
+	}
 	return nil
+}
+
+// openAIVideoFormValue is a form value as an extra param: a JSON boolean, number, object or array
+// keeps its JSON type; anything else, null included, stays the text the caller sent.
+func openAIVideoFormValue(v string) interface{} {
+	trimmed := strings.TrimSpace(v)
+	if trimmed == "" || trimmed == "null" {
+		return v
+	}
+	switch trimmed[0] {
+	case 't', 'f', '{', '[', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		var decoded interface{}
+		if err := sonic.UnmarshalString(trimmed, &decoded); err == nil {
+			return decoded
+		}
+	}
+	return v
 }
 
 // enableRawRequestResponseForContainer sets per-request overrides to always capture and

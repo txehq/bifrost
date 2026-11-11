@@ -63,6 +63,7 @@ import (
 	"github.com/bytedance/sonic"
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/providers/bedrock"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/logstore"
 	"github.com/capsohq/bifrost/framework/modelcatalog"
@@ -803,6 +804,12 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 				// Use custom parser (e.g., for multipart/form-data)
 				if err := config.RequestParser(ctx, req); err != nil {
 					ctx.SetConnectionClose()
+					// A parser that refuses a field builds the refusal itself (status, error_type and
+					// error.param, contract C4); it reaches the caller as built (fork, TXE-7126).
+					if refusal, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+						g.sendError(ctx, bifrostCtx, config.ErrorConverter, refusal)
+						return
+					}
 					g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostErrorWithCode(err, "failed to parse request", fasthttp.StatusBadRequest))
 					return
 				}

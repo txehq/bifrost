@@ -20,6 +20,7 @@ import (
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/fasthttp/router"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
@@ -1521,6 +1522,270 @@ func TestOpenAIRouteImageStreamReportsOutputImages(t *testing.T) {
 			require.EqualValues(t, 1, gjson.GetBytes(final, "usage.output_images").Int(), string(final))
 			require.EqualValues(t, 284, gjson.GetBytes(final, "usage.total_tokens").Int(), string(final))
 			require.Equal(t, []string{wantPath}, upstream.calls())
+		})
+	}
+}
+
+// bytePlusVideoUpstream records each body that reaches BytePlus's task create and answers it.
+type bytePlusVideoUpstream struct {
+	mu     sync.Mutex
+	bodies []map[string]any
+}
+
+func (u *bytePlusVideoUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	raw, _ := io.ReadAll(r.Body)
+	if r.Method != http.MethodPost || r.URL.Path != "/api/v3/contents/generations/tasks" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	var body map[string]any
+	_ = json.Unmarshal(raw, &body)
+	u.mu.Lock()
+	u.bodies = append(u.bodies, body)
+	u.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = io.WriteString(w, `{"id":"cgt-7126"}`)
+}
+
+func (u *bytePlusVideoUpstream) take() []map[string]any {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	bodies := u.bodies
+	u.bodies = nil
+	return bodies
+}
+
+type bytePlusVideoAccount struct{ url string }
+
+func (a bytePlusVideoAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.BytePlus}, nil
+}
+
+func (a bytePlusVideoAccount) GetKeysForProvider(_ context.Context, _ schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "bp-key", Name: "bp-key", Value: *schemas.NewSecretVar("placeholder"), Models: schemas.WhiteList{"*"}, Weight: 1.0}}, nil
+}
+
+func (a bytePlusVideoAccount) GetConfigForProvider(_ schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	nc := schemas.DefaultNetworkConfig
+	nc.BaseURL = a.url
+	nc.MaxRetries = 0
+	nc.DefaultRequestTimeoutInSeconds = 5
+	nc.AllowPrivateNetwork = true
+	return &schemas.ProviderConfig{NetworkConfig: nc, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// TestOpenAIVideoMultipartDeliversEveryField sends each video create field as a multipart
+// /openai/v1/videos request to BytePlus (fork, TXE-7126, contract C4). Each one either reaches
+// BytePlus's body in BytePlus's own field, or is refused with a 400 naming it before any call.
+// Before, the multipart parser kept only seconds, size, negative_prompt, seed and video_uri, and
+// dropped every other field without an error.
+func TestOpenAIVideoMultipartDeliversEveryField(t *testing.T) {
+	upstream := &bytePlusVideoUpstream{}
+	server := httptest.NewServer(upstream)
+	defer server.Close()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: bytePlusVideoAccount{url: server.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewOpenAIRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	png := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+	type file struct{ field, name string }
+	post := func(t *testing.T, passthrough bool, values [][2]string, files []file) (int, map[string]any) {
+		t.Helper()
+		var form bytes.Buffer
+		writer := multipart.NewWriter(&form)
+		require.NoError(t, writer.WriteField("model", "byteplus/dreamina-seedance-2-5-260628"))
+		require.NoError(t, writer.WriteField("prompt", "a paper boat"))
+		for _, v := range values {
+			require.NoError(t, writer.WriteField(v[0], v[1]))
+		}
+		for _, f := range files {
+			part, err := writer.CreateFormFile(f.field, f.name)
+			require.NoError(t, err)
+			_, err = part.Write(png)
+			require.NoError(t, err)
+		}
+		require.NoError(t, writer.Close())
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+		ctx.Request.SetRequestURI("/openai/v1/videos")
+		if passthrough {
+			ctx.Request.Header.Set("x-bf-passthrough-extra-params", "true")
+		}
+		ctx.Request.Header.SetContentType(writer.FormDataContentType())
+		ctx.Request.SetBody(form.Bytes())
+		r.Handler(&ctx)
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp), "response: %s", ctx.Response.Body())
+		return ctx.Response.StatusCode(), resp
+	}
+	contentRoles := func(body map[string]any) map[string]string {
+		roles := map[string]string{}
+		items, _ := body["content"].([]any)
+		for _, item := range items {
+			m, _ := item.(map[string]any)
+			role, _ := m["role"].(string)
+			if image, ok := m["image_url"].(map[string]any); ok {
+				roles[role], _ = image["url"].(string)
+			}
+			if video, ok := m["video_url"].(map[string]any); ok {
+				roles[role], _ = video["url"].(string)
+			}
+		}
+		return roles
+	}
+
+	delivered := []struct {
+		name        string
+		passthrough bool
+		values      [][2]string
+		files       []file
+		check       func(t *testing.T, body map[string]any)
+	}{
+		{name: "seconds", values: [][2]string{{"seconds", "5"}}, check: func(t *testing.T, b map[string]any) { assert.EqualValues(t, 5, b["duration"]) }},
+		{name: "size", values: [][2]string{{"size", "1280x720"}}, check: func(t *testing.T, b map[string]any) {
+			assert.Equal(t, "720p", b["resolution"])
+			assert.Equal(t, "16:9", b["ratio"])
+		}},
+		{name: "resolution and aspect_ratio", values: [][2]string{{"resolution", "1080p"}, {"aspect_ratio", "9:16"}}, check: func(t *testing.T, b map[string]any) {
+			assert.Equal(t, "1080p", b["resolution"])
+			assert.Equal(t, "9:16", b["ratio"])
+		}},
+		{name: "seed", values: [][2]string{{"seed", "7"}}, check: func(t *testing.T, b map[string]any) { assert.EqualValues(t, 7, b["seed"]) }},
+		{name: "audio", values: [][2]string{{"audio", "true"}}, check: func(t *testing.T, b map[string]any) { assert.Equal(t, true, b["generate_audio"]) }},
+		{name: "output_format", values: [][2]string{{"output_format", "mp4"}}, check: func(t *testing.T, b map[string]any) { assert.Equal(t, "mp4", b["output_format"]) }},
+		{name: "callback_url", values: [][2]string{{"callback_url", "https://hooks.example.test/7126"}}, check: func(t *testing.T, b map[string]any) {
+			assert.Equal(t, "https://hooks.example.test/7126", b["callback_url"])
+		}},
+		{name: "expires_after_seconds", values: [][2]string{{"expires_after_seconds", "7200"}}, check: func(t *testing.T, b map[string]any) {
+			assert.EqualValues(t, 7200, b["execution_expires_after"])
+		}},
+		{name: "input_reference file", files: []file{{"input_reference", "first.png"}}, check: func(t *testing.T, b map[string]any) {
+			assert.Contains(t, contentRoles(b)["first_frame"], "data:image/png;base64,")
+		}},
+		{name: "last_frame as a URL", values: [][2]string{{"last_frame", "https://img.example.test/last.png"}}, check: func(t *testing.T, b map[string]any) {
+			assert.Equal(t, "https://img.example.test/last.png", contentRoles(b)["last_frame"])
+		}},
+		{name: "last_frame as a file", files: []file{{"last_frame", "last.png"}}, check: func(t *testing.T, b map[string]any) {
+			assert.Contains(t, contentRoles(b)["last_frame"], "data:image/png;base64,")
+		}},
+		{name: "reference_images as URLs and a file", values: [][2]string{{"reference_images[]", "https://img.example.test/a.png"}, {"reference_images[]", "https://img.example.test/b.png"}}, files: []file{{"reference_images[]", "c.png"}}, check: func(t *testing.T, b map[string]any) {
+			var refs []string
+			for _, item := range b["content"].([]any) {
+				m := item.(map[string]any)
+				if m["role"] == "reference_image" {
+					refs = append(refs, m["image_url"].(map[string]any)["url"].(string))
+				}
+			}
+			require.Len(t, refs, 3, "content: %v", b["content"])
+			assert.Equal(t, "https://img.example.test/a.png", refs[0])
+			assert.Equal(t, "https://img.example.test/b.png", refs[1])
+			assert.Contains(t, refs[2], "data:image/png;base64,")
+		}},
+		{name: "video_uri", values: [][2]string{{"video_uri", "https://media.example.test/source.mp4"}}, check: func(t *testing.T, b map[string]any) {
+			assert.Equal(t, "https://media.example.test/source.mp4", contentRoles(b)["reference_video"])
+		}},
+		// Contract C4 exempts negative_prompt (schemas.UnpricedUnifiedFields): Ark has no field for
+		// it, so it is parsed and accepted, and BytePlus may ignore it.
+		{name: "negative_prompt, which C4 lets BytePlus ignore", values: [][2]string{{"negative_prompt", "blur"}}, check: func(t *testing.T, b map[string]any) {
+			assert.NotContains(t, b, "negative_prompt")
+		}},
+		{name: "a vendor field under passthrough keeps its JSON type", passthrough: true, values: [][2]string{{"watermark", "false"}, {"camera_fixed", "true"}, {"service_tier", "flex"}}, check: func(t *testing.T, b map[string]any) {
+			assert.Equal(t, false, b["watermark"])
+			assert.Equal(t, true, b["camera_fixed"])
+			assert.Equal(t, "flex", b["service_tier"])
+		}},
+	}
+	for _, tc := range delivered {
+		t.Run("delivers "+tc.name, func(t *testing.T) {
+			status, resp := post(t, tc.passthrough, tc.values, tc.files)
+			require.Equal(t, http.StatusOK, status, "response: %v", resp)
+			bodies := upstream.take()
+			require.Len(t, bodies, 1)
+			tc.check(t, bodies[0])
+		})
+	}
+
+	refused := []struct {
+		name, param string
+		values      [][2]string
+		files       []file
+	}{
+		{name: "client_reference_id", param: "client_reference_id", values: [][2]string{{"client_reference_id", "mine-1"}}},
+		{name: "output_storage_uri", param: "output_storage_uri", values: [][2]string{{"output_storage_uri", "s3://bucket/out"}}},
+		{name: "upscale_factor", param: "upscale_factor", values: [][2]string{{"upscale_factor", "2"}}},
+		{name: "target_megapixels", param: "target_megapixels", values: [][2]string{{"target_megapixels", "4"}}},
+		{name: "a seed that is not a number", param: "seed", values: [][2]string{{"seed", "seven"}}},
+		{name: "audio that is not a boolean", param: "audio", values: [][2]string{{"audio", "loud"}}},
+		{name: "a vendor field without passthrough", param: "watermark", values: [][2]string{{"watermark", "false"}}},
+		{name: "a file field the create does not read", param: "mask", files: []file{{"mask", "mask.png"}}},
+		{name: "last_frame as both a URL and a file", param: "last_frame", values: [][2]string{{"last_frame", "https://img.example.test/last.png"}}, files: []file{{"last_frame", "last.png"}}},
+	}
+	for _, tc := range refused {
+		t.Run("refuses "+tc.name, func(t *testing.T) {
+			status, resp := post(t, false, tc.values, tc.files)
+			require.Equal(t, http.StatusBadRequest, status, "response: %v", resp)
+			errField, _ := resp["error"].(map[string]any)
+			assert.Equal(t, tc.param, errField["param"], "response: %v", resp)
+			extra, _ := resp["extra_fields"].(map[string]any)
+			assert.Equal(t, string(schemas.ErrorTypeCallerUnsupportedParameter), extra["error_type"], "response: %v", resp)
+			assert.Empty(t, upstream.take(), "a refused request reached BytePlus")
+		})
+	}
+}
+
+// BenchmarkOpenAIVideoMultipartParse is the multipart /openai/v1/videos parser on its own (fork,
+// TXE-7126): an ordinary SDK create (model, prompt, seconds, size and an input_reference file),
+// and one that also carries unified fields, task control fields and vendor fields under
+// x-bf-passthrough-extra-params. Each iteration parses a fresh request, as the router does.
+func BenchmarkOpenAIVideoMultipartParse(b *testing.B) {
+	build := func(values [][2]string) ([]byte, string) {
+		var form bytes.Buffer
+		writer := multipart.NewWriter(&form)
+		for _, v := range values {
+			_ = writer.WriteField(v[0], v[1])
+		}
+		part, _ := writer.CreateFormFile("input_reference", "first.png")
+		_, _ = part.Write(bytes.Repeat([]byte("\x89PNG\r\n\x1a\n"), 512))
+		_ = writer.Close()
+		return form.Bytes(), writer.FormDataContentType()
+	}
+	ordinary := [][2]string{{"model", "openai/sora-2"}, {"prompt", "a paper boat"}, {"seconds", "8"}, {"size", "1280x720"}}
+	cases := []struct {
+		name        string
+		values      [][2]string
+		passthrough bool
+	}{
+		{name: "ordinary", values: ordinary},
+		{name: "unified, control and vendor fields", passthrough: true, values: append(append([][2]string{}, ordinary...),
+			[2]string{"aspect_ratio", "16:9"}, [2]string{"resolution", "720p"}, [2]string{"last_frame", "https://img.example.test/last.png"},
+			[2]string{"callback_url", "https://hooks.example.test/v"}, [2]string{"expires_after_seconds", "7200"},
+			[2]string{"watermark", "false"}, [2]string{"service_tier", "flex"})},
+	}
+	for _, c := range cases {
+		body, contentType := build(c.values)
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				var ctx fasthttp.RequestCtx
+				ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+				ctx.Request.Header.SetContentType(contentType)
+				if c.passthrough {
+					ctx.Request.Header.Set("x-bf-passthrough-extra-params", "true")
+				}
+				ctx.Request.SetBody(body)
+				var req openai.OpenAIVideoGenerationRequest
+				if err := parseOpenAIVideoGenerationMultipartRequest(&ctx, &req); err != nil {
+					b.Fatal(err)
+				}
+			}
 		})
 	}
 }

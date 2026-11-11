@@ -699,6 +699,7 @@ How parameters are collected depends on the entrypoint:
 
 - Standard inference routes such as `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`, and `/v1/images/generations` collect all unknown top-level JSON fields as extra parameters.
 - OpenAI integration routes under `/openai` preserve the OpenAI request shape, so provider-specific fields must be put under `extra_params`.
+- A multipart `/openai/v1/videos` request has no `extra_params` object. Every form field that is not a video generation field is an extra parameter, and a form value that is a JSON boolean, number, object or array keeps that type (`watermark=false` arrives as `false`). Without `x-bf-passthrough-extra-params: true`, such a field is refused with `400` `caller_unsupported_parameter` naming it, and so is a file field other than `input_reference`, `last_frame` or `reference_images`. `last_frame` and `reference_images` can be sent as a URL or as an uploaded file.
 
 <Tabs>
 <Tab title="Standard Inference Routes">

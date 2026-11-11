@@ -3,6 +3,7 @@ package openai
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -368,4 +369,58 @@ func benchmarkVideoGenerationForm(b *testing.B, extraParams map[string]any, pass
 func BenchmarkVideoGenerationForm(b *testing.B) {
 	b.Run("no_passthrough", func(b *testing.B) { benchmarkVideoGenerationForm(b, map[string]any{"vendor_hint": "high"}, false) })
 	b.Run("passthrough_one_extra", func(b *testing.B) { benchmarkVideoGenerationForm(b, map[string]any{"vendor_hint": "high"}, true) })
+}
+
+// Every unified video field an /openai/v1/videos request sets is also kept in ExtraParams under
+// its own name, as the native /v1/videos handler keeps it, for the converters that still read it
+// there (fork, TXE-7126). The loop runs over schemas.UnifiedVideoGenerationFields, so a unified
+// field added later fails here until it has a sample below and a copy in addUnifiedVideoFieldCopies.
+func TestOpenAIVideoRequestKeepsUnifiedFieldCopies(t *testing.T) {
+	samples := map[string]any{
+		"aspect_ratio":     "9:16",
+		"resolution":       "1080p",
+		"last_frame":       "https://img.example.test/last.png",
+		"reference_images": []string{"https://img.example.test/a.png"},
+	}
+	body := map[string]any{"model": "minimax/MiniMax-H3", "prompt": "a dog"}
+	for _, name := range schemas.UnifiedVideoGenerationFields {
+		sample, ok := samples[name]
+		if !ok {
+			t.Fatalf("unified video field %q has no sample here; add one, and a copy in addUnifiedVideoFieldCopies", name)
+		}
+		body[name] = sample
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req OpenAIVideoGenerationRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatal(err)
+	}
+	// A caller's own extra param under a unified name is kept, not replaced by the copy.
+	req.ExtraParams = map[string]any{"resolution": "1080p", "prompt_optimizer": false}
+	req.VideoGenerationParameters.ExtraParams = req.ExtraParams
+
+	bifrostReq := req.ToBifrostVideoGenerationRequest(nil)
+	extra := bifrostReq.Params.ExtraParams
+	for _, name := range schemas.UnifiedVideoGenerationFields {
+		got, err := json.Marshal(extra[name])
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, _ := json.Marshal(samples[name])
+		if string(got) != string(want) {
+			t.Errorf("ExtraParams[%q] = %s, want the compatibility copy %s", name, got, want)
+		}
+	}
+	if extra["prompt_optimizer"] != false {
+		t.Errorf("the caller's own extra param was lost: %v", extra)
+	}
+
+	// A request that sets no unified field gets no ExtraParams at all.
+	plain := OpenAIVideoGenerationRequest{Model: "openai/sora-2", Prompt: "a dog"}
+	if got := plain.ToBifrostVideoGenerationRequest(nil).Params.ExtraParams; got != nil {
+		t.Errorf("ExtraParams = %v, want nil when no unified field is set", got)
+	}
 }

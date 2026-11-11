@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/capsohq/bifrost/core/providers/gemini"
+	"github.com/capsohq/bifrost/core/providers/openai"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -205,4 +206,17 @@ func TestGeminiVideoDeliversTheUnifiedAspectRatio(t *testing.T) {
 	assert.Nil(t, schemas.CheckExtraParamPriceFieldsFor(schemas.Gemini, &schemas.BifrostRequest{
 		RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: bifrostReq,
 	}), "the genai route's own request must not be refused")
+}
+
+// An /openai/v1/videos request's unified resolution reaches Veo (fork, TXE-7126). The Gemini
+// converter reads resolution only from ExtraParams, so it depends on the compatibility copy the
+// OpenAI route request keeps there; before that copy, the route dropped it.
+func TestOpenAIRouteResolutionReachesVeo(t *testing.T) {
+	req := openai.OpenAIVideoGenerationRequest{Model: "gemini/veo-3.1-generate-preview", Prompt: "a paper boat"}
+	req.Resolution = "1080p"
+	geminiReq, err := gemini.ToGeminiVideoGenerationRequest(req.ToBifrostVideoGenerationRequest(nil))
+	require.NoError(t, err)
+	require.NotNil(t, geminiReq.Parameters)
+	require.NotNil(t, geminiReq.Parameters.Resolution)
+	assert.Equal(t, "1080p", *geminiReq.Parameters.Resolution)
 }
