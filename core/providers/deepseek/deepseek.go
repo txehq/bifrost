@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/capsohq/bifrost/core/providers/anthropic"
+	"github.com/capsohq/bifrost/core/providers/anthropicmsg"
 	"github.com/capsohq/bifrost/core/providers/openai"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
@@ -217,6 +218,30 @@ func servedModelPostHookRunner(requested string, next schemas.PostHookRunner) sc
 // GetProviderKey returns the provider identifier for DeepSeek.
 func (provider *DeepSeekProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.DeepSeek
+}
+
+// anthropicMessagesPath is where DeepSeek serves its Anthropic-compatible Messages API,
+// relative to the provider base URL.
+const anthropicMessagesPath = "/anthropic"
+
+// AnthropicMessagesEndpoint advertises DeepSeek's Anthropic-compatible endpoint
+// ({base}/anthropic), so /anthropic/v1/messages passes through to it as sent instead
+// of round-tripping through Bifrost Responses, which drops every Anthropic field the
+// Responses structure has no slot for (TXE-6548). The key's use_anthropic_endpoints
+// flag still decides the wire for chat and Responses; it plays no part here.
+func (provider *DeepSeekProvider) AnthropicMessagesEndpoint() (string, bool) {
+	if provider.networkConfig.BaseURL == "" {
+		return "", false
+	}
+	return provider.networkConfig.BaseURL + anthropicMessagesPath, true
+}
+
+func (provider *DeepSeekProvider) anthropicMessagesConfig() anthropicmsg.Config {
+	endpoint, _ := provider.AnthropicMessagesEndpoint()
+	return anthropicmsg.Config{
+		Provider: provider.GetProviderKey(), Endpoint: endpoint,
+		NetworkConfig: provider.networkConfig, Logger: provider.logger,
+	}
 }
 
 // ListModels performs a list models request to DeepSeek's API.
@@ -699,11 +724,80 @@ func (provider *DeepSeekProvider) ContainerFileDelete(_ *schemas.BifrostContext,
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
 }
 
-// Passthrough is not supported by the DeepSeek provider.
-func (provider *DeepSeekProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughRequest, provider.GetProviderKey())
+// Passthrough forwards a native Messages body to DeepSeek's Anthropic-compatible
+// endpoint byte for byte and returns DeepSeek's status, headers and body unchanged.
+// Only POST /v1/messages is served; every other path stays unsupported.
+func (provider *DeepSeekProvider) Passthrough(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
+	if !anthropicmsg.IsMessagesPath(req.Path) {
+		return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughRequest, provider.GetProviderKey())
+	}
+	resp, bifrostErr := anthropicmsg.Passthrough(ctx, provider.client, key, req, provider.anthropicMessagesConfig())
+	if resp != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		requested := passthroughRequestedModel(ctx, req)
+		served := providerUtils.GetJSONField(resp.Body, "model").Str
+		if served == "" {
+			served = requested
+		}
+		var usage *schemas.BifrostLLMUsage
+		if resp.PassthroughUsage != nil {
+			usage = resp.PassthroughUsage.LLMUsage
+		}
+		stampServedModel(&resp.ExtraFields, usage, requested, served)
+	}
+	return resp, bifrostErr
 }
 
-func (provider *DeepSeekProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+// PassthroughStream relays DeepSeek's Anthropic SSE frames unchanged, as Passthrough does.
+func (provider *DeepSeekProvider) PassthroughStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, req *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if !anthropicmsg.IsMessagesPath(req.Path) {
+		return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+	}
+	if served := datasheetServedModel(passthroughRequestedModel(ctx, req)); served != "" {
+		postHookRunner = passthroughServedModelPostHookRunner(served, postHookRunner)
+	}
+	return anthropicmsg.PassthroughStream(ctx, postHookRunner, postHookSpanFinalizer, provider.streamingClient, key, req, provider.anthropicMessagesConfig())
+}
+
+// passthroughRequestedModel is the DeepSeek model id a native Messages body reaches the
+// vendor with: the key alias's model id when core resolved one for this attempt (the
+// shared Messages client swaps it into the body), else the routed model, else the
+// body's own model.
+func passthroughRequestedModel(ctx *schemas.BifrostContext, req *schemas.BifrostPassthroughRequest) string {
+	model := req.Model
+	if model == "" {
+		model = providerUtils.GetJSONField(req.Body, "model").Str
+	}
+	if alias := schemas.GetResolvedAlias(ctx); alias != nil && alias.Config != nil && alias.Config.ModelID != "" && alias.Key == model {
+		return alias.Config.ModelID
+	}
+	return model
+}
+
+// datasheetServedModel is the model DeepSeek serves behind a requested id when the
+// datasheet names one that differs (DeepSeek's Anthropic endpoint echoes the
+// requested id back, so the datasheet is the only source on the native path).
+func datasheetServedModel(requested string) string {
+	caps := providerUtils.CapabilitiesFor(schemas.DeepSeek, requested)
+	if caps == nil || caps.ServerSideModel == nil || strings.EqualFold(*caps.ServerSideModel, requested) {
+		return ""
+	}
+	return *caps.ServerSideModel
+}
+
+// passthroughServedModelPostHookRunner stamps the served model on every native Messages
+// stream chunk and on the final chunk's usage, which is what pricing reads. It is
+// installed only when the datasheet names a served model, so other streams pay nothing.
+func passthroughServedModelPostHookRunner(served string, next schemas.PostHookRunner) schemas.PostHookRunner {
+	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		if result != nil && result.PassthroughResponse != nil {
+			result.PassthroughResponse.ExtraFields.RoutingInfo.ServerSideFallbackModel = new(served)
+			if usage := result.PassthroughResponse.PassthroughUsage; usage != nil && usage.LLMUsage != nil {
+				usage.LLMUsage.ServerSideFallbackModel = new(served)
+			}
+		}
+		if bifrostErr != nil && bifrostErr.ExtraFields.BilledUsage != nil {
+			bifrostErr.ExtraFields.BilledUsage.ServerSideFallbackModel = new(served)
+		}
+		return next(ctx, result, bifrostErr)
+	}
 }

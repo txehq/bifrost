@@ -8,7 +8,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -610,6 +615,7 @@ var nativeMessagesProviders = []struct {
 	{schemas.Anthropic, "claude-sonnet-4-5", "/v1/messages"},
 	{schemas.XAI, "grok-4.5", "/v1/messages"},
 	{schemas.Moonshot, "kimi-k3.1-pro", "/anthropic/v1/messages"},
+	{schemas.DeepSeek, "deepseek-v4-flash", "/anthropic/v1/messages"},
 }
 
 const (
@@ -937,4 +943,171 @@ func BenchmarkAnthropicNativeMessagesSelection(b *testing.B) {
 			installAnthropicNativeMessagesAdapters(bifrostCtx)
 		}
 	})
+}
+
+// TXE-6548: /anthropic/v1/messages with a deepseek/ model takes DeepSeek's native
+// Anthropic endpoint ({base}/anthropic/v1/messages) instead of the Responses bridge.
+// The caller's bytes reach DeepSeek with only the model value changed (the provider
+// prefix, or a key alias resolved to its model id), DeepSeek's bytes come back
+// unchanged, and its Anthropic usage reaches the plugins.
+func TestAnthropicMessagesRouteDeepSeekForwardsBodyByteExact(t *testing.T) {
+	// DeepSeek serves deepseek-v4-flash as deepseek-flash and its Anthropic endpoint
+	// echoes the requested id, so the datasheet's server_side_model is what pricing and
+	// the routing-info header must carry on the native path, as on the bridge.
+	served := "deepseek-flash"
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if provider != schemas.DeepSeek || model != "deepseek-v4-flash" {
+			return nil
+		}
+		return &schemas.ModelCapabilities{ServerSideModel: &served}
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	cases := []struct {
+		name, callerModel string
+		stream            bool
+	}{
+		{name: "prefixed_unary", callerModel: "deepseek/deepseek-v4-flash"},
+		{name: "prefixed_stream", callerModel: "deepseek/deepseek-v4-flash", stream: true},
+		{name: "key_alias_unary", callerModel: "deepseek/flash-anthropic"},
+		{name: "key_alias_stream", callerModel: "deepseek/flash-anthropic", stream: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			requestBody := xaiByteExactBody(tc.callerModel, tc.stream, 0)
+			from := []byte(`"model":"` + tc.callerModel + `"`)
+			if bytes.Count(requestBody, from) != 1 {
+				t.Fatalf("fixture must carry the model value exactly once")
+			}
+			want := bytes.Replace(requestBody, from, []byte(`"model":"deepseek-v4-flash"`), 1)
+			// DeepSeek's Anthropic endpoint echoes the requested id in its responses.
+			contentType, responseBody := "application/json", []byte(strings.ReplaceAll(xaiByteExactResponse, "grok-4.5", "deepseek-v4-flash"))
+			if tc.stream {
+				contentType, responseBody = "text/event-stream", []byte(strings.ReplaceAll(xaiByteExactSSE, "grok-4.5", "deepseek-v4-flash"))
+			}
+
+			var mu sync.Mutex
+			var upstreamBody []byte
+			var upstreamPaths []string
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read upstream body: %v", err)
+				}
+				mu.Lock()
+				upstreamBody, upstreamPaths = body, append(upstreamPaths, r.URL.Path)
+				mu.Unlock()
+				if got := r.Header.Get("x-api-key"); got != "ds-secret" {
+					t.Errorf("x-api-key = %q", got)
+				}
+				w.Header().Set("Content-Type", contentType)
+				_, _ = w.Write(responseBody)
+			}))
+			defer upstream.Close()
+
+			plugin := &passthroughUsagePlugin{}
+			account := &nativeMessagesTestAccount{
+				configs: map[schemas.ModelProvider]*schemas.ProviderConfig{
+					schemas.DeepSeek: {NetworkConfig: schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true}},
+				},
+				keys: map[schemas.ModelProvider][]schemas.Key{
+					schemas.DeepSeek: {{
+						ID: "ds-key", Value: schemas.SecretVar{Val: "ds-secret"}, Models: schemas.WhiteList{"*"}, Weight: 1,
+						Aliases: schemas.KeyAliases{"flash-anthropic": {ModelID: "deepseek-v4-flash"}},
+					}},
+				},
+			}
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+				Account: account, Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1,
+				LLMPlugins: []schemas.LLMPlugin{plugin},
+			})
+			if err != nil {
+				t.Fatalf("init Bifrost: %v", err)
+			}
+			defer client.Shutdown()
+
+			handler := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger()).
+				createHandler(createAnthropicMessagesRouteConfig("/anthropic", bifrost.NewNoOpLogger())[0])
+			httpCtx := &fasthttp.RequestCtx{}
+			httpCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+			httpCtx.Request.SetRequestURI("/anthropic/v1/messages")
+			httpCtx.Request.Header.SetContentType("application/json")
+			httpCtx.Request.Header.Set("anthropic-version", "2023-06-01")
+			httpCtx.Request.SetBody(requestBody)
+			handler(httpCtx)
+
+			if httpCtx.Response.StatusCode() != fasthttp.StatusOK {
+				t.Fatalf("status = %d, body = %s", httpCtx.Response.StatusCode(), httpCtx.Response.Body())
+			}
+			clientBody := httpCtx.Response.Body()
+			if tc.stream && httpCtx.Response.IsBodyStream() {
+				clientBody, err = io.ReadAll(httpCtx.Response.BodyStream())
+				if err != nil {
+					t.Fatalf("read client stream: %v", err)
+				}
+			}
+			if !bytes.Equal(clientBody, responseBody) {
+				t.Fatalf("client bytes changed:\n got: %q\nwant: %q", clientBody, responseBody)
+			}
+			// The routed-identity headers are how a client (and the provider harness)
+			// tells the native path from the Responses bridge.
+			wantType := schemas.PassthroughRequest
+			if tc.stream {
+				wantType = schemas.PassthroughStreamRequest
+			}
+			if got := string(httpCtx.Response.Header.Peek("x-bifrost-request-type")); got != string(wantType) {
+				t.Errorf("x-bifrost-request-type = %q, want %q", got, wantType)
+			}
+			if got := string(httpCtx.Response.Header.Peek("x-bifrost-provider")); got != string(schemas.DeepSeek) {
+				t.Errorf("x-bifrost-provider = %q, want deepseek", got)
+			}
+			if got := string(httpCtx.Response.Header.Peek("x-bifrost-routing-info-server-side-fallback-model")); got != served {
+				t.Errorf("x-bifrost-routing-info-server-side-fallback-model = %q, want %q", got, served)
+			}
+
+			mu.Lock()
+			got, paths := upstreamBody, upstreamPaths
+			mu.Unlock()
+			if len(paths) != 1 || paths[0] != "/anthropic/v1/messages" {
+				t.Fatalf("upstream calls = %v, want exactly one to /anthropic/v1/messages", paths)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("upstream body is not byte-exact:\n got: %s\nwant: %s", got, want)
+			}
+			plugin.assertCacheUsage(t)
+		})
+	}
+}
+
+// TestNativeMessagesProvidersMatchHarnessCheck keeps the offline harness rule for native
+// Messages rows (nativeMessagesProviders in collection-scripts.test.mjs) equal to the Go
+// table nativeMessagesProviders above, which
+// TestAnthropicNativeMessagesRedactionCoversEveryCapableProvider ties to the providers that
+// implement AnthropicMessagesEndpoint. A provider that gains the method sends its
+// /anthropic/v1/messages rows down the passthrough, where extra_fields.raw_request no longer
+// exists; without its name in that list the harness rule would not see those rows.
+func TestNativeMessagesProvidersMatchHarnessCheck(t *testing.T) {
+	implementers := make([]string, 0, len(nativeMessagesProviders))
+	for _, row := range nativeMessagesProviders {
+		implementers = append(implementers, string(row.provider))
+	}
+	sort.Strings(implementers)
+
+	root := filepath.Join("..", "..", "..")
+	script, err := os.ReadFile(filepath.Join(root, "tests", "e2e", "api", "collections", "collection-scripts.test.mjs"))
+	if err != nil {
+		t.Fatalf("read collection-scripts.test.mjs: %v", err)
+	}
+	match := regexp.MustCompile(`const nativeMessagesProviders = \[([^\]]*)\];`).FindSubmatch(script)
+	if match == nil {
+		t.Fatal("nativeMessagesProviders not found in collection-scripts.test.mjs")
+	}
+	var listed []string
+	for _, quoted := range regexp.MustCompile(`"([^"]+)"`).FindAllSubmatch(match[1], -1) {
+		listed = append(listed, string(quoted[1]))
+	}
+	sort.Strings(listed)
+	if !slices.Equal(implementers, listed) {
+		t.Fatalf("collection-scripts.test.mjs nativeMessagesProviders = %v, but the Go table nativeMessagesProviders names %v", listed, implementers)
+	}
 }

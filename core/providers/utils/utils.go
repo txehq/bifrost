@@ -1975,6 +1975,18 @@ func ApplyLargePayloadRequestBodyWithModelNormalization(
 	req *fasthttp.Request,
 	defaultProvider schemas.ModelProvider,
 ) bool {
+	return ApplyLargePayloadRequestBodyWithModelMapping(ctx, req, defaultProvider, nil)
+}
+
+// ApplyLargePayloadRequestBodyWithModelMapping is ApplyLargePayloadRequestBodyWithModelNormalization
+// whose outgoing model is mapModel(normalized model) when mapModel is not nil, so a
+// streamed body gets the same model rewrite (a resolved key alias, say) as a buffered one.
+func ApplyLargePayloadRequestBodyWithModelMapping(
+	ctx context.Context,
+	req *fasthttp.Request,
+	defaultProvider schemas.ModelProvider,
+	mapModel func(string) string,
+) bool {
 	if req == nil || !IsLargePayloadPassthroughEnabled(ctx) {
 		return false
 	}
@@ -1990,6 +2002,9 @@ func ApplyLargePayloadRequestBodyWithModelNormalization(
 		if metadata, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMetadata).(*schemas.LargePayloadMetadata); ok && metadata != nil {
 			if rawModel := strings.TrimSpace(metadata.Model); rawModel != "" && defaultProvider != "" {
 				_, normalizedModel := schemas.ParseModelString(rawModel, defaultProvider)
+				if mapModel != nil && normalizedModel != "" {
+					normalizedModel = mapModel(normalizedModel)
+				}
 				if normalizedModel != "" && normalizedModel != rawModel {
 					if strings.Contains(ctLower, "application/json") {
 						rewrittenReader, sizeDelta := RewriteLargePayloadModelInJSONPrefix(bodyReader, rawModel, normalizedModel)
