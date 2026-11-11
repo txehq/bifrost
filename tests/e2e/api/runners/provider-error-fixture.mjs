@@ -1141,7 +1141,8 @@ const wireAnswer = (path, body, bytes) => {
         if (body.input.includes("voyage-fixture-fail")) return { status: 500, body: JSON.stringify({ detail: "voyage fixture failure" }) };
         const embedding = body.encoding_format === "base64" ? "AACAPw==" :
             ["int8", "binary"].includes(body.output_dtype) ? [-128, 0, 127] :
-            ["uint8", "ubinary"].includes(body.output_dtype) ? [0, 128, 255] : [0.1, 0.2];
+            ["uint8", "ubinary"].includes(body.output_dtype) ? [0, 128, 255] :
+            [256, 512, 1024, 2048].includes(body.output_dimension) ? Array(body.output_dimension).fill(0.1) : [0.1, 0.2];
         return { status: 200, body: JSON.stringify({ object: "list", data: body.input.map((_, index) => ({ object: "embedding", index, embedding })), usage: body.input.includes("voyage-fixture-no-usage") ? {} : { total_tokens: 7 } }) };
     }
 	if (path === "/v1/embeddings" || path === "/pp/volcengine/embeddings") return { status: 200, body: JSON.stringify(embeddingAnswer) };

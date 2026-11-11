@@ -79,6 +79,7 @@ func TestVoyageBatch(t *testing.T) {
 				require.EqualValues(t, 1, calls.Load())
 				wire := <-wireCh
 				require.Equal(t, []interface{}{"hello", "world"}, wire["input"])
+				require.Equal(t, model, wire["model"])
 				require.Equal(t, float64(256), wire["output_dimension"])
 				require.Equal(t, "float", wire["output_dtype"])
 				require.Equal(t, "document", wire["input_type"])

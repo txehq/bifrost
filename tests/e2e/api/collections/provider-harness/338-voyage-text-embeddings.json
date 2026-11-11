@@ -933,5 +933,16 @@
         }
       }
     }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (pm.variables.get('providerErrorFixture') === '1') { pm.request.headers.upsert({ key: 'x-bf-api-key', value: 'voyage-fixture' }); }"
+        ]
+      }
+    }
   ]
 }
