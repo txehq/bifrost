@@ -648,6 +648,176 @@ func newAudioTestHandler(t *testing.T, upstreams map[schemas.ModelProvider]*audi
 	return &CompletionHandler{client: client, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
 }
 
+// deepgramUpstream stands in for api.deepgram.com: it records each request's query,
+// Content-Type and body and answers with status and body.
+type deepgramUpstream struct {
+	status int
+	body   string
+
+	mu       sync.Mutex
+	requests []deepgramUpstreamRequest
+}
+
+type deepgramUpstreamRequest struct {
+	path, query, contentType, auth string
+	body                           []byte
+}
+
+func (u *deepgramUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	u.mu.Lock()
+	u.requests = append(u.requests, deepgramUpstreamRequest{
+		path: r.URL.Path, query: r.URL.RawQuery, contentType: r.Header.Get("Content-Type"), auth: r.Header.Get("Authorization"), body: body,
+	})
+	u.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(u.status)
+	_, _ = io.WriteString(w, u.body)
+}
+
+func (u *deepgramUpstream) only(t *testing.T) deepgramUpstreamRequest {
+	t.Helper()
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if len(u.requests) != 1 {
+		t.Fatalf("upstream calls = %d, want exactly one", len(u.requests))
+	}
+	return u.requests[0]
+}
+
+func newDeepgramTestHandler(t *testing.T, upstream *deepgramUpstream) *CompletionHandler {
+	t.Helper()
+	srv := httptest.NewServer(upstream)
+	t.Cleanup(srv.Close)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: audioUpstreamAccount{baseURLs: map[schemas.ModelProvider]string{schemas.Deepgram: srv.URL}},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("bifrost.Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	return &CompletionHandler{client: client, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+}
+
+const deepgramTwoChannelBody = `{"metadata":{"request_id":"a847f427-4ad5-4d67-9b95-db801e58251c","duration":30.5,"channels":2},` +
+	`"results":{"channels":[{"alternatives":[{"transcript":"thank you for calling"}]},{"alternatives":[{"transcript":"hello"}]}]}}`
+
+// POST /v1/audio/transcriptions with model deepgram/nova-3 and a url in place of the file:
+// the route accepts it and Deepgram receives the JSON body {"url": ...}, with the options the
+// caller wrote as form fields in the query string under their own names (contract C4). The
+// response carries Deepgram's billable duration as usage, duration × channels (C5).
+func TestTranscriptionRouteSendsURLWithoutFileToDeepgram(t *testing.T) {
+	const audioURL = "https://example.com/audio/call.wav"
+	upstream := &deepgramUpstream{status: http.StatusOK, body: deepgramTwoChannelBody}
+	h := newDeepgramTestHandler(t, upstream)
+
+	ctx := multipartTranscriptionCtxWithoutFile(t, [][2]string{
+		{"model", "deepgram/nova-3"},
+		{"url", audioURL},
+		{"language", "en"},
+		{"multichannel", "true"},
+		{"keyterm", "Bifrost gateway"},
+		{"keyterm", "Tokun"},
+	})
+	h.transcription(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("status = %d, body %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	got := upstream.only(t)
+	if got.path != "/v1/listen" || got.auth != "Token sk-test" {
+		t.Fatalf("upstream request = %s with %q, want /v1/listen with the Token scheme", got.path, got.auth)
+	}
+	if got.contentType != "application/json" || string(got.body) != `{"url":"`+audioURL+`"}` {
+		t.Fatalf("upstream body = %s (%s), want the JSON url body", got.body, got.contentType)
+	}
+	if got.query != "keyterm=Bifrost+gateway&keyterm=Tokun&language=en&model=nova-3&multichannel=true" {
+		t.Fatalf("upstream query = %q, want every option under its own name and no url", got.query)
+	}
+	var resp struct {
+		Text  string `json:"text"`
+		Usage struct {
+			Type    string  `json:"type"`
+			Seconds float64 `json:"seconds"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("response is not JSON: %v: %s", err, ctx.Response.Body())
+	}
+	if resp.Text != "thank you for calling\nhello" || resp.Usage.Type != "duration" || resp.Usage.Seconds != 61 {
+		t.Fatalf("response = %s, want both channels and usage {type: duration, seconds: 61}", ctx.Response.Body())
+	}
+}
+
+// The same route with a file: the audio bytes are Deepgram's request body.
+func TestTranscriptionRouteSendsFileBytesToDeepgram(t *testing.T) {
+	upstream := &deepgramUpstream{status: http.StatusOK, body: deepgramTwoChannelBody}
+	h := newDeepgramTestHandler(t, upstream)
+
+	ctx := multipartTranscriptionCtx(t, [][2]string{{"model", "deepgram/nova-3"}, {"diarize", "true"}})
+	h.transcription(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("status = %d, body %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	got := upstream.only(t)
+	if got.contentType != "audio/mpeg" || string(got.body) != "ID3fake-mp3" || got.query != "diarize=true&model=nova-3" {
+		t.Fatalf("upstream request = %q (%s) ?%s, want the audio bytes and the options in the query", got.body, got.contentType, got.query)
+	}
+}
+
+// A Deepgram error reaches the caller with Deepgram's status code, text and code, and
+// extra_fields.error_type (contract C6). A field Deepgram cannot take is 400
+// caller_unsupported_parameter and makes no upstream call (C4).
+func TestTranscriptionRouteReturnsDeepgramErrors(t *testing.T) {
+	upstream := &deepgramUpstream{status: http.StatusPaymentRequired, body: `{"err_code":"ASR_PAYMENT_REQUIRED","err_msg":"Project does not have enough credits for an ASR request and does not have an overage agreement.","request_id":"r-402"}`}
+	h := newDeepgramTestHandler(t, upstream)
+
+	type errorBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			Param   string `json:"param"`
+		} `json:"error"`
+		ExtraFields struct {
+			ErrorType string `json:"error_type"`
+			Provider  string `json:"provider"`
+		} `json:"extra_fields"`
+	}
+
+	ctx := multipartTranscriptionCtx(t, [][2]string{{"model", "deepgram/nova-3"}})
+	h.transcription(ctx)
+	var vendorErr errorBody
+	if err := json.Unmarshal(ctx.Response.Body(), &vendorErr); err != nil {
+		t.Fatalf("error response is not JSON: %v: %s", err, ctx.Response.Body())
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusPaymentRequired || vendorErr.ExtraFields.ErrorType != string(schemas.ErrorTypeProviderBilling) ||
+		vendorErr.Error.Code != "ASR_PAYMENT_REQUIRED" || !strings.HasPrefix(vendorErr.Error.Message, "Project does not have enough credits") || vendorErr.ExtraFields.Provider != "deepgram" {
+		t.Fatalf("status %d, body %s; want Deepgram's 402 as provider_billing", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	upstream.only(t)
+
+	// The native route parses response_format into the unified field and leaves temperature and
+	// include[] in the extra params; each is refused the same way, and none reaches Deepgram.
+	for field, param := range map[[2]string]string{
+		{"response_format", "srt"}: "response_format",
+		{"temperature", "0.2"}:     "temperature",
+		{"include[]", "logprobs"}:  "include",
+	} {
+		ctx = multipartTranscriptionCtx(t, [][2]string{{"model", "deepgram/nova-3"}, field})
+		h.transcription(ctx)
+		var refused errorBody
+		if err := json.Unmarshal(ctx.Response.Body(), &refused); err != nil {
+			t.Fatalf("error response is not JSON: %v: %s", err, ctx.Response.Body())
+		}
+		if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || refused.ExtraFields.ErrorType != string(schemas.ErrorTypeCallerUnsupportedParameter) || refused.Error.Param != param {
+			t.Fatalf("%s: status %d, body %s; want 400 caller_unsupported_parameter naming %s", field[0], ctx.Response.StatusCode(), ctx.Response.Body(), param)
+		}
+		upstream.only(t)
+	}
+}
+
 func speechCtx(body string) *fasthttp.RequestCtx {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod(fasthttp.MethodPost)

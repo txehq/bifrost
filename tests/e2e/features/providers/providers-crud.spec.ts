@@ -311,6 +311,43 @@ test.describe("Providers", () => {
       await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
     });
 
+    // Deepgram (fork, TXE-6434) is a built-in provider with a plain API key. It serves
+    // transcription only and lists no models, so model discovery on save finds none.
+    test("should add the Deepgram provider from the dropdown and save a key", async ({
+      providersPage,
+      page,
+    }) => {
+      if (!(await providersPage.providerExists("deepgram"))) {
+        await providersPage.addKnownProviderFromDropdown("deepgram");
+        createdProviders.push("deepgram");
+      }
+      const item = providersPage.getProviderItem("deepgram");
+      await expect(item).toBeVisible({ timeout: 15000 });
+      await expect(item).toContainText("Deepgram");
+      await providersPage.selectProvider("deepgram");
+      await expect(providersPage.page).toHaveURL(/provider=deepgram/);
+
+      const keyName = `Deepgram-Key-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      createdKeys.push({ provider: "deepgram", keyName });
+
+      await providersPage.dismissToasts();
+      await providersPage.addKeyBtn.click();
+      await expect(providersPage.keyForm).toBeVisible();
+      await page.getByLabel("Name").fill(keyName);
+      await page.getByLabel("API Key").fill("e2e-deepgram-api-key");
+
+      // Model discovery is unsupported for Deepgram; the key must still save.
+      await providersPage.keySaveBtn.click();
+      await providersPage.waitForSuccessToast();
+      await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+      expect(await providersPage.keyExists(keyName)).toBe(true);
+
+      const keysResponse = await page.request.get("/api/providers/deepgram/keys");
+      expect(keysResponse.ok()).toBe(true);
+      const saved = ((await keysResponse.json()) as { keys: { name: string }[] }).keys.find((k) => k.name === keyName);
+      expect(saved, "saved key must be listed").toBeTruthy();
+    });
+
     test("should save a Cloudflare key with its account ID", async ({
       providersPage,
       page,

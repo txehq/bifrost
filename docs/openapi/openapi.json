@@ -114745,6 +114745,7 @@
           "cerebras",
           "cohere",
           "deepseek",
+          "deepgram",
           "gemini",
           "groq",
           "mistral",
@@ -122494,7 +122495,7 @@
           "url": {
             "type": "string",
             "format": "uri",
-            "description": "Audio URL in place of `file`, forwarded to the provider unchanged; Bifrost does not download it. Only providers whose transcription takes a URL accept it (Groq); any other provider answers 400 with `extra_fields.error_type` `caller_unsupported_parameter` and `error.param` `url`."
+            "description": "Audio URL in place of `file`, forwarded to the provider unchanged; Bifrost does not download it. Only providers whose transcription takes a URL accept it (Groq, Deepgram); any other provider answers 400 with `extra_fields.error_type` `caller_unsupported_parameter` and `error.param` `url`."
           },
           "fallbacks": {
             "type": "array",

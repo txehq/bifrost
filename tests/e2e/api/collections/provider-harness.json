@@ -278,6 +278,8 @@
           "  var __u = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
           "  var __p = __u.split('?')[0];",
           "  var __ends = function (s) { return __p.length >= s.length && __p.slice(-s.length) === s; };",
+          "  // An async submission (/v1/async/...) answers 202 with a job, before any provider is called: it has no routed identity yet.",
+          "  if (__p.indexOf('/v1/async/') !== -1) { return; }",
           "  var __isInference =",
           "    __ends('/chat/completions') ||",
           "    __ends('/responses') ||",
@@ -322521,6 +322523,1029 @@
                 "v1",
                 "audio",
                 "transcriptions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "403. Deepgram provider: Nova-3 transcription by file or URL, options as query parameters, duration usage (deepgram provider) [SERIAL]",
+      "description": "TXE-6434 (Bifrost-Tokun contract C3, C4, C5, C6, C12): the deepgram provider serves POST /v1/audio/transcriptions on Deepgram's pre-recorded API, POST /v1/listen. Rows 403.1 to 403.8 run against the provider error fixture, which stands in for api.deepgram.com and keeps every call it receives, so they pin what reaches the vendor and how often: with x-bf-api-key one request is exactly one upstream call under the named key, for a transcript and for a vendor error alike (two keys are configured; the other is never tried); the options the caller sends as form fields arrive as query parameters under their own names, a repeated field once per value; a file arrives as the request body, and a url with no file arrives as the JSON body {\"url\": ...} that Deepgram fetches itself; usage is {type: duration, seconds: metadata.duration x metadata.channels}, 61 for a 30.5 second two-channel call; raw_response carries metadata.request_id; a vendor 402 keeps its status, code and text and is provider_billing; a 200 without results is 502 provider_empty_result; a field Deepgram cannot take (response_format srt, callback) is 400 caller_unsupported_parameter and makes no upstream call. They are skipped unless providerErrorFixture=1. Row 403.9 is the live row: one Nova-3 transcription by URL, skipped while DEEPGRAM_API_KEY is unset; it also passes against the fixture. Rows 403.10 and 403.11 are the async route, against the fixture: POST /v1/async/audio/transcriptions accepts a url-only Deepgram job, and GET /v1/async/audio/transcriptions/{job_id} returns it completed with the transcript and the duration usage, after exactly one upstream call carrying the JSON url body.",
+      "item": [
+        {
+          "name": "403.1 /v1/audio/transcriptions - a file with a named key is one upstream call, options arrive as query parameters - deepgram/nova-3 (deepgram provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('deepgram setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the calls that reached the Deepgram stand-in, in order.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/v1/listen'; })); }); }",
+                  "// params: a call's query string as name -> list of values, in the order sent.",
+                  "function params(call) { var out = {}; call.query.replace(/^\\?/, '').split('&').forEach(function (pair) { if (!pair) { return; } var i = pair.indexOf('='); var k = decodeURIComponent(pair.slice(0, i).replace(/\\+/g, ' ')); var v = decodeURIComponent(pair.slice(i + 1).replace(/\\+/g, ' ')); (out[k] = out[k] || []).push(v); }); return out; }",
+                  "pm.test('the transcript and the billable duration come back', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, pm.response.text()).to.eql(\"Yeah. As as much as, it's worth celebrating, the first, spacewalk.\");",
+                  "  pm.expect(j.usage, 'usage: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(j.usage.type, pm.response.text()).to.eql('duration');",
+                  "  pm.expect(j.usage.seconds, pm.response.text()).to.eql(25.933313);",
+                  "  pm.expect(j.usage.input_tokens, 'Deepgram reports no tokens: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(j.extra_fields.raw_response.metadata.request_id, 'raw_response: ' + pm.response.text()).to.eql('a847f427-4ad5-4d67-9b95-db801e58251c');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), 'served by the named key').to.eql('deepgram-fixture-b');",
+                  "});",
+                  "wire(function (calls) {",
+                  "  pm.test('exactly one upstream call, under the named key, with the audio as the body', function () {",
+                  "    pm.expect(calls, JSON.stringify(calls)).to.have.length(1);",
+                  "    pm.expect(calls[0].headers.key, JSON.stringify(calls[0])).to.eql('test-key-b');",
+                  "    pm.expect(calls[0].headers.content_type, JSON.stringify(calls[0])).to.eql('audio/mpeg');",
+                  "    pm.expect(calls[0].audio_bytes, JSON.stringify(calls[0])).to.be.above(0);",
+                  "  });",
+                  "  pm.test('every option reached Deepgram as a query parameter under its own name', function () {",
+                  "    pm.expect(params(calls[0]), calls[0].query).to.eql({ diarize: ['true'], keyterm: ['Bifrost gateway'], language: ['en'], model: ['nova-3'], redact: ['pci', 'ssn'], smart_format: ['true'] });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "deepgram-fixture-b"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "deepgram/nova-3",
+                  "type": "text"
+                },
+                {
+                  "key": "language",
+                  "value": "en",
+                  "type": "text"
+                },
+                {
+                  "key": "smart_format",
+                  "value": "true",
+                  "type": "text"
+                },
+                {
+                  "key": "diarize",
+                  "value": "true",
+                  "type": "text"
+                },
+                {
+                  "key": "redact",
+                  "value": "pci",
+                  "type": "text"
+                },
+                {
+                  "key": "redact",
+                  "value": "ssn",
+                  "type": "text"
+                },
+                {
+                  "key": "keyterm",
+                  "value": "Bifrost gateway",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "403.2 /v1/audio/transcriptions - multichannel usage is duration times channels - deepgram/nova-3 (deepgram provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('deepgram setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the calls that reached the Deepgram stand-in, in order.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/v1/listen'; })); }); }",
+                  "// params: a call's query string as name -> list of values, in the order sent.",
+                  "function params(call) { var out = {}; call.query.replace(/^\\?/, '').split('&').forEach(function (pair) { if (!pair) { return; } var i = pair.indexOf('='); var k = decodeURIComponent(pair.slice(0, i).replace(/\\+/g, ' ')); var v = decodeURIComponent(pair.slice(i + 1).replace(/\\+/g, ' ')); (out[k] = out[k] || []).push(v); }); return out; }",
+                  "pm.test('usage.seconds is metadata.duration x metadata.channels', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.usage, 'usage: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(j.usage.type, pm.response.text()).to.eql('duration');",
+                  "  pm.expect(j.usage.seconds, '30.5 s x 2 channels: ' + pm.response.text()).to.eql(61);",
+                  "  pm.expect(j.text, pm.response.text()).to.eql(\"thank you for calling\\nhello i'd like to order\");",
+                  "  pm.expect(j.extra_fields.raw_response.metadata.duration, 'the per-channel duration stays readable: ' + pm.response.text()).to.eql(30.5);",
+                  "  pm.expect(j.extra_fields.raw_response.metadata.channels, pm.response.text()).to.eql(2);",
+                  "});",
+                  "wire(function (calls) {",
+                  "  pm.test('exactly one upstream call carrying multichannel=true', function () {",
+                  "    pm.expect(calls, JSON.stringify(calls)).to.have.length(1);",
+                  "    pm.expect(params(calls[0]), calls[0].query).to.eql({ model: ['nova-3'], multichannel: ['true'] });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "deepgram-fixture-b"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "deepgram/nova-3",
+                  "type": "text"
+                },
+                {
+                  "key": "multichannel",
+                  "value": "true",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "403.3 /v1/audio/transcriptions - a url with no file reaches Deepgram as the JSON url body - deepgram/nova-3 (deepgram provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('deepgram setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the calls that reached the Deepgram stand-in, in order.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/v1/listen'; })); }); }",
+                  "// params: a call's query string as name -> list of values, in the order sent.",
+                  "function params(call) { var out = {}; call.query.replace(/^\\?/, '').split('&').forEach(function (pair) { if (!pair) { return; } var i = pair.indexOf('='); var k = decodeURIComponent(pair.slice(0, i).replace(/\\+/g, ' ')); var v = decodeURIComponent(pair.slice(i + 1).replace(/\\+/g, ' ')); (out[k] = out[k] || []).push(v); }); return out; }",
+                  "pm.test('a url in place of the file is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.usage.type, pm.response.text()).to.eql('duration');",
+                  "  pm.expect(j.usage.seconds, pm.response.text()).to.eql(25.933313);",
+                  "});",
+                  "wire(function (calls) {",
+                  "  pm.test('Deepgram received the url as a JSON body, unchanged, in one call', function () {",
+                  "    pm.expect(calls, JSON.stringify(calls)).to.have.length(1);",
+                  "    pm.expect(calls[0].headers.content_type, JSON.stringify(calls[0])).to.eql('application/json');",
+                  "    pm.expect(JSON.parse(calls[0].body), calls[0].body).to.eql({ url: 'https://example.com/audio/call.wav?session=1&part=2' });",
+                  "    pm.expect(calls[0].audio_bytes, 'no audio bytes were sent').to.eql(-1);",
+                  "  });",
+                  "  pm.test('the url is not repeated in the query string', function () {",
+                  "    pm.expect(params(calls[0]), calls[0].query).to.eql({ model: ['nova-3'], punctuate: ['true'] });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "deepgram-fixture-b"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "deepgram/nova-3",
+                  "type": "text"
+                },
+                {
+                  "key": "url",
+                  "value": "https://example.com/audio/call.wav?session=1&part=2",
+                  "type": "text"
+                },
+                {
+                  "key": "punctuate",
+                  "value": "true",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "403.4 [EXPECT-402] /v1/audio/transcriptions - a vendor error keeps its status and is one upstream call with the named key - deepgram/deepgram-402 (deepgram provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('deepgram setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the calls that reached the Deepgram stand-in, in order.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/v1/listen'; })); }); }",
+                  "// params: a call's query string as name -> list of values, in the order sent.",
+                  "function params(call) { var out = {}; call.query.replace(/^\\?/, '').split('&').forEach(function (pair) { if (!pair) { return; } var i = pair.indexOf('='); var k = decodeURIComponent(pair.slice(0, i).replace(/\\+/g, ' ')); var v = decodeURIComponent(pair.slice(i + 1).replace(/\\+/g, ' ')); (out[k] = out[k] || []).push(v); }); return out; }",
+                  "pm.test('Deepgram\\'s 402 comes back as 402 provider_billing with its code and text', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(402);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_billing');",
+                  "  pm.expect(j.error && j.error.code, 'vendor code: ' + pm.response.text()).to.eql('ASR_PAYMENT_REQUIRED');",
+                  "  pm.expect(j.error.message, pm.response.text()).to.include('does not have enough credits');",
+                  "  pm.expect(j.is_bifrost_error, 'a vendor error is not a Bifrost error: ' + pm.response.text()).to.not.equal(true);",
+                  "  pm.expect(j.extra_fields.raw_response && j.extra_fields.raw_response.err_code, 'raw_response: ' + pm.response.text()).to.eql('ASR_PAYMENT_REQUIRED');",
+                  "});",
+                  "wire(function (calls) {",
+                  "  pm.test('the error was not retried and the other key was not tried', function () {",
+                  "    pm.expect(calls, JSON.stringify(calls)).to.have.length(1);",
+                  "    pm.expect(calls[0].headers.key, JSON.stringify(calls[0])).to.eql('test-key-b');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "deepgram-fixture-b"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "deepgram/deepgram-402",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "403.5 [EXPECT-400] /v1/audio/transcriptions - response_format srt is refused, nothing is sent - deepgram/nova-3 (deepgram provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('deepgram setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the calls that reached the Deepgram stand-in, in order.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/v1/listen'; })); }); }",
+                  "// params: a call's query string as name -> list of values, in the order sent.",
+                  "function params(call) { var out = {}; call.query.replace(/^\\?/, '').split('&').forEach(function (pair) { if (!pair) { return; } var i = pair.indexOf('='); var k = decodeURIComponent(pair.slice(0, i).replace(/\\+/g, ' ')); var v = decodeURIComponent(pair.slice(i + 1).replace(/\\+/g, ' ')); (out[k] = out[k] || []).push(v); }); return out; }",
+                  "pm.test('an undeliverable response_format is 400 caller_unsupported_parameter', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(j.error && j.error.param, 'param: ' + pm.response.text()).to.eql('response_format');",
+                  "});",
+                  "wire(function (calls) {",
+                  "  pm.test('no upstream call was made', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(0); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "deepgram-fixture-b"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "deepgram/nova-3",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "srt",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "403.6 [EXPECT-400] /v1/audio/transcriptions - callback is refused, nothing is sent - deepgram/nova-3 (deepgram provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('deepgram setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the calls that reached the Deepgram stand-in, in order.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/v1/listen'; })); }); }",
+                  "// params: a call's query string as name -> list of values, in the order sent.",
+                  "function params(call) { var out = {}; call.query.replace(/^\\?/, '').split('&').forEach(function (pair) { if (!pair) { return; } var i = pair.indexOf('='); var k = decodeURIComponent(pair.slice(0, i).replace(/\\+/g, ' ')); var v = decodeURIComponent(pair.slice(i + 1).replace(/\\+/g, ' ')); (out[k] = out[k] || []).push(v); }); return out; }",
+                  "pm.test('a callback is 400 caller_unsupported_parameter', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(j.error && j.error.param, 'param: ' + pm.response.text()).to.eql('callback');",
+                  "});",
+                  "wire(function (calls) {",
+                  "  pm.test('no upstream call was made', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(0); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "deepgram-fixture-b"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "deepgram/nova-3",
+                  "type": "text"
+                },
+                {
+                  "key": "callback",
+                  "value": "https://example.com/hooks/deepgram",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "403.7 [EXPECT-502] /v1/audio/transcriptions - a 200 without results is provider_empty_result - deepgram/deepgram-no-results (deepgram provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('deepgram setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the calls that reached the Deepgram stand-in, in order.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/v1/listen'; })); }); }",
+                  "// params: a call's query string as name -> list of values, in the order sent.",
+                  "function params(call) { var out = {}; call.query.replace(/^\\?/, '').split('&').forEach(function (pair) { if (!pair) { return; } var i = pair.indexOf('='); var k = decodeURIComponent(pair.slice(0, i).replace(/\\+/g, ' ')); var v = decodeURIComponent(pair.slice(i + 1).replace(/\\+/g, ' ')); (out[k] = out[k] || []).push(v); }); return out; }",
+                  "pm.test('a vendor 200 with no transcript is 502 provider_empty_result', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(502);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_empty_result');",
+                  "  pm.expect(j.is_bifrost_error, 'the vendor answered: ' + pm.response.text()).to.not.equal(true);",
+                  "});",
+                  "wire(function (calls) {",
+                  "  pm.test('exactly one upstream call', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(1); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "deepgram-fixture-b"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "deepgram/deepgram-no-results",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "403.8 /openai/v1/audio/transcriptions - the OpenAI drop-in route reaches Deepgram with a file - deepgram/nova-3 (deepgram provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('deepgram setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the calls that reached the Deepgram stand-in, in order.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/v1/listen'; })); }); }",
+                  "// params: a call's query string as name -> list of values, in the order sent.",
+                  "function params(call) { var out = {}; call.query.replace(/^\\?/, '').split('&').forEach(function (pair) { if (!pair) { return; } var i = pair.indexOf('='); var k = decodeURIComponent(pair.slice(0, i).replace(/\\+/g, ' ')); var v = decodeURIComponent(pair.slice(i + 1).replace(/\\+/g, ' ')); (out[k] = out[k] || []).push(v); }); return out; }",
+                  "pm.test('the drop-in route answers with the transcript and the billable duration', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.usage.type, pm.response.text()).to.eql('duration');",
+                  "  pm.expect(j.usage.seconds, pm.response.text()).to.eql(25.933313);",
+                  "});",
+                  "wire(function (calls) {",
+                  "  pm.test('one upstream call, the audio as the body and the form fields as query parameters', function () {",
+                  "    pm.expect(calls, JSON.stringify(calls)).to.have.length(1);",
+                  "    pm.expect(calls[0].headers.key, JSON.stringify(calls[0])).to.eql('test-key-b');",
+                  "    pm.expect(calls[0].audio_bytes, JSON.stringify(calls[0])).to.be.above(0);",
+                  "    pm.expect(params(calls[0]), calls[0].query).to.eql({ keyterm: ['Bifrost gateway', 'Tokun'], language: ['en'], model: ['nova-3'] });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "deepgram-fixture-b"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "deepgram/nova-3",
+                  "type": "text"
+                },
+                {
+                  "key": "language",
+                  "value": "en",
+                  "type": "text"
+                },
+                {
+                  "key": "keyterm",
+                  "value": "Bifrost gateway",
+                  "type": "text"
+                },
+                {
+                  "key": "keyterm",
+                  "value": "Tokun",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "403.9 /v1/audio/transcriptions - live: a url in place of the file comes back with the billable duration - deepgram/nova-3 (deepgram provider)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a Nova-3 transcription by url returns text and duration usage', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'no transcript: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.usage, 'no usage: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(j.usage.type, pm.response.text()).to.eql('duration');",
+                  "  pm.expect(j.usage.seconds, pm.response.text()).to.be.a('number').and.above(0);",
+                  "  pm.expect(j.extra_fields.raw_response.metadata.request_id, 'raw_response: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.usage.seconds, 'duration x channels: ' + pm.response.text()).to.eql(j.extra_fields.raw_response.metadata.duration * j.extra_fields.raw_response.metadata.channels);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "deepgram/nova-3",
+                  "type": "text"
+                },
+                {
+                  "key": "url",
+                  "value": "https://dpgr.am/spacewalk.wav",
+                  "type": "text"
+                },
+                {
+                  "key": "smart_format",
+                  "value": "true",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "403.10 [EXPECT-202] /v1/async/audio/transcriptions - a url-only job is accepted - deepgram/nova-3 (deepgram provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('deepgram setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the calls that reached the Deepgram stand-in, in order.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/v1/listen'; })); }); }",
+                  "// params: a call's query string as name -> list of values, in the order sent.",
+                  "function params(call) { var out = {}; call.query.replace(/^\\?/, '').split('&').forEach(function (pair) { if (!pair) { return; } var i = pair.indexOf('='); var k = decodeURIComponent(pair.slice(0, i).replace(/\\+/g, ' ')); var v = decodeURIComponent(pair.slice(i + 1).replace(/\\+/g, ' ')); (out[k] = out[k] || []).push(v); }); return out; }",
+                  "pm.collectionVariables.unset('deepgramAsyncJobId');",
+                  "pm.test('the async submit is accepted with a job id', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(202);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id, 'no job id: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "  pm.collectionVariables.set('deepgramAsyncJobId', j.id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "deepgram-fixture-b"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "deepgram/nova-3",
+                  "type": "text"
+                },
+                {
+                  "key": "url",
+                  "value": "https://example.com/audio/async-call.wav",
+                  "type": "text"
+                },
+                {
+                  "key": "multichannel",
+                  "value": "true",
+                  "type": "text"
+                },
+                {
+                  "key": "keyterm",
+                  "value": "Bifrost gateway",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/async/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "async",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "403.11 /v1/async/audio/transcriptions/{job_id} - the job completes with the transcript and duration usage after one upstream call - deepgram/nova-3 (deepgram provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "// The job runs in the background against a local fixture; give it time to finish before the one read.",
+                  "setTimeout(function () {}, 3000);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the calls that reached the Deepgram stand-in, in order.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/v1/listen'; })); }); }",
+                  "// params: a call's query string as name -> list of values, in the order sent.",
+                  "function params(call) { var out = {}; call.query.replace(/^\\?/, '').split('&').forEach(function (pair) { if (!pair) { return; } var i = pair.indexOf('='); var k = decodeURIComponent(pair.slice(0, i).replace(/\\+/g, ' ')); var v = decodeURIComponent(pair.slice(i + 1).replace(/\\+/g, ' ')); (out[k] = out[k] || []).push(v); }); return out; }",
+                  "pm.test('the job is completed and carries the transcription', function () {",
+                  "  pm.expect(pm.collectionVariables.get('deepgramAsyncJobId'), 'row 403.10 produced no job id').to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.status, pm.response.text()).to.eql('completed');",
+                  "  pm.expect(j.result, 'no result: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(j.result.text, pm.response.text()).to.eql(\"thank you for calling\\nhello i'd like to order\");",
+                  "  pm.expect(j.result.usage.type, pm.response.text()).to.eql('duration');",
+                  "  pm.expect(j.result.usage.seconds, '30.5 s x 2 channels: ' + pm.response.text()).to.eql(61);",
+                  "});",
+                  "wire(function (calls) {",
+                  "  pm.test('the background run made exactly one upstream call with the JSON url body under the named key', function () {",
+                  "    pm.expect(calls, JSON.stringify(calls)).to.have.length(1);",
+                  "    pm.expect(calls[0].headers.key, JSON.stringify(calls[0])).to.eql('test-key-b');",
+                  "    pm.expect(calls[0].headers.content_type, JSON.stringify(calls[0])).to.eql('application/json');",
+                  "    pm.expect(JSON.parse(calls[0].body), calls[0].body).to.eql({ url: 'https://example.com/audio/async-call.wav' });",
+                  "    pm.expect(params(calls[0]), calls[0].query).to.eql({ keyterm: ['Bifrost gateway'], model: ['nova-3'], multichannel: ['true'] });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/async/audio/transcriptions/{{deepgramAsyncJobId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "async",
+                "audio",
+                "transcriptions",
+                "{{deepgramAsyncJobId}}"
               ]
             }
           }

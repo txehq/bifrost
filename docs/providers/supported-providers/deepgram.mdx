@@ -1,0 +1,230 @@
+---
+title: "Deepgram"
+description: "Deepgram conversion guide - pre-recorded speech-to-text (Nova-3) with options as query parameters, audio by file or URL, and billable duration as usage"
+icon: "d"
+---
+
+## Overview
+
+Deepgram is a speech-to-text provider. Bifrost serves its pre-recorded transcription API, which answers synchronously:
+
+- **Options are query parameters** - every Deepgram option (`diarize`, `smart_format`, `redact`, `keyterm`, `multichannel`, ...) is sent to Deepgram under its own name and value
+- **Audio by file or by URL** - a file is sent as the request body; a URL is sent as `{"url": "..."}` and Deepgram fetches it
+- **Billable duration as usage** - `usage.seconds` is the duration Deepgram reports, multiplied by the channels it transcribed
+- **One request, one upstream call** - Bifrost sends `POST /v1/listen` once and returns Deepgram's answer or its error
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Transcription (STT) | ✅ | ❌ | `/v1/listen` |
+| Speech (TTS) | ❌ | ❌ | - |
+| Chat Completions | ❌ | ❌ | - |
+| Responses API | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+| List Models | ❌ | - | - |
+
+<Note>
+**Unsupported Operations** (❌): Bifrost reaches Deepgram for pre-recorded transcription only. Deepgram's text-to-speech (Aura) and its realtime WebSocket transcription are not integrated. Every other operation returns `UnsupportedOperationError`.
+</Note>
+
+## Setup & Configuration
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **Deepgram** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Deepgram**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.DEEPGRAM_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "deepgram": {
+      "keys": [
+        {
+          "name": "deepgram-key-1",
+          "value": "env.DEEPGRAM_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Deepgram:
+    return []schemas.Key{{
+        Name:   "deepgram-key-1",
+        Value:  *schemas.NewSecretVar("env.DEEPGRAM_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 1. Transcription (Speech-to-Text)
+
+### Request with a file
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/transcriptions \
+  -F "model=deepgram/nova-3" \
+  -F "file=@call.wav" \
+  -F "language=en" \
+  -F "smart_format=true" \
+  -F "diarize=true" \
+  -F "keyterm=Bifrost" \
+  -F "keyterm=Tokun"
+```
+
+Bifrost sends:
+
+```
+POST https://api.deepgram.com/v1/listen?diarize=true&keyterm=Bifrost&keyterm=Tokun&language=en&model=nova-3&smart_format=true
+Authorization: Token <key>
+Content-Type: audio/wav
+
+<the audio bytes>
+```
+
+### Request with a URL
+
+Send `url` in place of `file`. Bifrost does not download the audio; Deepgram fetches it.
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/transcriptions \
+  -F "model=deepgram/nova-3" \
+  -F "url=https://dpgr.am/spacewalk.wav" \
+  -F "smart_format=true"
+```
+
+Bifrost sends `Content-Type: application/json` with the body `{"url":"https://dpgr.am/spacewalk.wav"}`. The `url` is not repeated in the query string. A request that carries both `file` and `url` is refused.
+
+<Note>
+The `/openai/v1/audio/transcriptions` drop-in route also reaches Deepgram with a `deepgram/` model, but it requires a `file`. Use `/v1/audio/transcriptions` for a URL.
+</Note>
+
+### Parameter Mapping
+
+| Bifrost field | Deepgram | Notes |
+|---------------|----------|-------|
+| `model` | `model` query parameter | Without the `deepgram/` prefix, e.g. `nova-3` |
+| `file` | request body | The bytes as sent. `Content-Type` comes from the filename's extension, else from the file header |
+| `url` | JSON body `{"url": ...}` | Only when no `file` is sent |
+| `language` | `language` query parameter | BCP-47 code, or `multi` |
+| `response_format` | not sent | Only `json` (or unset) is accepted; Deepgram answers JSON |
+| `prompt` | not sent | Deepgram has no prompt. Use `keyterm` |
+| any other form field | query parameter of the same name | Value unchanged; a repeated field is sent once per value |
+
+Deepgram's options do not need the `x-bf-passthrough-extra-params` header: they have no other way to reach Deepgram, so they are always forwarded.
+
+Bifrost never drops or rewrites a field it cannot deliver. These requests get `400` with `extra_fields.error_type: "caller_unsupported_parameter"` and the field in `error.param`, and no request reaches Deepgram:
+
+| Field | Why |
+|-------|-----|
+| `response_format` other than `json` | Deepgram answers JSON only |
+| `timestamp_granularities`, `temperature`, `include` | Deepgram has no equivalent. Word timings are always in the raw response |
+| `callback`, `callback_method` | Deepgram would answer with a request id and deliver the transcript elsewhere, so the response would carry no transcript and no usage |
+| `url` together with `file` | Send one |
+| an extra param whose value is an object or a nested list (Go SDK) | It has no query form |
+
+As on every provider, an extra param never names a field the request already sets or one only the gateway decides. These get `400` with `extra_fields.error_type: "caller_invalid_request"` and the param in `error.param`, and no request reaches Deepgram:
+
+| Field | Why |
+|-------|-----|
+| `model` or `language` as an extra param, under any spelling (`Model`, `MODEL`) | The request already sets them |
+| `version`, `model_id`, `deployment`, `deployment_id`, `engine`, `stream` | Names a vendor can read the model under, or the response shape. Deepgram reads `version` as the model's version, so it cannot be set through Bifrost |
+
+### Response Mapping
+
+| Deepgram field | Bifrost field | Notes |
+|----------------|---------------|-------|
+| `results.channels[].alternatives[0].transcript` | `text` | One channel unless `multichannel=true`; several channels are joined with a newline, in channel order |
+| `results.channels[0].detected_language` | `language` | Present when Deepgram detects the language |
+| `metadata.duration` × `metadata.channels` | `usage.seconds`, with `usage.type: "duration"` | See below |
+| the whole body | `extra_fields.raw_response` | When raw responses are enabled. Carries `metadata.request_id`, word timings, speakers, utterances, and every alternative |
+
+```json
+{
+  "text": "Yeah. As as much as, it's worth celebrating, the first, spacewalk.",
+  "language": "en",
+  "usage": {
+    "type": "duration",
+    "seconds": 25.933313
+  },
+  "extra_fields": {
+    "provider": "deepgram",
+    "request_type": "transcription"
+  }
+}
+```
+
+### Usage on multichannel audio
+
+Deepgram bills every channel of a `multichannel=true` request for the audio's full duration. The unified usage has one `seconds` field, so Bifrost reports the product: a 30.5 second stereo call transcribed with `multichannel=true` returns `usage.seconds: 61`. The per-channel duration and the channel count stay readable in `extra_fields.raw_response.metadata`.
+
+Bifrost reports only what Deepgram reported. When a response carries no `metadata.duration` or no `metadata.channels`, `usage` is absent.
+
+---
+
+## Errors
+
+A Deepgram error comes back with Deepgram's HTTP status code. `error.message` is Deepgram's text (`err_msg`, or `message` and `details`), `error.code` is Deepgram's code (`err_code`, `error_code` or `category`), and `extra_fields.error_type` classifies it:
+
+| Deepgram status | Example `error.code` | `extra_fields.error_type` |
+|-----------------|----------------------|---------------------------|
+| 400 | `Bad Request`, `INVALID_JSON`, `INVALID_QUERY_PARAMETER` | `caller_invalid_request` |
+| 401 | `INVALID_AUTH` | `provider_auth_failed` |
+| 402 | `ASR_PAYMENT_REQUIRED` | `provider_billing` |
+| 403 | `INSUFFICIENT_PERMISSIONS` | `provider_auth_failed` |
+| 429 | `TOO_MANY_REQUESTS` | `provider_rate_limited` |
+| 503 | `Service Unavailable` | `provider_overloaded` |
+
+A `200` from Deepgram that carries no `results` is returned as `502` with `error_type: "provider_empty_result"`.
+
+## Authentication
+
+Deepgram uses the `Token` scheme: `Authorization: Token <key>`. Bifrost applies it from the configured key.
+
+## Configuration
+
+**HTTP Settings:**
+- **Base URL**: `https://api.deepgram.com` (default)
+- **Endpoint**: `/v1/listen`
+
+Deepgram transcribes a file in one synchronous request, and a long recording can take minutes. Set `network_config.default_request_timeout_in_seconds` above the longest transcription you expect. Keep `network_config.max_retries` at `0` (the default) if a request must reach Deepgram exactly once.
+
+## Caveats
+
+<Accordion title="Only the first alternative is in text">
+**Severity**: Low
+**Behavior**: `text` carries the first alternative of each channel, the one Deepgram ranks highest.
+**Impact**: Read the other alternatives, word timings, speaker labels and utterances from `extra_fields.raw_response`.
+</Accordion>
+
+<Accordion title="Numbers on the OpenAI drop-in route">
+**Severity**: Low
+**Behavior**: `/openai/v1/audio/transcriptions` decodes a single extra form value as JSON before it reaches the provider, so `utt_split=0.80` is sent to Deepgram as `utt_split=0.8`.
+**Impact**: The value is numerically the same. `/v1/audio/transcriptions` forwards the text exactly as sent.
+</Accordion>

@@ -10448,6 +10448,129 @@ func (p *declaringImageProvider) ImageGeneration(_ *schemas.BifrostContext, _ sc
 	return &schemas.BifrostImageGenerationResponse{Data: []schemas.ImageData{{URL: "https://example.invalid/a.png"}}}, nil
 }
 
+// Deepgram through the real request worker (contract C3, C4, C5, C6): with a key named, one
+// request is exactly one upstream call, whether Deepgram answers a transcript or an error.
+// The named key's value goes in "Authorization: Token", the extra params go in the query, a
+// URL-only request goes as the JSON url body, usage is duration × channels, and a vendor 401
+// comes back as 401 without a second key being tried. A unified field Deepgram does not take
+// is refused before any call.
+func TestDeepgramTranscriptionIsOneUpstreamCallWithNamedKey(t *testing.T) {
+	type upstreamCall struct {
+		auth, path, query, contentType, body string
+	}
+	var mu sync.Mutex
+	var calls []upstreamCall
+	status := http.StatusOK
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		calls = append(calls, upstreamCall{auth: r.Header.Get("Authorization"), path: r.URL.Path, query: r.URL.RawQuery, contentType: r.Header.Get("Content-Type"), body: string(body)})
+		answer := status
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(answer)
+		if answer != http.StatusOK {
+			_, _ = w.Write([]byte(`{"err_code":"INVALID_AUTH","err_msg":"Invalid credentials.","request_id":"req_err"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"metadata":{"request_id":"req_ok","duration":30.5,"channels":2},"results":{"channels":[{"alternatives":[{"transcript":"thank you for calling"}]},{"alternatives":[{"transcript":"hello"}]}]}}`))
+	}))
+	defer upstream.Close()
+	taken := func() []upstreamCall {
+		mu.Lock()
+		defer mu.Unlock()
+		out := calls
+		calls = nil
+		return out
+	}
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.Deepgram, 4, 256, upstream.URL)
+	account.SetKeysForProvider(schemas.Deepgram, []schemas.Key{scenarioKey("deepgram-a", 1), scenarioKey("deepgram-b", 1)})
+	// A provider that serves a non-chat operation is configured with no retries (contract C3).
+	// With a retry budget, a named key's 401 would come back as 502 upstream_credentials_exhausted.
+	account.mu.Lock()
+	account.configs[schemas.Deepgram].NetworkConfig.MaxRetries = 0
+	account.mu.Unlock()
+	client := scenarioClient(t, account, nil, nil)
+
+	namedKeyCtx := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, "deepgram-b")
+		return ctx
+	}
+	fileRequest := func() *schemas.BifrostTranscriptionRequest {
+		return &schemas.BifrostTranscriptionRequest{
+			Provider: schemas.Deepgram,
+			Model:    "nova-3",
+			Input:    &schemas.TranscriptionInput{File: []byte("ID3fake-mp3"), Filename: "call.mp3"},
+			Params: &schemas.TranscriptionParameters{ExtraParams: map[string]interface{}{
+				"multichannel": "true",
+				"redact":       []string{"pci", "ssn"},
+			}},
+		}
+	}
+
+	resp, bifrostErr := client.TranscriptionRequest(namedKeyCtx(), fileRequest())
+	if bifrostErr != nil {
+		t.Fatalf("deepgram transcription failed: %s", bifrostErr.GetErrorString())
+	}
+	got := taken()
+	if len(got) != 1 {
+		t.Fatalf("upstream calls = %d, want exactly one", len(got))
+	}
+	if got[0].auth != "Token sk-deepgram-b" || got[0].path != "/v1/listen" || got[0].query != "model=nova-3&multichannel=true&redact=pci&redact=ssn" || got[0].contentType != "audio/mpeg" || got[0].body != "ID3fake-mp3" {
+		t.Fatalf("upstream call = %+v, want the named key, the options as query parameters and the audio as the body", got[0])
+	}
+	if resp.Text != "thank you for calling\nhello" || resp.Usage == nil || resp.Usage.Type != "duration" || resp.Usage.Seconds == nil || *resp.Usage.Seconds != 61 {
+		t.Fatalf("text = %q, usage = %+v; want both channels and {type: duration, seconds: 61}", resp.Text, resp.Usage)
+	}
+	if resp.ExtraFields.Provider != schemas.Deepgram || resp.ExtraFields.RoutingInfo.Key != "deepgram-b" {
+		t.Fatalf("extra fields = %+v, want provider deepgram served by the named key", resp.ExtraFields)
+	}
+
+	// URL-only: Deepgram declares it takes one, so the request reaches it as the JSON url body.
+	urlRequest := fileRequest()
+	urlRequest.Input = &schemas.TranscriptionInput{}
+	urlRequest.Params.ExtraParams = map[string]interface{}{schemas.TranscriptionURLParam: "https://example.com/audio/clip.m4a"}
+	if _, bifrostErr = client.TranscriptionRequest(namedKeyCtx(), urlRequest); bifrostErr != nil {
+		t.Fatalf("deepgram URL-only transcription failed: %s", bifrostErr.GetErrorString())
+	}
+	got = taken()
+	if len(got) != 1 || got[0].contentType != "application/json" || got[0].body != `{"url":"https://example.com/audio/clip.m4a"}` || got[0].query != "model=nova-3" {
+		t.Fatalf("upstream calls = %+v, want one call with the JSON url body and no url in the query", got)
+	}
+
+	// A vendor error with the key named: the vendor's status, error_type, and no second key.
+	mu.Lock()
+	status = http.StatusUnauthorized
+	mu.Unlock()
+	_, bifrostErr = client.TranscriptionRequest(namedKeyCtx(), fileRequest())
+	if bifrostErr == nil {
+		t.Fatal("a vendor 401 must come back as an error")
+	}
+	if got = taken(); len(got) != 1 || got[0].auth != "Token sk-deepgram-b" {
+		t.Fatalf("upstream calls = %+v, want exactly one, with the named key", got)
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusUnauthorized || bifrostErr.Error == nil || bifrostErr.Error.Message != "Invalid credentials." {
+		t.Fatalf("error = %v / %+v, want the vendor's 401 and text", bifrostErr.StatusCode, bifrostErr.Error)
+	}
+	if errorType := bifrostErr.ResolveErrorType(); errorType != schemas.ErrorTypeProviderAuthFailed {
+		t.Fatalf("error_type = %q, want provider_auth_failed", errorType)
+	}
+
+	// A unified field Deepgram does not take: refused before a key is chosen, no upstream call.
+	undeliverable := fileRequest()
+	undeliverable.Params.TimestampGranularities = []string{"word"}
+	_, bifrostErr = client.TranscriptionRequest(namedKeyCtx(), undeliverable)
+	if bifrostErr == nil || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error.Param != "timestamp_granularities" {
+		t.Fatalf("error = %+v, want caller_unsupported_parameter naming timestamp_granularities", bifrostErr)
+	}
+	if got = taken(); len(got) != 0 {
+		t.Fatalf("upstream calls = %d for a refused request, want none", len(got))
+	}
+}
+
 // BF4 through the real request worker: a unified field the provider did not declare is a
 // 400 caller_unsupported_parameter naming the field, and the provider is never called.
 // The declared-only request is the control: it reaches the provider.

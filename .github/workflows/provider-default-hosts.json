@@ -12,6 +12,7 @@
   "cohere": "api.cohere.ai",
   "dashscope": "dashscope-intl.aliyuncs.com",
   "databricks": "",
+  "deepgram": "api.deepgram.com",
   "deepseek": "api.deepseek.com",
   "elevenlabs": "api.elevenlabs.io",
   "fireworks": "api.fireworks.ai",

@@ -68,6 +68,7 @@ const (
 	Perplexity    ModelProvider = "perplexity"
 	Cerebras      ModelProvider = "cerebras"
 	DeepSeek      ModelProvider = "deepseek"
+	Deepgram      ModelProvider = "deepgram"
 	Gemini        ModelProvider = "gemini"
 	GLM           ModelProvider = "glm"
 	OpenRouter    ModelProvider = "openrouter"
@@ -138,6 +139,7 @@ var StandardProviders = []ModelProvider{
 	Cerebras,
 	Cohere,
 	DeepSeek,
+	Deepgram,
 	Gemini,
 	GLM,
 	Groq,

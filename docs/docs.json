@@ -170,6 +170,7 @@
                   "providers/supported-providers/cohere",
                   "providers/supported-providers/dashscope",
                   "providers/supported-providers/databricks",
+                  "providers/supported-providers/deepgram",
                   "providers/supported-providers/deepseek",
                   "providers/supported-providers/elevenlabs",
                   "providers/supported-providers/fireworks",

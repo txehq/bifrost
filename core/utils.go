@@ -41,6 +41,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.DashScope,
 	schemas.Databricks,
 	schemas.DeepSeek,
+	schemas.Deepgram,
 	schemas.Elevenlabs,
 	schemas.Gemini,
 	schemas.GoogleCloudTTS,

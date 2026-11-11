@@ -709,6 +709,9 @@
         "deepseek": {
           "$ref": "#/$defs/provider_with_deepseek_config"
         },
+        "deepgram": {
+          "$ref": "#/$defs/provider"
+        },
         "wafer": {
           "$ref": "#/$defs/provider"
         },

@@ -363,6 +363,7 @@ jobs:
             api.cohere.ai:443
             api.deepinfra.com:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.fireworks.ai:443
             api.github.com:443
@@ -494,6 +495,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           # Registration-only providers: every operation answers unsupported with no upstream call,
           # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
           DASHSCOPE_API_KEY: registration-only-no-upstream-call
@@ -610,6 +612,7 @@ jobs:
             api.cloudflare.com:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.fireworks.ai:443
             api.github.com:443
@@ -741,6 +744,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           # Registration-only providers: every operation answers unsupported with no upstream call,
           # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
           DASHSCOPE_API_KEY: registration-only-no-upstream-call
@@ -1119,6 +1123,7 @@ jobs:
             api.cerebras.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
@@ -1372,6 +1377,7 @@ jobs:
             api.cerebras.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
@@ -1455,6 +1461,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           # Registration-only providers: every operation answers unsupported with no upstream call,
           # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
           DASHSCOPE_API_KEY: registration-only-no-upstream-call
@@ -1515,6 +1522,7 @@ jobs:
             api.cerebras.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.groq.com:443
             api.mistral.ai:443
@@ -1608,6 +1616,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           # Registration-only providers: every operation answers unsupported with no upstream call,
           # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
           DASHSCOPE_API_KEY: registration-only-no-upstream-call
@@ -1660,6 +1669,7 @@ jobs:
             api.cerebras.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.groq.com:443
             api.mistral.ai:443
@@ -1829,6 +1839,7 @@ jobs:
             api.cerebras.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
@@ -2019,6 +2030,7 @@ jobs:
             api.cerebras.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.githubcopilot.com:443
@@ -2142,6 +2154,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           # Registration-only providers: every operation answers unsupported with no upstream call,
           # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
           DASHSCOPE_API_KEY: registration-only-no-upstream-call
@@ -2215,6 +2228,7 @@ jobs:
             api.cerebras.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
@@ -2313,6 +2327,7 @@ jobs:
             api.cerebras.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
@@ -2418,6 +2433,7 @@ jobs:
             api.cerebras.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.githubcopilot.com:443
@@ -2507,6 +2523,7 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           # Registration-only providers: every operation answers unsupported with no upstream call,
           # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
           DASHSCOPE_API_KEY: registration-only-no-upstream-call
@@ -2581,6 +2598,7 @@ jobs:
             api.cerebras.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.githubcopilot.com:443
@@ -2670,6 +2688,7 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           # Registration-only providers: every operation answers unsupported with no upstream call,
           # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
           DASHSCOPE_API_KEY: registration-only-no-upstream-call
@@ -2816,6 +2835,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           # Registration-only providers: every operation answers unsupported with no upstream call,
           # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
           DASHSCOPE_API_KEY: registration-only-no-upstream-call
@@ -2957,6 +2977,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           # Registration-only providers: every operation answers unsupported with no upstream call,
           # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
           DASHSCOPE_API_KEY: registration-only-no-upstream-call
@@ -3110,6 +3131,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           # Registration-only providers: every operation answers unsupported with no upstream call,
           # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
           DASHSCOPE_API_KEY: registration-only-no-upstream-call
