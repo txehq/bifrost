@@ -474,10 +474,14 @@ func ToBifrostVideoGenerationResponse(task *DashScopeTaskResponse) (*schemas.Bif
 			resp.ExpiresAt = providerUtils.VideoExpiresAt(nil, schemas.Ptr(resp.CreatedAt), dashScopeVideoLinkLifetime)
 		}
 	}
-	if usage := task.Usage; usage != nil && (usage.OutputVideoDuration != nil || usage.InputVideoDuration != nil) {
-		resp.Usage = &schemas.VideoUsage{OutputSeconds: usage.OutputVideoDuration, InputSeconds: usage.InputVideoDuration}
-		if usage.OutputVideoDuration != nil && *usage.OutputVideoDuration > 0 {
-			resp.Seconds = schemas.Ptr(strconv.FormatFloat(*usage.OutputVideoDuration, 'f', -1, 64))
+	// seconds is the clip's length as DashScope reports it. Accounting prices a job from it when
+	// the create named no seconds, so the older families' own usage fields are read too.
+	if usage := task.Usage; usage != nil {
+		if output := usage.outputSeconds(); output != nil || usage.InputVideoDuration != nil {
+			resp.Usage = &schemas.VideoUsage{OutputSeconds: output, InputSeconds: usage.InputVideoDuration}
+			if output != nil && *output > 0 {
+				resp.Seconds = schemas.Ptr(strconv.FormatFloat(*output, 'f', -1, 64))
+			}
 		}
 	}
 	return resp, nil

@@ -79,12 +79,32 @@ type DashScopeTaskOutput struct {
 	Message       string `json:"message,omitempty"`
 }
 
-// DashScopeVideoUsage is the usage object of a finished task. Only the two durations the
-// unified usage carries are decoded; the rest (duration, SR, ratio, video_count, fps) stays
-// readable in the raw response.
+// DashScopeVideoUsage is the usage object of a finished task. Wan 2.6 and later report
+// output_video_duration and input_video_duration. The older families report the clip's length
+// as video_duration (Wan 2.1 and earlier) or duration alone (Wan 2.2 and 2.5), and take no
+// input video. The rest (SR, ratio, video_count, fps) stays readable in the raw response.
 type DashScopeVideoUsage struct {
 	InputVideoDuration  *float64 `json:"input_video_duration,omitempty"`
 	OutputVideoDuration *float64 `json:"output_video_duration,omitempty"`
+	VideoDuration       *float64 `json:"video_duration,omitempty"`
+	Duration            *float64 `json:"duration,omitempty"`
+}
+
+// outputSeconds is the length of the generated clip: output_video_duration where DashScope
+// reports it, else the older families' video_duration or duration. Where output_video_duration
+// is present, duration is the billed total with the input video and is not read.
+func (u *DashScopeVideoUsage) outputSeconds() *float64 {
+	switch {
+	case u == nil:
+		return nil
+	case u.OutputVideoDuration != nil:
+		return u.OutputVideoDuration
+	case u.VideoDuration != nil:
+		return u.VideoDuration
+	case u.InputVideoDuration == nil:
+		return u.Duration
+	}
+	return nil
 }
 
 // DashScopeTaskListResponse is the body of GET /api/v1/tasks: one page of the account's

@@ -141,7 +141,8 @@ curl -X POST http://localhost:8080/v1/videos \
 | `created_at`, `completed_at` | `output.submit_time`, `output.end_time`, which DashScope sends in UTC+8 |
 | `videos[]` | `output.video_url` as `{"type": "url", "url": ..., "content_type": "video/mp4"}`, the vendor's link unchanged |
 | `expires_at` | `submit_time` plus 24 hours: DashScope keeps a task and its link for 24 hours |
-| `usage.output_seconds`, `usage.input_seconds` | `usage.output_video_duration`, `usage.input_video_duration`, only when DashScope reports them |
+| `usage.output_seconds`, `seconds` | `usage.output_video_duration`; for the older families, which do not report it, `usage.video_duration` or `usage.duration`. Absent when DashScope reports none |
+| `usage.input_seconds` | `usage.input_video_duration`, only when DashScope reports it |
 | `error` | `output.code` and `output.message` of a failed task |
 | `content_filter` | Set when a failed task's code is `DataInspectionFailed` or `IPInfringementSuspect` |
 

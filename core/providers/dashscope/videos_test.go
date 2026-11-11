@@ -480,18 +480,50 @@ func TestDashScopeVideoRetrieveMapsTheTaskObject(t *testing.T) {
 		}
 	})
 
-	t.Run("a task whose usage carries no durations reports none", func(t *testing.T) {
-		provider, _ := newMockDashScope(t, map[string]mockResponse{
-			"GET " + dashScopeTasksPath + "/" + taskID: {http.StatusOK, `{"request_id":"r","output":{"task_id":"` + taskID + `","task_status":"SUCCEEDED","submit_time":"2025-09-29 14:18:52.331","end_time":"2025-09-29 14:23:39.407","video_url":"` + videoURL + `"},"usage":{"duration":5,"SR":480,"video_count":1}}`},
+	// The older families report the clip's length under their own names. It is read into
+	// seconds and usage.output_seconds, which accounting prices a job from when the create named
+	// no seconds. With output_video_duration present, duration is the billed total and is not read.
+	for _, tc := range []struct {
+		name        string
+		usage       string
+		wantSeconds string
+		wantInput   bool
+	}{
+		{"wan2.5 duration alone", `{"duration":5,"SR":480,"video_count":1}`, "5", false},
+		{"wan2.1 video_duration", `{"video_duration":5,"video_ratio":"standard","video_count":1}`, "5", false},
+		{"output_video_duration wins over the billed total", `{"duration":12,"input_video_duration":2,"output_video_duration":10}`, "10", true},
+		{"an input duration with no output duration fills no seconds from the total", `{"duration":12,"input_video_duration":2}`, "", true},
+		{"no duration at all", `{"video_count":1,"SR":480}`, "", false},
+	} {
+		t.Run("usage: "+tc.name, func(t *testing.T) {
+			provider, _ := newMockDashScope(t, map[string]mockResponse{
+				"GET " + dashScopeTasksPath + "/" + taskID: {http.StatusOK, `{"request_id":"r","output":{"task_id":"` + taskID + `","task_status":"SUCCEEDED","submit_time":"2025-09-29 14:18:52.331","end_time":"2025-09-29 14:23:39.407","video_url":"` + videoURL + `"},"usage":` + tc.usage + `}`},
+			})
+			resp, bifrostErr := provider.VideoRetrieve(videoTestContext(t), videoTestKey(), &schemas.BifrostVideoRetrieveRequest{Provider: schemas.DashScope, ID: taskID})
+			if bifrostErr != nil {
+				t.Fatalf("VideoRetrieve: %+v", bifrostErr.Error)
+			}
+			gotSeconds := ""
+			if resp.Seconds != nil {
+				gotSeconds = *resp.Seconds
+			}
+			if gotSeconds != tc.wantSeconds {
+				t.Errorf("seconds = %q, want %q", gotSeconds, tc.wantSeconds)
+			}
+			switch {
+			case tc.wantSeconds == "" && !tc.wantInput:
+				if resp.Usage != nil {
+					t.Errorf("usage = %+v, want none: the vendor reported no duration", resp.Usage)
+				}
+			case resp.Usage == nil:
+				t.Fatal("usage is missing")
+			default:
+				if (resp.Usage.OutputSeconds != nil) != (tc.wantSeconds != "") || (resp.Usage.InputSeconds != nil) != tc.wantInput {
+					t.Errorf("usage = %+v, want output set: %v, input set: %v", resp.Usage, tc.wantSeconds != "", tc.wantInput)
+				}
+			}
 		})
-		resp, bifrostErr := provider.VideoRetrieve(videoTestContext(t), videoTestKey(), &schemas.BifrostVideoRetrieveRequest{Provider: schemas.DashScope, ID: taskID})
-		if bifrostErr != nil {
-			t.Fatalf("VideoRetrieve: %+v", bifrostErr.Error)
-		}
-		if resp.Usage != nil || resp.Seconds != nil {
-			t.Errorf("usage = %+v, seconds = %v; want neither filled from a quantity the vendor did not report", resp.Usage, resp.Seconds)
-		}
-	})
+	}
 
 	states := []struct {
 		output        string

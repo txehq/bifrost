@@ -679,6 +679,17 @@ const dashScopeTasks = {
 	"ds-infringing": { output: { task_status: "FAILED", ...dashScopeEnded, code: "IPInfringementSuspect", message: "Input data is suspected of being involved in IP infringement." } },
 	"ds-canceled": { output: { task_status: "CANCELED", ...dashScopeEnded } },
 	"ds-expired": { output: { task_status: "UNKNOWN" } },
+	// The download rows of folder 423. ds-media-gapped names its file at a public-looking address, which the
+	// gateway reaches through the media tunnel (dashscope's proxy_config); ds-media-loopback names a file on
+	// this fixture's own loopback address, which the gateway must refuse without asking for it.
+	"ds-media-gapped": {
+		output: { task_status: "SUCCEEDED", ...dashScopeEnded, video_url: `http://${MEDIA_PUBLIC_HOST}/pp/media/gapped.mp4?X-Fixture-Signature=signed` },
+		usage: { duration: 5, input_video_duration: 0, output_video_duration: 5, video_count: 1, ratio: "16:9", SR: 720 },
+	},
+	"ds-media-loopback": {
+		output: { task_status: "SUCCEEDED", ...dashScopeEnded, video_url: `http://127.0.0.1:${port}/pp/media/internal.mp4?X-Fixture-Signature=signed` },
+		usage: { duration: 5, input_video_duration: 0, output_video_duration: 5, video_count: 1, ratio: "16:9", SR: 720 },
+	},
 };
 // DashScope's task list, GET /api/v1/tasks: three tasks over two pages of two, in DashScope's documented page
 // shape (times in Unix milliseconds). page_no=2 is the last page; any other request is the first.
