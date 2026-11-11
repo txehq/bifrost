@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -750,4 +751,291 @@ func BenchmarkNewUnsupportedParameterError(b *testing.B) {
 	for b.Loop() {
 		_ = NewUnsupportedParameterError("seconds", "seconds must be a whole number between 4 and 15 for this model")
 	}
+}
+
+// ExtraParamsLessMapped leaves out the handler's copy of a field the converter mapped, and
+// nothing else (TXE-7077).
+func TestExtraParamsLessMapped(t *testing.T) {
+	tests := []struct {
+		name   string
+		params *SpeechParameters
+		mapped []string
+		want   map[string]interface{}
+		same   bool // the caller's map is returned as it is
+	}{
+		{
+			name:   "the copy of a mapped string field is left out",
+			params: &SpeechParameters{LanguageCode: Ptr("en-GB"), ExtraParams: map[string]interface{}{"language_code": "en-GB", "pitch": -2.0}},
+			mapped: []string{"language_code"},
+			want:   map[string]interface{}{"pitch": -2.0},
+		},
+		{
+			name:   "the copy of a mapped bool, number and list field is left out",
+			params: &SpeechParameters{EnableLogging: Ptr(false), MaxOutputTokens: Ptr(321), PronunciationDictionaryLocators: []SpeechPronunciationDictionaryLocator{{PronunciationDictionaryID: "d", VersionID: Ptr("v")}}, ExtraParams: map[string]interface{}{"enable_logging": false, "max_output_tokens": float64(321), "pronunciation_dictionary_locators": []interface{}{map[string]interface{}{"pronunciation_dictionary_id": "d", "version_id": "v"}}}},
+			mapped: []string{"enable_logging", "max_output_tokens", "pronunciation_dictionary_locators"},
+			want:   map[string]interface{}{},
+		},
+		{
+			name:   "the name is compared without regard to the case of ASCII letters",
+			params: &SpeechParameters{LanguageCode: Ptr("en-GB"), ExtraParams: map[string]interface{}{"Language_Code": "en-GB"}},
+			mapped: []string{"language_code"},
+			want:   map[string]interface{}{},
+		},
+		{
+			name:   "a name with a letter outside ASCII is not the field",
+			params: &SpeechParameters{WithTimestamps: Ptr(true), ExtraParams: map[string]interface{}{"with_time\u017ftamps": true}},
+			mapped: []string{"with_timestamps"},
+			same:   true,
+		},
+		{
+			name:   "a field the converter did not map stays",
+			params: &SpeechParameters{LanguageCode: Ptr("en-GB"), ExtraParams: map[string]interface{}{"language_code": "en-GB"}},
+			mapped: []string{"max_output_tokens"},
+			same:   true,
+		},
+		{
+			name:   "a key naming a field the request did not send stays",
+			params: &SpeechParameters{ExtraParams: map[string]interface{}{"language_code": "en-GB"}},
+			mapped: []string{"language_code"},
+			same:   true,
+		},
+		{
+			name:   "a key carrying another value than the field stays",
+			params: &SpeechParameters{LanguageCode: Ptr("en-GB"), ExtraParams: map[string]interface{}{"language_code": "fr-FR"}},
+			mapped: []string{"language_code"},
+			same:   true,
+		},
+		{
+			name:   "no extra params",
+			params: &SpeechParameters{LanguageCode: Ptr("en-GB")},
+			mapped: []string{"language_code"},
+			same:   true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := make(map[string]interface{}, len(tt.params.ExtraParams))
+			for k, v := range tt.params.ExtraParams {
+				before[k] = v
+			}
+			got := tt.params.UnmappedExtraParams(tt.mapped...)
+			if tt.same {
+				tt.want = tt.params.ExtraParams
+			}
+			if len(got) != len(tt.want) || (len(got) > 0 && !reflect.DeepEqual(got, tt.want)) {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+			if len(before) != len(tt.params.ExtraParams) || (len(before) > 0 && !reflect.DeepEqual(before, tt.params.ExtraParams)) {
+				t.Errorf("the request's extra params were modified: %v, were %v", tt.params.ExtraParams, before)
+			}
+			if tt.same && len(got) > 0 && reflect.ValueOf(got).Pointer() != reflect.ValueOf(tt.params.ExtraParams).Pointer() {
+				t.Error("the extra params were copied though nothing was left out")
+			}
+		})
+	}
+	var none *SpeechParameters
+	if got := none.UnmappedExtraParams("language_code"); got != nil {
+		t.Errorf("nil params: got %v, want nil", got)
+	}
+}
+
+// One mapped field spelled in many cases among the extra params is compared with the sent
+// value every time, and the sent value is encoded for that once (TXE-7077, a security
+// review finding: 256 spellings beside a 1 MB list cost seconds and gigabytes before any
+// upstream call). The cost of each further spelling must not grow with the sent value.
+func TestASentFieldIsEncodedOnceForAllItsSpellings(t *testing.T) {
+	const field = "pronunciation_dictionary_locators"
+	spelling := func(i int) string {
+		b := []byte(field)
+		for bit := 0; bit < 8; bit++ {
+			if i&(1<<bit) != 0 {
+				b[bit] -= 'a' - 'A'
+			}
+		}
+		return string(b)
+	}
+	request := func(locators, spellings int) *SpeechParameters {
+		params := &SpeechParameters{ExtraParams: map[string]interface{}{}}
+		copied := make([]interface{}, 0, locators)
+		for i := 0; i < locators; i++ {
+			id := "dictionary-" + strconv.Itoa(i)
+			params.PronunciationDictionaryLocators = append(params.PronunciationDictionaryLocators, SpeechPronunciationDictionaryLocator{PronunciationDictionaryID: id})
+			copied = append(copied, map[string]interface{}{"pronunciation_dictionary_id": id})
+		}
+		params.ExtraParams[field] = copied
+		for i := 1; i <= spellings; i++ {
+			params.ExtraParams[spelling(i)] = []interface{}{map[string]interface{}{"pronunciation_dictionary_id": "other"}}
+		}
+		return params
+	}
+
+	const locators, spellings = 2000, 200
+	params := request(locators, spellings)
+	got := params.UnmappedExtraParams(field)
+	if _, kept := got[field]; kept || len(got) != spellings {
+		t.Fatalf("got %d extra params (the copy kept: %v), want the copy left out and the %d other spellings kept", len(got), kept, spellings)
+	}
+
+	one := request(locators, 1)
+	allocsOne := testing.AllocsPerRun(3, func() { _ = one.UnmappedExtraParams(field) })
+	allocsMany := testing.AllocsPerRun(3, func() { _ = params.UnmappedExtraParams(field) })
+	// A spelling carrying a one-entry list costs a few dozen allocations. Encoding the
+	// sent list again for it would cost several per locator.
+	if perSpelling := (allocsMany - allocsOne) / (spellings - 1); perSpelling > 200 {
+		t.Errorf("each further spelling costs %.0f allocations beside a list of %d (one spelling: %.0f, %d spellings: %.0f): the sent value is encoded again for every spelling", perSpelling, locators, allocsOne, spellings, allocsMany)
+	}
+
+	// The record answers as the sent value does, also past the fields it keeps without
+	// allocating, and a field is recorded once.
+	var sentFields sentUnifiedFields
+	for round := 0; round < 3; round++ {
+		for i := 0; i < 12; i++ {
+			name := "field-" + strconv.Itoa(i)
+			entry := sentFields.known(name)
+			if (entry == nil) != (round == 0) {
+				t.Fatalf("round %d: %s known: %v", round, name, entry != nil)
+			}
+			if entry == nil {
+				entry = sentFields.record(name, sentUnifiedField{value: reflect.ValueOf([]string{name})}, i != 11)
+			}
+			if want := i != 11; entry.sameValueAs([]interface{}{name}) != want || entry.sameValueAs([]interface{}{"other"}) {
+				t.Fatalf("%s: the record does not compare as the sent value does", name)
+			}
+		}
+	}
+	if len(sentFields.entries) != 12 {
+		t.Errorf("%d fields recorded, want 12", len(sentFields.entries))
+	}
+}
+
+// The copy of a sent field is recognised by walking the two values, with no JSON round trip
+// (TXE-7077, a security review finding: one copy of a 7.6 MB list cost 1.5 s and 224 MB in
+// the converter). Wherever the walk decides, it must say what comparing the encoded forms
+// says, and the copy of a large list must cost next to nothing.
+func TestTheCopyOfASentFieldIsComparedWithoutEncodingIt(t *testing.T) {
+	type inner struct {
+		ID       string            `json:"id"`
+		Version  *string           `json:"version,omitempty"`
+		Count    int               `json:"count,omitempty"`
+		Flags    []bool            `json:"flags"`
+		Labels   map[string]string `json:"labels,omitempty"`
+		Skipped  string            `json:"-"`
+		Untagged float64
+		hidden   int
+	}
+	type embedding struct {
+		inner
+		Extra string `json:"extra"`
+	}
+	type stringOption struct {
+		N int `json:"n,string"`
+	}
+	object := func(pairs ...interface{}) map[string]interface{} {
+		m := map[string]interface{}{}
+		for i := 0; i < len(pairs); i += 2 {
+			m[pairs[i].(string)] = pairs[i+1]
+		}
+		return m
+	}
+	list := func(items ...interface{}) []interface{} { return items }
+	var nilStrings []string
+	var nilInner *inner
+
+	sent := []interface{}{
+		"en-GB", "", true, false, 0, 7, -7, int64(1) << 60, uint(7), uint64(1) << 60, 2.0, 2.5, float32(2.5),
+		Ptr("en-GB"), Ptr(true), Ptr(7), Ptr(2.5), nilInner,
+		[]string{"a", "b"}, []string{}, nilStrings, [2]int{1, 2}, []byte("ab"), []interface{}{"a", 1, nil},
+		map[string]int{"a": 1}, map[string]interface{}{"a": []string{"b"}}, map[int]string{1: "a"},
+		inner{ID: "a"}, inner{ID: "a", Version: Ptr("v1"), Count: 2, Flags: []bool{true}, Labels: map[string]string{"k": "v"}, Skipped: "s", Untagged: 1.5, hidden: 3},
+		&inner{ID: "b", Flags: []bool{}},
+		[]inner{{ID: "a"}, {ID: "b", Version: Ptr("v2")}},
+		[]SpeechPronunciationDictionaryLocator{{PronunciationDictionaryID: "d1"}, {PronunciationDictionaryID: "d2", VersionID: Ptr("v")}},
+		embedding{inner: inner{ID: "a"}, Extra: "x"}, stringOption{N: 5},
+		SpeechVoiceInput{Voice: Ptr("alloy")}, &SpeechVoiceInput{Voice: Ptr("alloy")},
+	}
+	extras := []interface{}{
+		nil, "en-GB", "", "alloy", true, false, 0.0, 7.0, -7.0, 2.0, 2.5, 7, int64(7), float64(int64(1) << 60), "5",
+		list(), list("a", "b"), list("a"), list(1.0, 2.0), list("a", 1.0, nil), list(true), "YWI=",
+		object(), object("a", 1.0), object("a", list("b")), object("1", "a"),
+		object("id", "a", "flags", nil, "Untagged", 0.0),
+		object("id", "a", "flags", nil, "Untagged", 0.0, "version", nil),
+		object("id", "a", "flags", nil),
+		object("id", "a", "version", "v1", "count", 2.0, "flags", list(true), "labels", object("k", "v"), "Untagged", 1.5),
+		object("id", "a", "version", "v1", "count", 2.0, "flags", list(true), "labels", object("k", "v"), "Untagged", 1.5, "hidden", 3.0),
+		object("id", "b", "flags", list(), "Untagged", 0.0),
+		list(object("id", "a", "flags", nil, "Untagged", 0.0), object("id", "b", "version", "v2", "flags", nil, "Untagged", 0.0)),
+		list(object("pronunciation_dictionary_id", "d1"), object("pronunciation_dictionary_id", "d2", "version_id", "v")),
+		list(object("pronunciation_dictionary_id", "d1"), object("pronunciation_dictionary_id", "d2")),
+		object("id", "a", "flags", nil, "Untagged", 0.0, "extra", "x"), object("n", "5"),
+		[]string{"a", "b"}, map[string]string{"a": "b"}, Ptr("en-GB"),
+	}
+
+	decidedTrue, decidedFalse, undecided := 0, 0, 0
+	for i, value := range sent {
+		field := sentUnifiedField{value: reflect.ValueOf(value)}
+		if text, isText := value.(string); isText {
+			field = sentUnifiedField{text: text, isText: true}
+		}
+		for j, extra := range extras {
+			var want bool
+			if sentValue, ok := field.asJSONValue(); ok {
+				extraValue, ok := jsonValueOf(extra)
+				want = ok && reflect.DeepEqual(sentValue, extraValue)
+			}
+			same, decided := field.sameWithoutEncoding(extra)
+			switch {
+			case !decided:
+				undecided++
+			case same != want:
+				t.Errorf("sent %d (%#v) and extra %d (%#v): the walk says %v, the encoded forms say %v", i, value, j, extra, same, want)
+			case same:
+				decidedTrue++
+			default:
+				decidedFalse++
+			}
+			if got := field.sameValueAs(extra); got != want {
+				t.Errorf("sent %d (%#v) and extra %d (%#v): sameValueAs says %v, the encoded forms say %v", i, value, j, extra, got, want)
+			}
+		}
+	}
+	// The table must exercise all three outcomes, or it proves nothing.
+	if decidedTrue < 15 || decidedFalse < 500 || undecided < 50 {
+		t.Errorf("the walk decided equal %d times, unequal %d times and left %d to the encoded forms: the table no longer covers all three", decidedTrue, decidedFalse, undecided)
+	}
+
+	// One copy of a large list.
+	const locators = 2000
+	params := &SpeechParameters{ExtraParams: map[string]interface{}{}}
+	copied := make([]interface{}, 0, locators)
+	for i := 0; i < locators; i++ {
+		id := "dictionary-" + strconv.Itoa(i)
+		params.PronunciationDictionaryLocators = append(params.PronunciationDictionaryLocators, SpeechPronunciationDictionaryLocator{PronunciationDictionaryID: id, VersionID: Ptr("v1")})
+		copied = append(copied, map[string]interface{}{"pronunciation_dictionary_id": id, "version_id": "v1"})
+	}
+	params.ExtraParams["pronunciation_dictionary_locators"] = copied
+	params.ExtraParams["seed"] = 7.0
+	if got := params.UnmappedExtraParams("pronunciation_dictionary_locators"); len(got) != 1 || got["seed"] != 7.0 {
+		t.Fatalf("got %v, want the copy of the list left out and seed kept", got)
+	}
+	if allocs := testing.AllocsPerRun(5, func() { _ = params.UnmappedExtraParams("pronunciation_dictionary_locators") }); allocs > 20 {
+		t.Errorf("leaving out the copy of a %d-entry list costs %.0f allocations, want at most 20: the list is encoded to be compared", locators, allocs)
+	}
+}
+
+// The request with no copy to leave out pays nothing for the rule.
+func BenchmarkExtraParamsLessMapped(b *testing.B) {
+	plain := &SpeechParameters{LanguageCode: Ptr("en-GB"), ExtraParams: map[string]interface{}{"pitch": -2.0, "sampleRateHertz": 24000}}
+	copied := &SpeechParameters{LanguageCode: Ptr("en-GB"), ExtraParams: map[string]interface{}{"pitch": -2.0, "language_code": "en-GB"}}
+	b.Run("no copy", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = plain.UnmappedExtraParams("voice", "speed", "language_code")
+		}
+	})
+	b.Run("one copy", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = copied.UnmappedExtraParams("voice", "speed", "language_code")
+		}
+	})
 }

@@ -82,6 +82,30 @@ type SpeechParameters struct {
 	ExtraParams map[string]interface{} `json:"-"`
 }
 
+// UnifiedSpeechFieldsKeptAsExtraParams are the SpeechParameters fields the HTTP speech route
+// parses into the typed parameters and also leaves among the extra params under the same
+// name: the route's known-field table predates them. A provider whose converter maps one of
+// them forwards the extra params through SpeechParameters.UnmappedExtraParams, so the vendor
+// never gets the field a second time under a name it does not have (TXE-7077).
+var UnifiedSpeechFieldsKeptAsExtraParams = []string{
+	"language_code",
+	"pronunciation_dictionary_locators",
+	"enable_logging",
+	"optimize_streaming_latency",
+	"with_timestamps",
+	"max_output_tokens",
+}
+
+// UnmappedExtraParams returns the extra params a speech converter forwards to the vendor:
+// ExtraParams less the route's copy of each unified field in mapped, the fields the
+// converter has already mapped to the vendor's own (ExtraParamsLessMapped).
+func (params *SpeechParameters) UnmappedExtraParams(mapped ...string) map[string]interface{} {
+	if params == nil {
+		return nil
+	}
+	return ExtraParamsLessMapped(params, params.ExtraParams, mapped...)
+}
+
 type SpeechPronunciationDictionaryLocator struct {
 	PronunciationDictionaryID string  `json:"pronunciation_dictionary_id"`
 	VersionID                 *string `json:"version_id,omitempty"`

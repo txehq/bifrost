@@ -4,6 +4,10 @@ import (
 	schemas "github.com/capsohq/bifrost/core/schemas"
 )
 
+// speechMappedUnifiedFields are the unified speech fields ToSarvamSpeechRequest maps to
+// Sarvam's own names: voice as speaker, speed as pace, language_code as target_language_code.
+var speechMappedUnifiedFields = []string{"voice", "speed", "language_code"}
+
 // ToSarvamSpeechRequest maps a Bifrost speech request onto Sarvam's text-to-speech request.
 func ToSarvamSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *SarvamSpeechRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
@@ -20,9 +24,11 @@ func ToSarvamSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *SarvamSpee
 	}
 
 	// Copy so consuming keys below doesn't mutate the caller's request map.
-	if bifrostReq.Params.ExtraParams != nil {
-		sarvamReq.ExtraParams = make(map[string]interface{}, len(bifrostReq.Params.ExtraParams))
-		for k, v := range bifrostReq.Params.ExtraParams {
+	// language_code is target_language_code here; the speech route's copy of it among the
+	// extra params is not forwarded under the unified name (TXE-7077).
+	if unmapped := bifrostReq.Params.UnmappedExtraParams(speechMappedUnifiedFields...); unmapped != nil {
+		sarvamReq.ExtraParams = make(map[string]interface{}, len(unmapped))
+		for k, v := range unmapped {
 			sarvamReq.ExtraParams[k] = v
 		}
 	}

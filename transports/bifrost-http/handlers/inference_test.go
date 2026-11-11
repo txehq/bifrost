@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -426,6 +427,35 @@ func TestUnifiedFieldsAreNotKnownFields(t *testing.T) {
 		if imageEditParamsKnownFields[name] {
 			t.Errorf("%s is in imageEditParamsKnownFields", name)
 		}
+	}
+}
+
+// Every SpeechParameters field is either a known field of the speech route or listed in
+// schemas.UnifiedSpeechFieldsKeptAsExtraParams, the fields the route also leaves among the
+// extra params (TXE-7077). The list is what core's speech-provider test walks, so a field
+// added to SpeechParameters and to neither place would be copied into the extra params with
+// no provider checked for forwarding it twice.
+func TestSpeechFieldsKeptAsExtraParamsAreExactlyTheUnknownOnes(t *testing.T) {
+	kept := map[string]bool{}
+	for _, name := range schemas.UnifiedSpeechFieldsKeptAsExtraParams {
+		kept[name] = true
+		if speechParamsKnownFields[name] {
+			t.Errorf("%s is in speechParamsKnownFields and in schemas.UnifiedSpeechFieldsKeptAsExtraParams: the route does not keep a known field", name)
+		}
+	}
+	paramsType := reflect.TypeOf(schemas.SpeechParameters{})
+	for i := 0; i < paramsType.NumField(); i++ {
+		name, _, _ := strings.Cut(paramsType.Field(i).Tag.Get("json"), ",")
+		if name == "" || name == "-" {
+			continue
+		}
+		if !speechParamsKnownFields[name] && !kept[name] {
+			t.Errorf("SpeechParameters field %s is not in speechParamsKnownFields, so the route leaves it among the extra params: list it in schemas.UnifiedSpeechFieldsKeptAsExtraParams", name)
+		}
+		delete(kept, name)
+	}
+	for name := range kept {
+		t.Errorf("schemas.UnifiedSpeechFieldsKeptAsExtraParams lists %s, which is not a SpeechParameters field", name)
 	}
 }
 

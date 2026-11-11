@@ -13951,3 +13951,184 @@ func BenchmarkDecideLargePayloadForAttempt(b *testing.B) {
 		}
 	})
 }
+
+// speechFieldSample is one unified speech field the speech route leaves among the extra
+// params (schemas.UnifiedSpeechFieldsKeptAsExtraParams): how a request sets the typed field,
+// and the copy the route leaves, as a JSON body decodes it.
+type speechFieldSample struct {
+	set  func(params *schemas.SpeechParameters)
+	copy interface{}
+}
+
+var speechFieldSamples = map[string]speechFieldSample{
+	"language_code": {
+		set:  func(p *schemas.SpeechParameters) { p.LanguageCode = schemas.Ptr("en-GB") },
+		copy: "en-GB",
+	},
+	"pronunciation_dictionary_locators": {
+		set: func(p *schemas.SpeechParameters) {
+			p.PronunciationDictionaryLocators = []schemas.SpeechPronunciationDictionaryLocator{{PronunciationDictionaryID: "dict-1", VersionID: schemas.Ptr("v1")}}
+		},
+		copy: []interface{}{map[string]interface{}{"pronunciation_dictionary_id": "dict-1", "version_id": "v1"}},
+	},
+	"enable_logging": {
+		set:  func(p *schemas.SpeechParameters) { p.EnableLogging = schemas.Ptr(false) },
+		copy: false,
+	},
+	"optimize_streaming_latency": {
+		set:  func(p *schemas.SpeechParameters) { p.OptimizeStreamingLatency = schemas.Ptr(true) },
+		copy: true,
+	},
+	"with_timestamps": {
+		set:  func(p *schemas.SpeechParameters) { p.WithTimestamps = schemas.Ptr(true) },
+		copy: true,
+	},
+	"max_output_tokens": {
+		set:  func(p *schemas.SpeechParameters) { p.MaxOutputTokens = schemas.Ptr(321) },
+		copy: float64(321),
+	},
+}
+
+// speechFieldsMappedBy is, per provider, the unified speech fields of
+// schemas.UnifiedSpeechFieldsKeptAsExtraParams its converter delivers: setting the field
+// changes what the provider sends. The test below finds this out from the wire and fails
+// when it differs from this table, so the table is a record of the behaviour, not its
+// source. A provider absent from it delivers none of them on any speech operation, which
+// includes every provider that does not serve speech.
+var speechFieldsMappedBy = map[schemas.ModelProvider][]string{
+	// The OpenAI-shaped body carries max_output_tokens under the unified name.
+	schemas.OpenAI:     {"max_output_tokens"},
+	schemas.Azure:      {"max_output_tokens"},
+	schemas.Groq:       {"max_output_tokens"},
+	schemas.OpenRouter: {"max_output_tokens"},
+	// generationConfig.maxOutputTokens.
+	schemas.Gemini: {"max_output_tokens"},
+	// Body fields, query parameters and the with-timestamps endpoint.
+	schemas.Elevenlabs: {"enable_logging", "language_code", "optimize_streaming_latency", "pronunciation_dictionary_locators", "with_timestamps"},
+	// target_language_code.
+	schemas.Sarvam: {"language_code"},
+	// voice.languageCode.
+	schemas.GoogleCloudTTS: {"language_code"},
+	// The xml:lang of the SSML document, which is the whole body: no extra param is merged.
+	schemas.AzureSpeech: {"language_code"},
+}
+
+// The speech route parses some unified fields into the typed request and also leaves them
+// among the extra params under their unified names (TXE-7077). A provider that maps the typed
+// field to the vendor's own field must not then forward the copy: under
+// x-bf-passthrough-extra-params the vendor would get the field twice, once under a name it
+// does not have.
+//
+// For every standard provider, every speech operation and every such field the test sends
+// three requests: without the field, with the typed field, and with the typed field plus the
+// route's copy. When the typed field changes what is sent, the provider maps it, and the copy
+// must then change nothing. A new provider is covered without being added anywhere.
+func TestSpeechProvidersNeverForwardTheCopyOfAMappedUnifiedField(t *testing.T) {
+	upstream := newGuardUpstream(t)
+	client := &Bifrost{logger: NewNoOpLogger()}
+
+	fields := slices.Clone(schemas.UnifiedSpeechFieldsKeptAsExtraParams)
+	sort.Strings(fields)
+	for _, field := range fields {
+		if _, ok := speechFieldSamples[field]; !ok {
+			t.Fatalf("schemas.UnifiedSpeechFieldsKeptAsExtraParams lists %q, which has no sample in speechFieldSamples", field)
+		}
+	}
+
+	type speechOperation struct {
+		name string
+		run  func(ctx *schemas.BifrostContext, provider schemas.Provider, key schemas.Key, req *schemas.BifrostSpeechRequest) *schemas.BifrostError
+	}
+	operations := []speechOperation{
+		{"speech", func(ctx *schemas.BifrostContext, pr schemas.Provider, key schemas.Key, req *schemas.BifrostSpeechRequest) *schemas.BifrostError {
+			_, err := pr.Speech(ctx, key, req)
+			return err
+		}},
+		{"speech stream", func(ctx *schemas.BifrostContext, pr schemas.Provider, key schemas.Key, req *schemas.BifrostSpeechRequest) *schemas.BifrostError {
+			return guardDrain(pr.SpeechStream(ctx, guardPostHook, nil, key, req))
+		}},
+	}
+
+	for _, providerKey := range schemas.StandardProviders {
+		t.Run(string(providerKey), func(t *testing.T) {
+			config := &schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{BaseURL: "http://" + guardUpstreamHost, DefaultRequestTimeoutInSeconds: 10},
+				ProxyConfig: &schemas.ProxyConfig{
+					Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(upstream.proxyURL), CACertPEM: schemas.NewSecretVar(upstream.caPEM),
+				},
+			}
+			provider, err := client.createBaseProvider(providerKey, config)
+			if err != nil {
+				t.Fatalf("construct %s: %v", providerKey, err)
+			}
+			key := guardKey(providerKey)
+
+			// send returns what reached the upstream, one line per request, or "" when the
+			// provider refused the request or does not serve the operation.
+			send := func(op speechOperation, typed []string, copies []string) string {
+				upstream.take()
+				params := &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{Voice: schemas.Ptr(guardSpeechVoice(providerKey, guardModel(providerKey)))}}
+				for _, field := range typed {
+					speechFieldSamples[field].set(params)
+				}
+				if len(copies) > 0 {
+					params.ExtraParams = map[string]interface{}{}
+					for _, field := range copies {
+						params.ExtraParams[field] = speechFieldSamples[field].copy
+					}
+				}
+				req := &schemas.BifrostSpeechRequest{
+					Provider: providerKey,
+					Model:    guardModel(providerKey),
+					Input:    &schemas.SpeechInput{Input: "say this"},
+					Params:   params,
+				}
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+				func() {
+					// The upstream's answer is no provider's response shape, and a few providers
+					// do not survive that. What they sent is already recorded.
+					defer func() { _ = recover() }()
+					_ = op.run(ctx, provider, key, req)
+				}()
+				var sent bytes.Buffer
+				for _, request := range upstream.take() {
+					fmt.Fprintf(&sent, "%s\n%s\n", request.target, request.body)
+				}
+				return sent.String()
+			}
+
+			mapped := map[string]bool{}
+			for _, op := range operations {
+				without := send(op, nil, nil)
+				if without == "" {
+					continue // the operation is not served
+				}
+				for _, field := range fields {
+					typed := send(op, []string{field}, nil)
+					if typed == "" || typed == without {
+						// Refused (contract C4), or not delivered: the copy is then the only
+						// way the field travels, and it is left alone.
+						continue
+					}
+					mapped[field] = true
+					both := send(op, []string{field}, []string{field})
+					if both != typed {
+						t.Errorf("%s: %s is mapped by the provider, and the route's copy among the extra params still changed the request\nwith the typed field:\n%swith the typed field and the copy:\n%s", op.name, field, typed, both)
+					}
+				}
+			}
+
+			got := make([]string, 0, len(mapped))
+			for field := range mapped {
+				got = append(got, field)
+			}
+			sort.Strings(got)
+			want := slices.Clone(speechFieldsMappedBy[providerKey])
+			sort.Strings(want)
+			if !slices.Equal(got, want) {
+				t.Errorf("the provider delivers unified speech fields [%s]; speechFieldsMappedBy records [%s]: update the table", strings.Join(got, ", "), strings.Join(want, ", "))
+			}
+		})
+	}
+}

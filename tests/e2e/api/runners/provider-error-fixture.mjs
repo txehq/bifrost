@@ -1151,6 +1151,13 @@ const wireAnswer = (path, body, bytes) => {
 	}
 	if (path === "/pp/vercel/v1/images/generations") return { status: 200, body: JSON.stringify(vercelImageAnswer(body)) };
 	if (path === "/pp/google-cloud-tts/v1/text:synthesize") return cloudTTSAnswer(body);
+	// Speech accepted (folder 473, TXE-7077): Sarvam's and ElevenLabs' own answers, so a row can read from /__wire
+	// what the converter sent. ElevenLabs answers audio bytes, or JSON on the with-timestamps endpoint.
+	if (path === "/pp/sarvam/text-to-speech") return { status: 200, body: JSON.stringify({ request_id: "fixture-sarvam-speech", audios: [cloudTTSAudioContent] }) };
+	if (path.startsWith("/pp/elevenlabs/v1/text-to-speech/")) {
+		if (path.endsWith("/with-timestamps")) return { status: 200, body: JSON.stringify({ audio_base64: cloudTTSAudioContent, alignment: { characters: ["h", "i"], character_start_times_seconds: [0, 0.1], character_end_times_seconds: [0.1, 0.2] } }) };
+		return { status: 200, body: "fixture-elevenlabs-audio" };
+	}
 	if (path === "/pp/cp/v1/responses") return cpResponsesAnswerFor(body);
 	if (path === "/pp/cloudflare/accounts/acct-1/ai/v1/chat/completions") return cpCloudflareChat(body);
 	// TXE-6967: xAI reports its charge as cost_in_usd_ticks; upstream-usage-extended answers with it on chat and

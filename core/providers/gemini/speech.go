@@ -3,7 +3,6 @@ package gemini
 import (
 	"context"
 	"fmt"
-	"maps"
 	"math"
 	"strings"
 
@@ -191,13 +190,9 @@ func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) (*GeminiGen
 			if bifrostReq.Params.VoiceConfig.Voice != nil || len(bifrostReq.Params.VoiceConfig.MultiVoiceConfig) > 0 {
 				addSpeechConfigToGenerationConfig(&geminiReq.GenerationConfig, bifrostReq.Params.VoiceConfig)
 			}
-			geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
 			// The HTTP transport also leaves max_output_tokens in the extra params. It was
 			// delivered above; merged into the body under that name Gemini would refuse it.
-			if _, ok := geminiReq.ExtraParams[speechMaxOutputTokensParam]; ok {
-				geminiReq.ExtraParams = maps.Clone(geminiReq.ExtraParams)
-				delete(geminiReq.ExtraParams, speechMaxOutputTokensParam)
-			}
+			geminiReq.ExtraParams = bifrostReq.Params.UnmappedExtraParams(SpeechUnifiedFields...)
 		}
 	}
 	return geminiReq, nil

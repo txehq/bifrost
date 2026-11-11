@@ -1,0 +1,406 @@
+{
+  "name": "473. A unified speech field a provider has mapped reaches the vendor once, never again as a raw extra param (speech mapped extra params) [SERIAL]",
+  "description": "TXE-7077. The speech route parses language_code, pronunciation_dictionary_locators, enable_logging, optimize_streaming_latency, with_timestamps and max_output_tokens into the typed request and also leaves them among the extra params. Every row sends x-bf-passthrough-extra-params: true, so the extra params are merged into the vendor body. A provider that maps the field to the vendor's own name, a query parameter or the endpoint must not also send the copy. Each row reads from the fixture's /__wire what the vendor received. A vendor-specific extra param in the same request still arrives, so the rows fail on a provider that stops forwarding extra params altogether.",
+  "item": [
+    {
+      "name": "473.1 sarvam/bulbul:v2 /v1/audio/speech language_code reaches Sarvam as target_language_code only, and the vendor field pitch still arrives (speech mapped extra params)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"sarvam/bulbul:v2\",\"input\":\"Hello.\",\"voice\":\"anushka\",\"language_code\":\"hi-IN\",\"pitch\":0.2}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('speech mapped extra params setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// sent: the one request that reached the fixture under prefix, bytes and query as they arrived.",
+              "function sent(prefix, cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf(prefix) === 0; }); pm.test('exactly one upstream call', function () { pm.expect(calls, JSON.stringify(res.json().data[0].calls)).to.have.length(1); }); if (calls.length === 1) { cb(calls[0], JSON.parse(calls[0].body)); } }); }",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "sent('/pp/sarvam/text-to-speech', function (call, body) {",
+              "  pm.test('language_code is sent as target_language_code', function () { pm.expect(body.target_language_code, call.body).to.equal('hi-IN'); });",
+              "  pm.test('the body has no language_code field', function () { pm.expect(body, call.body).to.not.have.property('language_code'); });",
+              "  pm.test('the vendor field pitch arrives', function () { pm.expect(body.pitch, call.body).to.equal(0.2); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "473.2 elevenlabs/eleven_v3 /v1/audio/speech enable_logging and optimize_streaming_latency are query parameters only, and the vendor field seed still arrives (speech mapped extra params)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"elevenlabs/eleven_v3\",\"input\":\"Hello.\",\"voice\":\"voice-1\",\"enable_logging\":false,\"optimize_streaming_latency\":true,\"seed\":7}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('speech mapped extra params setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// sent: the one request that reached the fixture under prefix, bytes and query as they arrived.",
+              "function sent(prefix, cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf(prefix) === 0; }); pm.test('exactly one upstream call', function () { pm.expect(calls, JSON.stringify(res.json().data[0].calls)).to.have.length(1); }); if (calls.length === 1) { cb(calls[0], JSON.parse(calls[0].body)); } }); }",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "sent('/pp/elevenlabs/v1/text-to-speech/voice-1', function (call, body) {",
+              "  pm.test('the query carries enable_logging and optimize_streaming_latency', function () { pm.expect(call.query, call.query).to.include('enable_logging=false'); pm.expect(call.query, call.query).to.include('optimize_streaming_latency=true'); });",
+              "  pm.test('the body has neither field', function () { pm.expect(body, call.body).to.not.have.property('enable_logging'); pm.expect(body, call.body).to.not.have.property('optimize_streaming_latency'); });",
+              "  pm.test('the vendor field seed arrives', function () { pm.expect(body.seed, call.body).to.equal(7); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[NO-CONTENT] 473.3 elevenlabs/eleven_v3 /v1/audio/speech with_timestamps picks the with-timestamps endpoint and is not a body field; language_code is sent once (speech mapped extra params)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"elevenlabs/eleven_v3\",\"input\":\"Hello.\",\"voice\":\"voice-1\",\"with_timestamps\":true,\"language_code\":\"en\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('speech mapped extra params setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// sent: the one request that reached the fixture under prefix, bytes and query as they arrived.",
+              "function sent(prefix, cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf(prefix) === 0; }); pm.test('exactly one upstream call', function () { pm.expect(calls, JSON.stringify(res.json().data[0].calls)).to.have.length(1); }); if (calls.length === 1) { cb(calls[0], JSON.parse(calls[0].body)); } }); }",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.test('the reply is the JSON form with the audio and its alignment', function () { var reply = pm.response.json(); pm.expect(reply.audio_base64, pm.response.text()).to.equal('//NExAASCCIIAAhEAGAAEMW4kAYPnwwIKw/BBTpwTvB+IAxIfghU'); pm.expect(reply.alignment && reply.alignment.characters, pm.response.text()).to.eql(['h', 'i']); });",
+              "sent('/pp/elevenlabs/v1/text-to-speech/voice-1', function (call, body) {",
+              "  pm.test('the request went to the with-timestamps endpoint', function () { pm.expect(call.path, call.path).to.equal('/pp/elevenlabs/v1/text-to-speech/voice-1/with-timestamps'); });",
+              "  pm.test('the body has no with_timestamps field', function () { pm.expect(body, call.body).to.not.have.property('with_timestamps'); });",
+              "  pm.test('language_code is in the body once, as the vendor names it', function () { pm.expect(body.language_code, call.body).to.equal('en'); pm.expect(call.body.split('\"language_code\"').length - 1, call.body).to.equal(1); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "473.4 gemini/pp-tts-ok /v1/audio/speech max_output_tokens reaches Gemini as generationConfig.maxOutputTokens only (speech mapped extra params)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"gemini/pp-tts-ok\",\"input\":\"Say hello.\",\"voice\":\"Kore\",\"max_output_tokens\":1024}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('speech mapped extra params setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// sent: the one request that reached the fixture under prefix, bytes and query as they arrived.",
+              "function sent(prefix, cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf(prefix) === 0; }); pm.test('exactly one upstream call', function () { pm.expect(calls, JSON.stringify(res.json().data[0].calls)).to.have.length(1); }); if (calls.length === 1) { cb(calls[0], JSON.parse(calls[0].body)); } }); }",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "sent('/pp/gemini/models/pp-tts-ok', function (call, body) {",
+              "  pm.test('max_output_tokens is sent as generationConfig.maxOutputTokens', function () { pm.expect(body.generationConfig && body.generationConfig.maxOutputTokens, call.body).to.equal(1024); });",
+              "  pm.test('the body has no max_output_tokens field', function () { pm.expect(body, call.body).to.not.have.property('max_output_tokens'); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "473.5 google-cloud-tts/wavenet /v1/audio/speech language_code reaches Google as voice.languageCode only, and the vendor field audioConfig.pitch still arrives (speech mapped extra params)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-google-cloud-tts-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"google-cloud-tts/wavenet\",\"input\":\"Hello.\",\"voice\":\"en-US-Wavenet-D\",\"language_code\":\"en-US\",\"audioConfig\":{\"pitch\":-2}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('speech mapped extra params setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// sent: the one request that reached the fixture under prefix, bytes and query as they arrived.",
+              "function sent(prefix, cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf(prefix) === 0; }); pm.test('exactly one upstream call', function () { pm.expect(calls, JSON.stringify(res.json().data[0].calls)).to.have.length(1); }); if (calls.length === 1) { cb(calls[0], JSON.parse(calls[0].body)); } }); }",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "sent('/pp/google-cloud-tts/v1/text:synthesize', function (call, body) {",
+              "  pm.test('language_code is sent as voice.languageCode', function () { pm.expect(body.voice, call.body).to.deep.equal({ languageCode: 'en-US', name: 'en-US-Wavenet-D' }); });",
+              "  pm.test('the body has no language_code field', function () { pm.expect(body, call.body).to.not.have.property('language_code'); });",
+              "  pm.test('the vendor field audioConfig.pitch arrives', function () { pm.expect(body.audioConfig.pitch, call.body).to.equal(-2); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
