@@ -265,6 +265,12 @@ function mergeKeyedList(base, current, theirs, keyOf, mergeEntry, where, conflic
     conflicts.push(`${where}: changed on main and on this branch, and its entries cannot be matched by name (a name repeats)`);
     return current;
   }
+  // Entries are merged where main has them, so an order this branch changed would be lost
+  // without a word (a producer moved ahead of its consumer, say). That is a hand merge.
+  const kept = (list) => list.map(keyOf).filter((key) => b.has(key) && t.has(key));
+  if (!same(kept(base), kept(theirs))) {
+    conflicts.push(`${where}: this branch reordered its entries and main changed it too; main's order is kept`);
+  }
   let result = current.slice();
   const position = (key) => result.findIndex((entry) => keyOf(entry) === key);
   let previous = null;

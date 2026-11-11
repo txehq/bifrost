@@ -189,6 +189,19 @@ test("adopt reports what both sides changed and leaves main's content", () => {
   assert.equal(assembleProviderHarness(dir).item[0].item[0].request.body.raw, '{"main":1}');
 });
 
+test("adopt reports an order the branch changed in a folder main also changed", () => {
+  const base = collection(folder("1. One", row("consumer"), row("producer")));
+  const dir = sourceOf(...base.item);
+  write(dir, "1-one.json", folder("1. One", row("consumer"), row("producer"), row("from main")));
+  const theirs = collection(folder("1. One", row("producer"), row("consumer")));
+  const report = adoptCollectionChange({ base, theirs, dir });
+  assert.deepEqual(report.conflicts, ["1. One: this branch reordered its entries and main changed it too; main's order is kept"]);
+  // Main did not change the folder: the branch's order is taken whole, with no conflict.
+  const alone = sourceOf(...base.item);
+  assert.deepEqual(adoptCollectionChange({ base, theirs, dir: alone }).conflicts, []);
+  assert.deepEqual(assembleProviderHarness(alone).item[0].item.map((r) => r.name), ["producer", "consumer"]);
+});
+
 test("adopt moves a collection variable the branch added, and removes a folder it removed", () => {
   const base = collection(folder("1. One"), folder("2. Two"));
   const dir = sourceOf(...base.item);
