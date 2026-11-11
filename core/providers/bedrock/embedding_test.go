@@ -551,7 +551,7 @@ func TestToBedrockCohereEmbeddingRequest(t *testing.T) {
 		assert.Equal(t, "search_document", req.InputType)
 	})
 
-	t.Run("image-only input uses images[] with input_type image", func(t *testing.T) {
+	t.Run("image-only input uses images[] with task_type image", func(t *testing.T) {
 		// Embed v3 rejects inputs[] (v4 only) and needs input_type "image" for images[];
 		// v4 accepts both, so lone images always go out as images[].
 		img := "data:image/png;base64,iVBORw0KGgo="
@@ -560,6 +560,7 @@ func TestToBedrockCohereEmbeddingRequest(t *testing.T) {
 			Input: []schemas.EmbeddingInputItem{
 				{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: &img}}}},
 			},
+			Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("image")},
 		})
 		require.NoError(t, err)
 		assert.Equal(t, []string{img}, req.Images)
@@ -589,13 +590,15 @@ func TestToBedrockCohereEmbeddingRequest(t *testing.T) {
 		text := "caption"
 
 		req, err := ToBedrockCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
-			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{image}}},
+			Input:  []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{image}}},
+			Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("image")},
 		})
 		require.NoError(t, err)
 		assert.Equal(t, []string{"data:image/png;base64,iVBORw0KGgo="}, req.Images)
 
 		req, err = ToBedrockCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
-			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}, image}}},
+			Input:  []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}, image}}},
+			Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("search_document")},
 		})
 		require.NoError(t, err)
 		require.Len(t, req.Inputs, 1)
@@ -607,7 +610,8 @@ func TestToBedrockCohereEmbeddingRequest(t *testing.T) {
 		data := "data:image/png;base64,iVBORw0KGgo="
 		mime := "image/png"
 		req, err := ToBedrockCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
-			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: &data, MIMEType: &mime}}}}},
+			Input:  []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: &data, MIMEType: &mime}}}}},
+			Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("image")},
 		})
 		require.NoError(t, err)
 		assert.Equal(t, []string{data}, req.Images)
@@ -643,19 +647,40 @@ func TestToBedrockCohereEmbeddingRequest(t *testing.T) {
 		}
 	})
 
-	t.Run("defaults input_type when the caller omits it", func(t *testing.T) {
-		// AWS requires input_type and has no default, so an absent value would go out
-		// as "" and be rejected. SDKs shaped around Titan's single-field body never
-		// send it; this is what lets them reach a Cohere model at all.
+	t.Run("no task_type or input_type is caller_unsupported_parameter, never a default", func(t *testing.T) {
+		// Contract C4 (TXE-7080): Bifrost used to send search_document (image for images[])
+		// when the caller named none. The input type changes the vectors returned, so the
+		// caller must choose it; the refusal comes before any upstream call.
 		text := "hello"
-		req, err := ToBedrockCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
-			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
-		})
-		require.NoError(t, err)
-		assert.Equal(t, BedrockCohereInputTypeSearchDocument, req.InputType)
+		image := "data:image/png;base64,iVBORw0KGgo="
+		for name, content := range map[string]schemas.EmbeddingContent{
+			"texts":  {{Type: schemas.EmbeddingContentPartTypeText, Text: &text}},
+			"images": {{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: &image}}},
+		} {
+			_, err := ToBedrockCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+				Input: []schemas.EmbeddingInputItem{{Content: content}},
+			})
+			bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
+			require.True(t, ok, "%s: want a caller error, got %v", name, err)
+			assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType, name)
+			assert.Equal(t, "task_type", bifrostErr.Error.Param, name)
+		}
 	})
 
-	t.Run("caller input_type always wins over the default", func(t *testing.T) {
+	t.Run("unified task_type reaches Bedrock as input_type", func(t *testing.T) {
+		text := "hello"
+		for taskType, want := range map[string]string{"search_query": "search_query", "RETRIEVAL_DOCUMENT": "search_document", "image": "image"} {
+			req, err := ToBedrockCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+				Input:  []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
+				Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr(taskType)},
+			})
+			require.NoError(t, err, taskType)
+			assert.Equal(t, want, req.InputType, taskType)
+			assert.NotContains(t, req.ExtraParams, "input_type", taskType)
+		}
+	})
+
+	t.Run("caller input_type extra field is sent as given", func(t *testing.T) {
 		text := "hello"
 		req, err := ToBedrockCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
 			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
@@ -672,6 +697,7 @@ func TestToBedrockCohereEmbeddingRequest(t *testing.T) {
 		bifrostReq := &schemas.BifrostEmbeddingRequest{
 			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
 			Params: &schemas.EmbeddingParameters{
+				TaskType: schemas.Ptr("search_document"),
 				ExtraParams: map[string]interface{}{
 					"embedding_types": []interface{}{"float", "int8", "binary"},
 				},
@@ -692,7 +718,7 @@ func TestToBedrockCohereEmbeddingRequest(t *testing.T) {
 		req, err := ToBedrockCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
 			Model:  "cohere.embed-v4:0",
 			Input:  []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
-			Params: &schemas.EmbeddingParameters{EncodingFormat: &int8Format},
+			Params: &schemas.EmbeddingParameters{EncodingFormat: &int8Format, TaskType: schemas.Ptr("search_document")},
 		})
 		require.NoError(t, err)
 		assert.Equal(t, []string{"int8"}, req.EmbeddingTypes)
@@ -706,7 +732,7 @@ func TestToBedrockCohereEmbeddingRequest(t *testing.T) {
 		req, err := ToBedrockCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
 			Model:  "cohere.embed-v4:0",
 			Input:  []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
-			Params: &schemas.EmbeddingParameters{EncodingFormat: &base64Format},
+			Params: &schemas.EmbeddingParameters{EncodingFormat: &base64Format, TaskType: schemas.Ptr("search_document")},
 		})
 		require.NoError(t, err)
 		assert.Empty(t, req.EmbeddingTypes)
@@ -723,6 +749,7 @@ func TestToBedrockCohereEmbeddingRequest(t *testing.T) {
 			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
 			Params: &schemas.EmbeddingParameters{
 				EncodingFormat: &base64Format,
+				TaskType:       schemas.Ptr("search_document"),
 				ExtraParams:    map[string]interface{}{"embedding_types": []string{"float", "int8"}},
 			},
 		})
@@ -1660,6 +1687,10 @@ func TestBedrockEmbeddingCapturesRawRequestAndResponse(t *testing.T) {
 				request := embeddingRequest()
 				request.Model = test.model
 				request.Params = nil
+				if strings.HasPrefix(test.model, "cohere.") {
+					// Cohere's input_type is the caller's choice (TXE-7080); the other families take none.
+					request.Params = &schemas.EmbeddingParameters{TaskType: schemas.Ptr("search_document")}
+				}
 				response, bifrostErr := provider.Embedding(ctx, testBedrockKey(), request)
 				require.Nil(t, bifrostErr)
 				require.NotNil(t, response)
@@ -1718,4 +1749,53 @@ func TestBedrockNovaInvokeWireThroughTheProvider(t *testing.T) {
 	for _, data := range response.Data {
 		assert.Equal(t, 0, data.Index, "modality %s points at input %d of a one-input request", data.Modality, data.Index)
 	}
+}
+
+// Bifrost's own embedding requests (semantic cache, routing, Warp; marked by
+// bifrost.MarkInternalEmbeddingRequest, which sets this context key) have no caller to name
+// a task, so on Bedrock's Cohere models, as on the cohere provider, one that names none
+// gets search_document, and a task it does name wins. A caller's request without one is
+// refused before any upstream call (TXE-7080).
+func TestBedrockCohereInternalEmbeddingGetsTheDocumentedInputType(t *testing.T) {
+	var calls int
+	var gotInputType string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		body, _ := io.ReadAll(r.Body)
+		gotInputType = gjson.GetBytes(body, "input_type").String()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"embeddings":[[0.5]],"id":"x","response_type":"embeddings_floats"}`))
+	}))
+	defer server.Close()
+	provider := newTestProviderWithServer(t, server)
+	text := "hello"
+	request := func(params *schemas.EmbeddingParameters) *schemas.BifrostEmbeddingRequest {
+		return &schemas.BifrostEmbeddingRequest{
+			Provider: schemas.Bedrock,
+			Model:    "cohere.embed-english-v3",
+			Input:    []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
+			Params:   params,
+		}
+	}
+	internalCtx := func() *schemas.BifrostContext {
+		ctx := testBedrockCtx()
+		ctx.SetValue(schemas.BifrostContextKeyInternalEmbeddingRequest, true)
+		return ctx
+	}
+
+	_, bifrostErr := provider.Embedding(internalCtx(), testBedrockKey(), request(nil))
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "search_document", gotInputType)
+
+	_, bifrostErr = provider.Embedding(internalCtx(), testBedrockKey(), request(&schemas.EmbeddingParameters{TaskType: schemas.Ptr("search_query")}))
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "search_query", gotInputType)
+	require.Equal(t, 2, calls)
+
+	_, bifrostErr = provider.Embedding(testBedrockCtx(), testBedrockKey(), request(nil))
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.StatusCode)
+	assert.Equal(t, 400, *bifrostErr.StatusCode)
+	assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+	assert.Equal(t, 2, calls, "a caller's request without a task is refused before any upstream call")
 }

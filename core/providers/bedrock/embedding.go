@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/capsohq/bifrost/core/providers/cohere"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 )
@@ -274,7 +275,15 @@ func ToBedrockCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest
 		return nil, providerUtils.InvalidRequestErrorf("%s", err)
 	}
 
-	req := &BedrockCohereEmbeddingRequest{}
+	// Cohere's input_type is resolved the same way for every provider serving Cohere's embed
+	// models (contract C4): the unified task_type, else the caller's own input_type extra
+	// field; with neither the request is refused before any upstream call. Bifrost used to
+	// send search_document (or image for images[]) here when the caller named none.
+	inputType, err := cohere.EmbeddingInputType(bifrostReq.Params)
+	if err != nil {
+		return nil, err
+	}
+	req := &BedrockCohereEmbeddingRequest{InputType: inputType}
 
 	// Text-only batches use texts[], lone images use images[] (the only image shape Embed v3
 	// accepts), and anything else uses the mixed inputs[] shape (Embed v4 only).
@@ -322,12 +331,8 @@ func ToBedrockCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest
 		delete(extra, "images")
 		delete(extra, "inputs")
 
-		if v, ok := extra["input_type"]; ok {
-			if s, ok := v.(string); ok {
-				req.InputType = s
-				delete(extra, "input_type")
-			}
-		}
+		// Resolved into req.InputType above.
+		delete(extra, "input_type")
 		if v, ok := extra["truncate"]; ok {
 			if s, ok := v.(string); ok {
 				req.Truncate = &s
@@ -362,19 +367,6 @@ func ToBedrockCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest
 		}
 		if len(extra) > 0 {
 			req.ExtraParams = extra
-		}
-	}
-
-	// AWS requires input_type and defines no default, so an absent value would be
-	// serialized as "" and rejected. SDKs that target Titan's single-field shape
-	// (LangChain's BedrockEmbeddings) never send it; both LangChain Python clients
-	// pick search_document client-side for exactly this case, so match them.
-	// Embed v3 rejects images[] under any input_type but "image"; v4 accepts it too.
-	if req.InputType == "" {
-		if len(req.Images) > 0 {
-			req.InputType = BedrockCohereInputTypeImage
-		} else {
-			req.InputType = BedrockCohereInputTypeSearchDocument
 		}
 	}
 

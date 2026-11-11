@@ -491,7 +491,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\"\n}"
+              "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"task_type\": \"search_document\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/embeddings",
@@ -517,11 +517,9 @@
                   "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
                   "var data = j.data || [];",
                   "// The plainest possible OpenAI-shaped call against a Bedrock Cohere model.",
-                  "// BedrockCohereEmbeddingRequest.InputType is tagged `json:\"input_type\"` with no omitempty",
-                  "// (core/providers/bedrock/types.go), so a caller who omits it sends \"input_type\": \"\" to",
-                  "// Bedrock, and AWS documents input_type as required with a fixed enum. A 400 here is a",
-                  "// Bifrost defect, not a caller error: the same request shape works on every other provider.",
-                  "pm.test('returns 1 vector(s) - a Bedrock Cohere embed must not require caller-supplied input_type', function () {",
+                  "// Contract C4 (TXE-7080): the caller names the task, and task_type is sent as Bedrock's",
+                  "// input_type. Without one the request is refused with 400 caller_unsupported_parameter (474.2).",
+                  "pm.test('returns 1 vector(s) - task_type reaches Bedrock Cohere as input_type', function () {",
                   "  pm.expect(data.length, 'wrong vector count; body: ' + pm.response.text().slice(0, 300))",
                   "    .to.eql(1);",
                   "  for (var i = 0; i < data.length; i++) {",

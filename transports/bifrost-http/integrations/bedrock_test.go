@@ -14,6 +14,8 @@ import (
 	"github.com/bytedance/sonic"
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/providers/bedrock"
+	"github.com/capsohq/bifrost/core/providers/gemini"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/kvstore"
 	"github.com/capsohq/bifrost/framework/logstore"
@@ -1463,4 +1465,91 @@ func Test_bedrockPreCallback_ReadsInvokeGuardrailHeaders(t *testing.T) {
 			}
 		})
 	}
+}
+
+// /bedrock/model/{modelId}/invoke to a Cohere embed model (TXE-7080, contract C4): the
+// caller's native input_type reaches Bedrock unchanged; a body without one, including
+// the Titan-shaped {"inputText": ...} that LangChain's BedrockEmbeddings sends, is refused
+// with caller_unsupported_parameter instead of being embedded as search_document.
+func TestBedrockInvokeCohereEmbeddingInputTypeIsTheCallers(t *testing.T) {
+	route := createBedrockInvokeRouteConfig("/bedrock", &mockHandlerStore{})
+	toEgress := func(body string) (*bedrock.BedrockCohereEmbeddingRequest, error) {
+		req := &bedrock.BedrockInvokeRequest{}
+		require.NoError(t, sonic.Unmarshal([]byte(body), req))
+		req.ModelID = "cohere.embed-v4:0"
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, bedrock.DetectInvokeRequestType([]byte(body), req.ModelID))
+		bifrostReq, err := route.RequestConverter(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, bifrostReq.EmbeddingRequest, body)
+		return bedrock.ToBedrockCohereEmbeddingRequest(bifrostReq.EmbeddingRequest)
+	}
+
+	egress, err := toEgress(`{"texts":["hi"],"input_type":"search_query"}`)
+	require.NoError(t, err)
+	assert.Equal(t, "search_query", egress.InputType)
+
+	for _, body := range []string{`{"texts":["hi"]}`, `{"inputText":"hi"}`} {
+		_, err := toEgress(body)
+		bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
+		require.True(t, ok, "%s: want a caller error, got %v", body, err)
+		assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType, body)
+	}
+}
+
+// /v1-shaped ingress to Bedrock Cohere (TXE-7080): /openai/v1/embeddings (and its alias
+// prefixes) decodes task_type into the unified parameters, so it reaches Bedrock as
+// input_type, and a request without one is refused.
+func TestOpenAIEmbeddingsRouteToBedrockCohereCarriesTaskType(t *testing.T) {
+	var route *RouteConfig
+	routes := CreateOpenAIRouteConfigs("/openai", nil)
+	for i := range routes {
+		if routes[i].Path == "/openai/v1/embeddings" {
+			route = &routes[i]
+		}
+	}
+	require.NotNil(t, route)
+	toEgress := func(body string) (*bedrock.BedrockCohereEmbeddingRequest, error) {
+		native := route.GetRequestTypeInstance(context.Background())
+		require.NoError(t, sonic.Unmarshal([]byte(body), native))
+		bifrostReq, err := route.RequestConverter(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), native)
+		require.NoError(t, err)
+		require.Equal(t, schemas.Bedrock, bifrostReq.EmbeddingRequest.Provider)
+		return bedrock.ToBedrockCohereEmbeddingRequest(bifrostReq.EmbeddingRequest)
+	}
+	egress, err := toEgress(`{"model":"bedrock/cohere.embed-v4:0","input":"hi","task_type":"RETRIEVAL_QUERY"}`)
+	require.NoError(t, err)
+	assert.Equal(t, "search_query", egress.InputType)
+
+	_, err = toEgress(`{"model":"bedrock/cohere.embed-v4:0","input":"hi"}`)
+	bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
+	require.True(t, ok, "want a caller error, got %v", err)
+	assert.Equal(t, "task_type", bifrostErr.Error.Param)
+}
+
+// /genai to Bedrock Cohere (TXE-7080): Gemini's taskType becomes the unified task_type,
+// which reaches Bedrock as input_type; without one the request is refused.
+func TestGenAIRouteToBedrockCohereMapsTaskType(t *testing.T) {
+	var route *RouteConfig
+	routes := CreateGenAIRouteConfigs("/genai")
+	for i := range routes {
+		if routes[i].Path == "/genai/v1beta/models/{model:*}" && routes[i].EmbeddingResponseConverter != nil {
+			route = &routes[i]
+		}
+	}
+	require.NotNil(t, route)
+	toEgress := func(native *gemini.GeminiEmbeddingRequest) (*bedrock.BedrockCohereEmbeddingRequest, error) {
+		bifrostReq, err := route.RequestConverter(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), native)
+		require.NoError(t, err)
+		require.Equal(t, schemas.Bedrock, bifrostReq.EmbeddingRequest.Provider)
+		return bedrock.ToBedrockCohereEmbeddingRequest(bifrostReq.EmbeddingRequest)
+	}
+	content := &gemini.Content{Parts: []*gemini.Part{{Text: "hi"}}}
+	egress, err := toEgress(&gemini.GeminiEmbeddingRequest{Model: "bedrock/cohere.embed-v4:0", Content: content, TaskType: schemas.Ptr("RETRIEVAL_DOCUMENT")})
+	require.NoError(t, err)
+	assert.Equal(t, "search_document", egress.InputType)
+
+	_, err = toEgress(&gemini.GeminiEmbeddingRequest{Model: "bedrock/cohere.embed-v4:0", Content: content})
+	_, ok := providerUtils.AsBifrostBadRequestError(err)
+	require.True(t, ok, "want a caller error, got %v", err)
 }

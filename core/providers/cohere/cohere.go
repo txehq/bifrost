@@ -1015,7 +1015,7 @@ func (provider *CohereProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToCohereEmbeddingRequest(withInternalEmbeddingInputType(ctx, request))
+			return ToCohereEmbeddingRequest(WithInternalEmbeddingInputType(ctx, request))
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr

@@ -28,6 +28,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/providers/anthropic"
+	"github.com/capsohq/bifrost/core/providers/cohere"
 	openai "github.com/capsohq/bifrost/core/providers/openai"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
@@ -2292,7 +2293,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				return ToBedrockCohereEmbeddingRequest(request)
+				return ToBedrockCohereEmbeddingRequest(cohere.WithInternalEmbeddingInputType(ctx, request))
 			})
 		if bifrostError != nil {
 			return nil, bifrostError

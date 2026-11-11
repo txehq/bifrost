@@ -196,6 +196,7 @@ func TestBedrock(t *testing.T) {
 			{Provider: schemas.Bedrock, Model: "claude-4.5-sonnet"},
 		},
 		EmbeddingModel:           "cohere.embed-v4:0",
+		EmbeddingTaskType:        "search_document",
 		RerankModel:              rerankModelARN,
 		ReasoningModel:           "claude-4.5-sonnet",
 		PromptCachingModel:       "claude-4.5-sonnet",
