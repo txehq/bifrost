@@ -199,7 +199,11 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 	}
 	settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, false)
 
-	if resp != nil && resp.ContentFilter != nil && resp.ContentFilter.FilteredCount > 0 {
+	// Parked only when the filter left nothing delivered. A task that delivered some videos
+	// and had others filtered (fork, TXE-6537: Veo reports both) is priced by the clips it
+	// delivered, below: those are owed whatever the policy on the filtered ones is, and
+	// parking the whole job would leave them uncharged.
+	if resp != nil && resp.ContentFilter != nil && resp.ContentFilter.FilteredCount > 0 && len(resp.Videos) == 0 {
 		settlement.UnpriceableReason = UnpriceableReasonContentFiltered
 		return settlement, nil
 	}
