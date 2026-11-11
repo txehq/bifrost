@@ -293,7 +293,9 @@ func ToDashScopeVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGeneratio
 
 	if params.Seconds != nil && *params.Seconds != "" {
 		// duration is a whole number of seconds; a fractional value is refused, not rounded.
-		duration, err := strconv.Atoi(strings.TrimSpace(*params.Seconds))
+		// The value is read as written, with no trimming: accounting parses the same string
+		// the same way, so a value taken here is one it can price.
+		duration, err := strconv.Atoi(*params.Seconds)
 		if err != nil {
 			return nil, unsupportedVideoParameter("seconds", "dashscope: seconds %q is not a whole number of seconds", *params.Seconds)
 		}
