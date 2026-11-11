@@ -47,12 +47,15 @@ const (
 // is nil when no name repeats. A plugin may change or add Query entries; the transport
 // applies those and never a change to RepeatedQuery.
 //
-// A parameter the gateway does not interpret is forwarded to the vendor with every value,
-// so a plugin that allows or refuses a request by a query value must check RepeatedQuery
-// as well as Query. Setting a name in Query to a different value replaces every value the
-// caller sent. Setting it to the value it already holds changes nothing, because the
-// transport cannot tell that from a name the plugin left alone: a plugin that must pin a
-// value refuses a request whose RepeatedQuery carries the name.
+// A parameter the gateway does not interpret is forwarded to the vendor with every value
+// the caller sent, unless a plugin set it. A plugin sets a query value with SetQuery: the
+// name is then forwarded with that one value, also when it is the value the name already
+// had (the caller sends tier=allowed&tier=other, a plugin calls
+// SetQuery("tier", "allowed"), and the vendor receives tier=allowed alone). Do not write
+// Query[name] directly: the transport cannot see a write of the value the name already
+// holds, so the caller's other values would stay. A plugin that only reads a value, to
+// allow or refuse the request, must read RepeatedQuery as well as Query, because the
+// other values of a name no plugin set are forwarded.
 type HTTPRequest struct {
 	Method        string              `json:"method"`
 	Path          string              `json:"path"`
@@ -61,6 +64,29 @@ type HTTPRequest struct {
 	RepeatedQuery map[string][]string `json:"repeated_query,omitempty"` // Every value of each name sent more than once; read-only
 	Body          []byte              `json:"body"`
 	PathParams    map[string]string   `json:"path_params"` // Path variables extracted from the URL pattern (e.g., {model})
+
+	assignedQuery map[string]struct{} // Names set through SetQuery
+}
+
+// SetQuery sets a query parameter to one value and records that a plugin set it, so the
+// transport forwards the name with that value alone, whatever the caller sent and however
+// many times. It is the only supported way for a plugin to set a query value
+// (fork, TXE-7042).
+func (req *HTTPRequest) SetQuery(name, value string) {
+	if req.Query == nil {
+		req.Query = make(map[string]string, 1)
+	}
+	req.Query[name] = value
+	if req.assignedQuery == nil {
+		req.assignedQuery = make(map[string]struct{}, 1)
+	}
+	req.assignedQuery[name] = struct{}{}
+}
+
+// QueryAssigned reports whether a plugin set name through SetQuery.
+func (req *HTTPRequest) QueryAssigned(name string) bool {
+	_, ok := req.assignedQuery[name]
+	return ok
 }
 
 // CaseInsensitiveHeaderLookup looks up a header key in a case-insensitive manner
@@ -212,6 +238,7 @@ func ReleaseHTTPRequest(req *HTTPRequest) {
 	req.Path = ""
 	req.Body = nil
 	req.RepeatedQuery = nil
+	req.assignedQuery = nil
 	httpRequestPool.Put(req)
 }
 

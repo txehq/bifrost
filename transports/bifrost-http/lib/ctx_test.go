@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/fs"
 	"math"
@@ -3149,36 +3152,191 @@ func TestCopyQueryFirstValues(t *testing.T) {
 	}
 }
 
-// ApplyQueryChanges leaves what a plugin did not change exactly as sent and replaces every
-// value of a name a plugin changed (fork, TXE-7042).
+// ApplyQueryChanges leaves what a plugin did not set exactly as sent. A name set through
+// SetQuery ends with that one value, also when it is the value the name already had; a
+// direct write is applied by comparing text (fork, TXE-7042).
 func TestApplyQueryChanges(t *testing.T) {
-	const sent = "provider=openai&status=a&status=b&flag&limit=5"
+	const sent = "provider=openai&status=a&status=b&flag&limit=5&tier=allowed&tier=other&empty=&empty=x"
+	const pinned = "provider=openai&status=a&status=b&flag&limit=5&empty=&empty=x&tier=allowed"
+	type request = schemas.HTTPRequest
 	cases := []struct {
 		name   string
-		mutate func(query map[string]string)
+		mutate func(r *request)
 		want   string
 	}{
-		{name: "nothing changed", mutate: func(map[string]string) {}, want: sent},
-		{name: "another name changed", mutate: func(q map[string]string) { q["limit"] = "9" }, want: "provider=openai&status=a&status=b&flag&limit=9"},
-		{name: "name added", mutate: func(q map[string]string) { q["injected"] = "yes" }, want: sent + "&injected=yes"},
-		{name: "empty name added", mutate: func(q map[string]string) { q["bare"] = "" }, want: sent + "&bare="},
-		{name: "repeated name changed", mutate: func(q map[string]string) { q["status"] = "z" }, want: "provider=openai&flag&limit=5&status=z"},
-		{name: "repeated name set to its last value", mutate: func(q map[string]string) { q["status"] = "b" }, want: "provider=openai&flag&limit=5&status=b"},
-		{name: "name deleted stays", mutate: func(q map[string]string) { delete(q, "status") }, want: sent},
+		{name: "nothing changed", mutate: func(*request) {}, want: sent},
+		// SetQuery: the name ends with the one value.
+		{name: "repeated name pinned to its first value", mutate: func(r *request) { r.SetQuery("tier", "allowed") }, want: pinned},
+		{name: "repeated name pinned to the string read from the request", mutate: func(r *request) { r.SetQuery("tier", r.Query["tier"]) }, want: pinned},
+		{name: "repeated name pinned to its empty first value", mutate: func(r *request) { r.SetQuery("empty", "") }, want: "provider=openai&status=a&status=b&flag&limit=5&tier=allowed&tier=other&empty="},
+		{name: "repeated name set to another value", mutate: func(r *request) { r.SetQuery("status", "z") }, want: "provider=openai&flag&limit=5&tier=allowed&tier=other&empty=&empty=x&status=z"},
+		{name: "repeated name set to its last value", mutate: func(r *request) { r.SetQuery("status", "b") }, want: "provider=openai&flag&limit=5&tier=allowed&tier=other&empty=&empty=x&status=b"},
+		{name: "name sent once set to its own value", mutate: func(r *request) { r.SetQuery("limit", "5") }, want: sent},
+		{name: "name sent once set to another value", mutate: func(r *request) { r.SetQuery("limit", "9") }, want: "provider=openai&status=a&status=b&flag&limit=9&tier=allowed&tier=other&empty=&empty=x"},
+		{name: "name added", mutate: func(r *request) { r.SetQuery("injected", "yes") }, want: sent + "&injected=yes"},
+		{name: "empty name added", mutate: func(r *request) { r.SetQuery("bare", "") }, want: sent + "&bare="},
+		{name: "pin holds without the record of repeated names", mutate: func(r *request) { r.RepeatedQuery = nil; r.SetQuery("tier", "allowed") }, want: pinned},
+		// A direct write, from a plugin built outside this repository, is compared as text.
+		{name: "direct write of another value", mutate: func(r *request) { r.Query["status"] = "z" }, want: "provider=openai&flag&limit=5&tier=allowed&tier=other&empty=&empty=x&status=z"},
+		{name: "direct write of a new name", mutate: func(r *request) { r.Query["injected"] = "yes" }, want: sent + "&injected=yes"},
+		{name: "direct write of the first value reads as untouched", mutate: func(r *request) { r.Query["tier"] = "allowed" }, want: sent},
+		{name: "name deleted stays", mutate: func(r *request) { delete(r.Query, "status") }, want: sent},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := queryTestCtx("/v1/batches?" + sent)
 			args := ctx.Request.URI().QueryArgs()
-			query := map[string]string{}
-			CopyQueryFirstValues(args, query, false)
-			tc.mutate(query)
-			ApplyQueryChanges(args, query)
-			if got := string(args.QueryString()); got != tc.want {
+			r := &request{Query: map[string]string{}}
+			r.RepeatedQuery = CopyQueryFirstValues(args, r.Query, false)
+			tc.mutate(r)
+			ApplyQueryChanges(args, r)
+			got := string(args.QueryString())
+			if !sameQueryPairs(got, tc.want) {
 				t.Fatalf("query string = %q, want %q", got, tc.want)
 			}
 		})
 	}
+}
+
+// TestPluginsSetQueryValuesThroughSetQuery fails when Go code in this repository writes
+// an entry of an HTTPRequest's Query map itself. The transport cannot see such a write
+// when it stores the value the name already had, so a plugin pinning tier=allowed on a
+// request that carries tier=allowed&tier=other would leave both values on it;
+// HTTPRequest.SetQuery records the name and the transport forwards the one value
+// (fork, TXE-7042). The check reads syntax: it catches x.Query[k] = v, x.Query[k] += v
+// and maps.Copy(x.Query, ...) on any expression, not a write through another variable
+// holding the map. The two allowed files are SetQuery itself and the transport's own
+// copy of a request for the streamed post-hooks.
+func TestPluginsSetQueryValuesThroughSetQuery(t *testing.T) {
+	root := filepath.Join("..", "..", "..")
+	allowed := map[string]bool{
+		filepath.Join("core", "schemas", "plugin.go"):                             true,
+		filepath.Join("transports", "bifrost-http", "handlers", "middlewares.go"): true,
+	}
+	isQueryField := func(e ast.Expr) bool {
+		sel, ok := e.(*ast.SelectorExpr)
+		return ok && sel.Sel.Name == "Query"
+	}
+	writes := func(src string) (lines []int, err error) {
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, "", src, parser.SkipObjectResolution)
+		if err != nil {
+			return nil, err
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.AssignStmt:
+				for _, lhs := range node.Lhs {
+					if index, ok := lhs.(*ast.IndexExpr); ok && isQueryField(index.X) {
+						lines = append(lines, fset.Position(node.Pos()).Line)
+					}
+				}
+			case *ast.CallExpr:
+				if fn, ok := node.Fun.(*ast.SelectorExpr); ok && fn.Sel.Name == "Copy" && len(node.Args) == 2 {
+					if pkg, ok := fn.X.(*ast.Ident); ok && pkg.Name == "maps" && isQueryField(node.Args[0]) {
+						lines = append(lines, fset.Position(node.Pos()).Line)
+					}
+				}
+			}
+			return true
+		})
+		return lines, nil
+	}
+
+	// The check itself: each written form is found, SetQuery and reads are not.
+	for src, want := range map[string]int{
+		`package p; func f(req *R) { req.Query["tier"] = "allowed" }`:             1,
+		`package p; func f(req *R) { req.Query[k] += "x" }`:                       1,
+		`package p; func f(req *R) { maps.Copy(req.Query, other) }`:               1,
+		`package p; func f(c *C) { c.Request.Query["a"], c.n = "b", 1 }`:          1,
+		`package p; func f(req *R) { req.SetQuery("tier", "allowed") }`:           0,
+		`package p; func f(req *R) string { v := req.Query["tier"]; return v }`:   0,
+		`package p; func f(req *R) { maps.Copy(dst, req.Query); q["a"] = "b" }`:   0,
+		`package p; func f(req *R) { req.Headers["a"] = "b"; action.Query = &q }`: 0,
+	} {
+		lines, err := writes(src)
+		if err != nil {
+			t.Fatalf("%s: %v", src, err)
+		}
+		if len(lines) != want {
+			t.Fatalf("%s: found %d writes, want %d", src, len(lines), want)
+		}
+	}
+
+	found := map[string]bool{}
+	scanned := 0
+	for _, module := range []string{"core", "framework", "plugins", "transports", "examples"} {
+		err := filepath.WalkDir(filepath.Join(root, module), func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if d.Name() == "ui" || d.Name() == "node_modules" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			src, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			scanned++
+			if !bytes.Contains(src, []byte("Query")) {
+				return nil
+			}
+			lines, parseErr := writes(string(src))
+			if parseErr != nil {
+				return fmt.Errorf("%s: %w", path, parseErr)
+			}
+			if len(lines) == 0 {
+				return nil
+			}
+			rel, _ := filepath.Rel(root, path)
+			found[rel] = true
+			if !allowed[rel] {
+				t.Errorf("%s writes a Query entry directly (line %v); call HTTPRequest.SetQuery", rel, lines)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if scanned < 500 {
+		t.Fatalf("scanned %d Go files under %s, expected the whole repository", scanned, root)
+	}
+	for rel := range allowed {
+		if !found[rel] {
+			t.Errorf("%s no longer writes a Query entry: drop it from the allow list", rel)
+		}
+	}
+}
+
+// sameQueryPairs compares two query strings as name=value pairs, keeping the order of the
+// values of each name: ApplyQueryChanges walks a map, so the names it rewrites land at
+// the end in no fixed order.
+func sameQueryPairs(got, want string) bool {
+	byName := func(qs string) map[string][]string {
+		out := map[string][]string{}
+		for _, pair := range strings.Split(qs, "&") {
+			name, value, _ := strings.Cut(pair, "=")
+			out[name] = append(out[name], value)
+		}
+		return out
+	}
+	g, w := byName(got), byName(want)
+	if len(g) != len(w) || len(got) != len(want) {
+		return false
+	}
+	for name, values := range w {
+		if !slices.Equal(g[name], values) {
+			return false
+		}
+	}
+	return true
 }
 
 // Routing rules read BifrostContextKeyRequestQuery and handlers read Args.Peek: both must

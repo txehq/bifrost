@@ -225,6 +225,9 @@ func TestReleaseHTTPRequestClearsRepeatedQuery(t *testing.T) {
 	req := AcquireHTTPRequest()
 	req.Query["status"] = "a"
 	req.RepeatedQuery = map[string][]string{"status": {"a", "b"}}
+	req.SetQuery("tier", "allowed")
+	assert.True(t, req.QueryAssigned("tier"))
+	assert.False(t, req.QueryAssigned("status"))
 	ReleaseHTTPRequest(req)
 	assert.Nil(t, req.RepeatedQuery)
 	assert.Empty(t, req.Query)
