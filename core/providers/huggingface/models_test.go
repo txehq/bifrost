@@ -16,6 +16,39 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// TestModelHubFollowsTheConfiguredBaseURL (fork, TXE-7117): with the default base URL the hub
+// API is asked at huggingface.co, as before. With a base URL the operator set, the model
+// lookup and the model list go there too, so a provider pointed at a gateway or a fixture
+// reaches no HuggingFace host by a route nobody configured.
+func TestModelHubFollowsTheConfiguredBaseURL(t *testing.T) {
+	newProvider := func(baseURL string) *HuggingFaceProvider {
+		return NewHuggingFaceProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: baseURL, DefaultRequestTimeoutInSeconds: 5}}, nil)
+	}
+	for _, baseURL := range []string{"", defaultInferenceBaseURL, defaultInferenceBaseURL + "/"} {
+		provider := newProvider(baseURL)
+		assert.Equal(t, "https://huggingface.co/api/models/org/model?expand%5B%5D=inferenceProviderMapping", provider.buildModelInferenceProviderURL("org/model"), "base %q", baseURL)
+		assert.Contains(t, provider.buildModelHubURL(&schemas.BifrostListModelsRequest{}, falAI), "https://huggingface.co/api/models?", "base %q", baseURL)
+	}
+	// A provider built without the constructor keeps the old host.
+	assert.Contains(t, (&HuggingFaceProvider{}).buildModelInferenceProviderURL("org/model"), "https://huggingface.co/api/models/org/model?")
+
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"_id":"1","id":"org/model","pipeline_tag":"text-to-speech","inferenceProviderMapping":{"fal-ai":{"status":"live","providerId":"fal-ai/org-model","task":"text-to-speech"}}}`))
+	}))
+	defer server.Close()
+	provider := newProvider(server.URL + "/pp/huggingface/")
+	assert.Equal(t, server.URL+"/pp/huggingface/api/models/org/model?expand%5B%5D=inferenceProviderMapping", provider.buildModelInferenceProviderURL("org/model"))
+	assert.Contains(t, provider.buildModelHubURL(&schemas.BifrostListModelsRequest{}, falAI), server.URL+"/pp/huggingface/api/models?")
+
+	modelID, bifrostErr := provider.getValidatedProviderModelID(context.Background(), falAI, "org/model", "text-to-speech", schemas.SpeechRequest)
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "fal-ai/org-model", modelID)
+	assert.Equal(t, []string{"/pp/huggingface/api/models/org/model"}, paths, "the lookup must go to the configured base URL")
+}
+
 // Regression tests for https://github.com/capsohq/bifrost/issues/4215.
 //
 // Allowlist entries selected from a previous ListModels response carry an

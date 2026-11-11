@@ -28,6 +28,9 @@ type HuggingFaceProvider struct {
 	sendBackRawRequest        bool
 	customProviderConfig      *schemas.CustomProviderConfig
 	modelProviderMappingCache *sync.Map
+	// hubBaseURL is where the model hub API (/api/models) is asked: huggingface.co, or the
+	// configured base URL when the operator set one (fork, TXE-7117).
+	hubBaseURL string
 }
 
 var huggingFaceTranscriptionResponsePool = sync.Pool{
@@ -95,6 +98,15 @@ func NewHuggingFaceProvider(config *schemas.ProviderConfig, logger schemas.Logge
 		config.NetworkConfig.BaseURL = defaultInferenceBaseURL
 	}
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	// Fork (TXE-7117): the hub lookup follows the configured base URL. With the default
+	// base the inference router and the hub are two HuggingFace hosts. An operator who
+	// points the provider elsewhere (a gateway in front of HuggingFace, a test fixture)
+	// has redirected HuggingFace, and a lookup that still went to huggingface.co would
+	// leave by a route they did not configure, or fail where only that host is reachable.
+	hubBaseURL := modelHubBaseURL
+	if config.NetworkConfig.BaseURL != defaultInferenceBaseURL {
+		hubBaseURL = config.NetworkConfig.BaseURL
+	}
 
 	return &HuggingFaceProvider{
 		logger:                    logger,
@@ -105,6 +117,7 @@ func NewHuggingFaceProvider(config *schemas.ProviderConfig, logger schemas.Logge
 		sendBackRawRequest:        config.SendBackRawRequest,
 		customProviderConfig:      config.CustomProviderConfig,
 		modelProviderMappingCache: &sync.Map{},
+		hubBaseURL:                hubBaseURL,
 	}
 }
 
