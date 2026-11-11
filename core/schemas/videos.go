@@ -269,10 +269,15 @@ const DefaultVideoDuration = "8"
 // DefaultVideoSeconds is the duration a provider renders when a video create names none, for
 // the providers whose default Bifrost knows (Veo on Gemini and Vertex: 8 seconds). Job
 // settlement prices a create that sent no seconds by it, so such a job is still charged to the
-// caller's budget. It is never written to a response (contract C5).
-func DefaultVideoSeconds(provider ModelProvider) (int, bool) {
+// caller's budget. It is never written to a response (contract C5). model is the model that
+// ran, the response's when it names one: an Omni model on the same providers picks its own
+// duration and has no default (TXE-6538).
+func DefaultVideoSeconds(provider ModelProvider, model string) (int, bool) {
 	switch provider {
 	case Gemini, Vertex:
+		if IsGeminiOmniModel(model) {
+			return 0, false
+		}
 		return 8, true
 	}
 	return 0, false

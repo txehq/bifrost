@@ -281,6 +281,25 @@ func TestVideoSettle_DashScopeUnknownTaskParksAsGone(t *testing.T) {
 	assert.Empty(t, other.UnpriceableReason)
 }
 
+// TXE-6537: a task that delivered videos and had others filtered is charged for the delivered
+// clips. Parking it with the fully filtered ones would leave delivered output uncharged.
+func TestVideoSettle_PartlyFilteredJobIsPricedByTheClipsDelivered(t *testing.T) {
+	job := videoJob(t, "vid_partly_filtered", generationDims("sora-2-pro", "1280x720", 8))
+	settlement := settleVideo(t, job, &schemas.BifrostVideoGenerationResponse{
+		Status: schemas.VideoStatusCompleted,
+		Videos: []schemas.VideoOutput{
+			{Type: schemas.VideoOutputTypeContent, ID: "gs://out/t/sample_0.mp4", ContentType: "video/mp4"},
+			{Type: schemas.VideoOutputTypeBase64, ContentType: "video/mp4"},
+		},
+		ContentFilter: &schemas.ContentFilterInfo{FilteredCount: 1, Reasons: []string{"safety"}},
+	})
+
+	require.True(t, settlement.Priced)
+	assert.True(t, settlement.Complete)
+	assert.Empty(t, settlement.UnpriceableReason)
+	assert.InDelta(t, 2*8*0.30, settlement.Cost, 1e-12, "the two delivered clips, not the filtered one")
+}
+
 func TestVideoSettle_NoRateRecordsUnpricedRatherThanFree(t *testing.T) {
 	job := videoJob(t, "vid_norate", generationDims("some-unknown-model", "1920x1080", 8))
 	settlement := settleVideoRendered(t, job, &schemas.BifrostVideoGenerationResponse{
@@ -1515,7 +1534,7 @@ var videoDurationFixtures = map[schemas.ModelProvider]videoDurationFixture{
 // videoDurationExemptProviders are providers in videoProviders this test cannot reach through a
 // stand-in vendor, each with the reason and where the same guarantee is checked instead.
 var videoDurationExemptProviders = map[schemas.ModelProvider]string{
-	schemas.Vertex: "Vertex dials its regional Google host over TLS whatever the base URL. It runs Gemini's Veo converter, and core's BackfillParams gives it Veo's default duration, which TestVertexVeoWithoutSecondsGetsVeosDefault checks",
+	schemas.Vertex: "Vertex dials its regional Google host over TLS whatever the base URL. It runs Gemini's Veo converter, and the job row gets Veo's default duration (WithVendorDefaultSeconds), which TestVertexVeoWithoutSecondsGetsVeosDefault checks",
 }
 
 // runwareTaskUUID reads the taskUUID a Runware request names.
@@ -1635,8 +1654,9 @@ func TestEveryVideoProviderSettlesAJobCreatedWithoutSeconds(t *testing.T) {
 				t.Fatalf("the fixture's finished task reads as %q, not completed: fix the fixture", finished.Status)
 			}
 			// What the job row captures at the create, layered under what the finished task says:
-			// the settler's own merge (Settle).
-			dims := modelcatalog.VideoDimensionsFromResponse(created).MergedWith(modelcatalog.VideoDimensionsFromResponse(finished))
+			// the settler's own merge (Settle). The logging plugin gives the create's row the
+			// vendor's default duration when it knows one (TXE-6537: a task object never carries it).
+			dims := modelcatalog.VideoDimensionsFromResponse(created).WithVendorDefaultSeconds(provider).MergedWith(modelcatalog.VideoDimensionsFromResponse(finished))
 			if dims.Seconds == nil && dims.ProviderCost == nil {
 				t.Errorf("%s: a job created without seconds settles with neither a duration nor a provider cost, so it is recorded unpriced and the virtual key's budget is never charged. Record the duration the vendor renders (on the create or the finished task), or report the vendor's cost in USD as usage.cost", provider)
 			}
@@ -1652,18 +1672,36 @@ func videoErrorText(bifrostErr *schemas.BifrostError) string {
 }
 
 // TestVertexVeoWithoutSecondsGetsVeosDefault is the check videoDurationExemptProviders names for
-// vertex: a Veo create on Vertex that names no seconds carries Veo's default duration after
-// core's BackfillParams, so its job settles priced. An Omni model picks its own length and gets
-// no default; Vertex Omni, like Gemini Omni, is outside this check's Veo row.
+// vertex: a Veo create on Vertex that names no seconds gets Veo's default duration on its job
+// row, so its job settles priced, while the task object carries none (contract C5, TXE-6537).
+// An Omni model picks its own length and gets no default (TXE-6538), on Vertex as on Gemini,
+// also when the request named an alias's opaque id and the response names the Omni model.
 func TestVertexVeoWithoutSecondsGetsVeosDefault(t *testing.T) {
-	req := &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{
-		Provider: schemas.Vertex, Model: "veo-3.1-generate-preview", Input: &schemas.VideoGenerationInput{Prompt: "a paper boat"},
-	}}
-	resp := &schemas.BifrostVideoGenerationResponse{Model: "veo-3.1-generate-preview"}
-	resp.BackfillParams(req)
-	dims := modelcatalog.VideoDimensionsFromResponse(resp)
-	if dims.Seconds == nil || *dims.Seconds <= 0 {
-		t.Fatalf("a Vertex Veo create with no seconds settles with no duration: seconds %v", resp.Seconds)
+	row := func(provider schemas.ModelProvider, requestModel, responseModel string) (*schemas.BifrostVideoGenerationResponse, modelcatalog.VideoPricingDimensions) {
+		req := &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{
+			Provider: provider, Model: requestModel, Input: &schemas.VideoGenerationInput{Prompt: "a paper boat"},
+		}}
+		resp := &schemas.BifrostVideoGenerationResponse{Model: responseModel}
+		resp.BackfillParams(req)
+		return resp, modelcatalog.VideoDimensionsFromResponse(resp).WithVendorDefaultSeconds(provider)
+	}
+	for _, provider := range []schemas.ModelProvider{schemas.Vertex, schemas.Gemini} {
+		resp, dims := row(provider, "veo-3.1-generate-preview", "veo-3.1-generate-preview")
+		if resp.Seconds != nil {
+			t.Errorf("%s: the task object carries seconds %q; contract C5 says only the vendor's own", provider, *resp.Seconds)
+		}
+		if dims.Seconds == nil || *dims.Seconds != 8 {
+			t.Errorf("%s: a Veo create with no seconds settles with seconds %v, want Veo's 8", provider, dims.Seconds)
+		}
+		for _, models := range [][2]string{{"gemini-omni-1.1-flash-preview", ""}, {"tuned-endpoint-1", "gemini-omni-1.1-flash"}} {
+			if _, dims := row(provider, models[0], models[1]); dims.Seconds != nil {
+				t.Errorf("%s: an Omni create (%v) got default seconds %d; Omni picks its own length", provider, models, *dims.Seconds)
+			}
+		}
+	}
+	reported := 6
+	if dims := (modelcatalog.VideoPricingDimensions{Model: "veo-3.1-generate-preview", Seconds: &reported}).WithVendorDefaultSeconds(schemas.Vertex); *dims.Seconds != 6 {
+		t.Errorf("a known duration was replaced by the default: %d", *dims.Seconds)
 	}
 }
 
