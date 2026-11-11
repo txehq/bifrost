@@ -108,6 +108,40 @@ func fetchMediaURLResponse(ctx context.Context, resourceURL string, header http.
 	return fetchURLResponse(ctx, resourceURL, mediaFetchLimits, header)
 }
 
+// ClientForVendorURL returns the client a provider sends a request with when the vendor's
+// response, not the provider's base URL, named the request's address: a poll or stream URL of
+// a task, a next-page link, a result file. Such an address is not trusted. Unless it is on
+// the origin of baseURL, which the operator configured, the request goes out on the
+// SSRF-hardened fetch client for the provider's proxy: http and https only, every resolved
+// address checked at dial time, a proxied tunnel bound to the checked address. stream picks
+// the client whose body is read as it arrives; the caller drives it as it drives its own
+// (MakeRequestWithContext, DoStreamingRequest) and must not follow redirects on it, since a
+// redirect hop is not this function's to check (fork, TXE-7090).
+//
+// An address that is not http or https is an error, on either client. providerClient is
+// returned for an address on baseURL's origin; an empty baseURL never matches.
+func ClientForVendorURL(ctx context.Context, vendorURL, baseURL string, providerClient *fasthttp.Client, stream bool) (*fasthttp.Client, error) {
+	parsed, err := url.Parse(vendorURL)
+	if err != nil || parsed.Host == "" {
+		return nil, fmt.Errorf("invalid address %q in the provider's response", RedactURLForError(vendorURL))
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, fmt.Errorf("unsupported URL scheme %q in the provider's response (only http/https allowed)", parsed.Scheme)
+	}
+	if baseURL != "" && providerClient != nil && sameOrigin(vendorURL, baseURL) {
+		return providerClient, nil
+	}
+	limits := mediaFetchLimits
+	if stream {
+		limits = mediaStreamLimits
+	}
+	client, err := fetchClientForLimits(ctx, limits)
+	if err != nil {
+		return nil, err
+	}
+	return client.Transport.(*fasthttpRoundTripper).client, nil
+}
+
 // MediaStream is a media file being downloaded by FetchMediaStream.
 type MediaStream struct {
 	// ContentType is the vendor's Content-Type without its parameters, "" when it sent none.

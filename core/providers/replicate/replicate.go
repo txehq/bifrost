@@ -192,6 +192,7 @@ func createPrediction(
 func getPrediction(
 	ctx *schemas.BifrostContext,
 	client *fasthttp.Client,
+	baseURL string,
 	predictionURL string,
 	key schemas.Key,
 	logger schemas.Logger,
@@ -202,6 +203,13 @@ func getPrediction(
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
+
+	// Fork: urls.get comes from Replicate's answer, so off the provider's own origin the poll
+	// goes out on the SSRF-hardened client (TXE-7090).
+	client, clientErr := providerUtils.ClientForVendorURL(ctx, predictionURL, baseURL, client, false)
+	if clientErr != nil {
+		return nil, nil, nil, providerUtils.NewBifrostOperationError("replicate named a prediction address that cannot be fetched", clientErr)
+	}
 
 	// Set URL
 	req.SetRequestURI(predictionURL)
@@ -266,6 +274,7 @@ func PredictionPollURL(created *ReplicatePredictionResponse) (string, *schemas.B
 func pollPrediction(
 	ctx *schemas.BifrostContext,
 	client *fasthttp.Client,
+	baseURL string,
 	created *ReplicatePredictionResponse,
 	key schemas.Key,
 	timeoutSeconds int,
@@ -284,7 +293,7 @@ func pollPrediction(
 	defer ticker.Stop()
 
 	// Poll immediately first time
-	prediction, rawResponse, providerResponseHeaders, err := getPrediction(pollCtx, client, predictionURL, key, logger, sendBackRawResponse)
+	prediction, rawResponse, providerResponseHeaders, err := getPrediction(pollCtx, client, baseURL, predictionURL, key, logger, sendBackRawResponse)
 	if err != nil {
 		return nil, nil, providerResponseHeaders, err
 	}
@@ -304,7 +313,7 @@ func pollPrediction(
 				schemas.ErrProviderRequestTimedOut,
 				fmt.Errorf("prediction polling timed out after %d seconds", timeoutSeconds))
 		case <-ticker.C:
-			prediction, rawResponse, providerResponseHeaders, err = getPrediction(pollCtx, client, predictionURL, key, logger, sendBackRawResponse)
+			prediction, rawResponse, providerResponseHeaders, err = getPrediction(pollCtx, client, baseURL, predictionURL, key, logger, sendBackRawResponse)
 			if err != nil {
 				return nil, nil, providerResponseHeaders, err
 			}
@@ -349,6 +358,15 @@ func (provider *ReplicateProvider) listDeploymentsByKey(ctx *schemas.BifrostCont
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
+		// Fork: every page after the first is at the address Replicate's "next" names, so off
+		// the provider's own origin it goes out on the SSRF-hardened client (TXE-7090).
+		pageClient, clientErr := providerUtils.ClientForVendorURL(ctx, currentURL, provider.networkConfig.BaseURL, client, false)
+		if clientErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			return nil, providerUtils.NewBifrostOperationError("replicate named a next page that cannot be fetched", clientErr)
+		}
+
 		// Set up request
 		req.SetRequestURI(currentURL)
 		req.Header.SetMethod(http.MethodGet)
@@ -363,7 +381,7 @@ func (provider *ReplicateProvider) listDeploymentsByKey(ctx *schemas.BifrostCont
 		providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
 
 		// Make request
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, pageClient, req, resp)
 
 		// Release resources
 		wait()
@@ -505,6 +523,7 @@ func (provider *ReplicateProvider) TextCompletion(ctx *schemas.BifrostContext, k
 		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
 			provider.client,
+			provider.networkConfig.BaseURL,
 			prediction,
 			key,
 			provider.networkConfig.DefaultRequestTimeoutInSeconds,
@@ -604,7 +623,7 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 	streamURL := *prediction.URLs.Stream
 
 	// Connect to stream URL
-	_, resp, bifrostErr := listenToReplicateStreamURL(ctx, provider.streamingClient, streamURL, key)
+	_, resp, bifrostErr := listenToReplicateStreamURL(ctx, provider.streamingClient, provider.networkConfig.BaseURL, streamURL, key)
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -855,6 +874,7 @@ func (provider *ReplicateProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
 			provider.client,
+			provider.networkConfig.BaseURL,
 			prediction,
 			key,
 			provider.networkConfig.DefaultRequestTimeoutInSeconds,
@@ -954,7 +974,7 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 	streamURL := *prediction.URLs.Stream
 
 	// Connect to stream URL
-	_, resp, bifrostErr := listenToReplicateStreamURL(ctx, provider.streamingClient, streamURL, key)
+	_, resp, bifrostErr := listenToReplicateStreamURL(ctx, provider.streamingClient, provider.networkConfig.BaseURL, streamURL, key)
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -1219,6 +1239,7 @@ func (provider *ReplicateProvider) Responses(ctx *schemas.BifrostContext, key sc
 		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
 			provider.client,
+			provider.networkConfig.BaseURL,
 			prediction,
 			key,
 			provider.networkConfig.DefaultRequestTimeoutInSeconds,
@@ -1330,9 +1351,17 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 	// Set extra headers
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
+	// Fork: urls.stream comes from Replicate's answer, so off the provider's own origin the
+	// stream is read on the SSRF-hardened client (TXE-7090).
+	streamClient, clientErr := providerUtils.ClientForVendorURL(ctx, streamURL, provider.networkConfig.BaseURL, provider.streamingClient, true)
+	if clientErr != nil {
+		fasthttp.ReleaseResponse(resp)
+		return nil, providerUtils.NewBifrostOperationError("replicate named a stream address that cannot be fetched", clientErr)
+	}
+
 	// Make the streaming request
 	startTime = time.Now()
-	streamErr := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
+	streamErr := providerUtils.DoStreamingRequest(ctx, streamClient, req, resp)
 	latency = time.Since(startTime)
 	if streamErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1841,6 +1870,7 @@ func (provider *ReplicateProvider) ImageGeneration(ctx *schemas.BifrostContext, 
 		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
 			provider.client,
+			provider.networkConfig.BaseURL,
 			prediction,
 			key,
 			provider.networkConfig.DefaultRequestTimeoutInSeconds,
@@ -1957,7 +1987,7 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 	streamURL := *prediction.URLs.Stream
 
 	// Connect to stream URL
-	_, resp, bifrostErr := listenToReplicateStreamURL(ctx, provider.streamingClient, streamURL, key)
+	_, resp, bifrostErr := listenToReplicateStreamURL(ctx, provider.streamingClient, provider.networkConfig.BaseURL, streamURL, key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -2268,6 +2298,7 @@ func (provider *ReplicateProvider) ImageEdit(ctx *schemas.BifrostContext, key sc
 		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
 			provider.client,
+			provider.networkConfig.BaseURL,
 			prediction,
 			key,
 			provider.networkConfig.DefaultRequestTimeoutInSeconds,
@@ -2383,7 +2414,7 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 	streamURL := *prediction.URLs.Stream
 
 	// Connect to stream URL
-	_, resp, bifrostErr := listenToReplicateStreamURL(ctx, provider.streamingClient, streamURL, key)
+	_, resp, bifrostErr := listenToReplicateStreamURL(ctx, provider.streamingClient, provider.networkConfig.BaseURL, streamURL, key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
