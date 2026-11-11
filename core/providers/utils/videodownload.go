@@ -2,6 +2,7 @@ package utils
 
 import (
 	"bytes"
+	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
@@ -116,6 +117,28 @@ func fetchVendorVideoURL(ctx *schemas.BifrostContext, f VideoContentFetch) (*sch
 		latency := time.Since(start)
 		if err != nil {
 			return nil, failed(err, latency)
+		}
+		// The held file is decoded as the streamed one is: gzip on the way through, any other
+		// encoding refused. The decoded file is held to the same cap as the bytes on the wire,
+		// so a small encoded body cannot unfold past it.
+		switch encoding := strings.ToLower(strings.TrimSpace(respHeader.Get("Content-Encoding"))); encoding {
+		case "", "identity":
+		case "gzip", "x-gzip":
+			decoder, gzErr := gzip.NewReader(bytes.NewReader(body))
+			if gzErr != nil {
+				return nil, failed(fmt.Errorf("failed to decode gzip body: %w", gzErr), latency)
+			}
+			decoded, readErr := io.ReadAll(io.LimitReader(decoder, mediaFetchLimits.maxBytes+1))
+			_ = decoder.Close()
+			if readErr != nil {
+				return nil, failed(fmt.Errorf("failed to decode gzip body: %w", readErr), latency)
+			}
+			if int64(len(decoded)) > mediaFetchLimits.maxBytes {
+				return nil, failed(fmt.Errorf("decoded video exceeds %d-byte limit", mediaFetchLimits.maxBytes), latency)
+			}
+			body = decoded
+		default:
+			return nil, failed(fmt.Errorf("video has unsupported Content-Encoding %q", encoding), latency)
 		}
 		return &schemas.BifrostVideoDownloadResponse{
 			VideoID:     f.VideoID,

@@ -567,6 +567,14 @@ func TestFetchVideoContentVendorURL(t *testing.T) {
 			http.Error(w, "AccessDenied", http.StatusForbidden)
 			return
 		}
+		if r.URL.Path == "/gzip.mp4" || r.URL.Path == "/br.mp4" {
+			w.Header().Set("Content-Type", "video/mp4")
+			w.Header().Set("Content-Encoding", map[string]string{"/gzip.mp4": "gzip", "/br.mp4": "br"}[r.URL.Path])
+			gz := gzip.NewWriter(w)
+			_, _ = gz.Write(file)
+			_ = gz.Close()
+			return
+		}
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", strconv.Itoa(len(file)))
 		w.Header().Set("X-Request-Id", "file-host-request-1")
@@ -619,6 +627,28 @@ func TestFetchVideoContentVendorURL(t *testing.T) {
 	})
 
 	for _, stream := range []bool{true, false} {
+		// An encoded file is decoded whichever way it is asked for, as the provider-client path
+		// decodes it; an encoding the fetcher cannot decode is refused, not passed on encoded.
+		t.Run(fmt.Sprintf("gzip decoded stream=%v", stream), func(t *testing.T) {
+			resp, bifrostErr, _ := vendorURLFetch(t, handler, VideoContentFetch{VendorURL: "http://203.0.113.10/gzip.mp4", Stream: stream})
+			if bifrostErr != nil {
+				t.Fatalf("FetchVideoContent: %v", bifrostErr.Error)
+			}
+			got := resp.Content
+			if resp.Body != nil {
+				got, _ = io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+			}
+			if !bytes.Equal(got, file) {
+				t.Fatalf("got %d bytes, want the %d decoded ones", len(got), len(file))
+			}
+		})
+		t.Run(fmt.Sprintf("other encoding refused stream=%v", stream), func(t *testing.T) {
+			_, bifrostErr, _ := vendorURLFetch(t, handler, VideoContentFetch{VendorURL: "http://203.0.113.10/br.mp4", Stream: stream})
+			if bifrostErr == nil || bifrostErr.Error.Error == nil || !strings.Contains(bifrostErr.Error.Error.Error(), "Content-Encoding") {
+				t.Fatalf("got %+v, want an unsupported Content-Encoding error", bifrostErr)
+			}
+		})
 		t.Run(fmt.Sprintf("refusal stream=%v", stream), func(t *testing.T) {
 			_, bifrostErr, _ := vendorURLFetch(t, handler, VideoContentFetch{VendorURL: "http://203.0.113.10/gone.mp4?sig=deadbeefcafe", Stream: stream})
 			if bifrostErr == nil || bifrostErr.Error.Message != "failed to download video: HTTP 403" {
