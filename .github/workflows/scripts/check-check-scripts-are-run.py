@@ -9,7 +9,8 @@ purpose. Its red result then read as "main is broken".
 Rule: every tracked file directly under .github/workflows/scripts whose name says it is a check
 (check-*, validate-*, test-*, *.test.*) must be reachable from a workflow, a composite action or
 the Makefile: named by one of them, or by a script that is itself reachable. A name that appears
-only in a comment line does not count.
+only in a comment line does not count, and neither does a name in this file, which lists scripts
+(NOT_RUN) without running any.
 
 NOT_RUN lists the scripts that are deliberately run by nothing, each with its reason or the
 ticket that wires it in. An entry for a script that is reachable, or that no longer exists,
@@ -25,6 +26,8 @@ from pathlib import Path, PurePosixPath
 REPO = Path(__file__).resolve().parents[3]
 SCRIPTS = ".github/workflows/scripts"
 CHECK_NAMES = ["check-*", "validate-*", "test-*", "*.test.*"]
+# This file names the scripts in NOT_RUN and runs none of them, so it is never read as a caller.
+SELF = SCRIPTS + "/" + Path(__file__).name
 
 # Scripts run by no workflow, action, Makefile target or reachable script, and why.
 NOT_RUN = {
@@ -44,7 +47,7 @@ def code_lines(text):
     return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith(("#", "//")))
 
 
-def unrun(files, not_run):
+def unrun(files, not_run, self_path=SELF):
     """files maps a tracked path to its text. Returns one line per defect; empty passes."""
     scripts = {path: text for path, text in files.items() if PurePosixPath(path).parent.as_posix() == SCRIPTS}
     roots = {
@@ -62,7 +65,8 @@ def unrun(files, not_run):
         for path, script_text in scripts.items():
             if path not in reachable and PurePosixPath(path).name in text:
                 reachable.add(path)
-                frontier.append(code_lines(script_text))
+                if path != self_path:
+                    frontier.append(code_lines(script_text))
     found = []
     names = {PurePosixPath(path).name: path for path in scripts}
     for name, path in sorted(names.items()):
@@ -94,6 +98,18 @@ def self_test():
         ("a listed script nothing runs", {wf: "run: true", s + "check-e.sh": ""}, {"check-e.sh": "TXE-1: reason"}, 0),
         ("a stale entry: the script is run now", {wf: "run: check-e.sh", s + "check-e.sh": ""}, {"check-e.sh": "TXE-1: reason"}, 1),
         ("a stale entry: the script is gone", {wf: "run: true"}, {"check-f.sh": "reason"}, 1),
+        (
+            "this checker, run by a workflow, does not make the scripts its list names look run",
+            {wf: "run: python3 " + SELF, SELF: 'NOT_RUN = {"check-h.sh": "reason"}', s + "check-h.sh": ""},
+            {"check-h.sh": "reason"},
+            0,
+        ),
+        (
+            "any other reachable script that names a check does run it",
+            {wf: "run: bash runner.sh", s + "runner.sh": 'LIST = {"check-h.sh": "reason"}', s + "check-h.sh": ""},
+            {"check-h.sh": "reason"},
+            1,
+        ),
         ("a nested workflow file is not a root", {".github/workflows/scripts/fixtures/w.yml": "run: check-g.sh", s + "check-g.sh": ""}, {}, 1),
     ]
     failed = 0
