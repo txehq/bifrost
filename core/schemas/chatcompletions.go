@@ -1998,6 +1998,10 @@ type BifrostLLMUsage struct {
 	// xAI-specific usage field, normalized into Cost and VendorCost by NormalizeProviderCost.
 	CostInUsdTicks *int64      `json:"cost_in_usd_ticks,omitempty"`
 	VendorCost     *VendorCost `json:"vendor_cost,omitempty"` // money the vendor reported (fork, TXE-6967); nil when it reported none
+	// ServerSideToolUsageDetails are the per-tool call counts xAI reports for tools it ran
+	// itself (web search, X search, code interpreter and the rest), in the shape Responses
+	// usage already carries (fork, TXE-7043, contract C5). Nil when the vendor reported none.
+	ServerSideToolUsageDetails *ResponsesServerSideToolUsageDetails `json:"server_side_tool_usage_details,omitempty"`
 	// Laya decision usage: state token accounting and truncation, reported on /v1/decisions.
 	StateTokens        *int     `json:"state_tokens,omitempty"`
 	StateTokensDropped *int     `json:"state_tokens_dropped,omitempty"`
@@ -2890,6 +2894,10 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 	if u.VendorCost != nil {
 		vc := *u.VendorCost
 		c.VendorCost = &vc
+	}
+	if u.ServerSideToolUsageDetails != nil {
+		d := *u.ServerSideToolUsageDetails
+		c.ServerSideToolUsageDetails = &d
 	}
 	if u.Speed != nil {
 		s := *u.Speed

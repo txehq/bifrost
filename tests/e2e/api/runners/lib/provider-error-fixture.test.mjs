@@ -880,3 +880,25 @@ test("xAI video, tts and stt endpoints answer in xAI's shapes and record the wir
     "POST /pp/xai/v1/stt",
   ]);
 });
+
+// Folder 443 (TXE-7043): xAI chat reports server-side tool usage, streamed and not; Responses answers and
+// its request body is recorded.
+test("xAI chat reports server-side tool usage and Responses records its request body", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}`;
+  await fetch(`${base}/__reset`, { method: "POST" });
+  const chat = await (await post({ model: "grok-4.5", messages: [] }, "/pp/xai/v1/chat/completions")).json();
+  assert.equal(chat.usage.server_side_tool_usage_details.web_search_calls, 2);
+  const streamed = await (await post({ model: "grok-4.5", messages: [], stream: true }, "/pp/xai/v1/chat/completions")).text();
+  const frames = streamed.split("\n\n").filter((f) => f.startsWith("data: {")).map((f) => JSON.parse(f.slice(6)));
+  assert.equal(frames.at(-1).usage.server_side_tool_usage_details.x_search_calls, 1);
+  assert.ok(streamed.endsWith("data: [DONE]\n\n"));
+  const responses = await (await post({ model: "grok-4.5", input: "hi", max_turns: 3 }, "/pp/xai/v1/responses")).json();
+  assert.equal(responses.status, "completed");
+  const streamedResponse = await (await post({ model: "grok-4.5", input: "hi", max_turns: 5, stream: true }, "/pp/xai/v1/responses")).text();
+  assert.ok(streamedResponse.startsWith("event: response.completed\ndata: {"));
+  let calls = (await (await fetch(`${base}/__wire`)).json()).data[0].calls;
+  assert.equal(JSON.parse(calls.at(-1).body).max_turns, 5);
+  calls = calls.slice(0, -1);
+  assert.equal(JSON.parse(calls.at(-1).body).max_turns, 3);
+});

@@ -1126,6 +1126,9 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 		CostInUsdTicks: cu.CostInUsdTicks,
 		VendorCost:     cu.VendorCost,
 		AudioSeconds:   copyFloat64Ptr(cu.AudioSeconds),
+		// Same shape on both sides, so the counts survive a chat answer served on a
+		// Responses route and the reverse.
+		ServerSideToolUsageDetails: cu.ServerSideToolUsageDetails,
 	}
 
 	if cu.PromptTokensDetails != nil {
@@ -1167,13 +1170,14 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 	}
 
 	usage := &BifrostLLMUsage{
-		PromptTokens:     ru.InputTokens,
-		CompletionTokens: ru.OutputTokens,
-		TotalTokens:      ru.TotalTokens,
-		Cost:             ru.Cost,
-		CostInUsdTicks:   ru.CostInUsdTicks,
-		VendorCost:       ru.VendorCost,
-		AudioSeconds:     copyFloat64Ptr(ru.AudioSeconds),
+		PromptTokens:               ru.InputTokens,
+		CompletionTokens:           ru.OutputTokens,
+		TotalTokens:                ru.TotalTokens,
+		Cost:                       ru.Cost,
+		CostInUsdTicks:             ru.CostInUsdTicks,
+		VendorCost:                 ru.VendorCost,
+		AudioSeconds:               copyFloat64Ptr(ru.AudioSeconds),
+		ServerSideToolUsageDetails: ru.ServerSideToolUsageDetails,
 	}
 
 	if ru.InputTokensDetails != nil {

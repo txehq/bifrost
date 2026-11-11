@@ -1808,3 +1808,150 @@ func BenchmarkOpenAIVideoMultipartParse(b *testing.B) {
 		})
 	}
 }
+
+// TXE-7043 (contract C4, C5): /openai/v1/chat/completions and /openai/v1/responses with an xai/
+// model reach the same provider methods as /v1/chat/completions and /v1/responses. These tests
+// drive each route's own parser and converter into the xAI provider and pin what reaches xAI's
+// wire and what comes back.
+
+// openAIXAITextEgress is an xAI stand-in that answers with body and records each request.
+type openAIXAITextEgress struct {
+	mu     sync.Mutex
+	paths  []string
+	bodies []map[string]any
+}
+
+func (e *openAIXAITextEgress) provider(t *testing.T, body string) *xai.XAIProvider {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var sent map[string]any
+		_ = json.Unmarshal(raw, &sent)
+		e.mu.Lock()
+		e.paths = append(e.paths, r.URL.Path)
+		e.bodies = append(e.bodies, sent)
+		e.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+	provider, err := xai.NewXAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+	}, bifrost.NewNoOpLogger())
+	require.NoError(t, err)
+	return provider
+}
+
+func (e *openAIXAITextEgress) calls() ([]string, []map[string]any) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string(nil), e.paths...), append([]map[string]any(nil), e.bodies...)
+}
+
+func openAIRouteByPath(t *testing.T, path string) RouteConfig {
+	t.Helper()
+	for _, route := range CreateOpenAIRouteConfigs("/openai", nil) {
+		if route.Path == path && route.Method == http.MethodPost {
+			return route
+		}
+	}
+	t.Fatalf("route POST %s not registered", path)
+	return RouteConfig{}
+}
+
+const openAIXAIChatAnswer = `{"id":"chatcmpl-xai","object":"chat.completion","created":1,"model":"grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":220,"completion_tokens":56,"total_tokens":276,"server_side_tool_usage_details":{"web_search_calls":2,"x_search_calls":1,"code_interpreter_calls":0,"file_search_calls":0,"mcp_calls":0,"document_search_calls":0}}}`
+
+func TestOpenAIRouteXAIChatIngressToEgress(t *testing.T) {
+	route := openAIRouteByPath(t, "/openai/v1/chat/completions")
+	convert := func(t *testing.T, body string) *schemas.BifrostChatRequest {
+		t.Helper()
+		bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := route.GetRequestTypeInstance(bifrostCtx)
+		require.NoError(t, parseJSONRequestBody([]byte(body), req))
+		converted, err := route.RequestConverter(bifrostCtx, req)
+		require.NoError(t, err)
+		require.NotNil(t, converted.ChatRequest)
+		require.Equal(t, schemas.XAI, converted.ChatRequest.Provider)
+		return converted.ChatRequest
+	}
+
+	// The per-tool call counts xAI reports come back in the usage the route serializes.
+	t.Run("usage carries server_side_tool_usage_details", func(t *testing.T) {
+		egress := &openAIXAITextEgress{}
+		request := convert(t, `{"model":"xai/grok-4.5","messages":[{"role":"user","content":"hi"}]}`)
+		response, bifrostErr := egress.provider(t, openAIXAIChatAnswer).ChatCompletion(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), openAIXAIKey, request)
+		require.Nil(t, bifrostErr)
+		encoded, err := json.Marshal(response)
+		require.NoError(t, err)
+		var wire map[string]any
+		require.NoError(t, json.Unmarshal(encoded, &wire))
+		details := wire["usage"].(map[string]any)["server_side_tool_usage_details"].(map[string]any)
+		require.EqualValues(t, 2, details["web_search_calls"])
+		require.EqualValues(t, 1, details["x_search_calls"])
+		paths, _ := egress.calls()
+		require.Equal(t, []string{"/v1/chat/completions"}, paths)
+	})
+
+	// A prompt-cache field the model cannot take is refused, not removed, and nothing is sent.
+	for _, field := range []string{"prompt_cache_key", "prompt_cache_retention"} {
+		t.Run(field+" is refused", func(t *testing.T) {
+			egress := &openAIXAITextEgress{}
+			request := convert(t, `{"model":"xai/grok-4.5","messages":[{"role":"user","content":"hi"}],"`+field+`":"24h"}`)
+			_, bifrostErr := egress.provider(t, openAIXAIChatAnswer).ChatCompletion(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), openAIXAIKey, request)
+			require.NotNil(t, bifrostErr, "the route dropped %s before the provider saw it, or the provider sent the request", field)
+			require.Equal(t, schemas.Ptr(http.StatusBadRequest), bifrostErr.StatusCode)
+			require.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+			require.Equal(t, field, bifrostErr.Error.Param)
+			paths, _ := egress.calls()
+			require.Empty(t, paths, "a refused request must not reach xAI")
+		})
+	}
+}
+
+func TestOpenAIRouteXAIResponsesIngressToEgress(t *testing.T) {
+	route := openAIRouteByPath(t, "/openai/v1/responses")
+	const answer = `{"id":"resp_1","object":"response","created_at":1,"model":"grok-4.5","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
+	// send drives the route as the router does: parse the body into the route's request type,
+	// then, when the caller sent x-bf-passthrough-extra-params: true, lift the body's
+	// "extra_params" object onto the request (router.go, the step after parsing). That is the
+	// one way an integration route carries a field it does not model.
+	send := func(t *testing.T, body string, extraParamsHeader bool) map[string]any {
+		t.Helper()
+		bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := route.GetRequestTypeInstance(bifrostCtx)
+		require.NoError(t, parseJSONRequestBody([]byte(body), req))
+		if extraParamsHeader {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+			var wrapper struct {
+				ExtraParams map[string]interface{} `json:"extra_params"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(body), &wrapper))
+			settable, ok := req.(RequestWithSettableExtraParams)
+			require.True(t, ok, "the Responses route's request type must take extra params")
+			settable.SetExtraParams(wrapper.ExtraParams)
+		}
+		converted, err := route.RequestConverter(bifrostCtx, req)
+		require.NoError(t, err)
+		require.NotNil(t, converted.ResponsesRequest)
+		require.Equal(t, schemas.XAI, converted.ResponsesRequest.Provider)
+
+		egress := &openAIXAITextEgress{}
+		_, bifrostErr := egress.provider(t, answer).Responses(bifrostCtx, openAIXAIKey, converted.ResponsesRequest)
+		require.Nil(t, bifrostErr)
+		paths, bodies := egress.calls()
+		require.Equal(t, []string{"/v1/responses"}, paths)
+		return bodies[0]
+	}
+
+	// With the header, max_turns under extra_params reaches xAI at the top level, as sent.
+	sent := send(t, `{"model":"xai/grok-4.5","input":"hi","extra_params":{"max_turns":3}}`, true)
+	require.EqualValues(t, 3, sent["max_turns"], "max_turns must reach xAI as sent: %v", sent)
+	require.NotContains(t, sent, "extra_params")
+
+	// A top-level field the route does not model is dropped by the route's own decoding, on
+	// every plain integration route and for every provider (see
+	// TestAzureDeploymentChatForwardsUnknownTopLevelFields); the provider never sees it, so
+	// its merge cannot restore it. Recorded here so a change to that rule shows up.
+	sent = send(t, `{"model":"xai/grok-4.5","input":"hi","max_turns":3}`, false)
+	require.NotContains(t, sent, "max_turns")
+}

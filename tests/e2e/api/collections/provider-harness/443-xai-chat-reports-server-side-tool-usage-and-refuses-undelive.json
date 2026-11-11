@@ -1,0 +1,613 @@
+{
+  "name": "443. xAI chat reports server-side tool usage and refuses undeliverable cache fields; Responses takes max_turns (xai chat contract)",
+  "description": "Pins TXE-7043 (contract C4, C5; vendor sheet xAI chat B1, B2, responses B3). Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. The xai provider's base is the fixture's /pp/xai, so every vendor call is a row of GET /__wire. Rows 2 and 3: usage.server_side_tool_usage_details, the per-tool call counts xAI reports, is in the chat usage and on the final streamed frame; before the change the field was not in the unified usage at all. Rows 4 to 6: prompt_cache_key and prompt_cache_retention on a model whose capability record does not list them are 400 caller_unsupported_parameter, streamed too; before the change the field was removed and the request sent without it. Rows 7 and 8: max_turns on /v1/responses, with no x-bf-passthrough-extra-params header. Rows 9 to 11 repeat the three behaviours on the OpenAI SDK routes /openai/v1/chat/completions and /openai/v1/responses, with those routes' own request shape: an integration route carries a field it does not model only under extra_params with x-bf-passthrough-extra-params: true, so max_turns is sent that way there. Row 12 reads the wire: max_turns arrived as sent on all three Responses requests (before the change the unified route dropped it without the header), and only the three accepted chat requests reached xAI.",
+  "item": [
+    {
+      "name": "443.1 reset the fixture's record (xai chat contract)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "http://127.0.0.1:8791/__reset"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture reset its record', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "443.2 xai/grok-4.5 POST /v1/chat/completions reports server_side_tool_usage_details in usage (xai chat contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-4.5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('usage carries the per-tool call counts xAI reported', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var u = pm.response.json().usage;",
+              "  pm.expect(u.server_side_tool_usage_details, JSON.stringify(u)).to.eql({ web_search_calls: 2, x_search_calls: 1, code_interpreter_calls: 0, file_search_calls: 0, mcp_calls: 0, document_search_calls: 0 });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "443.3 xai/grok-4.5 POST /v1/chat/completions streamed: the final frame carries the same server_side_tool_usage_details (xai chat contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-4.5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var frames = pm.response.text().split('\\n\\n').filter(function (f) { return f.indexOf('data: {') === 0; }).map(function (f) { return JSON.parse(f.slice(6)); });",
+              "var withUsage = frames.filter(function (f) { return f.usage; });",
+              "pm.test('the last usage frame of the stream carries the counts of the non-streamed answer', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(withUsage.length, pm.response.text()).to.be.above(0);",
+              "  pm.expect(withUsage[withUsage.length - 1].usage.server_side_tool_usage_details, pm.response.text()).to.eql({ web_search_calls: 2, x_search_calls: 1, code_interpreter_calls: 0, file_search_calls: 0, mcp_calls: 0, document_search_calls: 0 });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "443.4 [EXPECT-400] xai/grok-4.5 POST /v1/chat/completions refuses prompt_cache_key the model cannot take instead of removing it (xai chat contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-4.5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"prompt_cache_key\": \"conversation-1\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('prompt_cache_key is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('prompt_cache_key');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "443.5 [EXPECT-400] xai/grok-4.5 POST /v1/chat/completions refuses prompt_cache_retention the model cannot take instead of removing it (xai chat contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-4.5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"prompt_cache_retention\": \"24h\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('prompt_cache_retention is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('prompt_cache_retention');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "443.6 [EXPECT-400] xai/grok-4.5 POST /v1/chat/completions streamed refuses prompt_cache_key before the stream opens (xai chat contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-4.5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"stream\": true,\n  \"prompt_cache_key\": \"conversation-1\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('prompt_cache_key is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('prompt_cache_key');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "443.7 xai/grok-4.5 POST /v1/responses takes max_turns with no extra-params header (xai chat contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-4.5\",\n  \"input\": \"hi\",\n  \"max_turns\": 3\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the Responses request succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "443.8 xai/grok-4.5 POST /v1/responses streamed takes max_turns with no extra-params header (xai chat contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-4.5\",\n  \"input\": \"hi\",\n  \"max_turns\": 5,\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the streamed Responses request succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "443.9 xai/grok-4.5 POST /openai/v1/chat/completions (OpenAI SDK route) reports server_side_tool_usage_details in usage (xai chat contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-4.5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the OpenAI SDK route serializes the per-tool call counts', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var u = pm.response.json().usage;",
+              "  pm.expect(u.server_side_tool_usage_details, JSON.stringify(u)).to.eql({ web_search_calls: 2, x_search_calls: 1, code_interpreter_calls: 0, file_search_calls: 0, mcp_calls: 0, document_search_calls: 0 });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "443.10 [EXPECT-400] xai/grok-4.5 POST /openai/v1/chat/completions (OpenAI SDK route) refuses prompt_cache_key the model cannot take (xai chat contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-4.5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"prompt_cache_key\": \"conversation-1\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the OpenAI SDK route returns the refusal naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('prompt_cache_key');",
+              "  pm.expect(pm.response.text(), pm.response.text()).to.include('caller_unsupported_parameter');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "443.11 xai/grok-4.5 POST /openai/v1/responses (OpenAI SDK route) forwards max_turns sent under extra_params with the extra-params header (xai chat contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-4.5\",\n  \"input\": \"hi\",\n  \"extra_params\": {\n    \"max_turns\": 7\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the Responses request succeeds on the OpenAI SDK route', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "443.12 xai chat and Responses on the wire: max_turns reached /v1/responses and no refused request reached xAI (xai chat contract)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "http://127.0.0.1:8791/__wire"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls;",
+              "function on(path) { return calls.filter(function (c) { return c.path === path; }).map(function (c) { return JSON.parse(c.body); }); }",
+              "pm.test('max_turns reached /v1/responses unchanged, streamed and not', function () {",
+              "  var responses = on('/pp/xai/v1/responses');",
+              "  pm.expect(responses.map(function (b) { return b.max_turns; }), JSON.stringify(responses)).to.eql([3, 5, 7]);",
+              "  responses.forEach(function (b) { pm.expect(b, JSON.stringify(b)).to.not.have.property('extra_params'); });",
+              "});",
+              "pm.test('three chat requests reached xAI; the four refused ones made no call and none carried a prompt cache field', function () {",
+              "  var chats = on('/pp/xai/v1/chat/completions');",
+              "  pm.expect(chats.length, JSON.stringify(chats)).to.eql(3);",
+              "  chats.forEach(function (b) { pm.expect(b, JSON.stringify(b)).to.not.have.any.keys('prompt_cache_key', 'prompt_cache_retention', 'prompt_cache_options'); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

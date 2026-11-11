@@ -14,6 +14,7 @@ package openai
 //	go test ./core/providers/openai/ -bench ChatRequest -benchmem
 
 import (
+	"context"
 	"testing"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -276,6 +277,25 @@ func BenchmarkToOpenAIChatRequestReasoningEffort(b *testing.B) {
 				if out := ToOpenAIChatRequest(ctx, bifrostReq); out == nil {
 					b.Fatal("nil OpenAI request")
 				}
+			}
+		})
+	}
+}
+
+// BenchmarkChatRequestRefusal measures the check every chat request pays before it is
+// converted: a request with no service tier and no prompt-cache field (the common case, on any
+// provider) returns on field checks alone; an xAI request with a cache field resolves the
+// model's capabilities once.
+func BenchmarkChatRequestRefusal(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	plain := &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini", Params: &schemas.ChatParameters{}}
+	xaiPlain := &schemas.BifrostChatRequest{Provider: schemas.XAI, Model: "grok-4.5", Params: &schemas.ChatParameters{}}
+	xaiCacheKey := &schemas.BifrostChatRequest{Provider: schemas.XAI, Model: "grok-4.5", Params: &schemas.ChatParameters{PromptCacheKey: schemas.Ptr("conversation-1")}}
+	for name, req := range map[string]*schemas.BifrostChatRequest{"openai, nothing to refuse": plain, "xai, nothing to refuse": xaiPlain, "xai, prompt_cache_key refused": xaiCacheKey} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = ChatRequestRefusal(ctx, req)
 			}
 		})
 	}

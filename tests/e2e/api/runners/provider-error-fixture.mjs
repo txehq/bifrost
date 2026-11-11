@@ -975,6 +975,36 @@ const dashScopeImageAnswer = (body) => {
 	}
 };
 
+// xAI chat and Responses under the xai provider's base /pp/xai (folder 443, TXE-7043). The chat answer
+// reports the per-tool call counts of tools xAI ran itself; a streamed one sends them once, on the
+// trailing usage frame. The Responses answer is a finished response: what matters there is the request
+// body the fixture recorded.
+const xaiToolUsage = {
+	prompt_tokens: 220, completion_tokens: 56, total_tokens: 276, cost_in_usd_ticks: 5584000,
+	server_side_tool_usage_details: { web_search_calls: 2, x_search_calls: 1, code_interpreter_calls: 0, file_search_calls: 0, mcp_calls: 0, document_search_calls: 0 },
+};
+const xaiChatAnswer = (body) => {
+	const base = { id: "chatcmpl-xai-fixture", created: 1, model: body.model };
+	if (body.stream === true) {
+		const chunk = (extra) => `data: ${JSON.stringify({ ...base, object: "chat.completion.chunk", ...extra })}\n\n`;
+		return {
+			status: 200,
+			stream: chunk({ choices: [{ index: 0, delta: { role: "assistant", content: "answer" } }] })
+				+ chunk({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })
+				+ chunk({ choices: [], usage: xaiToolUsage })
+				+ "data: [DONE]\n\n",
+		};
+	}
+	return { status: 200, body: JSON.stringify({ ...base, object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content: "answer" }, finish_reason: "stop" }], usage: xaiToolUsage }) };
+};
+const xaiResponsesAnswer = (body) => {
+	const response = { id: "resp_xai_fixture", object: "response", created_at: 1, model: body.model, status: "completed", output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } };
+	if (body.stream === true) {
+		return { status: 200, stream: `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", sequence_number: 1, response })}\n\n` };
+	}
+	return { status: 200, body: JSON.stringify(response) };
+};
+
 const wireAnswer = (path, body, bytes) => {
 	if (isBedrockConversePath(path)) return bedrockConverseAnswer(path);
 	if (path.startsWith("/pp/storage/")) return storageAnswer(path, body);
@@ -1038,6 +1068,8 @@ const wireAnswer = (path, body, bytes) => {
 		};
 		return body.stream === true ? { status: 200, stream: sse([{ type: "response.completed", sequence_number: 0, response }]) } : { status: 200, body: JSON.stringify(response) };
 	}
+	if (path === "/pp/xai/v1/chat/completions") return xaiChatAnswer(body);
+	if (path === "/pp/xai/v1/responses") return xaiResponsesAnswer(body);
 	// DeepSeek's Anthropic-compatible endpoint is {base}/anthropic/v1/messages (TXE-6548), under the same /pp/oc base its chat uses.
 	if (path === "/pp/xai/v1/messages" || path === "/pp/anthropic/v1/messages" || path === "/pp/oc/anthropic/v1/messages") {
 		if (body.model === "pp-fail") return { status: 400, body: JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "fixture refused" } }) };
