@@ -364,6 +364,11 @@ func bytePlusImageStreamError(failure *BytePlusError, perImage bool) *schemas.Bi
 		// content_filter, so the refusal is the error (contract C6).
 		bifrostErr.ExtraFields.ErrorType = schemas.ErrorTypeCallerContentFiltered
 	}
+	if !perImage && isBytePlusContentFilterCode(code) {
+		// A whole-request moderation refusal sent as a stream event is classed as it is in a
+		// 200 body or an HTTP error: the caller's content was filtered.
+		bifrostErr.ExtraFields.ErrorType = schemas.ErrorTypeCallerContentFiltered
+	}
 	return bifrostErr
 }
 

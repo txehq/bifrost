@@ -989,6 +989,7 @@ func TestBytePlusImageGenerationStreamErrors(t *testing.T) {
 		{"internal error ends the stream", []string{seedreamStreamImage0, `{"type":"image_generation.partial_failed","model":"seedream-4-5-251128","created":1,"image_index":1,"error":{"code":"InternalServiceError","message":"internal"}}`}, "InternalServiceError", "server_error", ""},
 		{"every image failed", []string{seedreamStreamFailed, `{"type":"image_generation.completed","model":"seedream-4-5-251128","created":1,"usage":{"generated_images":0,"output_tokens":0,"total_tokens":0}}`}, "OutputImageSensitiveContentDetected", "content_filter", schemas.ErrorTypeCallerContentFiltered},
 		{"request-level error event", []string{`{"error":{"code":"BadRequest","message":"missing required parameter"}}`}, "BadRequest", "invalid_request_error", ""},
+		{"request-level moderation event", []string{`{"error":{"code":"InputTextSensitiveContentDetected","message":"sensitive"}}`}, "InputTextSensitiveContentDetected", "invalid_request_error", schemas.ErrorTypeCallerContentFiltered},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

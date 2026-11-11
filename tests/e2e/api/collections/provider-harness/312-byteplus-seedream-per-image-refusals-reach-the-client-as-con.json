@@ -1,6 +1,6 @@
 {
   "name": "312. BytePlus Seedream per-image refusals reach the client as content_filter (seedream content filter) [SERIAL]",
-  "description": "TXE-6605 regression, contract C5, C6. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. The byteplus provider there points at /pp/byteplus, where the fixture answers /api/v3/images/generations with Ark's 200 shape: data[] mixing delivered images with per-image error objects (OutputImageSensitiveContentDetected), selected by model. A refused image is counted in content_filter, every image refused is still a 200 with data [], and a 200 with neither images nor refusals is 502 provider_empty_result. 312.4 and 312.5 pin the same on /v1/images/edits (multipart, with a reference image), and 312.4 also pins the resolution tier reaching Ark as size. 312.1 and 312.4 read the bytes that reached the fixture from /__wire. 312.6 to 312.9 pin the other C6 path: Ark refusing over HTTP (400, InputTextSensitiveContentDetected) on generation and edit, streamed and not, must keep Ark's status and code and carry extra_fields.error_type caller_content_filtered; 312.10 is the control, an Ark 400 InvalidParameter that must not be classed as a content filter. 312.11 and 312.12 pin the in-stream path: Ark accepts a stream (generation and edit) with a 200 and refuses every image with image_generation.partial_failed events. No frame has reached the client, so the gateway answers with a JSON 400 carrying Ark's code, error.type content_filter and error_type caller_content_filtered. Run the whole folder in order.",
+  "description": "TXE-6605 regression, contract C5, C6. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. The byteplus provider there points at /pp/byteplus, where the fixture answers /api/v3/images/generations with Ark's 200 shape: data[] mixing delivered images with per-image error objects (OutputImageSensitiveContentDetected), selected by model. A refused image is counted in content_filter, every image refused is still a 200 with data [], and a 200 with neither images nor refusals is 502 provider_empty_result. 312.4 and 312.5 pin the same on /v1/images/edits (multipart, with a reference image), and 312.4 also pins the resolution tier reaching Ark as size. 312.1 and 312.4 read the bytes that reached the fixture from /__wire. 312.6 to 312.9 pin the other C6 path: Ark refusing over HTTP (400, InputTextSensitiveContentDetected) on generation and edit, streamed and not, must keep Ark's status and code and carry extra_fields.error_type caller_content_filtered; 312.10 is the control, an Ark 400 InvalidParameter that must not be classed as a content filter. 312.11 and 312.12 pin the in-stream path: Ark accepts a stream (generation and edit) with a 200 and refuses every image with image_generation.partial_failed events. No frame has reached the client, so the gateway answers with a JSON 400 carrying Ark's code, error.type content_filter and error_type caller_content_filtered. 312.13 to 312.18 pin error objects inside an Ark 200, on generation and edit: InternalServiceError as the only image is 502 provider_server_error, a top-level moderation error object is 400 caller_content_filtered, and a top-level parameter error object is 400 caller_invalid_request, each with Ark's code verbatim. 312.19 to 312.21 pin the same error objects on a stream: a top-level moderation error event is 400 caller_content_filtered on generation and edit, and an InternalServiceError image is provider_server_error. Run the whole folder in order.",
   "item": [
     {
       "name": "312.1 byteplus/seedream-partly-filtered /v1/images/generations: Ark delivers 2 of 3 images and refuses one, the client gets 200 with the 2 images, content_filter counting the refusal with Ark's code, and usage.output_images 2 (seedream content filter)",
@@ -901,6 +901,638 @@
               "    pm.expect(calls, JSON.stringify(res.json())).to.have.length(1);",
               "    var sent = JSON.parse(calls[0].body);",
               "    pm.expect(sent.model, calls[0].body).to.equal('seedream-all-filtered');",
+              "    pm.expect(sent.stream, calls[0].body).to.equal(true);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-502] 312.13 byteplus/seedream-internal-error /v1/images/generations: an Ark 200 whose only image failed with InternalServiceError is Ark's failure: 502 provider_server_error, not counted as a refusal (seedream content filter)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"byteplus/seedream-internal-error\", \"prompt\": \"four seasons of one garden\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.json();",
+              "pm.test('the client gets 502', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(502); });",
+              "pm.test('error.code is Ark\\'s InternalServiceError, verbatim', function () { pm.expect(body.error, pm.response.text()).to.be.an('object'); pm.expect(body.error.code, pm.response.text()).to.equal('InternalServiceError'); });",
+              "pm.test('extra_fields.error_type is provider_server_error', function () { pm.expect(body.extra_fields, pm.response.text()).to.be.an('object'); pm.expect(body.extra_fields.error_type, pm.response.text()).to.equal('provider_server_error'); });",
+              "pm.test('no data and no content_filter: nothing was delivered or counted', function () { pm.expect(body.data, pm.response.text()).to.equal(undefined); pm.expect(body.content_filter, pm.response.text()).to.equal(undefined); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-502] 312.14 byteplus/seedream-internal-error /v1/images/edits: an Ark 200 whose only image failed with InternalServiceError is Ark's failure: 502 provider_server_error, not counted as a refusal (seedream content filter)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "byteplus/seedream-internal-error",
+              "type": "text"
+            },
+            {
+              "key": "prompt",
+              "value": "make the background a deep blue",
+              "type": "text"
+            },
+            {
+              "key": "image",
+              "src": "tests/e2e/api/fixtures/sample.png",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.json();",
+              "pm.test('the client gets 502', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(502); });",
+              "pm.test('error.code is Ark\\'s InternalServiceError, verbatim', function () { pm.expect(body.error, pm.response.text()).to.be.an('object'); pm.expect(body.error.code, pm.response.text()).to.equal('InternalServiceError'); });",
+              "pm.test('extra_fields.error_type is provider_server_error', function () { pm.expect(body.extra_fields, pm.response.text()).to.be.an('object'); pm.expect(body.extra_fields.error_type, pm.response.text()).to.equal('provider_server_error'); });",
+              "pm.test('no data and no content_filter: nothing was delivered or counted', function () { pm.expect(body.data, pm.response.text()).to.equal(undefined); pm.expect(body.content_filter, pm.response.text()).to.equal(undefined); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 312.15 byteplus/seedream-top-refusal /v1/images/generations: an Ark 200 carrying a top-level moderation error object is 400 caller_content_filtered (seedream content filter)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"byteplus/seedream-top-refusal\", \"prompt\": \"four seasons of one garden\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error.code is Ark\\'s InputTextSensitiveContentDetected, verbatim', function () { pm.expect(body.error, pm.response.text()).to.be.an('object'); pm.expect(body.error.code, pm.response.text()).to.equal('InputTextSensitiveContentDetected'); });",
+              "pm.test('extra_fields.error_type is caller_content_filtered', function () { pm.expect(body.extra_fields, pm.response.text()).to.be.an('object'); pm.expect(body.extra_fields.error_type, pm.response.text()).to.equal('caller_content_filtered'); });",
+              "pm.test('no data and no content_filter: nothing was delivered or counted', function () { pm.expect(body.data, pm.response.text()).to.equal(undefined); pm.expect(body.content_filter, pm.response.text()).to.equal(undefined); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 312.16 byteplus/seedream-top-refusal /v1/images/edits: an Ark 200 carrying a top-level moderation error object is 400 caller_content_filtered (seedream content filter)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "byteplus/seedream-top-refusal",
+              "type": "text"
+            },
+            {
+              "key": "prompt",
+              "value": "make the background a deep blue",
+              "type": "text"
+            },
+            {
+              "key": "image",
+              "src": "tests/e2e/api/fixtures/sample.png",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error.code is Ark\\'s InputTextSensitiveContentDetected, verbatim', function () { pm.expect(body.error, pm.response.text()).to.be.an('object'); pm.expect(body.error.code, pm.response.text()).to.equal('InputTextSensitiveContentDetected'); });",
+              "pm.test('extra_fields.error_type is caller_content_filtered', function () { pm.expect(body.extra_fields, pm.response.text()).to.be.an('object'); pm.expect(body.extra_fields.error_type, pm.response.text()).to.equal('caller_content_filtered'); });",
+              "pm.test('no data and no content_filter: nothing was delivered or counted', function () { pm.expect(body.data, pm.response.text()).to.equal(undefined); pm.expect(body.content_filter, pm.response.text()).to.equal(undefined); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 312.17 byteplus/seedream-top-invalid-param /v1/images/generations: an Ark 200 carrying a top-level parameter error object is 400 caller_invalid_request (seedream content filter)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"byteplus/seedream-top-invalid-param\", \"prompt\": \"four seasons of one garden\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error.code is Ark\\'s InvalidParameter, verbatim', function () { pm.expect(body.error, pm.response.text()).to.be.an('object'); pm.expect(body.error.code, pm.response.text()).to.equal('InvalidParameter'); });",
+              "pm.test('extra_fields.error_type is caller_invalid_request', function () { pm.expect(body.extra_fields, pm.response.text()).to.be.an('object'); pm.expect(body.extra_fields.error_type, pm.response.text()).to.equal('caller_invalid_request'); });",
+              "pm.test('no data and no content_filter: nothing was delivered or counted', function () { pm.expect(body.data, pm.response.text()).to.equal(undefined); pm.expect(body.content_filter, pm.response.text()).to.equal(undefined); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 312.18 byteplus/seedream-top-invalid-param /v1/images/edits: an Ark 200 carrying a top-level parameter error object is 400 caller_invalid_request (seedream content filter)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "byteplus/seedream-top-invalid-param",
+              "type": "text"
+            },
+            {
+              "key": "prompt",
+              "value": "make the background a deep blue",
+              "type": "text"
+            },
+            {
+              "key": "image",
+              "src": "tests/e2e/api/fixtures/sample.png",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error.code is Ark\\'s InvalidParameter, verbatim', function () { pm.expect(body.error, pm.response.text()).to.be.an('object'); pm.expect(body.error.code, pm.response.text()).to.equal('InvalidParameter'); });",
+              "pm.test('extra_fields.error_type is caller_invalid_request', function () { pm.expect(body.extra_fields, pm.response.text()).to.be.an('object'); pm.expect(body.extra_fields.error_type, pm.response.text()).to.equal('caller_invalid_request'); });",
+              "pm.test('no data and no content_filter: nothing was delivered or counted', function () { pm.expect(body.data, pm.response.text()).to.equal(undefined); pm.expect(body.content_filter, pm.response.text()).to.equal(undefined); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 312.19 byteplus/seedream-top-refusal /v1/images/generations stream: Ark's stream carries only a top-level moderation error event; it is 400 caller_content_filtered, as without a stream (seedream content filter)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"byteplus/seedream-top-refusal\", \"prompt\": \"four seasons of one garden\", \"stream\": true}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('seedream content filter setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400 as JSON, not a stream', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); pm.expect(pm.response.headers.get('Content-Type') || '', pm.response.text()).to.include('application/json'); });",
+              "pm.test('error.code is Ark\\'s InputTextSensitiveContentDetected, verbatim', function () { pm.expect(body.error, pm.response.text()).to.be.an('object'); pm.expect(body.error.code, pm.response.text()).to.equal('InputTextSensitiveContentDetected'); });",
+              "pm.test('extra_fields.error_type is caller_content_filtered', function () { pm.expect(body.extra_fields, pm.response.text()).to.be.an('object'); pm.expect(body.extra_fields.error_type, pm.response.text()).to.equal('caller_content_filtered'); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('exactly one call reached Ark, and it asked for a stream', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/byteplus/api/v3/images/generations'; });",
+              "    pm.expect(calls, JSON.stringify(res.json())).to.have.length(1);",
+              "    var sent = JSON.parse(calls[0].body);",
+              "    pm.expect(sent.model, calls[0].body).to.equal('seedream-top-refusal');",
+              "    pm.expect(sent.stream, calls[0].body).to.equal(true);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 312.20 byteplus/seedream-top-refusal /v1/images/edits stream: Ark's stream carries only a top-level moderation error event; it is 400 caller_content_filtered, as without a stream (seedream content filter)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "byteplus/seedream-top-refusal",
+              "type": "text"
+            },
+            {
+              "key": "prompt",
+              "value": "make the background a deep blue",
+              "type": "text"
+            },
+            {
+              "key": "stream",
+              "value": "true",
+              "type": "text"
+            },
+            {
+              "key": "image",
+              "src": "tests/e2e/api/fixtures/sample.png",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('seedream content filter setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400 as JSON, not a stream', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); pm.expect(pm.response.headers.get('Content-Type') || '', pm.response.text()).to.include('application/json'); });",
+              "pm.test('error.code is Ark\\'s InputTextSensitiveContentDetected, verbatim', function () { pm.expect(body.error, pm.response.text()).to.be.an('object'); pm.expect(body.error.code, pm.response.text()).to.equal('InputTextSensitiveContentDetected'); });",
+              "pm.test('extra_fields.error_type is caller_content_filtered', function () { pm.expect(body.extra_fields, pm.response.text()).to.be.an('object'); pm.expect(body.extra_fields.error_type, pm.response.text()).to.equal('caller_content_filtered'); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('exactly one call reached Ark, and it asked for a stream', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/byteplus/api/v3/images/generations'; });",
+              "    pm.expect(calls, JSON.stringify(res.json())).to.have.length(1);",
+              "    var sent = JSON.parse(calls[0].body);",
+              "    pm.expect(sent.model, calls[0].body).to.equal('seedream-top-refusal');",
+              "    pm.expect(sent.stream, calls[0].body).to.equal(true);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-500] 312.21 byteplus/seedream-internal-error /v1/images/generations stream: Ark's only image fails with InternalServiceError in the stream; it is Ark's failure, provider_server_error, not a refusal (seedream content filter)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"byteplus/seedream-internal-error\", \"prompt\": \"four seasons of one garden\", \"stream\": true}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('seedream content filter setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.json();",
+              "pm.test('the client gets 500 as JSON, not a stream', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); pm.expect(pm.response.headers.get('Content-Type') || '', pm.response.text()).to.include('application/json'); });",
+              "pm.test('error.code is Ark\\'s InternalServiceError, verbatim', function () { pm.expect(body.error, pm.response.text()).to.be.an('object'); pm.expect(body.error.code, pm.response.text()).to.equal('InternalServiceError'); });",
+              "pm.test('extra_fields.error_type is provider_server_error', function () { pm.expect(body.extra_fields, pm.response.text()).to.be.an('object'); pm.expect(body.extra_fields.error_type, pm.response.text()).to.equal('provider_server_error'); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('exactly one call reached Ark, and it asked for a stream', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/byteplus/api/v3/images/generations'; });",
+              "    pm.expect(calls, JSON.stringify(res.json())).to.have.length(1);",
+              "    var sent = JSON.parse(calls[0].body);",
+              "    pm.expect(sent.model, calls[0].body).to.equal('seedream-internal-error');",
               "    pm.expect(sent.stream, calls[0].body).to.equal(true);",
               "  });",
               "});"
