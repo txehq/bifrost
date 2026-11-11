@@ -78,7 +78,7 @@ BASE="$(tr -d '[:space:]' <"$BASE_FILE")"
 case "$BASE" in
   none) ;;
   *)
-    if ! printf '%s' "$BASE" | grep -qE '^[0-9a-f]{40}$'; then
+    if ! printf '%s' "$BASE" | grep -E '^[0-9a-f]{40}$' >/dev/null; then
       die "base revision record '$BASE' is neither 'none' nor a commit id"
     fi ;;
 esac

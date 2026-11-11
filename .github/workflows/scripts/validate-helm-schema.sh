@@ -548,7 +548,7 @@ HELM_CUSTOM_PLUGIN_PROPS=$(jq -r '.properties.bifrost.properties.plugins.propert
 
 # Check each config property exists in helm custom items
 for prop in $(echo "$CONFIG_PLUGIN_PROPS" | tr ',' '\n'); do
-  if ! echo "$HELM_CUSTOM_PLUGIN_PROPS" | tr ',' '\n' | grep -qx "$prop"; then
+  if ! echo "$HELM_CUSTOM_PLUGIN_PROPS" | tr ',' '\n' | grep -x "$prop" >/dev/null; then
     echo "❌ Plugin property '$prop' exists in config.schema.json but missing from helm custom plugin items"
     ERRORS=$((ERRORS + 1))
   else

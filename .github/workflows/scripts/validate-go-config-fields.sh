@@ -113,7 +113,7 @@ compare_struct_to_schema() {
       continue
     fi
 
-    if ! echo "$schema_keys" | grep -qx "$tag"; then
+    if ! echo "$schema_keys" | grep -x "$tag" >/dev/null; then
       echo -e "${RED}    ❌ Go field '$tag' missing from schema ($jq_path)${NC}"
       ERRORS=$((ERRORS + 1))
       has_error=true
@@ -123,7 +123,7 @@ compare_struct_to_schema() {
   # Check schema fields missing from Go (warnings only)
   while IFS= read -r key; do
     [ -z "$key" ] && continue
-    if ! echo "$go_tags" | grep -qx "$key"; then
+    if ! echo "$go_tags" | grep -x "$key" >/dev/null; then
       echo -e "${YELLOW}    ⚠️  Schema property '$key' not found in Go struct $struct_name${NC}"
       WARNINGS=$((WARNINGS + 1))
     fi
