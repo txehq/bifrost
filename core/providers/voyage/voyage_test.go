@@ -250,3 +250,89 @@ func TestVoyageExtraParamsCannotReplaceAuthorizedFields(t *testing.T) {
 		require.NotNil(t, err)
 	}
 }
+
+func TestVoyageQuantizedRepresentation(t *testing.T) {
+	for _, encoding := range []string{"int8", "binary", "uint8", "ubinary", "base64"} {
+		t.Run(encoding, func(t *testing.T) {
+			vector := `[-128,0,127]`
+			if encoding == "uint8" || encoding == "ubinary" {
+				vector = `[0,128,255]`
+			}
+			if encoding == "base64" {
+				vector = `"AACAPw=="`
+			}
+			server := &httptest.Server{Config: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprintf(w, `{"object":"list","data":[{"object":"embedding","index":0,"embedding":%s}],"usage":{"total_tokens":1}}`, vector)
+			})}}
+			var err error
+			for attempt := 0; attempt < 100; attempt++ {
+				server.Listener, err = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", 20000+rand.IntN(40001)))
+				if err == nil {
+					break
+				}
+			}
+			require.NoError(t, err)
+			server.Start()
+			defer server.Close()
+			p, err := voyage.NewVoyageProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true}}, bifrost.NewNoOpLogger())
+			require.NoError(t, err)
+			r := request("voyage-4")
+			r.Params = &schemas.EmbeddingParameters{EncodingFormat: &encoding}
+			got, bfErr := p.Embedding(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.Key{}, r)
+			require.Nil(t, bfErr)
+			require.Equal(t, encoding, got.Data[0].EncodingFormat)
+			switch encoding {
+			case "int8", "binary":
+				require.Equal(t, []int8{-128, 0, 127}, got.Data[0].Embedding.EmbeddingInt8Array)
+				require.Nil(t, got.Data[0].Embedding.EmbeddingArray)
+			case "uint8", "ubinary":
+				require.Equal(t, []int32{0, 128, 255}, got.Data[0].Embedding.EmbeddingInt32Array)
+				require.Nil(t, got.Data[0].Embedding.EmbeddingArray)
+			case "base64":
+				require.Equal(t, "AACAPw==", *got.Data[0].Embedding.EmbeddingStr)
+			}
+			wire, err := providerUtils.MarshalSorted(got)
+			require.NoError(t, err)
+			var roundTrip schemas.BifrostEmbeddingResponse
+			require.NoError(t, json.Unmarshal(wire, &roundTrip))
+			require.Equal(t, got.Data, roundTrip.Data)
+		})
+	}
+}
+
+func BenchmarkVoyageResponseConversion(b *testing.B) {
+	raw := []byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2,0.3]}],"usage":{"total_tokens":7}}`)
+	b.ReportAllocs()
+	for b.Loop() {
+		var r voyage.VoyageEmbeddingResponse
+		if err := json.Unmarshal(raw, &r); err != nil {
+			b.Fatal(err)
+		}
+		_ = r.ToBifrostEmbeddingResponse("voyage-4")
+	}
+}
+
+func TestVoyageQuantizedInvalidValues(t *testing.T) {
+	for _, tc := range []struct {
+		encoding string
+		value    float64
+	}{{"int8", 128}, {"binary", -129}, {"uint8", -1}, {"ubinary", 256}, {"int8", 0.5}} {
+		r := &voyage.VoyageEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{tc.value}}}}}
+		_, err := r.ToBifrostEmbeddingResponseWithEncoding("voyage-4", tc.encoding)
+		require.Error(t, err)
+	}
+}
+
+func BenchmarkVoyageQuantizedResponseConversion(b *testing.B) {
+	raw := []byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[-128,0,127]}],"usage":{"total_tokens":7}}`)
+	b.ReportAllocs()
+	for b.Loop() {
+		var r voyage.VoyageEmbeddingResponse
+		if err := json.Unmarshal(raw, &r); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := r.ToBifrostEmbeddingResponseWithEncoding("voyage-4", "int8"); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

@@ -192,7 +192,27 @@ func (provider *VoyageProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		return nil, providerUtils.EnrichError(ctx, schemas.NewProviderEmptyResultError("voyage returned no embeddings"), jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	convTracer, convHandle := providerUtils.StartResponseConvertorSpan(ctx)
-	bifrostResponse := response.ToBifrostEmbeddingResponse(request.Model)
+	encoding := ""
+	if converted != nil && len(converted.ExtraParams) == 0 {
+		if converted.EncodingFormat != nil {
+			encoding = *converted.EncodingFormat
+		} else if converted.OutputDType != nil {
+			encoding = *converted.OutputDType
+		}
+	} else {
+		// Raw requests and merged extras use the actual upstream representation.
+		encoding = providerUtils.GetJSONField(jsonBody, "encoding_format").String()
+		if encoding != schemas.EmbeddingEncodingBase64 {
+			encoding = providerUtils.GetJSONField(jsonBody, "output_dtype").String()
+		}
+	}
+	bifrostResponse, conversionErr := response.ToBifrostEmbeddingResponseWithEncoding(request.Model, encoding)
+	if conversionErr != nil {
+		if convTracer != nil {
+			convTracer.EndSpan(convHandle, schemas.SpanStatusError, conversionErr.Error())
+		}
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to decode voyage embedding response", conversionErr), jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
 	if convTracer != nil {
 		convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
 	}

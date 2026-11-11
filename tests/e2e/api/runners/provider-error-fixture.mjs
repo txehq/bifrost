@@ -1139,7 +1139,10 @@ const wireAnswer = (path, body, bytes) => {
 	if (path.startsWith("/pp/gemini/models/") && path.endsWith(":batchEmbedContents")) return { status: 200, body: JSON.stringify({ embeddings: (Array.isArray(body.requests) ? body.requests : []).map(() => ({ values: [0.1, 0.2] })) }) };
 	if (path === "/v1/embeddings" && String(body.model).startsWith("voyage-")) {
         if (body.input.includes("voyage-fixture-fail")) return { status: 500, body: JSON.stringify({ detail: "voyage fixture failure" }) };
-        return { status: 200, body: JSON.stringify({ object: "list", data: body.input.map((_, index) => ({ object: "embedding", index, embedding: [0.1, 0.2] })), usage: { total_tokens: 7 } }) };
+        const embedding = body.encoding_format === "base64" ? "AACAPw==" :
+            ["int8", "binary"].includes(body.output_dtype) ? [-128, 0, 127] :
+            ["uint8", "ubinary"].includes(body.output_dtype) ? [0, 128, 255] : [0.1, 0.2];
+        return { status: 200, body: JSON.stringify({ object: "list", data: body.input.map((_, index) => ({ object: "embedding", index, embedding })), usage: { total_tokens: 7 } }) };
     }
 	if (path === "/v1/embeddings" || path === "/pp/volcengine/embeddings") return { status: 200, body: JSON.stringify(embeddingAnswer) };
 	if (path === "/pp/volcengine/embeddings/multimodal") return { status: 200, body: JSON.stringify({ id: "emb_pp", object: "list", model: body.model, data: { embedding: [0.1, 0.2] }, usage: { prompt_tokens: 1, total_tokens: 1 } }) };

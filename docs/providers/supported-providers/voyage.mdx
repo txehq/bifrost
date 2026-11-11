@@ -46,6 +46,8 @@ entire input array in one call; it never splits or retries individual inputs.
 | `task_type`: query, document | `input_type` |
 | `auto_truncate` | `truncation` |
 
+Quantized responses retain their `encoding_format` and typed integer vectors in the Go SDK; base64 responses retain their string representation.
+
 Omitted options remain omitted. Dimensions accept 256, 512, 1024 and 2048.
 Unsupported unified options, per-item parameters, and non-text inputs return
 400 with `extra_fields.error_type: caller_unsupported_parameter` and the field

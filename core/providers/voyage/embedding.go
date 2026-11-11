@@ -2,6 +2,8 @@ package voyage
 
 import (
 	"fmt"
+	"math"
+	"slices"
 
 	"github.com/capsohq/bifrost/core/schemas"
 )
@@ -81,4 +83,72 @@ func (r *VoyageEmbeddingResponse) ToBifrostEmbeddingResponse(model string) *sche
 		out.Usage = &schemas.BifrostLLMUsage{PromptTokens: r.Usage.TotalTokens, TotalTokens: r.Usage.TotalTokens}
 	}
 	return out
+}
+
+// ToBifrostEmbeddingResponseWithEncoding restores the representation selected in
+// the upstream request. Voyage does not repeat it on individual response rows.
+// JSON integer values in these byte-sized formats are exact in float64; validate
+// their range and integrality before converting, never silently truncate them.
+func (r *VoyageEmbeddingResponse) ToBifrostEmbeddingResponseWithEncoding(model, encoding string) (*schemas.BifrostEmbeddingResponse, error) {
+	out := r.ToBifrostEmbeddingResponse(model)
+	if encoding == "" || encoding == schemas.EmbeddingEncodingFloat {
+		return out, nil
+	}
+	switch encoding {
+	case "int8":
+		encoding = schemas.EmbeddingEncodingInt8
+	case "binary":
+		encoding = schemas.EmbeddingEncodingBinary
+	case "uint8":
+		encoding = schemas.EmbeddingEncodingUint8
+	case "ubinary":
+		encoding = schemas.EmbeddingEncodingUbinary
+	case "base64":
+		encoding = schemas.EmbeddingEncodingBase64
+	default:
+		return nil, fmt.Errorf("unsupported voyage response encoding %q", encoding)
+	}
+	out.Data = slices.Clone(r.Data)
+	for i, item := range r.Data {
+		out.Data[i].EncodingFormat = encoding
+		if encoding == schemas.EmbeddingEncodingBase64 {
+			if item.Embedding.EmbeddingStr == nil {
+				return nil, fmt.Errorf("voyage embedding %d is not base64 text", i)
+			}
+			continue
+		}
+		values := item.Embedding.EmbeddingArray
+		if encoding == schemas.EmbeddingEncodingInt8 || encoding == schemas.EmbeddingEncodingBinary {
+			if item.Embedding.EmbeddingInt8Array != nil {
+				continue
+			}
+			if values == nil {
+				return nil, fmt.Errorf("voyage embedding %d is not a numeric vector", i)
+			}
+			vector := make([]int8, len(values))
+			for j, value := range values {
+				if value < -128 || value > 127 || math.Trunc(value) != value {
+					return nil, fmt.Errorf("voyage embedding %d contains an invalid signed byte", i)
+				}
+				vector[j] = int8(value)
+			}
+			out.Data[i].Embedding = schemas.EmbeddingStruct{EmbeddingInt8Array: vector}
+		} else {
+			if item.Embedding.EmbeddingInt32Array != nil {
+				continue
+			}
+			if values == nil {
+				return nil, fmt.Errorf("voyage embedding %d is not a numeric vector", i)
+			}
+			vector := make([]int32, len(values))
+			for j, value := range values {
+				if value < 0 || value > 255 || math.Trunc(value) != value {
+					return nil, fmt.Errorf("voyage embedding %d contains an invalid unsigned byte", i)
+				}
+				vector[j] = int32(value)
+			}
+			out.Data[i].Embedding = schemas.EmbeddingStruct{EmbeddingInt32Array: vector}
+		}
+	}
+	return out, nil
 }
