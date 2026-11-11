@@ -19,6 +19,14 @@ const tlsPort = Number(process.env.PROVIDER_ERROR_FIXTURE_TLS_PORT || "8793");
 // How long a stalled connection is held before the fixture drops it, longer than any first-token deadline
 // a case arms and shorter than a proxy handshake timeout, so a gateway that waits for the proxy still fails.
 const STALL_HOLD_MS = 15000;
+// The media tunnel (TXE-7036): an HTTP proxy that answers every CONNECT and joins the tunnel to this
+// fixture's own port, whatever address the CONNECT names. The SSRF-hardened media fetcher refuses a
+// loopback URL, so a vendor answer names its file at a public-looking address (203.0.113.0/24, RFC 5737)
+// and the provider's proxy_config points here: the gateway checks the address, asks this proxy for a tunnel
+// to it, and the request arrives at the fixture with that address in its Host header. Each tunnel is
+// counted under "__media_tunnel_connects@<host:port>" in /__hits, so a case can prove the download left
+// through the provider's proxy, to the address the vendor named.
+const mediaTunnelPort = Number(process.env.PROVIDER_ERROR_FIXTURE_MEDIA_TUNNEL_PORT || "8788");
 
 // Per-model behaviour for POST /v1/chat/completions. The model name in the request
 // body selects the response, so one fixture serves every case. A model may carry a
@@ -1867,6 +1875,37 @@ const throwawayCertificate = () => {
 // the next non-idempotent request fail with "the server closed connection before returning the first
 // response byte", which is the fixture's doing, not the gateway's.
 server.keepAliveTimeout = 0;
+
+const mediaTunnel = net.createServer((socket) => {
+	let head = Buffer.alloc(0);
+	const onData = (c) => {
+		head = Buffer.concat([head, c]);
+		const end = head.indexOf("\r\n\r\n");
+		if (end === -1) return;
+		socket.off("data", onData);
+		const match = /^CONNECT (\S+) HTTP\/1\.[01]\r\n/.exec(head.subarray(0, end + 2).toString("latin1"));
+		if (!match) return socket.end("HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n");
+		countHit(`__media_tunnel_connects@${match[1]}`);
+		const upstream = net.connect(port, "127.0.0.1", () => {
+			socket.write("HTTP/1.1 200 Connection established\r\n\r\n");
+			const rest = head.subarray(end + 4);
+			if (rest.length) upstream.write(rest);
+			socket.pipe(upstream);
+			upstream.pipe(socket);
+		});
+		upstream.on("error", () => socket.destroy());
+		socket.on("close", () => upstream.destroy());
+		upstream.on("close", () => socket.destroy());
+	};
+	socket.on("data", onData);
+	socket.on("error", () => {});
+});
+
+// The media tunnel listens before the fixture announces itself, so it is up by the "listening" line.
+mediaTunnel.listen(mediaTunnelPort, "127.0.0.1", () => {
+	console.log(`provider-error-fixture media tunnel on http://127.0.0.1:${mediaTunnelPort}`);
+});
+
 stallProxy.listen(stallPort, "127.0.0.1", () => {
 	server.listen(port, "127.0.0.1", () => {
 		console.log(`provider-error-fixture stall proxy on http://127.0.0.1:${stallPort}`);
