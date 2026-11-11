@@ -106,6 +106,69 @@ func checkOpenAIImageGenerationFields(ctx *schemas.BifrostContext, request *sche
 	return schemas.NewUnsupportedParameterError(param, "")
 }
 
+// checkOpenAIImageEditFields is checkOpenAIImageGenerationFields for an image edit (fork, TXE-6984,
+// contract C4). OpenAI's edit API, as a multipart form or as the JSON edit body, has no field for
+// aspect_ratio, resolution, target_megapixels, type or upscale_factor, and both bodies Bifrost
+// builds leave them out, so an edit to OpenAI or Azure carrying one is answered 400
+// caller_unsupported_parameter naming the first one set in alphabetical order, before any upstream
+// call. seed and negative_prompt are still dropped (the contract does not count them as
+// price-affecting), and so is num_inference_steps, which the contract's table does not list.
+//
+// The other providers on the shared edit handlers are not checked, and neither is a large payload
+// that is streamed to the vendor as the caller sent it.
+func checkOpenAIImageEditFields(ctx *schemas.BifrostContext, request *schemas.BifrostImageEditRequest) *schemas.BifrostError {
+	if request == nil || request.Params == nil {
+		return nil
+	}
+	if request.Provider != schemas.OpenAI && request.Provider != schemas.Azure {
+		return nil
+	}
+	params := request.Params
+	var param string
+	switch {
+	case params.AspectRatio != nil:
+		param = "aspect_ratio"
+	case params.Resolution != "":
+		param = "resolution"
+	case params.TargetMegapixels != nil:
+		param = "target_megapixels"
+	case params.Type != nil:
+		param = "type"
+	case params.UpscaleFactor != nil:
+		param = "upscale_factor"
+	default:
+		return nil
+	}
+	// Only a request about to be refused pays for the context lookup.
+	if ctx != nil && providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
+		return nil
+	}
+	return schemas.NewUnsupportedParameterError(param, "")
+}
+
+// setStreamedOutputImages writes usage.output_images on the completed frame of an OpenAI image
+// stream (fork, TXE-6984, contract C5): the number of finished images the stream delivered. A
+// stream has no data[] for BackfillParams to count, and the handlers end the stream on the first
+// completed event, so the count is 1 when that event carries an image and 0 when it carries none.
+// partial_image_index is not an image count: it numbers the previews of one image (0 to 3), so it
+// is not used here. A count the vendor reported itself is kept.
+func setStreamedOutputImages(chunk *schemas.BifrostImageGenerationStreamResponse) {
+	if chunk == nil {
+		return
+	}
+	if chunk.Usage != nil && chunk.Usage.OutputImages != nil {
+		return
+	}
+	if chunk.Usage == nil {
+		chunk.Usage = &schemas.ImageUsage{}
+	}
+	delivered := 0
+	if chunk.B64JSON != "" || chunk.URL != "" {
+		delivered = 1
+	}
+	chunk.Usage.OutputImages = &delivered
+}
+
 // ToBifrostImageGenerationRequest converts an OpenAI image generation request to Bifrost format
 func (request *OpenAIImageGenerationRequest) ToBifrostImageGenerationRequest(ctx *schemas.BifrostContext) *schemas.BifrostImageGenerationRequest {
 	if request == nil {

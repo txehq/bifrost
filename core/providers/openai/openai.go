@@ -4332,6 +4332,8 @@ func HandleOpenAIImageGenerationStreaming(
 				chunk.BackfillParams(&schemas.BifrostRequest{
 					ImageGenerationRequest: request,
 				})
+				// usage.output_images: the finished images this stream delivered (TXE-6984).
+				setStreamedOutputImages(chunk)
 				// Set raw request only on final chunk if enabled
 				if sendBackRawRequest {
 					providerUtils.ParseAndSetRawRequest(&chunk.ExtraFields, jsonBody)
@@ -5532,6 +5534,10 @@ func HandleOpenAIImageEditRequest(
 	if len(authHeaders) == 0 {
 		authHeaders = BearerAuthHeader(key)
 	}
+	// A unified field OpenAI's edit API has no field for is refused, never dropped (TXE-6984).
+	if fieldErr := checkOpenAIImageEditFields(ctx, request); fieldErr != nil {
+		return nil, fieldErr
+	}
 	// Large payload passthrough: stream multipart body directly without parsing
 	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, authHeaders, extraHeaders, providerName, logger); handled {
 		if lpErr != nil {
@@ -5698,6 +5704,10 @@ func HandleOpenAIImageEditStreamRequest(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	// A unified field OpenAI's edit API has no field for is refused, never dropped (TXE-6984).
+	if fieldErr := checkOpenAIImageEditFields(ctx, request); fieldErr != nil {
+		return nil, fieldErr
+	}
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	// Time the request conversion as the convertor phase.
 	ct, ch := providerUtils.StartPhaseSpan(ctx, "convertor")
@@ -6044,6 +6054,8 @@ func HandleOpenAIImageEditStreamRequest(
 				chunk.BackfillParams(&schemas.BifrostRequest{
 					ImageEditRequest: request,
 				})
+				// usage.output_images: the finished images this stream delivered (TXE-6984).
+				setStreamedOutputImages(chunk)
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			}
 

@@ -1344,3 +1344,183 @@ func TestOpenAIVideoContentRouteStreams(t *testing.T) {
 		"GET /v1/videos/video_a/content?variant=video",
 	}, calls)
 }
+
+// TXE-6984 (contract C4, C5): /openai/v1/images/edits and /openai/v1/images/generations reach the
+// OpenAI provider through their own parser and converters. These tests drive each route's parser
+// and request converter into the provider and its stream converter back out, and pin that an
+// edit carrying a unified field OpenAI's edit API has no field for is refused before any
+// upstream call, and that the completed frame the route writes carries usage.output_images.
+
+type openAIImageUpstream struct {
+	mu    sync.Mutex
+	paths []string
+}
+
+func (u *openAIImageUpstream) provider(t *testing.T, sse string) *openai.OpenAIProvider {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		u.mu.Lock()
+		u.paths = append(u.paths, r.URL.Path)
+		u.mu.Unlock()
+		if sse != "" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(sse))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1,"data":[{"b64_json":"aGk="}]}`))
+	}))
+	t.Cleanup(server.Close)
+	return openai.NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+	}, bifrost.NewNoOpLogger())
+}
+
+func (u *openAIImageUpstream) calls() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.paths...)
+}
+
+// openAIRouteImageEdit parses a multipart edit on the /openai/v1/images/edits route and returns
+// the Bifrost request its converter builds.
+func openAIRouteImageEdit(t *testing.T, bifrostCtx *schemas.BifrostContext, fields map[string]string) *schemas.BifrostImageEditRequest {
+	t.Helper()
+	route := openAIImageRoute(t, "/openai/v1/images/edits")
+	var form bytes.Buffer
+	writer := multipart.NewWriter(&form)
+	for k, v := range fields {
+		require.NoError(t, writer.WriteField(k, v))
+	}
+	part, err := writer.CreateFormFile("image", "day.png")
+	require.NoError(t, err)
+	_, err = part.Write(openAIXAIPNG)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	httpCtx := &fasthttp.RequestCtx{}
+	httpCtx.Request.Header.SetMethod(http.MethodPost)
+	httpCtx.Request.SetRequestURI("/openai/v1/images/edits")
+	httpCtx.Request.Header.SetContentType(writer.FormDataContentType())
+	httpCtx.Request.SetBody(form.Bytes())
+
+	req := route.GetRequestTypeInstance(bifrostCtx)
+	require.NoError(t, route.RequestParser(httpCtx, req))
+	converted, err := route.RequestConverter(bifrostCtx, req)
+	require.NoError(t, err)
+	require.NotNil(t, converted.ImageEditRequest)
+	require.Equal(t, schemas.OpenAI, converted.ImageEditRequest.Provider)
+	return converted.ImageEditRequest
+}
+
+func openAIImagePostHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return resp, err
+}
+
+var openAIImageKey = schemas.Key{Value: *schemas.NewSecretVar("openai-test")}
+
+func TestOpenAIRouteImageEditRefusesUndeliverableFields(t *testing.T) {
+	for param, value := range map[string]string{
+		"aspect_ratio":      "16:9",
+		"resolution":        "2K",
+		"target_megapixels": "4",
+		"type":              "upscale",
+		"upscale_factor":    "2",
+	} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s stream=%v", param, stream), func(t *testing.T) {
+				bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				fields := map[string]string{"model": "openai/gpt-image-1.5", "prompt": "add a hat", param: value}
+				if stream {
+					fields["stream"] = "true"
+				}
+				request := openAIRouteImageEdit(t, bifrostCtx, fields)
+
+				upstream := &openAIImageUpstream{}
+				provider := upstream.provider(t, "")
+				var bifrostErr *schemas.BifrostError
+				if stream {
+					_, bifrostErr = provider.ImageEditStream(bifrostCtx, openAIImagePostHook, nil, openAIImageKey, request)
+				} else {
+					_, bifrostErr = provider.ImageEdit(bifrostCtx, openAIImageKey, request)
+				}
+				require.NotNil(t, bifrostErr, "the edit must be refused")
+				require.NotNil(t, bifrostErr.StatusCode)
+				require.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+				require.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ResolveErrorType())
+				require.NotNil(t, bifrostErr.Error)
+				require.NotNil(t, bifrostErr.Error.Param)
+				require.Equal(t, param, bifrostErr.Error.Param)
+				require.Empty(t, upstream.calls(), "no upstream call for a refused edit")
+
+				// The route writes the error as it is: status, error_type and param reach the client.
+				route := openAIImageRoute(t, "/openai/v1/images/edits")
+				wire, err := sonic.Marshal(route.ErrorConverter(bifrostCtx, bifrostErr))
+				require.NoError(t, err)
+				require.Equal(t, param, gjson.GetBytes(wire, "error.param").String(), string(wire))
+				require.Equal(t, "caller_unsupported_parameter", gjson.GetBytes(wire, "extra_fields.error_type").String(), string(wire))
+			})
+		}
+	}
+}
+
+func TestOpenAIRouteImageStreamReportsOutputImages(t *testing.T) {
+	for _, kind := range []string{"image_generation", "image_edit"} {
+		t.Run(kind, func(t *testing.T) {
+			sse := "data: " + `{"type":"` + kind + `.partial_image","b64_json":"cDA=","partial_image_index":0,"sequence_number":1}` + "\n\n" +
+				"data: " + `{"type":"` + kind + `.partial_image","b64_json":"cDE=","partial_image_index":1,"sequence_number":2}` + "\n\n" +
+				"data: " + `{"type":"` + kind + `.completed","sequence_number":3,"b64_json":"aGk=","usage":{"input_tokens":12,"output_tokens":272,"total_tokens":284}}` + "\n\n"
+			upstream := &openAIImageUpstream{}
+			provider := upstream.provider(t, sse)
+			bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+			var route RouteConfig
+			var stream chan *schemas.BifrostStreamChunk
+			var bifrostErr *schemas.BifrostError
+			wantPath := "/v1/images/generations"
+			if kind == "image_generation" {
+				route = openAIImageRoute(t, "/openai/v1/images/generations")
+				req := route.GetRequestTypeInstance(bifrostCtx)
+				require.NoError(t, parseJSONRequestBody([]byte(
+					`{"model":"openai/gpt-image-1.5","prompt":"a fox","stream":true,"partial_images":2}`), req))
+				converted, err := route.RequestConverter(bifrostCtx, req)
+				require.NoError(t, err)
+				require.NotNil(t, converted.ImageGenerationRequest)
+				require.Equal(t, schemas.OpenAI, converted.ImageGenerationRequest.Provider)
+				stream, bifrostErr = provider.ImageGenerationStream(bifrostCtx, openAIImagePostHook, nil, openAIImageKey, converted.ImageGenerationRequest)
+			} else {
+				route = openAIImageRoute(t, "/openai/v1/images/edits")
+				wantPath = "/v1/images/edits"
+				request := openAIRouteImageEdit(t, bifrostCtx, map[string]string{
+					"model": "openai/gpt-image-1.5", "prompt": "add a hat", "stream": "true", "partial_images": "2",
+				})
+				stream, bifrostErr = provider.ImageEditStream(bifrostCtx, openAIImagePostHook, nil, openAIImageKey, request)
+			}
+			require.Nil(t, bifrostErr)
+			require.NotNil(t, route.StreamConfig)
+
+			var frames [][]byte
+			for chunk := range stream {
+				require.NotNil(t, chunk)
+				require.Nil(t, chunk.BifrostError)
+				require.NotNil(t, chunk.BifrostImageGenerationStreamResponse)
+				_, payload, err := route.StreamConfig.ImageGenerationStreamResponseConverter(bifrostCtx, chunk.BifrostImageGenerationStreamResponse)
+				require.NoError(t, err)
+				wire, err := sonic.Marshal(payload)
+				require.NoError(t, err)
+				frames = append(frames, wire)
+			}
+			require.Len(t, frames, 3, "two previews and the completed frame")
+			for _, preview := range frames[:2] {
+				require.False(t, gjson.GetBytes(preview, "usage").Exists(), string(preview))
+			}
+			final := frames[2]
+			require.Equal(t, kind+".completed", gjson.GetBytes(final, "type").String(), string(final))
+			require.True(t, gjson.GetBytes(final, "usage.output_images").Exists(), string(final))
+			require.EqualValues(t, 1, gjson.GetBytes(final, "usage.output_images").Int(), string(final))
+			require.EqualValues(t, 284, gjson.GetBytes(final, "usage.total_tokens").Int(), string(final))
+			require.Equal(t, []string{wantPath}, upstream.calls())
+		})
+	}
+}

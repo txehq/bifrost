@@ -2169,8 +2169,10 @@ var ingressSamples = []ingressSample{
 		body: `{"model":"openai/gpt-image-1","prompt":"a red square","n":2,"size":"1024x1024","quality":"high","background":"transparent","output_format":"png"}`},
 	{name: "openai image generation, short path", path: "/openai/images/generations",
 		body: `{"model":"openai/gpt-image-1","prompt":"a red square","n":2,"size":"1024x1024"}`},
+	// No resolution here: OpenAI's edit API has no such field, so an edit to openai carrying it
+	// is refused (TXE-6984); TestOpenAIRouteImageEditRefusesUndeliverableFields pins that.
 	{name: "openai image edit", path: "/openai/v1/images/edits", file: "image",
-		form: map[string]string{"model": "openai/gpt-image-1", "prompt": "make it blue", "n": "2", "size": "1024x1024", "quality": "high", "resolution": "2K"}},
+		form: map[string]string{"model": "openai/gpt-image-1", "prompt": "make it blue", "n": "2", "size": "1024x1024", "quality": "high"}},
 	{name: "openai image edit, short path", path: "/openai/images/edits", file: "image",
 		form: map[string]string{"model": "openai/gpt-image-1", "prompt": "make it blue", "size": "1024x1024"}},
 	{name: "openai video", path: "/openai/v1/videos",

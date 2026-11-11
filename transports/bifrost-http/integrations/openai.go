@@ -3963,6 +3963,23 @@ func parseOpenAIImageEditMultipartRequest(ctx *fasthttp.RequestCtx, req interfac
 	if resolutionValues := form.Value["resolution"]; len(resolutionValues) > 0 && resolutionValues[0] != "" {
 		imageEditReq.Resolution = schemas.TolerantString(resolutionValues[0])
 	}
+	// Fork (TXE-6984, contract C4): the unified upscale fields are read here as on
+	// /v1/images/edits, for the same reason: a provider that cannot deliver one refuses it, and
+	// a field this parser dropped would run the edit without it and without an error.
+	if upscaleFactorValues := form.Value["upscale_factor"]; len(upscaleFactorValues) > 0 && upscaleFactorValues[0] != "" {
+		upscaleFactor, err := strconv.Atoi(upscaleFactorValues[0])
+		if err != nil {
+			return errors.New("invalid upscale_factor value")
+		}
+		imageEditReq.UpscaleFactor = &upscaleFactor
+	}
+	if targetMegapixelsValues := form.Value["target_megapixels"]; len(targetMegapixelsValues) > 0 && targetMegapixelsValues[0] != "" {
+		targetMegapixels, err := strconv.Atoi(targetMegapixelsValues[0])
+		if err != nil {
+			return errors.New("invalid target_megapixels value")
+		}
+		imageEditReq.TargetMegapixels = &targetMegapixels
+	}
 
 	if responseFormatValues := form.Value["response_format"]; len(responseFormatValues) > 0 && responseFormatValues[0] != "" {
 		responseFormat := responseFormatValues[0]
