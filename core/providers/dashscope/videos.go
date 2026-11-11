@@ -327,17 +327,32 @@ func ToDashScopeVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGeneratio
 	// A key this converter writes there from the request's own fields is refused: nested, it
 	// is out of sight of core's price-field check, which reads the top-level names, and the
 	// vendor would be sent (and bill for) a size, a tier or a duration the request does not show.
-	for _, object := range dashScopeOwnedBodyFields {
-		nested, ok := extras[object.name].(map[string]any)
+	// Names are compared the way the merger compares them (case and underscores ignored), so
+	// "Parameters" or "SIZE" is refused like the exact spelling. The refusal names the keys as
+	// the caller wrote them; the lowest in sort order when several match.
+	refused := ""
+	for key, value := range extras {
+		nested, ok := value.(map[string]any)
 		if !ok {
 			continue
 		}
-		for _, field := range object.fields {
-			if _, ok := nested[field]; ok {
-				return nil, unsupportedVideoParameter(object.name+"."+field,
-					"dashscope: %s.%s is set from the request's own fields, not from an extra param", object.name, field)
+		for _, object := range dashScopeOwnedBodyFields {
+			if !providerUtils.SameJSONField(key, object.name) {
+				continue
+			}
+			for nestedKey := range nested {
+				for _, field := range object.fields {
+					if providerUtils.SameJSONField(nestedKey, field) {
+						if name := key + "." + nestedKey; refused == "" || name < refused {
+							refused = name
+						}
+					}
+				}
 			}
 		}
+	}
+	if refused != "" {
+		return nil, unsupportedVideoParameter(refused, "dashscope: %s is set from the request's own fields, not from an extra param", refused)
 	}
 
 	if len(extras) > 0 {
