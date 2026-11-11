@@ -1130,17 +1130,20 @@ func (p *GovernancePlugin) enforceProviderObjectOwnership(ctx *schemas.BifrostCo
 			Error:      &schemas.ErrorField{Message: "fine-tuning through a passthrough route is not available to virtual keys: tuning jobs and tuned models carry no per-key ownership, so a request could reach another key's job or model"},
 		}}
 	}
+	// Settled before any lookup: a request that could not be read in full, or that names more
+	// objects than the bound, is refused without a query.
+	refs, verifiable := distinctObjectRefs(refs)
+	if !verifiable {
+		ctx.SetValue(governanceRejectedContextKey, true)
+		return &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
+			Type:       bifrost.Ptr(string(DecisionAccessBlocked)),
+			StatusCode: bifrost.Ptr(400),
+			Error:      &schemas.ErrorField{Message: fmt.Sprintf("the objects this request names cannot be verified for this virtual key: it names more than %d files, containers or caches, or its provider-specific fields could not be read (raw JSON that does not parse, or data nested more than %d levels deep)", maxFileReferences, openValueDepth)},
+		}}
+	}
 	for _, ref := range refs {
 		if ref.isList {
 			continue
-		}
-		if ref.unreadable {
-			ctx.SetValue(governanceRejectedContextKey, true)
-			return &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
-				Type:       bifrost.Ptr(string(DecisionAccessBlocked)),
-				StatusCode: bifrost.Ptr(400),
-				Error:      &schemas.ErrorField{Message: fmt.Sprintf("the files this request names cannot be verified for this virtual key: it names more than %d files, or its provider-specific fields could not be read (raw JSON that does not parse, or data nested more than %d levels deep)", maxFileReferences, openValueDepth)},
-			}}
 		}
 		if shortCircuit := p.refuseForeignProviderObject(ctx, req, ref, vkID); shortCircuit != nil {
 			return shortCircuit
@@ -1161,6 +1164,38 @@ func (p *GovernancePlugin) enforceProviderObjectOwnership(ctx *schemas.BifrostCo
 		}
 	}
 	return nil
+}
+
+// distinctObjectRefs returns the references of a request with repeats of one object removed,
+// and whether the request can be verified from them. Each remaining reference is one ownership
+// lookup, so the count is bounded over the whole request, however its parts were read (typed
+// fields, extra params, a passthrough body, every inline item of a batch): a request marked
+// unreadable, or one naming more than maxFileReferences distinct objects, cannot be.
+func distinctObjectRefs(refs []providerObjectRef) ([]providerObjectRef, bool) {
+	if len(refs) <= 1 {
+		return refs, len(refs) == 0 || !refs[0].unreadable
+	}
+	type objectKey struct{ kind, provider, id string }
+	seen := make(map[objectKey]struct{}, len(refs))
+	distinct := refs[:0:0]
+	named := 0
+	for _, ref := range refs {
+		if ref.unreadable {
+			return nil, false
+		}
+		if !ref.isList {
+			key := objectKey{ref.kind, ref.provider, ref.requestID}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			if named++; named > maxFileReferences {
+				return nil, false
+			}
+		}
+		distinct = append(distinct, ref)
+	}
+	return distinct, true
 }
 
 // refuseForeignProviderObject is enforceProviderObjectOwnership for one referenced object.

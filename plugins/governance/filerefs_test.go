@@ -532,6 +532,24 @@ func TestFileReferencesCannotHideInOpenFields(t *testing.T) {
 		if len(bodyRefs) > maxFileReferences+1 || !bodyRefs[len(bodyRefs)-1].unreadable {
 			t.Errorf("a raw body naming 10000 files yields %d references and no refusal", len(bodyRefs))
 		}
+		// The bound is over the whole request: a batch whose inline items each name a few files
+		// is counted across its items, and refused before any lookup.
+		items := make([]schemas.BatchRequestItem, 0, 400)
+		for i := 0; i < 400; i++ {
+			items = append(items, schemas.BatchRequestItem{CustomID: fmt.Sprint(i), Body: map[string]any{"file_id": fmt.Sprintf("file-%d", i)}})
+		}
+		batch := &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.OpenAI, Requests: items}}
+		if _, verifiable := distinctObjectRefs(providerObjectReferences(batch)); verifiable {
+			t.Errorf("a batch naming 400 distinct files across its items is within the bound")
+		}
+		same := make([]schemas.BatchRequestItem, 0, 400)
+		for i := 0; i < 400; i++ {
+			same = append(same, schemas.BatchRequestItem{CustomID: fmt.Sprint(i), Body: map[string]any{"file_id": "file-shared"}})
+		}
+		batch.BatchCreateRequest.Requests = same
+		if refs, verifiable := distinctObjectRefs(providerObjectReferences(batch)); !verifiable || len(refs) != 1 {
+			t.Errorf("a batch naming one file 400 times: %d lookups, verifiable %v", len(refs), verifiable)
+		}
 		// The same file repeated is one lookup, however often it is named.
 		repeated := make([]any, 10000)
 		for i := range repeated {
