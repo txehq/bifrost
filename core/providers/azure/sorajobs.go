@@ -2,6 +2,7 @@ package azure
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -345,44 +346,39 @@ func (provider *AzureProvider) soraJobsCall(ctx *schemas.BifrostContext, key sch
 }
 
 // parseAzureSoraJobsError parses a jobs API error. The reference's error body carries code,
-// message, param and inner_error{code}, at the top level or under "error"; an inner_error.code
-// of ResponsibleAIPolicyViolation is the vendor blocking the caller's content (contract C6).
+// message, param and inner_error{code}. Under "error" it is the shape openai.ParseOpenAIError
+// reads, including ResponsibleAIPolicyViolation as caller_content_filtered (TXE-6532, contract
+// C6). At the top level, without the "error" envelope, ParseOpenAIError reads nothing, so this
+// fills the same fields and the same content-filter class from there.
 func parseAzureSoraJobsError(resp *fasthttp.Response) *schemas.BifrostError {
 	bifrostErr := openai.ParseOpenAIError(resp)
-	type innerError struct {
-		Code string `json:"code"`
-	}
-	type errorBody struct {
-		Code       *string     `json:"code"`
-		Message    string      `json:"message"`
-		Param      string      `json:"param"`
-		InnerError *innerError `json:"inner_error"`
-	}
-	var parsed struct {
-		errorBody
-		Error *errorBody `json:"error"`
+	var top struct {
+		Code       *string `json:"code"`
+		Message    string  `json:"message"`
+		Param      string  `json:"param"`
+		InnerError *struct {
+			Code string `json:"code"`
+		} `json:"inner_error"`
+		Error json.RawMessage `json:"error"`
 	}
 	raw, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil || sonic.Unmarshal(raw, &parsed) != nil {
+	if err != nil || sonic.Unmarshal(raw, &top) != nil || len(top.Error) > 0 {
 		return bifrostErr
 	}
-	top := &parsed.errorBody
-	if parsed.Error != nil {
-		top = parsed.Error
-	} else if bifrostErr.Error != nil && (top.Code != nil || top.Message != "") {
-		// An unwrapped error body: ParseOpenAIError read only the "error" envelope.
-		if top.Code != nil {
-			bifrostErr.Error.Code = top.Code
-		}
-		if top.Message != "" {
-			bifrostErr.Error.Message = top.Message
-		}
-		if top.Param != "" {
-			bifrostErr.Error.Param = top.Param
-		}
+	if top.Code != nil {
+		bifrostErr.Error.Code = top.Code
 	}
-	if top.InnerError != nil && top.InnerError.Code == "ResponsibleAIPolicyViolation" {
-		bifrostErr.ExtraFields.ErrorType = schemas.ErrorTypeCallerContentFiltered
+	if top.Message != "" {
+		bifrostErr.Error.Message = top.Message
+	}
+	if top.Param != "" {
+		bifrostErr.Error.Param = top.Param
+	}
+	if top.InnerError != nil && top.InnerError.Code != "" {
+		bifrostErr.Error.InnerCode = schemas.Ptr(top.InnerError.Code)
+		if top.InnerError.Code == "ResponsibleAIPolicyViolation" {
+			bifrostErr.ExtraFields.ErrorType = schemas.ErrorTypeCallerContentFiltered
+		}
 	}
 	return bifrostErr
 }

@@ -1,6 +1,6 @@
 {
   "name": "420. First-generation sora on Azure: video generation jobs API create, query, download (azure sora jobs)",
-  "description": "Pins TXE-6533 (contract C3, C4, C6, C7, C9): the azure provider sends first-generation sora to the video generation jobs API (/openai/v1/video/generations/jobs), not to /openai/v1/videos. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. The azure key's endpoint is the fixture, which serves the jobs API, counts each call under 'sora1 <METHOD> <job|content> <api-key>' and keeps the bodies in /__wire. Rows 2 and 3: a create sends n_seconds, width and height from seconds and size and returns the task object 'sora1.<job id>:azure'. Row 4: a query maps succeeded to completed, keeps provider_status, and gives a content artifact and the generation's n_seconds as usage.output_seconds. Row 5: /content streams the generation's video. Rows 6 to 8: fields the jobs API cannot take are 400 caller_unsupported_parameter. Row 9: ResponsibleAIPolicyViolation keeps the vendor 400 as caller_content_filtered. Row 10: the jobs API has no cancel, so cancel is provider_cancel_unsupported. Row 11: a delete is DELETE on the job, whose 204 becomes the unified deletion object. Row 12: a GenAI SDK operation poll gets the completed generation's video as bytes. Row 13: the call counts. Before the change rows 2 to 9 and 11 to 13 fail: azure/sora and its task id went to /openai/v1/videos, which the fixture does not serve for the azure key. Run with the augment's --profile set to the fixture config, so the azure key's literal value is not taken for a missing secret.",
+  "description": "Pins TXE-6533 (contract C3, C4, C6, C7, C9): the azure provider sends first-generation sora to the video generation jobs API (/openai/v1/video/generations/jobs), not to /openai/v1/videos. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. Every task query, download, delete, cancel and GenAI poll names the creating key with x-bf-api-key, as contract C3 requires and Tokun does; the fixture also has Sora 2 keys on other endpoints (folder 419), so an unnamed key may reach one that does not serve the jobs API. The azure key's endpoint is the fixture, which serves the jobs API, counts each call under 'sora1 <METHOD> <job|content> <api-key>' and keeps the bodies in /__wire. Rows 2 and 3: a create sends n_seconds, width and height from seconds and size and returns the task object 'sora1.<job id>:azure'. Row 4: a query maps succeeded to completed, keeps provider_status, and gives a content artifact and the generation's n_seconds as usage.output_seconds. Row 5: /content streams the generation's video. Rows 6 to 8: fields the jobs API cannot take are 400 caller_unsupported_parameter. Row 9: ResponsibleAIPolicyViolation keeps the vendor 400 as caller_content_filtered. Row 10: the jobs API has no cancel, so cancel is provider_cancel_unsupported. Row 11: a delete is DELETE on the job, whose 204 becomes the unified deletion object. Row 12: a GenAI SDK operation poll gets the completed generation's video as bytes. Row 13: the call counts. Before the change rows 2 to 9 and 11 to 13 fail: azure/sora and its task id went to /openai/v1/videos, which the fixture does not serve for the azure key. Run with the augment's --profile set to the fixture config, so the azure key's literal value is not taken for a missing secret.",
   "item": [
     {
       "name": "420.1 reset the fixture's hit counters and wire log (azure sora jobs)",
@@ -131,7 +131,12 @@
       "name": "420.4 azure GET /v1/videos/{id} maps succeeded to completed with a content artifact and vendor-reported output_seconds (azure sora jobs)",
       "request": {
         "method": "GET",
-        "header": [],
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
         "url": {
           "raw": "{{baseUrl}}/v1/videos/sora1.task_fixture_sora1:azure",
           "host": [
@@ -182,7 +187,12 @@
       "name": "420.5 azure GET /v1/videos/{id}/content returns the generation's video (azure sora jobs)",
       "request": {
         "method": "GET",
-        "header": [],
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
         "url": {
           "raw": "{{baseUrl}}/v1/videos/sora1.task_fixture_sora1:azure/content",
           "host": [
@@ -438,7 +448,12 @@
       "name": "420.10 [EXPECT-400] azure POST /v1/videos/{id}/cancel on a jobs API task is provider_cancel_unsupported (azure sora jobs)",
       "request": {
         "method": "POST",
-        "header": [],
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
         "url": {
           "raw": "{{baseUrl}}/v1/videos/sora1.task_fixture_sora1:azure/cancel",
           "host": [
@@ -483,7 +498,12 @@
       "name": "420.11 azure DELETE /v1/videos/{id} deletes the job with the jobs API's 204 (azure sora jobs)",
       "request": {
         "method": "DELETE",
-        "header": [],
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
         "url": {
           "raw": "{{baseUrl}}/v1/videos/sora1.task_fixture_sora1:azure",
           "host": [
@@ -529,7 +549,12 @@
       "name": "420.12 genai GET /genai/v1beta/models/sora/operations/{id} polls the job and returns the generation's video bytes (azure sora jobs)",
       "request": {
         "method": "GET",
-        "header": [],
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
         "url": {
           "raw": "{{baseUrl}}/genai/v1beta/models/sora/operations/sora1.task_fixture_sora1:azure",
           "host": [
