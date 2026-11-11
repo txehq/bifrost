@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -1334,7 +1336,7 @@ func TestTranscriptionStreamContextCancellation(t *testing.T) {
 		flusher.Flush()
 
 		// Wait longer than the context timeout
-		time.Sleep(5 * time.Second)
+		time.Sleep(testtime.Scale(5 * time.Second))
 
 		// This should not be received
 		w.Write([]byte("event: transcription.done\ndata: {}\n\n"))
@@ -1361,7 +1363,7 @@ func TestTranscriptionStreamContextCancellation(t *testing.T) {
 	}
 
 	// Create context with short timeout
-	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), testtime.Scale(500*time.Millisecond))
 	defer cancel()
 
 	streamChan, err := provider.TranscriptionStream(ctx, postHookRunner, nil, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, request)

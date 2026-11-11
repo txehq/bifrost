@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
+
 	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/framework/configstore"
 	"github.com/capsohq/bifrost/framework/configstore/tables"
@@ -211,7 +213,7 @@ func TestRSSItemsHonorsFetchDeadline(t *testing.T) {
 	t.Cleanup(srv.Close)
 	t.Cleanup(func() { close(release) })
 	previous := rssItemsFetchTimeout
-	rssItemsFetchTimeout = 300 * time.Millisecond
+	rssItemsFetchTimeout = testtime.Scale(300 * time.Millisecond)
 	t.Cleanup(func() { rssItemsFetchTimeout = previous })
 
 	const feedCount = rssItemsMaxConcurrentFetches + 1
@@ -226,7 +228,7 @@ func TestRSSItemsHonorsFetchDeadline(t *testing.T) {
 	h.listItems(ctx)
 	elapsed := time.Since(start)
 	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
-	require.Less(t, elapsed, 2*time.Second, "the request must return at the deadline")
+	require.Less(t, elapsed, testtime.Scale(2*time.Second), "the request must return at the deadline")
 
 	var response rssItemsResponse
 	require.NoError(t, sonic.Unmarshal(ctx.Response.Body(), &response))

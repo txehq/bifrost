@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
@@ -400,8 +402,8 @@ func TestStreamPostHooksRunExactlyOnceOnDownstreamDisconnect(t *testing.T) {
 
 	downstream.cancel()
 	waitClosed(t, "upstream stream", upstream.done)
-	require.Eventually(t, func() bool { return plugin.postCalls.Load() == 1 }, 5*time.Second, time.Millisecond, "post-hooks run once at stream termination")
-	require.Never(t, func() bool { return plugin.postCalls.Load() != 1 }, 100*time.Millisecond, 10*time.Millisecond, "post-hooks must not run again")
+	require.Eventually(t, func() bool { return plugin.postCalls.Load() == 1 }, testtime.Scale(5*time.Second), testtime.Scale(time.Millisecond), "post-hooks run once at stream termination")
+	require.Never(t, func() bool { return plugin.postCalls.Load() != 1 }, testtime.Scale(100*time.Millisecond), testtime.Scale(10*time.Millisecond), "post-hooks must not run again")
 }
 
 func TestStreamIsLazyAndPreHookPrecedesUpstreamCreation(t *testing.T) {

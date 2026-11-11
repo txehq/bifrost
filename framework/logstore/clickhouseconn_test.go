@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -127,7 +129,7 @@ func TestCutOffSafeConnRetiresOnlyCutOffConnections(t *testing.T) {
 
 	t.Run("context ended while Close drained the rest", func(t *testing.T) {
 		c := &cutOffSafeConn{conn: fakeCHConn{}}
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(20*time.Millisecond))
 		defer cancel()
 		rows, err := c.QueryContext(ctx, "DRAIN", nil)
 		require.NoError(t, err)
@@ -286,7 +288,7 @@ func TestCutOffSafePoolReusesOnlyUncutConnections(t *testing.T) {
 	require.NoError(t, readAll(context.Background()))
 	require.EqualValues(t, 2, connector.opened.Load(), "a read cut off mid-iteration retires its connection")
 
-	slow, cancelSlow := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	slow, cancelSlow := context.WithTimeout(context.Background(), testtime.Scale(20*time.Millisecond))
 	defer cancelSlow()
 	_, err = pool.QueryContext(slow, "SLOW")
 	require.ErrorIs(t, err, context.DeadlineExceeded)

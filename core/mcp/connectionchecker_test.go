@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -520,20 +522,20 @@ func TestReconnectAfterFailedCheck_StaleOrAuthoritativeState_DoesNotReconnect(t 
 			}
 			m.mu.Unlock()
 
-			checker := NewClientConnectionChecker(m, config.ID, time.Minute, false, &MockLogger{})
+			checker := NewClientConnectionChecker(m, config.ID, testtime.Scale(time.Minute), false, &MockLogger{})
 			checker.reconnectAfterFailedCheck(config.Name, tc.checkGeneration)
 
 			if tc.wantReconnect {
 				require.Eventually(t, func() bool {
 					_, inFlightOrDone := m.reconnectingClients.Load(config.ID)
 					return inFlightOrDone
-				}, 2*time.Second, 10*time.Millisecond, "the guards must not be a blanket no-op")
+				}, testtime.Scale(2*time.Second), testtime.Scale(10*time.Millisecond), "the guards must not be a blanket no-op")
 				return
 			}
 			require.Never(t, func() bool {
 				_, inFlightOrDone := m.reconnectingClients.Load(config.ID)
 				return inFlightOrDone
-			}, 500*time.Millisecond, 25*time.Millisecond, "no reconnect may be started for this client")
+			}, testtime.Scale(500*time.Millisecond), testtime.Scale(25*time.Millisecond), "no reconnect may be started for this client")
 		})
 	}
 }
@@ -618,7 +620,7 @@ func TestSSEStreamDropped_CheckerReconnects(t *testing.T) {
 			st.ConnGeneration != before.ConnGeneration ||
 			st.Conn == nil ||
 			st.LastFailure != nil
-	}, 1*time.Second, 100*time.Millisecond, "a dropped SSE stream is not self-detected: the entry must stay healthy on its dead connection until the checker probes it")
+	}, testtime.Scale(1*time.Second), testtime.Scale(100*time.Millisecond), "a dropped SSE stream is not self-detected: the entry must stay healthy on its dead connection until the checker probes it")
 
 	// Why the post-reconnect tool assertion is not vacuous: right now the entry
 	// still carries the pre-drop list, and cannot possibly carry the tool that
@@ -629,7 +631,7 @@ func TestSSEStreamDropped_CheckerReconnects(t *testing.T) {
 	require.Contains(t, stale.ToolMap, config.Name+"-echo", "the pre-drop tool list is retained as last-known-good")
 	require.NotContains(t, stale.ToolMap, config.Name+"-reconnected", "and cannot contain a tool registered after the drop until rediscovery runs")
 
-	checker := NewClientConnectionChecker(m, config.ID, time.Minute, false, &MockLogger{})
+	checker := NewClientConnectionChecker(m, config.ID, testtime.Scale(time.Minute), false, &MockLogger{})
 	checker.performCheck()
 
 	require.Eventually(t, func() bool {
@@ -637,7 +639,7 @@ func TestSSEStreamDropped_CheckerReconnects(t *testing.T) {
 		return exists &&
 			after.State == schemas.MCPConnectionStateHealthy &&
 			after.ConnGeneration > before.ConnGeneration
-	}, 30*time.Second, 100*time.Millisecond, "the checker's reconnect must re-establish the stream")
+	}, testtime.Scale(30*time.Second), testtime.Scale(100*time.Millisecond), "the checker's reconnect must re-establish the stream")
 
 	after, ok := snapshotClientState(m, config.ID)
 	require.True(t, ok)

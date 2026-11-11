@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -29,7 +31,7 @@ func TestToolExecution_Timeout(t *testing.T) {
 	bifrost.SetMCPManager(manager)
 
 	// Create context with short timeout
-	baseCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	baseCtx, cancel := context.WithTimeout(context.Background(), testtime.Scale(1*time.Second))
 	defer cancel()
 	ctx := schemas.NewBifrostContext(baseCtx, schemas.NoDeadline)
 
@@ -68,7 +70,7 @@ func TestToolExecution_TimeoutChatAndResponses(t *testing.T) {
 	bifrost.SetMCPManager(manager)
 
 	t.Run("chat_format", func(t *testing.T) {
-		baseCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		baseCtx, cancel := context.WithTimeout(context.Background(), testtime.Scale(500*time.Millisecond))
 		defer cancel()
 		ctx := schemas.NewBifrostContext(baseCtx, schemas.NoDeadline)
 
@@ -90,7 +92,7 @@ func TestToolExecution_TimeoutChatAndResponses(t *testing.T) {
 	})
 
 	t.Run("responses_format", func(t *testing.T) {
-		baseCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		baseCtx, cancel := context.WithTimeout(context.Background(), testtime.Scale(500*time.Millisecond))
 		defer cancel()
 		ctx := schemas.NewBifrostContext(baseCtx, schemas.NoDeadline)
 

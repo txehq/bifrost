@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/postgresconn"
 	"github.com/stretchr/testify/require"
@@ -131,11 +133,11 @@ func TestPauseMatViewMaintenanceNeverCancelsOtherWork(t *testing.T) {
 		_, err := holder.ExecContext(context.Background(), "SELECT pg_sleep(3)")
 		holderErr <- err
 	}()
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(testtime.Scale(200 * time.Millisecond))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(1500*time.Millisecond))
 	defer cancel()
-	_, err := PauseMatViewMaintenance(ctx, db, testLogger{}, MatViewPauseOptions{CancelAfter: 100 * time.Millisecond})
+	_, err := PauseMatViewMaintenance(ctx, db, testLogger{}, MatViewPauseOptions{CancelAfter: testtime.Scale(100 * time.Millisecond)})
 	require.Error(t, err, "the pause must give up rather than cancel unrelated work")
 	require.NoError(t, <-holderErr, "a non-REFRESH statement must never be cancelled")
 }
@@ -146,7 +148,7 @@ func TestPauseMatViewsForMigrationsFailsOpen(t *testing.T) {
 	db := pauseTestDB(t)
 	holder := dedicatedConn(t, db)
 	takeRefreshLock(t, holder)
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(500*time.Millisecond))
 	defer cancel()
 	release := PauseMatViewsForMigrations(ctx, db, testLogger{}, MatViewPauseOptions{})
 	require.NotNil(t, release)

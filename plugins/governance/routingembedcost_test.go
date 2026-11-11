@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/plugins/governance/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
@@ -103,5 +105,5 @@ func TestPostHookWorkerAddsRoutingCostToProviderUsageOnError(t *testing.T) {
 	// work off the caller's goroutine, too short.
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
 		assert.InDelta(c, want, fixture.cost(), 1e-12)
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 }

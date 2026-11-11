@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/plugins/routing/internal/testtime"
+
 	"github.com/stretchr/testify/require"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -267,7 +269,7 @@ func TestPreRequestHook_DecisionReceivesOnlyUserTurns(t *testing.T) {
 // and never cascades into the llm classifier, even when an llm block is saved.
 func TestPreRequestHook_DecisionPrimaryFailurePublishesNoTier(t *testing.T) {
 	analyzerConfig := decisionAnalyzerTestConfig()
-	analyzerConfig.LLM = &complexity.LLMConfig{Provider: schemas.OpenAI, Model: "test-classifier-model", Timeout: time.Second}
+	analyzerConfig.LLM = &complexity.LLMConfig{Provider: schemas.OpenAI, Model: "test-classifier-model", Timeout: testtime.Scale(time.Second)}
 	decision := &decisionRecorder{err: &schemas.BifrostError{Error: &schemas.ErrorField{Message: "no keys found that support model: jev-latest"}}}
 	plugin := decisionTestPlugin(t, nil, analyzerConfig, decision)
 	failOnChatClassifier(t, plugin)
@@ -339,7 +341,7 @@ func TestPreRequestHook_DecisionFallbackCoversSemanticWarmup(t *testing.T) {
 
 	select {
 	case <-warmupStarted:
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("semantic warmup did not start")
 	}
 

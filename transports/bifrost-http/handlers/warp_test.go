@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
+
 	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
@@ -365,7 +367,7 @@ func TestWarpSnapshotCarriesQueryScope(t *testing.T) {
 	ctx.SetUserValue(schemas.BifrostContextKeyQueryScope, scope)
 	ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
 
-	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+	snapshot, cancel, err := snapshotWarpContext(ctx, testtime.Scale(time.Second))
 	require.NoError(t, err)
 	defer cancel()
 	carried := queryscope.FromContext(snapshot)
@@ -385,7 +387,7 @@ func TestWarpSnapshotCarriesSettledGrant(t *testing.T) {
 	ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
 	ctx.SetUserValue(schemas.BifrostContextKeyUserEmail, "u1@example.com")
 
-	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+	snapshot, cancel, err := snapshotWarpContext(ctx, testtime.Scale(time.Second))
 	require.NoError(t, err)
 	defer cancel()
 	g := warp.NewGrantFromContext(snapshot)
@@ -396,7 +398,7 @@ func TestWarpSnapshotCarriesSettledGrant(t *testing.T) {
 
 	// A deployment with no auth still settles an identity - "nobody" - which is
 	// distinct from never having been settled.
-	anonymous, cancelAnonymous, err := snapshotWarpContext(&fasthttp.RequestCtx{}, time.Second)
+	anonymous, cancelAnonymous, err := snapshotWarpContext(&fasthttp.RequestCtx{}, testtime.Scale(time.Second))
 	require.NoError(t, err)
 	defer cancelAnonymous()
 	require.NotNil(t, warp.NewGrantFromContext(anonymous))
@@ -412,7 +414,7 @@ func TestWarpSnapshotSettlesAFreshGrantPerCall(t *testing.T) {
 	ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
 	ctx.SetUserValue(schemas.BifrostContextKeyUserName, "Suresh")
 
-	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+	snapshot, cancel, err := snapshotWarpContext(ctx, testtime.Scale(time.Second))
 	require.NoError(t, err)
 	defer cancel()
 	ctx.ResetUserValues()
@@ -440,7 +442,7 @@ func TestWarpSnapshotGrantCarriesHeaderVirtualKey(t *testing.T) {
 			set(&ctx.Request.Header)
 			ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
 
-			snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+			snapshot, cancel, err := snapshotWarpContext(ctx, testtime.Scale(time.Second))
 			require.NoError(t, err)
 			defer cancel()
 			identity := warp.NewGrantFromContext(snapshot).Identity()
@@ -453,7 +455,7 @@ func TestWarpSnapshotGrantCarriesHeaderVirtualKey(t *testing.T) {
 	// A bearer that is not a virtual key (a dashboard session token) is not one.
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Set("Authorization", "Bearer session-token")
-	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+	snapshot, cancel, err := snapshotWarpContext(ctx, testtime.Scale(time.Second))
 	require.NoError(t, err)
 	defer cancel()
 	require.Empty(t, warp.NewGrantFromContext(snapshot).Identity().Credential().Value)
@@ -488,7 +490,7 @@ func TestWarpChatGovernsTheDashboardCallerEndToEnd(t *testing.T) {
 	}
 	chat := func(t *testing.T, ctx *fasthttp.RequestCtx) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 		t.Helper()
-		snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+		snapshot, cancel, err := snapshotWarpContext(ctx, testtime.Scale(time.Second))
 		require.NoError(t, err)
 		defer cancel()
 		// The agent runs after the handler returns, so the request is gone by
@@ -523,7 +525,7 @@ func TestWarpChatGovernsTheDashboardCallerEndToEnd(t *testing.T) {
 		// The control: it is Warp's model-call context that admits the user, not
 		// the grant, so the same settled grant on any other request is still
 		// held to an access it does not have.
-		snapshot, cancel, err := snapshotWarpContext(signedIn(), time.Second)
+		snapshot, cancel, err := snapshotWarpContext(signedIn(), testtime.Scale(time.Second))
 		require.NoError(t, err)
 		defer cancel()
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -565,7 +567,7 @@ func TestWarpChatGovernsTheDashboardCallerEndToEnd(t *testing.T) {
 func TestWarpSnapshotFailsClosedOnUnusableScope(t *testing.T) {
 	t.Run("absent scope is allowed", func(t *testing.T) {
 		ctx := &fasthttp.RequestCtx{}
-		snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+		snapshot, cancel, err := snapshotWarpContext(ctx, testtime.Scale(time.Second))
 		require.NoError(t, err, "an OSS deployment has no scope wrapper and must still work")
 		defer cancel()
 		require.Nil(t, queryscope.FromContext(snapshot))
@@ -574,7 +576,7 @@ func TestWarpSnapshotFailsClosedOnUnusableScope(t *testing.T) {
 	t.Run("wrong type fails closed", func(t *testing.T) {
 		ctx := &fasthttp.RequestCtx{}
 		ctx.SetUserValue(schemas.BifrostContextKeyQueryScope, "not-a-scope")
-		_, cancel, err := snapshotWarpContext(ctx, time.Second)
+		_, cancel, err := snapshotWarpContext(ctx, testtime.Scale(time.Second))
 		if cancel != nil {
 			defer cancel()
 		}
@@ -584,7 +586,7 @@ func TestWarpSnapshotFailsClosedOnUnusableScope(t *testing.T) {
 	t.Run("nil scope of the right type fails closed", func(t *testing.T) {
 		ctx := &fasthttp.RequestCtx{}
 		ctx.SetUserValue(schemas.BifrostContextKeyQueryScope, queryscope.QueryScope(nil))
-		_, cancel, err := snapshotWarpContext(ctx, time.Second)
+		_, cancel, err := snapshotWarpContext(ctx, testtime.Scale(time.Second))
 		if cancel != nil {
 			defer cancel()
 		}

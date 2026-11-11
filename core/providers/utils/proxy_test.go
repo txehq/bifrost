@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/network/proxytest"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -519,7 +521,7 @@ func sendProxyMatrixRequest(t *testing.T, stack string, proxyConfig *schemas.Pro
 		return err
 	case "auth":
 		client := NewProviderHTTPClient(proxyConfig, schemas.DefaultNetworkConfig, testLogger{})
-		client.Timeout = 3 * time.Second
+		client.Timeout = testtime.Scale(3 * time.Second)
 		resp, err := client.Get(targetURL)
 		if err == nil {
 			resp.Body.Close()
@@ -528,9 +530,9 @@ func sendProxyMatrixRequest(t *testing.T, stack string, proxyConfig *schemas.Pro
 	case "fetch":
 		// A direct fetch to the documentation-range target never connects, so bound it;
 		// a proxied fetch is answered by the recorder at once.
-		timeout := 3 * time.Second
+		timeout := testtime.Scale(3 * time.Second)
 		if expectDirect {
-			timeout = 150 * time.Millisecond
+			timeout = testtime.Scale(150 * time.Millisecond)
 		}
 		ctx, cancel := context.WithTimeout(t.Context(), timeout)
 		defer cancel()
@@ -724,7 +726,7 @@ func TestConfigureProxy_UnresponsiveProxyDoesNotHang(t *testing.T) {
 	}()
 
 	previous := proxyHandshakeTimeout
-	proxyHandshakeTimeout = 300 * time.Millisecond
+	proxyHandshakeTimeout = testtime.Scale(300 * time.Millisecond)
 	defer func() { proxyHandshakeTimeout = previous }()
 
 	addr := listener.Addr().String()
@@ -747,7 +749,7 @@ func TestConfigureProxy_UnresponsiveProxyDoesNotHang(t *testing.T) {
 			conn.Close()
 			t.Errorf("%s: dial through an unresponsive proxy succeeded", name)
 		}
-		if elapsed := time.Since(start); elapsed > 3*time.Second {
+		if elapsed := time.Since(start); elapsed > testtime.Scale(3*time.Second) {
 			t.Errorf("%s: dial took %v, want it bounded by the handshake timeout", name, elapsed)
 		}
 	}

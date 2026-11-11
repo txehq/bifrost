@@ -11,6 +11,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
 )
 
 // TestSSEStreamReaderHeartbeatNeverSplitsDataLine is the regression test for #5905.
@@ -1230,7 +1232,7 @@ func TestSSEStreamReaderDoneWhileSendBlockedDoesNotPanic(t *testing.T) {
 			if ok {
 				t.Error("blocked SendHeartbeat should return false once Close() unblocks it")
 			}
-		case <-time.After(time.Second):
+		case <-time.After(testtime.Scale(time.Second)):
 			t.Fatal("blocked Send never unblocked after Close() -- would deadlock handleStreamingResponse's cleanup")
 		}
 
@@ -1331,13 +1333,13 @@ func TestStartSSEHeartbeatCallsOnDisconnectAfterClose(t *testing.T) {
 	r.Close() // SendHeartbeat will return false on the very first tick
 
 	var onDisconnectCalls atomic.Int32
-	_, exited := StartSSEHeartbeat(5*time.Millisecond, r.SendHeartbeat, func() {
+	_, exited := StartSSEHeartbeat(testtime.Scale(5*time.Millisecond), r.SendHeartbeat, func() {
 		onDisconnectCalls.Add(1)
 	})
 
 	select {
 	case <-exited:
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("heartbeat goroutine never exited after the reader was closed")
 	}
 

@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore/tables"
@@ -80,7 +82,7 @@ func TestSQLiteTransactionsTakeTheWriteLockOnBegin(t *testing.T) {
 		case err := <-otherWriter:
 			require.NoError(t, err)
 			t.Log("the other writer committed while this transaction was open")
-		case <-time.After(200 * time.Millisecond):
+		case <-time.After(testtime.Scale(200 * time.Millisecond)):
 			t.Log("the other writer is waiting behind this transaction")
 		}
 		return tx.Exec("UPDATE lock_probe SET n = ? WHERE id = 1", n+1).Error
@@ -90,7 +92,7 @@ func TestSQLiteTransactionsTakeTheWriteLockOnBegin(t *testing.T) {
 	select {
 	case err := <-otherWriter:
 		require.NoError(t, err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(testtime.Scale(5 * time.Second)):
 		t.Fatal("the other writer never completed")
 	}
 	var n int

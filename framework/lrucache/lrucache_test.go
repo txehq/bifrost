@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -275,12 +277,12 @@ func TestCache_InflightDedup(t *testing.T) {
 	// started: if the follower is scheduled late, the leader finishes,
 	// clears the inflight slot, and the follower runs a second legitimate
 	// load, failing the exactly-once assertion.
-	assert.Eventually(t, func() bool { return calls.Load() == 1 }, time.Second, time.Millisecond)
+	assert.Eventually(t, func() bool { return calls.Load() == 1 }, testtime.Scale(time.Second), testtime.Scale(time.Millisecond))
 	c.inflightMu.Lock()
 	call := c.inflight["k1"]
 	c.inflightMu.Unlock()
 	require.NotNil(t, call)
-	require.Eventually(t, func() bool { return call.waiters.Load() == 1 }, time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return call.waiters.Load() == 1 }, testtime.Scale(time.Second), testtime.Scale(time.Millisecond))
 	close(release)
 	wg.Wait()
 

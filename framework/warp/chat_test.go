@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 )
@@ -193,7 +195,7 @@ func TestWarpRunTurnStopsWhenSinkRefuses(t *testing.T) {
 	// readable timeout instead of blocking RunTurn until the runner kills the
 	// whole package - Turn.Budget does not apply to a scripted ChatFunc that
 	// only waits on its context.
-	runCtx, cancelRun := context.WithTimeout(context.Background(), 10*time.Second)
+	runCtx, cancelRun := context.WithTimeout(context.Background(), testtime.Scale(10*time.Second))
 	t.Cleanup(cancelRun)
 	response := service.RunTurn(runCtx, turn, func(event Event) bool {
 		if event.Type != EventToolCallEnd {
@@ -203,7 +205,7 @@ func TestWarpRunTurnStopsWhenSinkRefuses(t *testing.T) {
 		// mid-call" is the scenario under test rather than one of two schedules.
 		select {
 		case <-started:
-		case <-time.After(5 * time.Second):
+		case <-time.After(testtime.Scale(5 * time.Second)):
 			t.Error("the second model call never started")
 		}
 		return false
@@ -222,7 +224,7 @@ func TestWarpRunTurnStopsWhenSinkRefuses(t *testing.T) {
 	case <-released:
 		// A second call started and was cancelled - what the scripted model's
 		// blocking behavior exists to prove reaches it.
-	case <-time.After(300 * time.Millisecond):
+	case <-time.After(testtime.Scale(300 * time.Millisecond)):
 		// No second call arrived - the other valid outcome: the loop noticed
 		// the refusal before it would have started one.
 	}
@@ -230,7 +232,7 @@ func TestWarpRunTurnStopsWhenSinkRefuses(t *testing.T) {
 	if calls.Load() == 2 {
 		select {
 		case <-released:
-		case <-time.After(time.Second):
+		case <-time.After(testtime.Scale(time.Second)):
 			t.Fatal("a model call that started after the refusal was never cancelled")
 		}
 	}

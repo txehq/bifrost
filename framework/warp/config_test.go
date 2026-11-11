@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/framework/vectorstore"
 
@@ -944,7 +946,7 @@ func TestWarpSaveConfigRollbackSparesAConcurrentSavesNamespace(t *testing.T) {
 		select {
 		case winningErr = <-winningDone:
 			finished = true
-		case <-time.After(200 * time.Millisecond):
+		case <-time.After(testtime.Scale(200 * time.Millisecond)):
 		}
 		close(release)
 		require.Error(t, <-failingDone)

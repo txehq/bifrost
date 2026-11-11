@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -82,7 +84,7 @@ func TestContext_CancellationPropagation(t *testing.T) {
 	// Register long-running tool
 	longRunningHandler := func(args any) (string, error) {
 		// Simulate long operation
-		time.Sleep(3 * time.Second)
+		time.Sleep(testtime.Scale(3 * time.Second))
 		return `{"result": "should not reach here"}`, nil
 	}
 
@@ -101,7 +103,7 @@ func TestContext_CancellationPropagation(t *testing.T) {
 	bifrost.SetMCPManager(manager)
 
 	// Create context that will be cancelled
-	ctx, cancel := createTestContextWithTimeout(500 * time.Millisecond)
+	ctx, cancel := createTestContextWithTimeout(testtime.Scale(500 * time.Millisecond))
 	defer cancel()
 
 	toolCall := schemas.ChatAssistantMessageToolCall{
@@ -118,7 +120,7 @@ func TestContext_CancellationPropagation(t *testing.T) {
 	elapsed := time.Since(start)
 
 	// Should timeout/cancel before tool completes
-	assert.Less(t, elapsed, 2*time.Second, "should cancel before tool completes")
+	assert.Less(t, elapsed, testtime.Scale(2*time.Second), "should cancel before tool completes")
 
 	if bifrostErr != nil {
 		t.Logf("Cancellation propagated with error: %v", bifrostErr.Error)
@@ -327,7 +329,7 @@ func TestContext_TimeoutPropagation(t *testing.T) {
 
 	for i, delayMs := range delays {
 		toolName := fmt.Sprintf("delay_tool_%d", i)
-		delay := time.Duration(delayMs) * time.Millisecond
+		delay := testtime.Scale(time.Duration(delayMs) * time.Millisecond) // the 100/200/300ms pattern scales with the 250ms deadline
 
 		delayHandler := func(args any) (string, error) {
 			time.Sleep(delay)
@@ -350,7 +352,7 @@ func TestContext_TimeoutPropagation(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create context with 250ms timeout
-	ctx, cancel := createTestContextWithTimeout(250 * time.Millisecond)
+	ctx, cancel := createTestContextWithTimeout(testtime.Scale(250 * time.Millisecond))
 	defer cancel()
 
 	// Call all three tools (100ms, 200ms, 300ms) in parallel

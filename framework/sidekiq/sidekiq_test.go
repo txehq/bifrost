@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore/tables"
@@ -468,7 +470,7 @@ func TestRunnerRaceSingleWinner(t *testing.T) {
 	select {
 	case id := <-store.terminal:
 		t.Fatalf("job %s reached a terminal state twice; not a single winner", id)
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(testtime.Scale(200 * time.Millisecond)):
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()

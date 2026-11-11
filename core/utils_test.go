@@ -9,6 +9,8 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -323,10 +325,10 @@ func TestValidateExternalURLWithResolverUsesTheInjectedResolver(t *testing.T) {
 // net.Resolver.LookupIPAddr honors a context deadline and returns promptly once it
 // elapses, even against a real hostname that would otherwise resolve.
 func TestResolverLookupIPAddrRespectsContextDeadline(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(time.Nanosecond))
 	defer cancel()
 	// Let the deadline definitely elapse before the lookup starts.
-	time.Sleep(time.Millisecond)
+	time.Sleep(testtime.Scale(time.Millisecond))
 
 	start := time.Now()
 	_, err := (&net.Resolver{}).LookupIPAddr(ctx, "api.openai.com")
@@ -335,7 +337,7 @@ func TestResolverLookupIPAddrRespectsContextDeadline(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected LookupIPAddr to fail against an already-expired context, got nil error")
 	}
-	if elapsed > time.Second {
+	if elapsed > testtime.Scale(time.Second) {
 		t.Errorf("LookupIPAddr took %v to return after an already-expired deadline, want near-instant", elapsed)
 	}
 }

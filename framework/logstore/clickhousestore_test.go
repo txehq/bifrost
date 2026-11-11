@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/objectstore"
 	"github.com/capsohq/bifrost/framework/queryscope"
@@ -1677,13 +1679,13 @@ func TestClickHouseWarpWritesWaitForTheSharedOwnerLock(t *testing.T) {
 		case err := <-done:
 			release()
 			t.Fatalf("write finished while another instance held the owner's lock (err=%v)", err)
-		case <-time.After(300 * time.Millisecond):
+		case <-time.After(testtime.Scale(300 * time.Millisecond)):
 		}
 		release()
 		select {
 		case err := <-done:
 			require.NoError(t, err)
-		case <-time.After(30 * time.Second):
+		case <-time.After(testtime.Scale(30 * time.Second)):
 			t.Fatal("write never finished after the lock was released")
 		}
 	}
@@ -1706,7 +1708,7 @@ func TestClickHouseWarpWritesWaitForTheSharedOwnerLock(t *testing.T) {
 		waitsForLock(t, func() error { return replica.DeleteWarpConversation(ctx, owner, owner+"-delete") })
 	})
 	t.Run("prune", func(t *testing.T) {
-		seed(owner+"-prune-old", now.Add(-time.Hour), 1)
+		seed(owner+"-prune-old", now.Add(-testtime.Scale(time.Hour)), 1)
 		seed(owner+"-prune-new", now, 1)
 		waitsForLock(t, func() error {
 			_, err := replica.PruneWarpConversations(ctx, owner, 1)
@@ -1717,7 +1719,7 @@ func TestClickHouseWarpWritesWaitForTheSharedOwnerLock(t *testing.T) {
 		stale := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
 		seed(owner+"-stale", stale, 1)
 		waitsForLock(t, func() error {
-			_, err := replica.DeleteWarpConversationsOlderThan(ctx, stale.Add(time.Hour))
+			_, err := replica.DeleteWarpConversationsOlderThan(ctx, stale.Add(testtime.Scale(time.Hour)))
 			return err
 		})
 	})

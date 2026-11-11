@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/plugins/governance/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
@@ -695,7 +697,7 @@ func TestUsageTracker_CleanupWaitsForPeriodicDumpBeforeFinalFlush(t *testing.T) 
 
 	select {
 	case <-store.periodicEntered:
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("periodic dump did not start")
 	}
 

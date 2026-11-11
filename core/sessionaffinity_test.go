@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -2061,7 +2063,7 @@ func TestCallerKeyPinIsTriedOnTheFirstAttemptOnly(t *testing.T) {
 // fallback does on any provider. Once a second key exists, each request that follows the binding
 // and is served on it restarts the TTL, so the binding lasts until the session goes quiet.
 func TestSessionAffinitySingleKeyBindingIsRefreshedOnlyByAFallback(t *testing.T) {
-	const seedTTL = time.Second // distinct from the session TTL, so a rewrite shows
+	seedTTL := testtime.Scale(time.Second) // distinct from the session TTL, so a rewrite shows
 	route := routeOf(schemas.OpenAI, "gpt-4o")
 	single := []schemas.Key{{ID: "key-a", Name: "Key A"}}
 	for _, tc := range []struct {
@@ -2416,11 +2418,11 @@ func TestScenarioCancelKeepsTheBindingATimeoutMovesIt(t *testing.T) {
 		requireServed(t, served, err, provA)
 		bound, _ := sessionState(kv, "s", SessionStateKindKey, provA, "m")
 
-		u.reply("sk-"+bound, scenarioReply{stall: 3 * time.Second})
+		u.reply("sk-"+bound, scenarioReply{stall: testtime.Scale(3 * time.Second)})
 		parent, cancel := context.WithCancel(context.Background())
 		ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
 		ctx.SetValue(schemas.BifrostContextKeySessionID, "s")
-		time.AfterFunc(time.Second, cancel)
+		time.AfterFunc(testtime.Scale(time.Second), cancel)
 		_, err = scenarioChat(client, ctx, "", "m")
 		requireStatus(t, err, 499, schemas.RequestCancelled)
 		requireHits(t, u, map[string]int{"sk-b1": 0})
@@ -2443,7 +2445,7 @@ func TestScenarioCancelKeepsTheBindingATimeoutMovesIt(t *testing.T) {
 		requireServed(t, served, err, provA)
 		bound, _ := sessionState(kv, "s", SessionStateKindKey, provA, "m")
 
-		u.reply("sk-"+bound, scenarioReply{stall: 3 * time.Second})
+		u.reply("sk-"+bound, scenarioReply{stall: testtime.Scale(3 * time.Second)})
 		u.clearHits()
 		served, err = scenarioChat(client, sessionCtx("s"), "", "m")
 		requireServed(t, served, err, provB)

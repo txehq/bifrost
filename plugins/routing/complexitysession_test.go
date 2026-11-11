@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/plugins/routing/internal/testtime"
+
 	"github.com/stretchr/testify/require"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -131,12 +133,12 @@ func TestComplexitySessionStoreRefreshesTTLWhenTierDoesNotChange(t *testing.T) {
 }
 
 func TestComplexitySessionStoreExpiryStartsNewEpoch(t *testing.T) {
-	sessions, _ := newTestComplexitySessionStore(t, 10*time.Millisecond)
+	sessions, _ := newTestComplexitySessionStore(t, testtime.Scale(10*time.Millisecond))
 	key := "complexity-test:expiry"
 
 	_, err := sessions.resolve(key, complexity.TierComplex)
 	require.NoError(t, err)
-	time.Sleep(25 * time.Millisecond)
+	time.Sleep(testtime.Scale(25 * time.Millisecond))
 
 	tier, found, err := sessions.load(key, false)
 	require.NoError(t, err)

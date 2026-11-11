@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
+
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
@@ -297,14 +299,14 @@ func TestLegacyRealtimeSessionSecretOpensUpstreamThroughBifrost(t *testing.T) {
 	conn, _, err := ws.DefaultDialer.Dial("ws://"+ln.Addr().String()+"/v1/realtime?model=openai/gpt-realtime", header)
 	require.NoError(t, err)
 	defer conn.Close()
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(testtime.Scale(5 * time.Second)))
 	_, msg, err := conn.ReadMessage()
 	require.NoError(t, err)
 	require.Contains(t, string(msg), "session.created", "the upstream session reaches the client")
 	select {
 	case got := <-upstreamAuth:
 		require.Equal(t, "Bearer ek_abc", got, "Bifrost presents the provider's token upstream")
-	case <-time.After(5 * time.Second):
+	case <-time.After(testtime.Scale(5 * time.Second)):
 		t.Fatal("no upstream realtime connection")
 	}
 
@@ -315,17 +317,17 @@ func TestLegacyRealtimeSessionSecretOpensUpstreamThroughBifrost(t *testing.T) {
 	mapping := raw2.(realtimeEphemeralKeyMapping)
 	require.Equal(t, string(schemas.OpenAI), mapping.Provider, "the mapping records the issuing provider")
 	mapping.Provider = string(schemas.Anthropic)
-	require.NoError(t, kv.SetWithTTL(buildRealtimeEphemeralKeyMappingKey(session.ClientSecret.Value), mapping, time.Minute))
+	require.NoError(t, kv.SetWithTTL(buildRealtimeEphemeralKeyMappingKey(session.ClientSecret.Value), mapping, testtime.Scale(time.Minute)))
 	refused, _, err := ws.DefaultDialer.Dial("ws://"+ln.Addr().String()+"/v1/realtime?model=openai/gpt-realtime", header)
 	require.NoError(t, err)
 	defer refused.Close()
-	_ = refused.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = refused.SetReadDeadline(time.Now().Add(testtime.Scale(5 * time.Second)))
 	_, msg, err = refused.ReadMessage()
 	require.NoError(t, err)
 	require.Contains(t, string(msg), "not issued for this provider and key")
 	select {
 	case got := <-upstreamAuth:
 		t.Fatalf("a refused secret still reached the upstream with %q", got)
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(testtime.Scale(200 * time.Millisecond)):
 	}
 }

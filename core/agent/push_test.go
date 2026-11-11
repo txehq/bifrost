@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
 	"github.com/a2aproject/a2a-go/v2/a2asrv/push"
@@ -475,9 +477,9 @@ func (s *memoryPushStore) PruneAgentPushDeliveries(_ context.Context, before tim
 func TestPushRelayPrunesOnStartup(t *testing.T) {
 	store := newMemoryPushStore()
 	now := time.Now().UTC()
-	store.deliveries["old"] = schemas.AgentPushDelivery{ID: "old", Status: schemas.AgentPushDeliveryStatusDelivered, UpdatedAt: now.Add(-pushDeliveryRetention - time.Hour)}
+	store.deliveries["old"] = schemas.AgentPushDelivery{ID: "old", Status: schemas.AgentPushDeliveryStatusDelivered, UpdatedAt: now.Add(-pushDeliveryRetention - testtime.Scale(time.Hour))}
 	store.deliveries["recent"] = schemas.AgentPushDelivery{ID: "recent", Status: schemas.AgentPushDeliveryStatusDead, UpdatedAt: now}
-	store.deliveries["pending"] = schemas.AgentPushDelivery{ID: "pending", Status: schemas.AgentPushDeliveryStatusPending, UpdatedAt: now.Add(-pushDeliveryRetention - time.Hour)}
+	store.deliveries["pending"] = schemas.AgentPushDelivery{ID: "pending", Status: schemas.AgentPushDeliveryStatusPending, UpdatedAt: now.Add(-pushDeliveryRetention - testtime.Scale(time.Hour))}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	relay := newPushRelay(&Manager{ctx: ctx, pushStore: store})
@@ -491,7 +493,7 @@ func TestPushRelayPrunesOnStartup(t *testing.T) {
 		defer store.pushMu.Unlock()
 		_, exists := store.deliveries["old"]
 		return !exists
-	}, time.Second, time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(time.Millisecond))
 	cancel()
 	<-done
 	store.pushMu.Lock()
@@ -538,13 +540,13 @@ func TestPushRelayContinuesAfterPruneError(t *testing.T) {
 	case cutoff := <-store.pruned:
 		require.False(t, cutoff.Before(start.Add(-pushDeliveryRetention)))
 		require.False(t, cutoff.After(time.Now().UTC().Add(-pushDeliveryRetention)))
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("relay did not prune on startup")
 	}
 	relay.notify()
 	select {
 	case <-store.listed:
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("cleanup error stopped delivery processing")
 	}
 }

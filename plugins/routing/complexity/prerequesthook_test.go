@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/plugins/routing/internal/testtime"
+
 	"github.com/stretchr/testify/require"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -429,7 +431,7 @@ func TestPreRequestHook_SemanticComplexityNotReadyLogsInfo(t *testing.T) {
 
 	select {
 	case <-warmupStarted:
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("semantic warmup did not start")
 	}
 

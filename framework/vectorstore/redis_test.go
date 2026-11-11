@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/redis/go-redis/v9"
@@ -527,12 +529,12 @@ func TestRedisStore_ExecuteSearch_DisableScanFallbackOnQuerySyntaxError(t *testi
 		client: client,
 		logger: bifrost.NewDefaultLogger(schemas.LogLevelDebug),
 		config: RedisConfig{
-			ContextTimeout: schemas.Duration(time.Second),
+			ContextTimeout: schemas.Duration(testtime.Scale(time.Second)),
 		},
 		namespaceFieldTypes: make(map[string]map[string]VectorStoreProperties),
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(time.Second))
 	defer cancel()
 
 	_, err := store.executeSearch(WithDisableScanFallback(ctx), TestNamespace, "*", nil, nil, 0, 1)

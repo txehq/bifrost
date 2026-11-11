@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	ws "github.com/fasthttp/websocket"
 	"github.com/stretchr/testify/assert"
@@ -268,7 +270,7 @@ func TestPoolGetSkipsStaleIdleConnection(t *testing.T) {
 		}
 		current := connectionCount.Add(1)
 		if current == 1 {
-			_ = conn.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, "done"), time.Now().Add(time.Second))
+			_ = conn.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, "done"), time.Now().Add(testtime.Scale(time.Second)))
 			_ = conn.Close()
 			close(serverClosed)
 			return
@@ -307,7 +309,7 @@ func TestPoolGetSkipsStaleIdleConnection(t *testing.T) {
 	// borrow attempt so the close is in the client's TCP receive buffer.
 	select {
 	case <-serverClosed:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtime.Scale(2 * time.Second)):
 		t.Fatal("server did not close the first connection in time")
 	}
 
@@ -321,7 +323,7 @@ func TestPoolGetSkipsStaleIdleConnection(t *testing.T) {
 	// Wait for that bookkeeping instead of racing it.
 	select {
 	case <-secondConnAccepted:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtime.Scale(2 * time.Second)):
 		t.Fatal("server did not accept the second connection in time")
 	}
 	assert.EqualValues(t, 2, connectionCount.Load())

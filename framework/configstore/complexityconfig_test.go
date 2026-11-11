@@ -110,7 +110,7 @@ func TestComplexitySemanticConfigRejectsRemovedFields(t *testing.T) {
 
 func TestComplexitySemanticConfigTimeoutMarshalRoundTrip(t *testing.T) {
 	cfg := testSemanticConfig()
-	cfg.Timeout = 250 * time.Millisecond
+	cfg.Timeout = 250 * time.Millisecond // literal-timing: a config value round-trip, never waited on
 
 	data, err := json.Marshal(cfg)
 	require.NoError(t, err)
@@ -1010,7 +1010,7 @@ func TestComplexityDecisionConfigDecoding(t *testing.T) {
 // TestComplexityDecisionConfigMarshalRoundTrip checks that a saved decision-model block reads back unchanged.
 func TestComplexityDecisionConfigMarshalRoundTrip(t *testing.T) {
 	count := 4
-	original := ComplexityDecisionConfig{Provider: "nimble", Model: "nimble-latest", PreviousMessageCount: &count, Timeout: 1200 * time.Millisecond}
+	original := ComplexityDecisionConfig{Provider: "nimble", Model: "nimble-latest", PreviousMessageCount: &count, Timeout: 1200 * time.Millisecond} // literal-timing: a config value round-trip, never waited on
 	data, err := json.Marshal(original)
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"provider":"nimble","model":"nimble-latest","previous_message_count":4,"timeout":"1.2s"}`, string(data))
@@ -1131,7 +1131,7 @@ func TestRDBConfigStore_ComplexityDecisionPersistence(t *testing.T) {
 	count := 3
 	cfg := testDecisionAnalyzerConfig()
 	cfg.Semantic = testSemanticConfig()
-	cfg.Decision = &ComplexityDecisionConfig{PreviousMessageCount: &count, Timeout: 900 * time.Millisecond}
+	cfg.Decision = &ComplexityDecisionConfig{PreviousMessageCount: &count, Timeout: 900 * time.Millisecond} // literal-timing: a config value round-trip, never waited on
 	hashes, err := GenerateComplexityAnalyzerConfigHashes(cfg)
 	require.NoError(t, err)
 	cfg.ConfigHashes = hashes
@@ -1150,7 +1150,7 @@ func TestRDBConfigStore_ComplexityDecisionPersistence(t *testing.T) {
 	// A UI save omits hashes; the file-sync hashes must be carried over.
 	uiUpdate := testDecisionAnalyzerConfig()
 	uiUpdate.Semantic = testSemanticConfig()
-	uiUpdate.Decision = &ComplexityDecisionConfig{PreviousMessageCount: &count, Timeout: 900 * time.Millisecond}
+	uiUpdate.Decision = &ComplexityDecisionConfig{PreviousMessageCount: &count, Timeout: 900 * time.Millisecond} // literal-timing: a config value round-trip, never waited on
 	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, uiUpdate))
 	got, err = store.GetComplexityAnalyzerConfig(ctx)
 	require.NoError(t, err)

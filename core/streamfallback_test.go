@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	schemas "github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -1210,8 +1212,8 @@ func TestRetryBackoffStopsWhenRequestDeadlineExpires(t *testing.T) {
 	account := NewMockAccount()
 	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, "http://"+ln.Addr().String())
 	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 1
-	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffInitial = 3 * time.Second
-	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffMax = 3 * time.Second
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffInitial = testtime.Scale(3 * time.Second)
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffMax = testtime.Scale(3 * time.Second)
 	account.configs[schemas.OpenAI].NetworkConfig.DefaultRequestTimeoutInSeconds = 5
 	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
 		{ID: "primary-key", Value: *schemas.NewSecretVar("sk-primary"), Models: schemas.WhiteList{"*"}, Weight: 100},
@@ -1229,7 +1231,7 @@ func TestRetryBackoffStopsWhenRequestDeadlineExpires(t *testing.T) {
 
 	// The deadline lands inside the 3s backoff that follows the first failed
 	// attempt, with margin for the request to be enqueued and fail on a slow runner.
-	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(1*time.Second))
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(testtime.Scale(1*time.Second)))
 	errCh := make(chan *schemas.BifrostError, 1)
 	go func() {
 		stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
@@ -1256,7 +1258,7 @@ func TestRetryBackoffStopsWhenRequestDeadlineExpires(t *testing.T) {
 
 	start := time.Now()
 	client.Shutdown()
-	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
+	if elapsed := time.Since(start); elapsed > testtime.Scale(1500*time.Millisecond) {
 		t.Fatalf("Shutdown waited %v for a worker whose request had timed out: the retry backoff ignored the expired context", elapsed)
 	}
 
@@ -1574,16 +1576,16 @@ var anthropicFallback = schemas.Fallback{Provider: schemas.Anthropic, Model: "cl
 // whole stream. The primary's socket is closed, not left to the idle timeout.
 func TestStreamTTFTCutsOffStartupOnlyPrimary(t *testing.T) {
 	primary, fallback := newTTFTUpstream(), newTTFTUpstream()
-	client := newTTFTTestClient(t, primary.slowOpenAIHandler(10*time.Second), fallback.slowAnthropicHandler(0))
+	client := newTTFTTestClient(t, primary.slowOpenAIHandler(testtime.Scale(10*time.Second)), fallback.slowAnthropicHandler(0))
 
-	ctx := ttftContext(300 * time.Millisecond)
+	ctx := ttftContext(testtime.Scale(300 * time.Millisecond))
 	start := time.Now()
 	stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, ttftChatRequest(anthropicFallback))
 	if bifrostErr != nil {
 		t.Fatalf("expected the fallback to serve the stream, got %s", bifrostErr.Error.Message)
 	}
 	content, errs := drainChatStream(stream)
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
+	if elapsed := time.Since(start); elapsed > testtime.Scale(5*time.Second) {
 		t.Fatalf("TTFT cutoff took %v; the primary was not cut off at 300ms", elapsed)
 	}
 	if content != "hello" || len(errs) > 0 {
@@ -1597,7 +1599,7 @@ func TestStreamTTFTCutsOffStartupOnlyPrimary(t *testing.T) {
 	}
 	select {
 	case <-primary.hangups:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testtime.Scale(3 * time.Second)):
 		t.Fatal("the cut-off primary's connection is still open")
 	}
 	found := false
@@ -1620,17 +1622,17 @@ func TestStreamTTFTCutsOffSilentPrimaryHeaderWait(t *testing.T) {
 	primary, fallback := newTTFTUpstream(), newTTFTUpstream()
 	silent := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		primary.hits.Add(1)
-		primary.stall(r, 30*time.Second)
+		primary.stall(r, testtime.Scale(30*time.Second))
 	})
 	client := newTTFTTestClient(t, silent, fallback.slowAnthropicHandler(0))
 
 	start := time.Now()
-	stream, bifrostErr := client.ChatCompletionStreamRequest(ttftContext(300*time.Millisecond), ttftChatRequest(anthropicFallback))
+	stream, bifrostErr := client.ChatCompletionStreamRequest(ttftContext(testtime.Scale(300*time.Millisecond)), ttftChatRequest(anthropicFallback))
 	if bifrostErr != nil {
 		t.Fatalf("expected the fallback to serve the stream, got %s", bifrostErr.Error.Message)
 	}
 	content, _ := drainChatStream(stream)
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
+	if elapsed := time.Since(start); elapsed > testtime.Scale(5*time.Second) {
 		t.Fatalf("TTFT cutoff took %v during the header wait", elapsed)
 	}
 	if content != "hello" {
@@ -1641,7 +1643,7 @@ func TestStreamTTFTCutsOffSilentPrimaryHeaderWait(t *testing.T) {
 	}
 	select {
 	case <-primary.hangups:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testtime.Scale(3 * time.Second)):
 		t.Fatal("the cut-off primary's socket is still open after the header wait was cut off")
 	}
 }
@@ -1651,8 +1653,8 @@ func TestStreamTTFTCutsOffSilentPrimaryHeaderWait(t *testing.T) {
 func TestStreamTTFTNeverCutsOffLastAttempt(t *testing.T) {
 	t.Run("last fallback", func(t *testing.T) {
 		primary, fallback := newTTFTUpstream(), newTTFTUpstream()
-		client := newTTFTTestClient(t, primary.slowOpenAIHandler(10*time.Second), fallback.slowAnthropicHandler(time.Second))
-		stream, bifrostErr := client.ChatCompletionStreamRequest(ttftContext(200*time.Millisecond), ttftChatRequest(anthropicFallback))
+		client := newTTFTTestClient(t, primary.slowOpenAIHandler(testtime.Scale(10*time.Second)), fallback.slowAnthropicHandler(testtime.Scale(time.Second)))
+		stream, bifrostErr := client.ChatCompletionStreamRequest(ttftContext(testtime.Scale(200*time.Millisecond)), ttftChatRequest(anthropicFallback))
 		if bifrostErr != nil {
 			t.Fatalf("the last fallback was cut off: %s", bifrostErr.Error.Message)
 		}
@@ -1662,8 +1664,8 @@ func TestStreamTTFTNeverCutsOffLastAttempt(t *testing.T) {
 	})
 	t.Run("primary without fallbacks", func(t *testing.T) {
 		primary, fallback := newTTFTUpstream(), newTTFTUpstream()
-		client := newTTFTTestClient(t, primary.slowOpenAIHandler(time.Second), fallback.slowAnthropicHandler(0))
-		stream, bifrostErr := client.ChatCompletionStreamRequest(ttftContext(200*time.Millisecond), ttftChatRequest())
+		client := newTTFTTestClient(t, primary.slowOpenAIHandler(testtime.Scale(time.Second)), fallback.slowAnthropicHandler(0))
+		stream, bifrostErr := client.ChatCompletionStreamRequest(ttftContext(testtime.Scale(200*time.Millisecond)), ttftChatRequest())
 		if bifrostErr != nil {
 			t.Fatalf("a primary with no fallbacks was cut off: %s", bifrostErr.Error.Message)
 		}

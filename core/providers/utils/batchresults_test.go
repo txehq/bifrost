@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -437,7 +439,7 @@ func TestOpenResultStreamErrorBodyStallEndsOnContextCancel(t *testing.T) {
 	select {
 	case got := <-done:
 		t.Fatalf("returned before the context was cancelled, with the body still stalled: %+v", got.err)
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(testtime.Scale(200 * time.Millisecond)):
 	}
 	cancel()
 	select {
@@ -448,7 +450,7 @@ func TestOpenResultStreamErrorBodyStallEndsOnContextCancel(t *testing.T) {
 		if !strings.Contains(got.err.Error.Message, "partial") {
 			t.Fatalf("error message %q lost the part of the body that did arrive", got.err.Error.Message)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testtime.Scale(5 * time.Second)):
 		t.Fatal("OpenResultStream did not return after the context was cancelled")
 	}
 }

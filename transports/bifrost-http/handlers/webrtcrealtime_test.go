@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/providers/azure"
 
 	openaiProvider "github.com/capsohq/bifrost/core/providers/openai"
@@ -289,7 +291,7 @@ func TestNewRealtimeRelayContextCopiesValuesWithoutRequestCancellation(t *testin
 
 	select {
 	case <-requestCtx.Done():
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("expected request context to be cancelled")
 	}
 

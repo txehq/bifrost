@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
+
 	openaiProvider "github.com/capsohq/bifrost/core/providers/openai"
 	"github.com/capsohq/bifrost/core/schemas"
 
@@ -808,8 +810,8 @@ func TestTranscriptionUpgradeKeepsMiddlewareValuesPastTheHandler(t *testing.T) {
 				if got != "Bearer "+tt.wantKey {
 					t.Fatalf("session reached the upstream as %q, want %q: the restriction did not survive the handler", got, "Bearer "+tt.wantKey)
 				}
-			case <-time.After(5 * time.Second):
-				_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+			case <-time.After(testtime.Scale(5 * time.Second)):
+				_ = conn.SetReadDeadline(time.Now().Add(testtime.Scale(time.Second)))
 				_, msg, _ := conn.ReadMessage()
 				t.Fatalf("no upstream connection; client got %s", msg)
 			}

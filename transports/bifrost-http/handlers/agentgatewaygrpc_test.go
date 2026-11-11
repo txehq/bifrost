@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	"github.com/capsohq/bifrost/framework/configstore/tables"
@@ -114,19 +116,19 @@ func TestAgentGatewayGRPCStopForcesActiveStreamsAfterDeadline(t *testing.T) {
 	require.NoError(t, stream.SendMsg(&emptypb.Empty{}))
 	select {
 	case <-started:
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("timed out waiting for stream to start")
 	}
 
 	server := &AgentGatewayGRPCServer{server: grpcServer}
 	stopped := make(chan struct{})
 	go func() {
-		server.stop(10 * time.Millisecond)
+		server.stop(testtime.Scale(10 * time.Millisecond))
 		close(stopped)
 	}()
 	select {
 	case <-stopped:
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("gRPC stop did not force-close the active stream")
 	}
 }

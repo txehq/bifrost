@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/plugins/otel/internal/testtime"
+
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 )
@@ -75,7 +77,7 @@ func TestInject_GRPCExportHonoursTimeout(t *testing.T) {
 	}
 	defer client.Close()
 
-	const timeout = 400 * time.Millisecond
+	timeout := testtime.Scale(400 * time.Millisecond)
 	plugin := &OtelPlugin{targets: []*otelTarget{testTarget(t, client, timeout)}}
 
 	start := time.Now()
@@ -84,11 +86,11 @@ func TestInject_GRPCExportHonoursTimeout(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testtime.Scale(10 * time.Second)):
 		t.Fatal("Inject never returned against a black-holed gRPC endpoint")
 	}
 
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
+	if elapsed := time.Since(start); elapsed > testtime.Scale(5*time.Second) {
 		t.Fatalf("Inject took %v against a black-holed endpoint, expected it bounded near %v", elapsed, timeout)
 	}
 }
@@ -101,7 +103,7 @@ func TestInject_HTTPExportHonoursTimeout(t *testing.T) {
 
 	logger = bifrost.NewDefaultLogger(schemas.LogLevelError)
 
-	const timeout = 400 * time.Millisecond
+	timeout := testtime.Scale(400 * time.Millisecond)
 	client, err := NewOtelClientHTTP("http://"+addr, nil, "", true, timeout)
 	if err != nil {
 		t.Fatalf("NewOtelClientHTTP: %v", err)
@@ -116,11 +118,11 @@ func TestInject_HTTPExportHonoursTimeout(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testtime.Scale(10 * time.Second)):
 		t.Fatal("Inject never returned against a black-holed HTTP endpoint")
 	}
 
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
+	if elapsed := time.Since(start); elapsed > testtime.Scale(5*time.Second) {
 		t.Fatalf("Inject took %v against a black-holed endpoint, expected it bounded near %v", elapsed, timeout)
 	}
 }
@@ -141,7 +143,7 @@ func TestInject_CircuitBreakerStopsDialling(t *testing.T) {
 	logger = bifrost.NewDefaultLogger(schemas.LogLevelError)
 
 	client := &failingClient{}
-	target := testTarget(t, client, time.Second)
+	target := testTarget(t, client, testtime.Scale(time.Second))
 	plugin := &OtelPlugin{targets: []*otelTarget{target}}
 
 	// Drive well past the threshold.

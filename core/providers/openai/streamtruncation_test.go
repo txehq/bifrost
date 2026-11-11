@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -800,7 +802,7 @@ func TestChatStreamWaitForUsageSilentParkEndsOnIdleTimeout(t *testing.T) {
 	server := silentParkSSEServer(t, chatChunk("hello", nil)+chatChunk("", &stop))
 	defer server.Close()
 
-	const idleTimeout = 300 * time.Millisecond
+	idleTimeout := testtime.Scale(300 * time.Millisecond)
 
 	ctx := newStreamTestContext()
 	ctx.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)

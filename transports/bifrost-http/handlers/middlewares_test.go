@@ -22,6 +22,8 @@ import (
 	"testing/iotest"
 	"time"
 
+	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
+
 	"github.com/andybalholm/brotli"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
@@ -5008,7 +5010,7 @@ func TestRecoveryMiddleware_PanicBecomesInternalServerErrorAndServerKeepsServing
 func TestTracingMiddleware_DeferredCompletionWaitsForWorker(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	store := tracing.NewTraceStore(5*time.Minute, nil)
+	store := tracing.NewTraceStore(testtime.Scale(5*time.Minute), nil)
 	defer store.Stop()
 	tracer := tracing.NewTracer(store, nil, nil)
 	defer tracer.Stop()
@@ -5032,7 +5034,7 @@ func TestTracingMiddleware_DeferredCompletionWaitsForWorker(t *testing.T) {
 	select {
 	case <-plugin.done:
 		t.Fatal("trace was flushed at handler return despite a worker still owning it")
-	case <-time.After(150 * time.Millisecond):
+	case <-time.After(testtime.Scale(150 * time.Millisecond)):
 	}
 
 	// The worker now finishes: it writes the late attributes, then completes the trace.
@@ -5044,7 +5046,7 @@ func TestTracingMiddleware_DeferredCompletionWaitsForWorker(t *testing.T) {
 
 	select {
 	case <-plugin.done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtime.Scale(2 * time.Second)):
 		t.Fatal("worker completion did not flush the trace")
 	}
 

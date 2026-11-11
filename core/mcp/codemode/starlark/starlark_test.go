@@ -13,6 +13,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/bytedance/sonic"
 	"github.com/canonical/starlark/starlark"
 	"github.com/canonical/starlark/syntax"
@@ -246,7 +248,7 @@ func TestMatchesToolReferenceSupportsCanonicalAndLegacyNames(t *testing.T) {
 func TestHandleListToolFilesUsesCanonicalToolIdentifiers(t *testing.T) {
 	mode := NewStarlarkCodeMode(&codemcp.CodeModeConfig{
 		BindingLevel:         schemas.CodeModeBindingLevelTool,
-		ToolExecutionTimeout: time.Second,
+		ToolExecutionTimeout: testtime.Scale(time.Second),
 	}, nil)
 
 	clientName := "github"
@@ -1144,7 +1146,7 @@ func TestCodeModeSandboxCancellation(t *testing.T) {
 	// BifrostContext propagates cancellation asynchronously.
 	select {
 	case <-cancelledCtx.Done():
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("context cancellation did not propagate")
 	}
 	result := mode.executeCode(cancelledCtx, "result = 42")
@@ -1475,7 +1477,7 @@ func TestCodeModeInboundToolStringsChargedAtRawSize(t *testing.T) {
 }
 
 func TestCodeModeDeadline(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(time.Millisecond))
 	defer cancel()
 	result := runSandbox(ctx, schemas.MCPCodeModeLimits{}.WithDefaults(), "while True:\n    pass", nil, nil)
 	if result.Errors == nil || !strings.Contains(result.Errors.Message, "deadline") {
@@ -1554,7 +1556,7 @@ const probeInstructions = "Always call list_items before mutating.\n\nNever retr
 func newInstructionsCodeMode(level schemas.CodeModeBindingLevel) *StarlarkCodeMode {
 	mode := NewStarlarkCodeMode(&codemcp.CodeModeConfig{
 		BindingLevel:         level,
-		ToolExecutionTimeout: time.Second,
+		ToolExecutionTimeout: testtime.Scale(time.Second),
 	}, nil)
 	mode.clientManager = &testClientManager{
 		clients: map[string]*schemas.MCPClientState{
@@ -1779,7 +1781,7 @@ func restoreDiscoveredTool(t *testing.T, tool schemas.ChatTool) schemas.ChatTool
 func newSearchCodeMode(tool schemas.ChatTool) *StarlarkCodeMode {
 	mode := NewStarlarkCodeMode(&codemcp.CodeModeConfig{
 		BindingLevel:         schemas.CodeModeBindingLevelServer,
-		ToolExecutionTimeout: time.Second,
+		ToolExecutionTimeout: testtime.Scale(time.Second),
 	}, nil)
 	mode.clientManager = &testClientManager{
 		clients: map[string]*schemas.MCPClientState{

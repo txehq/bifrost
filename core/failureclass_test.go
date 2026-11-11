@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -379,9 +381,9 @@ func TestScenarioFailureClassLadder(t *testing.T) {
 		// The three below end the attempt on Bifrost's side, before the provider answers. The retry loop
 		// stops on them, and labels the attempt: a provider timeout and a request deadline are timeouts,
 		// a caller's cancel is cancelled (see TestScenarioTimedOutAttemptCarriesItsClass for the fields).
-		{name: "provider timeout", reply: scenarioReply{stall: 3 * time.Second}, timeout: true, want: outcome{trail: 1, class: schemas.FailureClassTimeout, fallback: true}},
-		{name: "caller cancel", reply: scenarioReply{stall: 3 * time.Second}, cancel: true, want: outcome{trail: 1, class: schemas.FailureClassCancelled}},
-		{name: "request deadline", reply: scenarioReply{stall: 3 * time.Second}, deadline: true, want: outcome{trail: 1, class: schemas.FailureClassTimeout}},
+		{name: "provider timeout", reply: scenarioReply{stall: testtime.Scale(3 * time.Second)}, timeout: true, want: outcome{trail: 1, class: schemas.FailureClassTimeout, fallback: true}},
+		{name: "caller cancel", reply: scenarioReply{stall: testtime.Scale(3 * time.Second)}, cancel: true, want: outcome{trail: 1, class: schemas.FailureClassCancelled}},
+		{name: "request deadline", reply: scenarioReply{stall: testtime.Scale(3 * time.Second)}, deadline: true, want: outcome{trail: 1, class: schemas.FailureClassTimeout}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -405,11 +407,11 @@ func TestScenarioFailureClassLadder(t *testing.T) {
 			defer cancel()
 			deadline := schemas.NoDeadline
 			if tc.deadline {
-				deadline = time.Now().Add(300 * time.Millisecond)
+				deadline = time.Now().Add(testtime.Scale(300 * time.Millisecond))
 			}
 			ctx := schemas.NewBifrostContext(parent, deadline)
 			if tc.cancel {
-				time.AfterFunc(300*time.Millisecond, cancel)
+				time.AfterFunc(testtime.Scale(300*time.Millisecond), cancel)
 			}
 			served, err := scenarioChat(client, ctx, provA, "m", schemas.Fallback{Provider: provB, Model: "m"})
 
@@ -483,16 +485,16 @@ func TestScenarioTimedOutAttemptCarriesItsClass(t *testing.T) {
 			}
 			router := &scenarioRouter{}
 			client := scenarioClient(t, account, router, nil)
-			u.reply("sk-a1", scenarioReply{stall: 3 * time.Second})
+			u.reply("sk-a1", scenarioReply{stall: testtime.Scale(3 * time.Second)})
 			parent, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			deadline := schemas.NoDeadline
 			if tc.deadline {
-				deadline = time.Now().Add(300 * time.Millisecond)
+				deadline = time.Now().Add(testtime.Scale(300 * time.Millisecond))
 			}
 			ctx := schemas.NewBifrostContext(parent, deadline)
 			if tc.cancel {
-				time.AfterFunc(300*time.Millisecond, cancel)
+				time.AfterFunc(testtime.Scale(300*time.Millisecond), cancel)
 			}
 			_, err := scenarioChat(client, ctx, provA, "m")
 			if err == nil {

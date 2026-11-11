@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	ws "github.com/fasthttp/websocket"
 	"github.com/tidwall/gjson"
 
@@ -1116,7 +1118,7 @@ func TestDrainNonSSEStreamReader_TinyOpenSSEPrefixReturnsPromptly(t *testing.T) 
 			}
 			select {
 			case got = <-result:
-			case <-time.After(200 * time.Millisecond):
+			case <-time.After(testtime.Scale(200 * time.Millisecond)):
 				_ = pw.Close()
 				t.Fatal("DrainNonSSEStreamReader blocked waiting for a larger prefix")
 			}
@@ -1188,7 +1190,7 @@ func TestDrainNonSSEStreamReader_FragmentedFieldPrefixReturnsPromptly(t *testing
 			}
 			select {
 			case got = <-result:
-			case <-time.After(200 * time.Millisecond):
+			case <-time.After(testtime.Scale(200 * time.Millisecond)):
 				_ = pw.Close()
 				t.Fatal("DrainNonSSEStreamReader blocked waiting for a full SSE field name")
 			}
@@ -4488,7 +4490,7 @@ func TestFasthttpRoundTripper_ContextEndsWhileDialing(t *testing.T) {
 		return nil, fmt.Errorf("dial released")
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(100*time.Millisecond))
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://slow-dial.example/", nil)
 
@@ -4497,7 +4499,7 @@ func TestFasthttpRoundTripper_ContextEndsWhileDialing(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) {
 		t.Fatalf("expected the context deadline, got %v", err)
 	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
+	if elapsed := time.Since(start); elapsed > testtime.Scale(2*time.Second) {
 		t.Fatalf("RoundTrip took %v after the context ended, want it to return promptly", elapsed)
 	}
 }

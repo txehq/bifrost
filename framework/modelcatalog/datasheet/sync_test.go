@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -26,7 +28,7 @@ import (
 // context deadline exceeded" even though the DB had data.
 func TestSyncFallsBackToDBWhenURLHangs(t *testing.T) {
 	origPricing, origParams := pricingFetchTimeout, paramsFetchTimeout
-	pricingFetchTimeout, paramsFetchTimeout = 500*time.Millisecond, 500*time.Millisecond
+	pricingFetchTimeout, paramsFetchTimeout = testtime.Scale(500*time.Millisecond), testtime.Scale(500*time.Millisecond)
 	t.Cleanup(func() { pricingFetchTimeout, paramsFetchTimeout = origPricing, origParams })
 
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
@@ -51,7 +53,7 @@ func TestSyncFallsBackToDBWhenURLHangs(t *testing.T) {
 	store := New(cs, logger, Config{URL: hang.URL, ModelParametersURL: hang.URL})
 
 	// Mirrors a caller-level deadline like force sync's; the fetch must not consume all of it.
-	syncCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	syncCtx, cancel := context.WithTimeout(ctx, testtime.Scale(3*time.Second))
 	defer cancel()
 	if err := store.SyncFromURL(syncCtx); err != nil {
 		t.Fatalf("SyncFromURL should fall back to DB records, got: %v", err)
@@ -65,7 +67,7 @@ func TestSyncFallsBackToDBWhenURLHangs(t *testing.T) {
 // the failing request, not just "context deadline exceeded".
 func TestSyncErrorKeepsURLCause(t *testing.T) {
 	orig := pricingFetchTimeout
-	pricingFetchTimeout = 500 * time.Millisecond
+	pricingFetchTimeout = testtime.Scale(500 * time.Millisecond)
 	t.Cleanup(func() { pricingFetchTimeout = orig })
 
 	hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
@@ -104,8 +106,8 @@ func TestLoadFromURLRefusesRedirectToLinkLocal(t *testing.T) {
 
 // Outside tests a catalog fetch is the guarded client, policy on every hop.
 func TestNewFetchClientIsTheGuardedClient(t *testing.T) {
-	guarded := network.NewPrivateNetworkHTTPClient(time.Second)
-	client := NewFetchClient(time.Second)
+	guarded := network.NewPrivateNetworkHTTPClient(testtime.Scale(time.Second))
+	client := NewFetchClient(testtime.Scale(time.Second))
 	if reflect.TypeOf(client.Transport) != reflect.TypeOf(guarded.Transport) {
 		t.Fatalf("transport = %T, want the guarded %T", client.Transport, guarded.Transport)
 	}
@@ -142,7 +144,7 @@ func TestSetFetchSeamForTestWrapsAndRestores(t *testing.T) {
 	if err := ValidateFetchURL("ftp://catalog.example/feed"); err == nil {
 		t.Fatal("the seam skipped the URL policy")
 	}
-	client := NewFetchClient(time.Second)
+	client := NewFetchClient(testtime.Scale(time.Second))
 	if client.CheckRedirect == nil {
 		t.Fatal("the seam dropped the redirect policy")
 	}
@@ -153,7 +155,7 @@ func TestSetFetchSeamForTestWrapsAndRestores(t *testing.T) {
 	if activeFetchTestSeam.Load() != nil {
 		t.Fatal("restore left the seam installed")
 	}
-	if _, ok := NewFetchClient(time.Second).Transport.(*recordingTransport); ok {
+	if _, ok := NewFetchClient(testtime.Scale(time.Second)).Transport.(*recordingTransport); ok {
 		t.Fatal("a client built after restore still uses the test transport")
 	}
 }
@@ -165,7 +167,7 @@ func TestSetFetchSeamForTestNilClearsTheSeam(t *testing.T) {
 	if activeFetchTestSeam.Load() != nil {
 		t.Fatal("a nil wrap left the seam installed")
 	}
-	if client := NewFetchClient(time.Second); client.CheckRedirect == nil {
+	if client := NewFetchClient(testtime.Scale(time.Second)); client.CheckRedirect == nil {
 		t.Fatal("the fetch client lost its redirect policy")
 	}
 }

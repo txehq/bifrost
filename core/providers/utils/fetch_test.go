@@ -24,6 +24,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/network/proxytest"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -848,7 +850,7 @@ func TestFetchMediaStreamBoundsAStalledVendor(t *testing.T) {
 	})
 
 	t.Run("idle timeout", func(t *testing.T) {
-		stream, err := FetchMediaStream(mediaStreamProxyCtx(t, proxy.URL, 20*time.Second), "http://203.0.113.10/stalled.mp4", MediaStreamOptions{IdleTimeout: 200 * time.Millisecond})
+		stream, err := FetchMediaStream(mediaStreamProxyCtx(t, proxy.URL, testtime.Scale(20*time.Second)), "http://203.0.113.10/stalled.mp4", MediaStreamOptions{IdleTimeout: testtime.Scale(200 * time.Millisecond)})
 		if err != nil {
 			t.Fatalf("FetchMediaStream: %v", err)
 		}
@@ -858,15 +860,15 @@ func TestFetchMediaStreamBoundsAStalledVendor(t *testing.T) {
 		if !errors.Is(err, ErrStreamIdleTimeout) || string(got) != "HEAD|" {
 			t.Fatalf("read %q, %v; want HEAD| and ErrStreamIdleTimeout", got, err)
 		}
-		if waited := time.Since(start); waited > 5*time.Second {
+		if waited := time.Since(start); waited > testtime.Scale(5*time.Second) {
 			t.Fatalf("the stalled read took %s to fail", waited)
 		}
 	})
 
 	t.Run("context ended", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(mediaStreamProxyCtx(t, proxy.URL, 20*time.Second))
+		ctx, cancel := context.WithCancel(mediaStreamProxyCtx(t, proxy.URL, testtime.Scale(20*time.Second)))
 		defer cancel()
-		stream, err := FetchMediaStream(ctx, "http://203.0.113.10/stalled.mp4", MediaStreamOptions{IdleTimeout: time.Minute})
+		stream, err := FetchMediaStream(ctx, "http://203.0.113.10/stalled.mp4", MediaStreamOptions{IdleTimeout: testtime.Scale(time.Minute)})
 		if err != nil {
 			t.Fatalf("FetchMediaStream: %v", err)
 		}
@@ -875,18 +877,18 @@ func TestFetchMediaStreamBoundsAStalledVendor(t *testing.T) {
 		if _, err := io.ReadFull(stream.Body, head); err != nil {
 			t.Fatalf("head: %v", err)
 		}
-		time.AfterFunc(100*time.Millisecond, cancel)
+		time.AfterFunc(testtime.Scale(100*time.Millisecond), cancel)
 		start := time.Now()
 		if _, err := stream.Body.Read(head); !errors.Is(err, context.Canceled) {
 			t.Fatalf("read after cancel: %v, want context.Canceled", err)
 		}
-		if waited := time.Since(start); waited > 5*time.Second {
+		if waited := time.Since(start); waited > testtime.Scale(5*time.Second) {
 			t.Fatalf("the cancelled read took %s to fail", waited)
 		}
 	})
 
 	t.Run("a slow reader is not a stalled vendor", func(t *testing.T) {
-		stream, err := FetchMediaStream(mediaStreamProxyCtx(t, proxy.URL, 20*time.Second), "http://203.0.113.10/complete.mp4", MediaStreamOptions{IdleTimeout: 150 * time.Millisecond})
+		stream, err := FetchMediaStream(mediaStreamProxyCtx(t, proxy.URL, testtime.Scale(20*time.Second)), "http://203.0.113.10/complete.mp4", MediaStreamOptions{IdleTimeout: testtime.Scale(150 * time.Millisecond)})
 		if err != nil {
 			t.Fatalf("FetchMediaStream: %v", err)
 		}
@@ -895,7 +897,7 @@ func TestFetchMediaStreamBoundsAStalledVendor(t *testing.T) {
 		if _, err := io.ReadFull(stream.Body, head); err != nil {
 			t.Fatalf("head: %v", err)
 		}
-		time.Sleep(450 * time.Millisecond)
+		time.Sleep(testtime.Scale(450 * time.Millisecond))
 		rest, err := io.ReadAll(stream.Body)
 		if err != nil || string(rest) != "TAIL" {
 			t.Fatalf("after a pause longer than the idle timeout: %q, %v", rest, err)

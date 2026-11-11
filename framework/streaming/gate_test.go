@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 )
@@ -116,7 +118,7 @@ func TestGate_HappyPath(t *testing.T) {
 			t.Fatalf("chunk %d: send returned false", i)
 		}
 	}
-	if !r.waitFor(2, time.Second) {
+	if !r.waitFor(2, testtime.Scale(time.Second)) {
 		t.Fatalf("expected 2 chunks live before pause")
 	}
 
@@ -127,7 +129,7 @@ func TestGate_HappyPath(t *testing.T) {
 		}
 	}
 	// Verify chunks 3-6 are NOT delivered while paused.
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(testtime.Scale(20 * time.Millisecond))
 	cs, _ := r.snapshot()
 	if len(cs) != 2 {
 		t.Fatalf("expected 2 chunks pre-resume, got %d", len(cs))
@@ -147,7 +149,7 @@ func TestGate_HappyPath(t *testing.T) {
 	// Wait for the flusher to drain everything.
 	sa := mustGet(t, a, traceID)
 	sa.WaitForFlusher()
-	if !r.waitFor(10, time.Second) {
+	if !r.waitFor(10, testtime.Scale(time.Second)) {
 		t.Fatalf("expected 10 chunks total")
 	}
 
@@ -196,7 +198,7 @@ func TestGate_FinalChunkWhilePaused(t *testing.T) {
 
 	// Pre-resume invariant: only chunks[0] (sent before pause) was delivered.
 	// All subsequent chunks — including the terminal one — must be held.
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(testtime.Scale(20 * time.Millisecond))
 	if pre, _ := r.snapshot(); len(pre) != 1 {
 		t.Fatalf("expected 1 chunk delivered while paused, got %d", len(pre))
 	}
@@ -215,7 +217,7 @@ func TestGate_FinalChunkWhilePaused(t *testing.T) {
 
 	a.ResumeStream(traceID)
 	sa.WaitForFlusher()
-	if !r.waitFor(6, time.Second) {
+	if !r.waitFor(6, testtime.Scale(time.Second)) {
 		t.Fatalf("expected 6 chunks delivered")
 	}
 	cs, _ := r.snapshot()
@@ -245,7 +247,7 @@ func TestGate_ResumeWithReplayIntervalIncludesNextChunk(t *testing.T) {
 			t.Fatalf("buffer chunk %d: GateSend returned false", i)
 		}
 	}
-	if !a.ResumeStreamWithReplayInterval(traceID, 50*time.Millisecond) {
+	if !a.ResumeStreamWithReplayInterval(traceID, testtime.Scale(50*time.Millisecond)) {
 		t.Fatal("ResumeStreamWithReplayInterval returned false, want paced resume armed")
 	}
 
@@ -255,7 +257,7 @@ func TestGate_ResumeWithReplayIntervalIncludesNextChunk(t *testing.T) {
 	bufferedBeforeFinal := len(sa.gateReplayBuf)
 	pendingIntervalBeforeFinal := sa.gateReplayEventInterval
 	sa.mu.Unlock()
-	if stateBeforeFinal != StreamStatePaused || bufferedBeforeFinal != 2 || pendingIntervalBeforeFinal != 50*time.Millisecond {
+	if stateBeforeFinal != StreamStatePaused || bufferedBeforeFinal != 2 || pendingIntervalBeforeFinal != testtime.Scale(50*time.Millisecond) {
 		t.Fatalf("before final: state=%v buffered=%d interval=%v, want Paused/2/50ms", stateBeforeFinal, bufferedBeforeFinal, pendingIntervalBeforeFinal)
 	}
 	if delivered, _ := r.snapshot(); len(delivered) != 0 {
@@ -267,7 +269,7 @@ func TestGate_ResumeWithReplayIntervalIncludesNextChunk(t *testing.T) {
 		t.Fatal("final chunk: GateSend returned false")
 	}
 	sa.WaitForFlusher()
-	if !r.waitFor(3, time.Second) {
+	if !r.waitFor(3, testtime.Scale(time.Second)) {
 		t.Fatal("expected all paced chunks to be delivered")
 	}
 
@@ -280,11 +282,11 @@ func TestGate_ResumeWithReplayIntervalIncludesNextChunk(t *testing.T) {
 			t.Fatalf("position %d: pointer mismatch", i)
 		}
 	}
-	if firstDelay := stamps[0].Sub(start); firstDelay > 100*time.Millisecond {
+	if firstDelay := stamps[0].Sub(start); firstDelay > testtime.Scale(100*time.Millisecond) {
 		t.Fatalf("first paced chunk delay = %v, want immediate release", firstDelay)
 	}
 	for i := 1; i < len(stamps); i++ {
-		if gap := stamps[i].Sub(stamps[i-1]); gap < 40*time.Millisecond || gap > 500*time.Millisecond {
+		if gap := stamps[i].Sub(stamps[i-1]); gap < testtime.Scale(40*time.Millisecond) || gap > testtime.Scale(500*time.Millisecond) {
 			t.Fatalf("event gap %d = %v, want approximately 50ms", i, gap)
 		}
 	}
@@ -314,13 +316,13 @@ func TestGate_ResumeWithReplayIntervalCancellationStopsWaiting(t *testing.T) {
 			t.Fatalf("buffer chunk %d: GateSend returned false", i)
 		}
 	}
-	if !a.ResumeStreamWithReplayInterval(traceID, time.Second) {
+	if !a.ResumeStreamWithReplayInterval(traceID, testtime.Scale(time.Second)) {
 		t.Fatal("ResumeStreamWithReplayInterval returned false, want paced resume armed")
 	}
 	if !a.GateSend(traceID, chunks[len(chunks)-1], true, false, r.ch, ctx) {
 		t.Fatal("final chunk: GateSend returned false")
 	}
-	if !r.waitFor(1, time.Second) {
+	if !r.waitFor(1, testtime.Scale(time.Second)) {
 		t.Fatal("first replay event was not delivered")
 	}
 
@@ -328,7 +330,7 @@ func TestGate_ResumeWithReplayIntervalCancellationStopsWaiting(t *testing.T) {
 	cancel()
 	sa := mustGet(t, a, traceID)
 	sa.WaitForFlusher()
-	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+	if elapsed := time.Since(start); elapsed > testtime.Scale(250*time.Millisecond) {
 		t.Fatalf("canceled replay stopped after %v, want prompt termination", elapsed)
 	}
 	sa.mu.Lock()
@@ -370,7 +372,7 @@ func TestGate_ClearPausedStreamBufferDropsBufferedOriginals(t *testing.T) {
 
 	sa := mustGet(t, a, traceID)
 	sa.WaitForFlusher()
-	if !r.waitFor(2, time.Second) {
+	if !r.waitFor(2, testtime.Scale(time.Second)) {
 		t.Fatalf("expected live setup chunk and final chunk")
 	}
 	cs, _ := r.snapshot()
@@ -432,7 +434,7 @@ func TestGate_ClearPausedStreamBufferDropsBufferedTerminal(t *testing.T) {
 	}
 
 	sa.WaitForFlusher()
-	if !r.waitFor(2, time.Second) {
+	if !r.waitFor(2, testtime.Scale(time.Second)) {
 		t.Fatalf("expected live setup chunk and replacement terminal chunk")
 	}
 	cs, _ := r.snapshot()
@@ -483,7 +485,7 @@ func TestGate_TransformPausedStreamBufferReplaysCopies(t *testing.T) {
 	}
 
 	a.ResumeStream(traceID)
-	if !r.waitFor(2, time.Second) {
+	if !r.waitFor(2, testtime.Scale(time.Second)) {
 		t.Fatal("transformed chunks were not replayed")
 	}
 	got, _ := r.snapshot()
@@ -518,10 +520,10 @@ func TestGate_TransformPausedStreamBufferReleasesOnlyApprovedPrefix(t *testing.T
 	if err != nil {
 		t.Fatalf("TransformPausedStreamBuffer() error = %v", err)
 	}
-	if !r.waitFor(2, time.Second) {
+	if !r.waitFor(2, testtime.Scale(time.Second)) {
 		t.Fatal("approved prefix was not replayed")
 	}
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(testtime.Scale(20 * time.Millisecond))
 	got, _ := r.snapshot()
 	if len(got) != 2 || got[0] != chunks[0] || got[1] != chunks[1] {
 		t.Fatalf("replayed prefix = %#v, want first two chunks only", got)
@@ -536,7 +538,7 @@ func TestGate_TransformPausedStreamBufferReleasesOnlyApprovedPrefix(t *testing.T
 	if err != nil {
 		t.Fatalf("second TransformPausedStreamBuffer() error = %v", err)
 	}
-	if !r.waitFor(3, time.Second) {
+	if !r.waitFor(3, testtime.Scale(time.Second)) {
 		t.Fatal("held suffix was not replayed after approval")
 	}
 	a.ResumeStream(traceID)
@@ -562,7 +564,7 @@ func TestGate_TransformPausedStreamBufferFailureKeepsOriginals(t *testing.T) {
 		t.Fatal("TransformPausedStreamBuffer() error = nil")
 	}
 	a.ResumeStream(traceID)
-	if !r.waitFor(1, time.Second) {
+	if !r.waitFor(1, testtime.Scale(time.Second)) {
 		t.Fatal("original chunk was not replayed")
 	}
 	got, _ := r.snapshot()
@@ -604,7 +606,7 @@ func TestGate_TransformPausedStreamBufferRejectsConcurrentAppend(t *testing.T) {
 	}
 
 	a.ResumeStream(traceID)
-	if !r.waitFor(2, time.Second) {
+	if !r.waitFor(2, testtime.Scale(time.Second)) {
 		t.Fatal("original chunks were not replayed")
 	}
 	got, _ := r.snapshot()
@@ -665,7 +667,7 @@ func TestGate_PauseDuringDrainStopsReplay(t *testing.T) {
 	}()
 
 	a.ResumeStream(traceID)
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(testtime.Scale(time.Second))
 	for {
 		sa.mu.Lock()
 		buffered := len(sa.gateReplayBuf)
@@ -676,7 +678,7 @@ func TestGate_PauseDuringDrainStopsReplay(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("flusher did not begin draining; buffered=%d", buffered)
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(testtime.Scale(time.Millisecond))
 	}
 
 	a.PauseStream(traceID)
@@ -686,7 +688,7 @@ func TestGate_PauseDuringDrainStopsReplay(t *testing.T) {
 	select {
 	case got := <-ch:
 		t.Fatalf("chunk %p escaped after the second pause", got)
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(testtime.Scale(100 * time.Millisecond)):
 	}
 }
 
@@ -739,7 +741,7 @@ func TestGate_HardErrorWhilePaused(t *testing.T) {
 		t.Fatalf("setup hard-error chunk: GateSend returned false")
 	}
 
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(testtime.Scale(20 * time.Millisecond))
 	if pre, _ := r.snapshot(); len(pre) != 1 {
 		t.Fatalf("expected 1 chunk delivered while paused, got %d", len(pre))
 	}
@@ -758,7 +760,7 @@ func TestGate_HardErrorWhilePaused(t *testing.T) {
 
 	a.ResumeStream(traceID)
 	sa.WaitForFlusher()
-	if !r.waitFor(5, time.Second) {
+	if !r.waitFor(5, testtime.Scale(time.Second)) {
 		t.Fatalf("expected 5 chunks delivered")
 	}
 	cs, _ := r.snapshot()
@@ -790,7 +792,7 @@ func TestGate_PauseStreamMultipleCalls(t *testing.T) {
 	// Two live chunks, then pause repeatedly.
 	a.GateSend(traceID, chunks[0], false, false, r.ch, ctx)
 	a.GateSend(traceID, chunks[1], false, false, r.ch, ctx)
-	if !r.waitFor(2, time.Second) {
+	if !r.waitFor(2, testtime.Scale(time.Second)) {
 		t.Fatalf("expected 2 chunks live before pause")
 	}
 
@@ -821,14 +823,14 @@ func TestGate_PauseStreamMultipleCalls(t *testing.T) {
 			t.Fatalf("chunk %d: send returned false", i)
 		}
 	}
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(testtime.Scale(20 * time.Millisecond))
 	if pre, _ := r.snapshot(); len(pre) != 2 {
 		t.Fatalf("expected 2 delivered (only pre-pause), got %d", len(pre))
 	}
 
 	// One Resume must be enough — no need to call it once per Pause.
 	a.ResumeStream(traceID)
-	if !r.waitFor(5, time.Second) {
+	if !r.waitFor(5, testtime.Scale(time.Second)) {
 		t.Fatalf("expected 5 chunks after resume")
 	}
 	cs, _ := r.snapshot()
@@ -861,7 +863,7 @@ func TestGate_EndStreamNilWhilePaused(t *testing.T) {
 
 	sa := mustGet(t, a, traceID)
 	sa.WaitForFlusher()
-	if !r.waitFor(4, time.Second) {
+	if !r.waitFor(4, testtime.Scale(time.Second)) {
 		t.Fatalf("expected 4 chunks")
 	}
 	if sa.gateState != StreamStateEnded {
@@ -892,7 +894,7 @@ func TestGate_EndStreamErrorWhilePaused(t *testing.T) {
 
 	sa := mustGet(t, a, traceID)
 	sa.WaitForFlusher()
-	if !r.waitFor(4, time.Second) {
+	if !r.waitFor(4, testtime.Scale(time.Second)) {
 		t.Fatalf("expected 4 chunks (3 buffered + synthetic err)")
 	}
 	cs, _ := r.snapshot()
@@ -955,7 +957,7 @@ func TestGate_AsyncResume(t *testing.T) {
 	a.GateSend(traceID, chunks[2], false, false, r.ch, ctx)
 
 	go func() {
-		time.Sleep(40 * time.Millisecond)
+		time.Sleep(testtime.Scale(40 * time.Millisecond))
 		a.ResumeStream(traceID)
 	}()
 
@@ -964,7 +966,7 @@ func TestGate_AsyncResume(t *testing.T) {
 
 	sa := mustGet(t, a, traceID)
 	sa.WaitForFlusher()
-	if !r.waitFor(5, time.Second) {
+	if !r.waitFor(5, testtime.Scale(time.Second)) {
 		t.Fatalf("expected 5 chunks")
 	}
 	cs, _ := r.snapshot()
@@ -1084,7 +1086,7 @@ func TestGate_CleanupDefersWhilePaused(t *testing.T) {
 	// so WaitForFlusher returning means cleanup has also completed.
 	a.ResumeStream(traceID)
 	sa.WaitForFlusher()
-	if !r.waitFor(3, time.Second) {
+	if !r.waitFor(3, testtime.Scale(time.Second)) {
 		t.Fatalf("expected 3 chunks delivered after resume")
 	}
 	if _, ok := a.streamAccumulators.Load(traceID); ok {
@@ -1224,7 +1226,7 @@ func TestGate_HardErrorWhileActive(t *testing.T) {
 	if !a.GateSend(traceID, hardErr, false, true, r.ch, ctx) {
 		t.Fatalf("hard error send returned false")
 	}
-	if !r.waitFor(2, time.Second) {
+	if !r.waitFor(2, testtime.Scale(time.Second)) {
 		t.Fatalf("expected 2 chunks delivered")
 	}
 	sa := mustGet(t, a, traceID)
@@ -1258,7 +1260,7 @@ func TestGate_SoftErrorPassesThrough(t *testing.T) {
 	if !a.GateSend(traceID, follow, false, false, r.ch, ctx) {
 		t.Fatalf("post-soft-error send returned false")
 	}
-	if !r.waitFor(2, time.Second) {
+	if !r.waitFor(2, testtime.Scale(time.Second)) {
 		t.Fatalf("expected 2 chunks delivered")
 	}
 	sa := mustGet(t, a, traceID)
@@ -1316,7 +1318,7 @@ func TestGate_EndStreamErrorWhileActive(t *testing.T) {
 	// Wait for the on-demand flusher to deliver the terminal error.
 	sa.WaitForFlusher()
 
-	if !r.waitFor(2, time.Second) {
+	if !r.waitFor(2, testtime.Scale(time.Second)) {
 		t.Fatalf("expected first chunk + terminal err delivered")
 	}
 	cs, _ := r.snapshot()
@@ -1383,7 +1385,7 @@ func TestGate_MultipleEndStreamCalls(t *testing.T) {
 func TestGate_CtxDeadlineExpiresDuringActive(t *testing.T) {
 	a := newTestAccumulator(t)
 	traceID := "trace-deadline-active"
-	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(40*time.Millisecond))
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(testtime.Scale(40*time.Millisecond)))
 	defer ctx.Cancel()
 	// Unbuffered: the send blocks until ctx fires.
 	ch := make(chan *schemas.BifrostStreamChunk)
@@ -1393,7 +1395,7 @@ func TestGate_CtxDeadlineExpiresDuringActive(t *testing.T) {
 		t.Fatalf("send should have returned false on deadline expiry")
 	}
 	elapsed := time.Since(start)
-	if elapsed < 30*time.Millisecond || elapsed > 500*time.Millisecond {
+	if elapsed < testtime.Scale(30*time.Millisecond) || elapsed > testtime.Scale(500*time.Millisecond) {
 		t.Fatalf("expected send to unblock around the deadline, took %s", elapsed)
 	}
 }
@@ -1404,7 +1406,7 @@ func TestGate_CtxDeadlineExpiresDuringActive(t *testing.T) {
 func TestGate_CtxDeadlineExpiresDuringPause(t *testing.T) {
 	a := newTestAccumulator(t)
 	traceID := "trace-deadline-pause"
-	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(60*time.Millisecond))
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(testtime.Scale(60*time.Millisecond)))
 	defer ctx.Cancel()
 	ch := make(chan *schemas.BifrostStreamChunk) // unbuffered: drain blocks
 	chunks := makeChunks(3)
@@ -1419,7 +1421,7 @@ func TestGate_CtxDeadlineExpiresDuringPause(t *testing.T) {
 
 	// Wait for ctx to fire, then resume — flusher will try to drain to an
 	// unbuffered channel with no consumer and observe ctx.Done().
-	time.Sleep(80 * time.Millisecond)
+	time.Sleep(testtime.Scale(80 * time.Millisecond))
 	a.ResumeStream(traceID)
 
 	sa := mustGet(t, a, traceID)
@@ -1952,7 +1954,7 @@ func TestGate_PausedBufferAccountingUsesCachedSizes(t *testing.T) {
 	}
 
 	a.ResumeStream(traceID)
-	if !r.waitFor(1, time.Second) {
+	if !r.waitFor(1, testtime.Scale(time.Second)) {
 		t.Fatal("chunk was not replayed after resume")
 	}
 	sa.mu.Lock()
@@ -2115,7 +2117,7 @@ func TestGate_FullHoldRedactReplaySSE(t *testing.T) {
 	}
 
 	a.ResumeStream(traceID)
-	if !r.waitFor(len(chunks), time.Second) {
+	if !r.waitFor(len(chunks), testtime.Scale(time.Second)) {
 		got, _ := r.snapshot()
 		t.Fatalf("replay delivered %d of %d chunks", len(got), len(chunks))
 	}
@@ -2170,7 +2172,7 @@ func TestGate_BlockVerdictClearsBufferAndDeliversTerminal(t *testing.T) {
 	})
 	sa := mustGet(t, a, traceID)
 	sa.WaitForFlusher()
-	if !r.waitFor(1, time.Second) {
+	if !r.waitFor(1, testtime.Scale(time.Second)) {
 		t.Fatal("block terminal was not delivered")
 	}
 
@@ -2292,7 +2294,7 @@ func TestGate_TransformInPlaceMutationIsRepriced(t *testing.T) {
 	}
 
 	a.ResumeStream(traceID)
-	if !r.waitFor(1, time.Second) {
+	if !r.waitFor(1, testtime.Scale(time.Second)) {
 		t.Fatal("mutated chunk was not replayed")
 	}
 	got, _ := r.snapshot()
@@ -2369,7 +2371,7 @@ func TestGate_ApprovedFullDrainWhilePausedThenResumeEnds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TransformPausedStreamBuffer() error = %v", err)
 	}
-	if !r.waitFor(len(chunks), time.Second) {
+	if !r.waitFor(len(chunks), testtime.Scale(time.Second)) {
 		got, _ := r.snapshot()
 		t.Fatalf("approved prefix delivered %d of %d chunks", len(got), len(chunks))
 	}
@@ -2377,7 +2379,7 @@ func TestGate_ApprovedFullDrainWhilePausedThenResumeEnds(t *testing.T) {
 	// drainBufferLocked nils the buffer at its end and the flusher keeps sa.mu
 	// until gateCond.Wait releases it, so observing nil here under sa.mu means
 	// the flusher already went back to waiting while Paused.
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(testtime.Scale(time.Second))
 	for {
 		sa.mu.Lock()
 		drained := sa.gateReplayBuf == nil && sa.gateState == StreamStatePaused && sa.gatePendingTerminal
@@ -2388,7 +2390,7 @@ func TestGate_ApprovedFullDrainWhilePausedThenResumeEnds(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("flusher did not finish the approved drain while paused")
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(testtime.Scale(time.Millisecond))
 	}
 
 	a.ResumeStream(traceID)
@@ -2399,7 +2401,7 @@ func TestGate_ApprovedFullDrainWhilePausedThenResumeEnds(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtime.Scale(2 * time.Second)):
 		t.Fatal("flusher never ended the stream after Resume: pending terminal stranded")
 	}
 	sa.mu.Lock()

@@ -9,6 +9,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -395,13 +397,13 @@ func TestRestoreStatementTimeoutOrDiscard(t *testing.T) {
 		conn := &fakeRawConn{}
 		err := RestoreStatementTimeoutOrDiscard(context.Background(), conn, func(context.Context) error {
 			return errors.New("set_config failed")
-		}, time.Second)
+		}, testtime.Scale(time.Second))
 		require.Error(t, err)
 		require.True(t, conn.discarded, "a failed restore must discard the connection instead of pooling it with statement_timeout=0")
 	})
 	t.Run("successful restore keeps the connection", func(t *testing.T) {
 		conn := &fakeRawConn{}
-		require.NoError(t, RestoreStatementTimeoutOrDiscard(context.Background(), conn, func(context.Context) error { return nil }, time.Second))
+		require.NoError(t, RestoreStatementTimeoutOrDiscard(context.Background(), conn, func(context.Context) error { return nil }, testtime.Scale(time.Second)))
 		require.False(t, conn.discarded)
 	})
 	t.Run("restore is bounded and survives a cancelled caller ctx", func(t *testing.T) {
@@ -416,9 +418,9 @@ func TestRestoreStatementTimeoutOrDiscard(t *testing.T) {
 			deadline, hasDeadline = ctx.Deadline()
 			ctxErr = ctx.Err()
 			return nil
-		}, time.Second))
+		}, testtime.Scale(time.Second)))
 		require.True(t, hasDeadline, "the restore must run under a deadline")
-		require.WithinDuration(t, time.Now().Add(time.Second), deadline, time.Second)
+		require.WithinDuration(t, time.Now().Add(testtime.Scale(time.Second)), deadline, testtime.Scale(time.Second))
 		require.NoError(t, ctxErr, "the caller's cancellation must not abort the restore")
 	})
 }

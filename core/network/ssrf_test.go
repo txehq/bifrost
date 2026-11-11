@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/network/proxytest"
 )
 
@@ -188,7 +190,7 @@ func TestSSRFSafeDialContextErrorPaths(t *testing.T) {
 func TestSSRFSafeDialContextBlocksLoopbackLiteral(t *testing.T) {
 	// End-to-end through the exported constructor with the real resolver: an IP
 	// literal resolves to itself and must be blocked before any connection.
-	dial := SSRFSafeDialContext(time.Second)
+	dial := SSRFSafeDialContext(testtime.Scale(time.Second))
 	if _, err := dial(context.Background(), "tcp", "127.0.0.1:80"); err == nil || !strings.Contains(err.Error(), "blocked connection to non-public address") {
 		t.Fatalf("expected blocked-connection error, got %v", err)
 	}
@@ -396,14 +398,14 @@ func TestSSRFSafeDialContextWithAllowlist_NilAllowlistMatchesPlainDialContext(t 
 }
 
 func TestPrivateNetworkDialContextBlocksLinkLocal(t *testing.T) {
-	dial := PrivateNetworkDialContext(time.Second)
+	dial := PrivateNetworkDialContext(testtime.Scale(time.Second))
 	if _, err := dial(context.Background(), "tcp", "169.254.169.254:80"); err == nil || !strings.Contains(err.Error(), "blocked connection to link-local address") {
 		t.Fatalf("expected blocked link-local error, got %v", err)
 	}
 }
 
 func TestPrivateNetworkDialContextBlocksUnspecified(t *testing.T) {
-	dial := PrivateNetworkDialContext(time.Second)
+	dial := PrivateNetworkDialContext(testtime.Scale(time.Second))
 	if _, err := dial(context.Background(), "tcp", "0.0.0.0:80"); err == nil || !strings.Contains(err.Error(), "blocked connection to unspecified address") {
 		t.Fatalf("expected blocked unspecified error, got %v", err)
 	}
@@ -425,7 +427,7 @@ func TestPrivateNetworkDialContextAllowsLoopback(t *testing.T) {
 		}
 	}()
 
-	dial := PrivateNetworkDialContext(time.Second)
+	dial := PrivateNetworkDialContext(testtime.Scale(time.Second))
 	conn, err := dial(context.Background(), "tcp", ln.Addr().String())
 	if err != nil {
 		t.Fatalf("expected loopback dial to succeed, got %v", err)
@@ -703,7 +705,7 @@ func TestValidatePrivateTargetAllowlist(t *testing.T) {
 // TestPrivateNetworkDialContextBlocksMetadataEndpoints proves the direct
 // dialer refuses the non-link-local metadata endpoints before any dial.
 func TestPrivateNetworkDialContextBlocksMetadataEndpoints(t *testing.T) {
-	dial := PrivateNetworkDialContext(time.Second)
+	dial := PrivateNetworkDialContext(testtime.Scale(time.Second))
 	for _, addr := range []string{"100.100.100.200:80", "[fd00:ec2::254]:80"} {
 		if _, err := dial(context.Background(), "tcp", addr); err == nil || !strings.Contains(err.Error(), "blocked connection to cloud metadata endpoint") {
 			t.Fatalf("%s: expected blocked metadata endpoint error, got %v", addr, err)

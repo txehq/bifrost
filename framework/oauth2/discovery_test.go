@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/network/proxytest"
 	"github.com/stretchr/testify/require"
@@ -35,7 +37,7 @@ func TestNewOAuthDiscoveryHTTPClientBlocksLoopback(t *testing.T) {
 	useProductionOAuthDialer(t, "127.0.0.1")
 
 	for _, ctx := range []context.Context{context.Background(), withRequirePublicTarget(context.Background(), true)} {
-		client := newOAuthDiscoveryHTTPClient(ctx, time.Second)
+		client := newOAuthDiscoveryHTTPClient(ctx, testtime.Scale(time.Second))
 		transport, ok := client.Transport.(*network.ProxyAwareTransport)
 		require.True(t, ok)
 		require.NotNil(t, transport.Direct.DialContext)
@@ -58,16 +60,16 @@ func TestNewOAuthDiscoveryHTTPClientFollowsPrivateTargetAllowlist(t *testing.T) 
 	ctx := withRequirePublicTarget(context.Background(), false)
 
 	useProductionOAuthDialer(t)
-	_, err := newOAuthDiscoveryHTTPClient(ctx, 2*time.Second).Get(server.URL)
+	_, err := newOAuthDiscoveryHTTPClient(ctx, testtime.Scale(2*time.Second)).Get(server.URL)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "blocked connection to non-public address")
 
 	useProductionOAuthDialer(t, "127.0.0.1")
-	resp, err := newOAuthDiscoveryHTTPClient(ctx, 2*time.Second).Get(server.URL)
+	resp, err := newOAuthDiscoveryHTTPClient(ctx, testtime.Scale(2*time.Second)).Get(server.URL)
 	require.NoError(t, err, "an allowlisted loopback OAuth server must be reachable")
 	resp.Body.Close()
 
-	transport, ok := newOAuthDiscoveryHTTPClient(ctx, time.Second).Transport.(*network.ProxyAwareTransport)
+	transport, ok := newOAuthDiscoveryHTTPClient(ctx, testtime.Scale(time.Second)).Transport.(*network.ProxyAwareTransport)
 	require.True(t, ok)
 	_, err = transport.Direct.DialContext(context.Background(), "tcp", "169.254.169.254:80")
 	require.Error(t, err)
@@ -462,8 +464,8 @@ func TestOAuthProxiedRequestHonoursCancellation(t *testing.T) {
 			c.Close()
 		}
 	})
-	client := newOAuthHTTPClient(oauthTestTransport(true, nil, fixedOAuthProxy(t, "http://"+ln.Addr().String()), oauthTestResolver{"auth.example.com": {net.ParseIP("93.184.216.34")}}), 30*time.Second)
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	client := newOAuthHTTPClient(oauthTestTransport(true, nil, fixedOAuthProxy(t, "http://"+ln.Addr().String()), oauthTestResolver{"auth.example.com": {net.ParseIP("93.184.216.34")}}), testtime.Scale(30*time.Second))
+	ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(200*time.Millisecond))
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://auth.example.com/token", nil)
 	require.NoError(t, err)
@@ -475,7 +477,7 @@ func TestOAuthProxiedRequestHonoursCancellation(t *testing.T) {
 	elapsed := time.Since(start)
 	require.Error(t, err)
 	require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
-	require.Less(t, elapsed, 5*time.Second, "a stalled proxy must not outlive the request's deadline: %v", err)
+	require.Less(t, elapsed, testtime.Scale(5*time.Second), "a stalled proxy must not outlive the request's deadline: %v", err)
 }
 
 // TestSetPrivateTargetAllowlistAppliesToProxiedRequests pins the hot swap on the

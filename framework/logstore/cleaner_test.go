@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -61,16 +63,16 @@ func TestDrainExpiredWaitsForMigrationWindow(t *testing.T) {
 // outlives the pass deadline: a lock held for the whole pass ends it cleanly
 // without a single delete.
 func TestDrainExpiredMigrationWaitBoundedByContext(t *testing.T) {
-	shrinkCleanupPoll(t, 5*time.Millisecond)
+	shrinkCleanupPoll(t, testtime.Scale(5*time.Millisecond))
 	manager := &gatedRetentionManager{}
 	manager.migrating.Store(true)
 	cleaner := NewLogsCleaner(manager, CleanerConfig{RetentionDays: 7}, testLogger{})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(60*time.Millisecond))
 	defer cancel()
 	start := time.Now()
 	require.False(t, cleaner.drainExpired(ctx, "logs", time.Now(), manager.DeleteLogsBatch))
-	assert.Less(t, time.Since(start), time.Second)
+	assert.Less(t, time.Since(start), testtime.Scale(time.Second))
 	assert.Equal(t, int64(0), manager.deletes.Load())
 }
 

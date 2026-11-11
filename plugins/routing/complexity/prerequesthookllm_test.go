@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/plugins/routing/internal/testtime"
+
 	"github.com/stretchr/testify/require"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -30,14 +32,14 @@ func llmFallbackAnalyzerTestConfig() *complexity.AnalyzerConfig {
 		Semantic: &complexity.SemanticConfig{
 			Provider:       schemas.OpenAI,
 			EmbeddingModel: "test-embedding-model",
-			Timeout:        time.Second,
+			Timeout:        testtime.Scale(time.Second),
 			VectorStore:    configstore.ComplexitySemanticVectorStoreEmbedded,
 			Fallback:       configstore.ComplexitySemanticFallbackLLM,
 		},
 		LLM: &complexity.LLMConfig{
 			Provider: schemas.OpenAI,
 			Model:    "test-classifier-model",
-			Timeout:  time.Second,
+			Timeout:  testtime.Scale(time.Second),
 		},
 	}
 }
@@ -113,7 +115,7 @@ func installSemanticEmbeddingFake(t *testing.T, plugin *routing.RoutingPlugin) {
 	})
 	require.Eventually(t, func() bool {
 		return plugin.ComplexitySemanticStatus().State == complexity.SemanticStatusReady
-	}, time.Second, 10*time.Millisecond, "semantic classifier did not finish warmup")
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond), "semantic classifier did not finish warmup")
 }
 
 func llmClassifierChatResponse(text string) *schemas.BifrostChatResponse {
@@ -289,7 +291,7 @@ func TestPreRequestHook_LLMFallbackSkipsWhenUnavailable(t *testing.T) {
 					return nil, &schemas.BifrostError{Type: schemas.Ptr(schemas.RequestTimedOut)}
 				})
 			},
-			wantLog: "timed out after 1s",
+			wantLog: "timed out after " + testtime.Scale(time.Second).String(),
 		},
 	}
 	for _, tt := range tests {

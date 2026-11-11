@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/andybalholm/brotli"
 	"github.com/capsohq/bifrost/core/network/proxytest"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -318,13 +320,13 @@ func TestFetchVideoContentCancelledRequestReturns(t *testing.T) {
 	t.Cleanup(func() { close(release); srv.Close() })
 
 	for _, stream := range []bool{true, false} {
-		base, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		base, cancel := context.WithTimeout(context.Background(), testtime.Scale(200*time.Millisecond))
 		req := fasthttp.AcquireRequest()
 		req.SetRequestURI(srv.URL + "/never")
 		// The buffered client carries a read timeout, as every provider client does: the wait
 		// for the request goroutine ends when that goroutine's read does.
 		_, bifrostErr := FetchVideoContent(schemas.NewBifrostContext(base, schemas.NoDeadline), VideoContentFetch{
-			Request: req, Client: &fasthttp.Client{ReadTimeout: time.Second}, StreamingClient: BuildStreamingClient(&fasthttp.Client{ReadTimeout: time.Second}),
+			Request: req, Client: &fasthttp.Client{ReadTimeout: testtime.Scale(time.Second)}, StreamingClient: BuildStreamingClient(&fasthttp.Client{ReadTimeout: testtime.Scale(time.Second)}),
 			Stream: stream, VideoID: "v",
 			ParseError: func(resp *fasthttp.Response) *schemas.BifrostError {
 				return NewBifrostOperationError("unexpected", nil)

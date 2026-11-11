@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
+
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
@@ -984,7 +986,7 @@ func TestLiveSessionStopsReadingADrainAtTheBillingBound(t *testing.T) {
 	require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
 	runner.setRefuse(true)
 	io := &abandonCountingIO{abandoned: make(chan struct{}, liveMaxBillingSegments)}
-	controller := &liveSessionController{io: io, meter: meter, drainTimeout: time.Hour, upstreamDone: make(chan struct{})}
+	controller := &liveSessionController{io: io, meter: meter, drainTimeout: testtime.Scale(time.Hour), upstreamDone: make(chan struct{})}
 	defer controller.stopDrainTimer()
 	respond := func(i int) {
 		controller.fromUpstream(fmt.Appendf(nil, `{"type":"response.event","delegation_id":"d%d","event":{"type":"response.completed","response":{"id":"r%d","object":"response","model":"gpt-5.6-luna","status":"completed","output":[],"usage":{"input_tokens":10,"output_tokens":1,"total_tokens":11}}}}`, i, i))
@@ -996,19 +998,19 @@ func TestLiveSessionStopsReadingADrainAtTheBillingBound(t *testing.T) {
 	select {
 	case <-io.abandoned:
 		t.Fatal("a drain under the bound keeps reading")
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(testtime.Scale(50 * time.Millisecond)):
 	}
 	respond(liveMaxBillingSegments - 1)
 	select {
 	case <-io.abandoned:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtime.Scale(2 * time.Second)):
 		t.Fatal("the session kept reading past what its unit can hold")
 	}
 	respond(liveMaxBillingSegments)
 	select {
 	case <-io.abandoned:
 		t.Fatal("the connection was abandoned twice")
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(testtime.Scale(50 * time.Millisecond)):
 	}
 }
 

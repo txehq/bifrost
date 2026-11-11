@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
+
 	bifrost "github.com/capsohq/bifrost/core"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -87,8 +89,8 @@ func newTestLiveController(models liveModelChecker, meter *liveMeter, io liveSes
 		liveUpdatePolicy: testLiveUpdatePolicy(models),
 		io:               io,
 		meter:            meter,
-		drainTimeout:     time.Second,
-		staleCheckEvery:  time.Hour,
+		drainTimeout:     testtime.Scale(time.Second),
+		staleCheckEvery:  testtime.Scale(time.Hour),
 		upstreamDone:     make(chan struct{}),
 	}
 }
@@ -222,7 +224,7 @@ func TestLiveRelayWaitsForTheClientsCloseReply(t *testing.T) {
 	closed := `{"type":"session.closed","reason":"close_requested","usage":{"seconds":3}}`
 	sendFrame(t, f.openai, closed)
 	assert.Equal(t, closed, readFrame(t, f.app))
-	require.NoError(t, f.app.SetReadDeadline(time.Now().Add(5*time.Second)))
+	require.NoError(t, f.app.SetReadDeadline(time.Now().Add(testtime.Scale(5*time.Second))))
 	_, _, err := f.app.ReadMessage()
 	var closeErr *ws.CloseError
 	require.ErrorAs(t, err, &closeErr)
@@ -231,9 +233,9 @@ func TestLiveRelayWaitsForTheClientsCloseReply(t *testing.T) {
 	select {
 	case <-f.done:
 		t.Fatal("the relay dropped the connection before the client answered the close frame")
-	case <-time.After(300 * time.Millisecond):
+	case <-time.After(300 * time.Millisecond): // literal-timing: must stay under liveCloseHandshakeGrace (1s), a production constant
 	}
-	require.NoError(t, f.app.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, ""), time.Now().Add(time.Second)))
+	require.NoError(t, f.app.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, ""), time.Now().Add(testtime.Scale(time.Second))))
 	f.waitDone(t)
 }
 
@@ -515,7 +517,7 @@ func TestLiveSidebandRelayReportsHowItEnded(t *testing.T) {
 		select {
 		case err := <-ended:
 			return err
-		case <-time.After(5 * time.Second):
+		case <-time.After(testtime.Scale(5 * time.Second)):
 			t.Fatal("sideband relay did not end")
 			return nil
 		}
@@ -536,7 +538,7 @@ func TestLiveSidebandRelayReportsHowItEnded(t *testing.T) {
 	})
 	t.Run("upstream closes normally", func(t *testing.T) {
 		_, openai, ended := start(t)
-		require.NoError(t, openai.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, "session over"), time.Now().Add(time.Second)))
+		require.NoError(t, openai.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, "session over"), time.Now().Add(testtime.Scale(time.Second))))
 		assert.Nil(t, wait(t, ended))
 	})
 }

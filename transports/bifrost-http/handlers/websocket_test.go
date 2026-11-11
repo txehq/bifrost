@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/fasthttp/router"
 	"github.com/fasthttp/websocket"
@@ -51,10 +53,10 @@ func TestBroadcastNotificationTargetsMatchingRole(t *testing.T) {
 
 	h.BroadcastNotification(&schemas.Notification{
 		ID: "notification-1", Audience: schemas.NotificationAudienceRoles, RoleIDs: []uint{7}, Severity: schemas.NotificationSeverityInfo,
-		Title: "For role seven", Message: "message", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+		Title: "For role seven", Message: "message", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(testtime.Scale(time.Hour)),
 	})
 
-	requireReadDeadline := time.Now().Add(time.Second)
+	requireReadDeadline := time.Now().Add(testtime.Scale(time.Second))
 	if err := matching.SetReadDeadline(requireReadDeadline); err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +68,7 @@ func TestBroadcastNotificationTargetsMatchingRole(t *testing.T) {
 		t.Fatalf("unexpected notification payload: %s", payload)
 	}
 
-	if err := nonMatching.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+	if err := nonMatching.SetReadDeadline(time.Now().Add(testtime.Scale(100 * time.Millisecond))); err != nil {
 		t.Fatal(err)
 	}
 	if _, payload, err := nonMatching.ReadMessage(); err == nil {

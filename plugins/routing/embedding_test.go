@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/plugins/routing/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/plugins/routing/complexity"
 	"github.com/stretchr/testify/assert"
@@ -16,7 +18,7 @@ func testEmbeddingSemanticConfig() *complexity.SemanticConfig {
 	return &complexity.SemanticConfig{
 		Provider:       "openai",
 		EmbeddingModel: "text-embedding-3-small",
-		Timeout:        100 * time.Millisecond,
+		Timeout:        testtime.Scale(100 * time.Millisecond),
 	}
 }
 
@@ -170,13 +172,13 @@ func TestGenerateEmbeddingTimeoutCancelsCall(t *testing.T) {
 		select {
 		case <-ctx.Done():
 			return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: ctx.Err().Error()}}
-		case <-time.After(5 * time.Second):
+		case <-time.After(testtime.Scale(5 * time.Second)):
 			return embeddingResponse(schemas.EmbeddingStruct{EmbeddingArray: []float64{1}}, 1), nil
 		}
 	})
 
 	cfg := testEmbeddingSemanticConfig()
-	cfg.Timeout = 20 * time.Millisecond
+	cfg.Timeout = testtime.Scale(20 * time.Millisecond)
 
 	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 	defer ctx.Cancel()
@@ -184,13 +186,13 @@ func TestGenerateEmbeddingTimeoutCancelsCall(t *testing.T) {
 	_, _, err := plugin.generateEmbedding(ctx, cfg, "slow", requestEmbeddingTimeout(cfg))
 	require.Error(t, err)
 	// Tolerant of scheduler jitter, but still tight enough that only the 20ms
-	// configuration can satisfy it — a second-scale budget would not.
-	assert.Less(t, time.Since(start), 500*time.Millisecond, "call must be bounded by the configured timeout")
+	// configuration can satisfy it (both scale together) — a second-scale budget would not.
+	assert.Less(t, time.Since(start), testtime.Scale(500*time.Millisecond), "call must be bounded by the configured timeout")
 	// A blown budget must stay distinguishable from a provider or config
 	// failure: callers log the two differently, and a string-flattened
 	// *BifrostError cannot be told apart after the fact.
 	require.ErrorIs(t, err, ErrEmbeddingTimeout)
-	assert.Contains(t, err.Error(), "20ms", "the timeout error should name the budget it exceeded")
+	assert.Contains(t, err.Error(), testtime.Scale(20*time.Millisecond).String(), "the timeout error should name the budget it exceeded")
 }
 
 // TestGenerateEmbeddingDistinguishesTimeoutFromOtherFailures guards the tag
@@ -269,7 +271,7 @@ func TestEmbeddingProviderFailureReasonUsesStatusCode(t *testing.T) {
 // a 504 and semantic routing silently served its fallback forever.
 func TestWarmupEmbedsDoNotInheritTheRequestTimeout(t *testing.T) {
 	semantic := testEmbeddingSemanticConfig()
-	semantic.Timeout = 10 * time.Millisecond
+	semantic.Timeout = testtime.Scale(10 * time.Millisecond)
 
 	t.Run("batch warmup", func(t *testing.T) {
 		plugin := &RoutingPlugin{}
@@ -288,7 +290,7 @@ func TestWarmupEmbedsDoNotInheritTheRequestTimeout(t *testing.T) {
 		before := time.Now()
 		_, err := plugin.embedComplexityTexts(context.Background(), semantic, []string{"a", "b"})
 		require.NoError(t, err)
-		assert.Greater(t, deadline.Sub(before), time.Second, "warmup batch must not run on the hot-path budget")
+		assert.Greater(t, deadline.Sub(before), testtime.Scale(time.Second), "warmup batch must not run on the hot-path budget")
 	})
 
 	t.Run("single-input warmup fallback", func(t *testing.T) {
@@ -303,7 +305,7 @@ func TestWarmupEmbedsDoNotInheritTheRequestTimeout(t *testing.T) {
 		before := time.Now()
 		_, err := plugin.embedComplexityText(context.Background(), semantic, "exemplar")
 		require.NoError(t, err)
-		assert.Greater(t, deadline.Sub(before), time.Second, "warmup fallback must not run on the hot-path budget")
+		assert.Greater(t, deadline.Sub(before), testtime.Scale(time.Second), "warmup fallback must not run on the hot-path budget")
 	})
 
 	t.Run("request classification still honors the configured budget", func(t *testing.T) {
@@ -319,7 +321,7 @@ func TestWarmupEmbedsDoNotInheritTheRequestTimeout(t *testing.T) {
 		before := time.Now()
 		_, err := plugin.embedComplexityText(requestCtx, semantic, "classify me")
 		require.NoError(t, err)
-		assert.LessOrEqual(t, deadline.Sub(before), 100*time.Millisecond, "a live request must stay on its configured budget")
+		assert.LessOrEqual(t, deadline.Sub(before), testtime.Scale(100*time.Millisecond), "a live request must stay on its configured budget")
 	})
 }
 

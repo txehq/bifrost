@@ -42,6 +42,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/internal/memtest"
 	"github.com/capsohq/bifrost/core/keyselectors"
 	"github.com/capsohq/bifrost/core/mcp"
@@ -4230,7 +4232,7 @@ func TestReleaseChannelMessage_ClearsPooledReferences_Streaming(t *testing.T) {
 // that range/receive on the result block forever, since a receive from a nil
 // channel never returns.
 func TestExecuteRequestWithRetries_EmptyStreamReturnsClosedChannel(t *testing.T) {
-	config := createTestConfig(1, 10*time.Millisecond, 100*time.Millisecond)
+	config := createTestConfig(1, testtime.Scale(10*time.Millisecond), testtime.Scale(100*time.Millisecond))
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	logger := NewDefaultLogger(schemas.LogLevelError)
 	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
@@ -4264,7 +4266,7 @@ func TestExecuteRequestWithRetries_EmptyStreamReturnsClosedChannel(t *testing.T)
 		if ok {
 			t.Error("Expected zero chunks from an empty stream")
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("Receive on the returned channel blocked; expected a closed channel")
 	}
 	count := 0
@@ -5908,7 +5910,7 @@ func tuneProviderForTest(t testing.TB, account *MockAccount, provider schemas.Mo
 	if !ok {
 		t.Fatalf("provider %s not configured on mock account", provider)
 	}
-	cfg.NetworkConfig.DefaultRequestTimeoutInSeconds = 2
+	cfg.NetworkConfig.DefaultRequestTimeoutInSeconds = testtime.Seconds(2)
 	cfg.NetworkConfig.MaxRetries = 0
 }
 
@@ -5981,7 +5983,7 @@ func TestListAllModelsUnreachableProviderDoesNotBlockAggregate(t *testing.T) {
 	// red path (no deadline honored) is still bounded by the 2s HTTP budget
 	// above, which comfortably exceeds the assertion below.
 	oldTimeout := listAllModelsProviderTimeout
-	listAllModelsProviderTimeout = 400 * time.Millisecond
+	listAllModelsProviderTimeout = testtime.Scale(400 * time.Millisecond)
 	t.Cleanup(func() { listAllModelsProviderTimeout = oldTimeout })
 
 	client := newListModelsTestClient(t, account, nil)
@@ -5998,7 +6000,7 @@ func TestListAllModelsUnreachableProviderDoesNotBlockAggregate(t *testing.T) {
 	if bfErr != nil {
 		t.Fatalf("ListAllModels returned error: %s", bfErr.GetErrorString())
 	}
-	if elapsed >= 1500*time.Millisecond {
+	if elapsed >= testtime.Scale(1500*time.Millisecond) {
 		t.Fatalf("aggregate blocked for %v by the unreachable provider; want well under its 2s HTTP timeout", elapsed)
 	}
 	if !containsModelID(resp, "openai/gpt-4o") {
@@ -6458,9 +6460,9 @@ func TestExecuteRequestWithRetries_BackoffSkippedOnlyForACredentialSwap(t *testi
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Long enough for an attempt however slow the worker, far too short for the backoff.
-			deadline := 30 * time.Second
+			deadline := testtime.Scale(30 * time.Second)
 			if tc.wantWait {
-				deadline = time.Second
+				deadline = testtime.Scale(time.Second)
 			}
 			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(deadline))
 			ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
@@ -9757,7 +9759,7 @@ func TestStampEndedAttempt(t *testing.T) {
 	}
 	t.Run("a TTFT miss keeps its reason", func(t *testing.T) {
 		ctx := trailWith(schemas.KeyAttemptRecord{KeyID: rotationKeyA.ID, FailReason: Ptr(schemas.FirstTokenTimeoutErrorCode)})
-		stampEndedAttempt(ctx, providerUtils.NewFirstTokenTimeoutError(time.Second))
+		stampEndedAttempt(ctx, providerUtils.NewFirstTokenTimeoutError(testtime.Scale(time.Second)))
 		requireEndedAttempt(t, ctx, schemas.FailureClassTimeout, 504, schemas.FirstTokenTimeoutErrorCode)
 	})
 	t.Run("a classified record is left alone", func(t *testing.T) {

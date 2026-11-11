@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -14,7 +16,8 @@ import (
 )
 
 // buildPerServerDelayServer creates an InProcess MCP server with a delay tool
-// that respects context cancellation so per-server timeouts are observable.
+// that respects context cancellation so per-server timeouts are observable. The delay
+// goes through testtime.Scale, so every timeout a test sets against it must too.
 func buildPerServerDelayServer(t *testing.T) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("delay-server", "1.0.0", server.WithToolCapabilities(true))
@@ -24,7 +27,7 @@ func buildPerServerDelayServer(t *testing.T) *server.MCPServer {
 	)
 	s.AddTool(delayTool, func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 		seconds, _ := req.GetArguments()["seconds"].(float64)
-		timer := time.NewTimer(time.Duration(seconds * float64(time.Second)))
+		timer := time.NewTimer(testtime.Scale(time.Duration(seconds * float64(time.Second))))
 		defer timer.Stop()
 		select {
 		case <-timer.C:
@@ -64,7 +67,7 @@ func TestPerServerTimeout_OverridesGlobal(t *testing.T) {
 		ConnectionType:       schemas.MCPConnectionTypeInProcess,
 		InProcessServer:      buildPerServerDelayServer(t),
 		ToolsToExecute:       []string{"*"},
-		ToolExecutionTimeout: 1 * time.Second,
+		ToolExecutionTimeout: testtime.Scale(1 * time.Second),
 	}
 
 	manager := setupMCPManager(t)
@@ -73,7 +76,7 @@ func TestPerServerTimeout_OverridesGlobal(t *testing.T) {
 	bf := setupBifrost(t)
 	bf.SetMCPManager(manager)
 
-	ctx, cancel := createTestContextWithTimeout(10 * time.Second)
+	ctx, cancel := createTestContextWithTimeout(testtime.Scale(10 * time.Second))
 	defer cancel()
 
 	start := time.Now()
@@ -81,7 +84,7 @@ func TestPerServerTimeout_OverridesGlobal(t *testing.T) {
 	result, bifrostErr := bf.ExecuteChatMCPTool(ctx, &toolCall)
 	elapsed := time.Since(start)
 
-	assert.Less(t, elapsed, 2500*time.Millisecond,
+	assert.Less(t, elapsed, testtime.Scale(2500*time.Millisecond),
 		"per-server timeout (1s) should fire before the 3s tool delay; got %v", elapsed)
 	// Timeout surfaces either as a BifrostError or as an error message in the result content.
 	if bifrostErr != nil && bifrostErr.Error != nil {
@@ -107,7 +110,7 @@ func TestPerServerTimeout_AllowsLongerThanGlobal(t *testing.T) {
 		ConnectionType:       schemas.MCPConnectionTypeInProcess,
 		InProcessServer:      buildPerServerDelayServer(t),
 		ToolsToExecute:       []string{"*"},
-		ToolExecutionTimeout: 3 * time.Second,
+		ToolExecutionTimeout: testtime.Scale(3 * time.Second),
 	}
 
 	manager := setupMCPManager(t)
@@ -116,7 +119,7 @@ func TestPerServerTimeout_AllowsLongerThanGlobal(t *testing.T) {
 	bf := setupBifrost(t)
 	bf.SetMCPManager(manager)
 
-	ctx, cancel := createTestContextWithTimeout(10 * time.Second)
+	ctx, cancel := createTestContextWithTimeout(testtime.Scale(10 * time.Second))
 	defer cancel()
 
 	toolCall := makeDelayToolCall(clientName, 2.0) // 2s delay < 3s timeout → must succeed
@@ -152,7 +155,7 @@ func TestPerServerTimeout_FallsBackToGlobal(t *testing.T) {
 	bf.SetMCPManager(manager)
 
 	// Short context deadline — demonstrates that global/context applies when per-server = 0.
-	ctx, cancel := createTestContextWithTimeout(500 * time.Millisecond)
+	ctx, cancel := createTestContextWithTimeout(testtime.Scale(500 * time.Millisecond))
 	defer cancel()
 
 	start := time.Now()
@@ -160,7 +163,7 @@ func TestPerServerTimeout_FallsBackToGlobal(t *testing.T) {
 	result, bifrostErr := bf.ExecuteChatMCPTool(ctx, &toolCall)
 	elapsed := time.Since(start)
 
-	assert.Less(t, elapsed, 2*time.Second,
+	assert.Less(t, elapsed, testtime.Scale(2*time.Second),
 		"context deadline should cancel the tool (per-server=0 falls back to global); got %v", elapsed)
 	// Cancellation surfaces either as a BifrostError or as an error message in the result content.
 	if bifrostErr != nil && bifrostErr.Error != nil {

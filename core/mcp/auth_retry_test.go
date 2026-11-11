@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
@@ -623,7 +625,7 @@ func TestExecuteTool_AuthFailureRetry_Shared_FallsBackWhenReconnectExceedsBudget
 
 	// A short caller deadline caps the reconnect wait budget well below the
 	// package const, keeping the test fast.
-	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(300*time.Millisecond))
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(testtime.Scale(300*time.Millisecond)))
 	req := newAuthRetryToolCallRequest(toolName)
 
 	start := time.Now()
@@ -648,14 +650,14 @@ func TestExecuteTool_AuthFailureRetry_Shared_FallsBackWhenReconnectExceedsBudget
 	if got := cm.acquireCalls.Load(); got != 0 {
 		t.Errorf("AcquireClientConn must not run when the reconnect exceeds the budget, got %d calls", got)
 	}
-	if elapsed > 2*time.Second {
+	if elapsed > testtime.Scale(2*time.Second) {
 		t.Errorf("expected the bounded wait to give up quickly under a short caller deadline, took %v", elapsed)
 	}
 
 	// The reconnect itself must still have been triggered and left running.
 	select {
 	case <-reconnectSignal:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtime.Scale(2 * time.Second)):
 		t.Fatal("expected the background goroutine to call ReconnectClient, but it never did")
 	}
 }
@@ -988,7 +990,7 @@ func TestExecuteTool_NonAuthFailure_NeverTriggersRetryLogic(t *testing.T) {
 	select {
 	case <-reconnectSignal:
 		t.Fatal("ReconnectClient must not be triggered for a non-auth failure")
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(testtime.Scale(200 * time.Millisecond)):
 	}
 	if got := cm.reconnectCalls.Load(); got != 0 {
 		t.Errorf("ReconnectClient must not run for a non-auth failure, got %d calls", got)

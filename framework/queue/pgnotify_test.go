@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/capsohq/bifrost/framework/postgresconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -76,13 +78,13 @@ func (p *pgTestInstance) awaitListening(t *testing.T) {
 	case <-p.store.probes: // a stale probe from an earlier session
 	default:
 	}
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(testtime.Scale(10 * time.Second))
 	for {
 		require.NoError(t, p.db.Exec("SELECT pg_notify(?, ?)", pgNotifyChannel, pgProbeTopic).Error)
 		select {
 		case <-p.store.probes:
 			return
-		case <-time.After(50 * time.Millisecond):
+		case <-time.After(testtime.Scale(50 * time.Millisecond)):
 		case <-deadline:
 			t.Fatal("the LISTEN session never came up")
 		}
@@ -297,14 +299,14 @@ func TestCloseStopsWaitingForAStuckListener(t *testing.T) {
 	q, err := NewStoreQueue(store, EngineConfig{}, nil)
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(200*time.Millisecond))
 	defer cancel()
 	closed := make(chan error, 1)
 	go func() { closed <- q.Close(ctx) }()
 	select {
 	case err := <-closed:
 		assert.ErrorIs(t, err, context.DeadlineExceeded)
-	case <-time.After(3 * time.Second):
+	case <-time.After(testtime.Scale(3 * time.Second)):
 		once.Do(func() { close(store.unblock) })
 		<-closed
 		t.Fatal("Close waited for the listener past its deadline")

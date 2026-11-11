@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -134,7 +136,7 @@ func TestCompleteAndFlushTrace_BoundsInjectsPerPlugin(t *testing.T) {
 // TestWaitForFlushes_TimesOutOnHungPlugin ensures a connector blocked on an unreachable
 // collector cannot hold up shutdown or a config reload.
 func TestWaitForFlushes_TimesOutOnHungPlugin(t *testing.T) {
-	store := NewTraceStore(5*time.Minute, nil)
+	store := NewTraceStore(testtime.Scale(5*time.Minute), nil)
 	defer store.Stop()
 
 	tracer := NewTracer(store, nil, nil)
@@ -143,19 +145,19 @@ func TestWaitForFlushes_TimesOutOnHungPlugin(t *testing.T) {
 	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{hung}, nil)
 	tracer.CompleteAndFlushTrace(tracer.CreateTrace(""))
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testtime.Scale(5 * time.Second))
 	for hung.started.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+		time.Sleep(testtime.Scale(time.Millisecond))
 	}
 	if hung.started.Load() == 0 {
 		t.Fatal("hung plugin was never injected")
 	}
 
 	start := time.Now()
-	if completed := tracer.waitForFlushes(200 * time.Millisecond); completed {
+	if completed := tracer.waitForFlushes(testtime.Scale(200 * time.Millisecond)); completed {
 		t.Fatal("waitForFlushes reported completion while a plugin was still blocked")
 	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
+	if elapsed := time.Since(start); elapsed > testtime.Scale(2*time.Second) {
 		t.Fatalf("waitForFlushes did not honour its timeout: took %v", elapsed)
 	}
 
@@ -276,7 +278,7 @@ func TestSetObservabilityPlugins_DefaultsWhenLimitsNotDeclared(t *testing.T) {
 // cancellation has its Inject call unblocked once the configured inject timeout elapses,
 // freeing the semaphore slot instead of holding it indefinitely.
 func TestCompleteAndFlushTrace_InjectTimeoutReleasesSlot(t *testing.T) {
-	store := NewTraceStore(5*time.Minute, nil)
+	store := NewTraceStore(testtime.Scale(5*time.Minute), nil)
 	defer store.Stop()
 
 	tracer := NewTracer(store, nil, nil)
@@ -289,7 +291,7 @@ func TestCompleteAndFlushTrace_InjectTimeoutReleasesSlot(t *testing.T) {
 	// both flushes below would acquire a slot immediately regardless of whether
 	// cancellation actually released one.
 	limits := map[string]schemas.ObservabilityLimits{
-		"ctx-aware-connector": {SemaphoreSize: 1, InjectTimeout: 50 * time.Millisecond},
+		"ctx-aware-connector": {SemaphoreSize: 1, InjectTimeout: testtime.Scale(50 * time.Millisecond)},
 	}
 	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, limits)
 
@@ -300,7 +302,7 @@ func TestCompleteAndFlushTrace_InjectTimeoutReleasesSlot(t *testing.T) {
 	// acquire instead of proving the slot came free.
 	start := time.Now()
 	tracer.CompleteAndFlushTrace(tracer.CreateTrace(""))
-	if completed := tracer.waitForFlushes(2 * time.Second); !completed {
+	if completed := tracer.waitForFlushes(testtime.Scale(2 * time.Second)); !completed {
 		t.Fatal("expected the first flush to complete once its inject timeout elapsed")
 	}
 	if got := plugin.started.Load(); got != 1 {
@@ -308,7 +310,7 @@ func TestCompleteAndFlushTrace_InjectTimeoutReleasesSlot(t *testing.T) {
 	}
 
 	tracer.CompleteAndFlushTrace(tracer.CreateTrace(""))
-	if completed := tracer.waitForFlushes(2 * time.Second); !completed {
+	if completed := tracer.waitForFlushes(testtime.Scale(2 * time.Second)); !completed {
 		t.Fatal("expected the second flush to complete once its inject timeout elapsed")
 	}
 	if got := plugin.started.Load(); got != 2 {
@@ -317,7 +319,7 @@ func TestCompleteAndFlushTrace_InjectTimeoutReleasesSlot(t *testing.T) {
 	if dropped := tracer.ObservabilityDropCounts()["ctx-aware-connector"]; dropped != 0 {
 		t.Fatalf("expected no traces dropped, got %d", dropped)
 	}
-	if elapsed := time.Since(start); elapsed > time.Second {
+	if elapsed := time.Since(start); elapsed > testtime.Scale(time.Second) {
 		t.Fatalf("flushes took %v, expected them to be bounded by the ~50ms inject timeout each", elapsed)
 	}
 }

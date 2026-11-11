@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/bytedance/sonic"
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -56,7 +58,7 @@ func (p *testRealtimeObservabilityPlugin) Inject(_ context.Context, trace *schem
 }
 
 func TestTracer_CompleteAndFlushTraceInjectsObservabilityPlugins(t *testing.T) {
-	store := NewTraceStore(5*time.Minute, nil)
+	store := NewTraceStore(testtime.Scale(5*time.Minute), nil)
 	defer store.Stop()
 
 	tracer := NewTracer(store, nil, nil)
@@ -75,7 +77,7 @@ func TestTracer_CompleteAndFlushTraceInjectsObservabilityPlugins(t *testing.T) {
 		if trace == nil || trace.TraceID != traceID {
 			t.Fatalf("injected trace = %+v, want trace %q", trace, traceID)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("timed out waiting for observability inject")
 	}
 
@@ -113,7 +115,7 @@ func TestTracer_TransformPausedStreamBufferForwardsToAccumulator(t *testing.T) {
 }
 
 func TestTracer_CompleteAndFlushTraceRedactsContentBeforeInject(t *testing.T) {
-	store := NewTraceStore(5*time.Minute, nil)
+	store := NewTraceStore(testtime.Scale(5*time.Minute), nil)
 	defer store.Stop()
 
 	tracer := NewTracer(store, nil, nil)
@@ -157,13 +159,13 @@ func TestTracer_CompleteAndFlushTraceRedactsContentBeforeInject(t *testing.T) {
 		if !strings.Contains(payload, "gpt-4o-mini") {
 			t.Fatalf("injected trace should retain non-content attributes: %s", payload)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("timed out waiting for observability inject")
 	}
 }
 
 func TestTracer_SetTraceRedactionReplacementsSurvivesLaterObservabilityPlugins(t *testing.T) {
-	store := NewTraceStore(5*time.Minute, nil)
+	store := NewTraceStore(testtime.Scale(5*time.Minute), nil)
 	defer store.Stop()
 
 	tracer := NewTracer(store, nil, nil)
@@ -192,7 +194,7 @@ func TestTracer_SetTraceRedactionReplacementsSurvivesLaterObservabilityPlugins(t
 		if !strings.Contains(payload, "[EMAIL-1]") {
 			t.Fatalf("injected trace missing redacted placeholder: %s", payload)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("timed out waiting for observability inject")
 	}
 }

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
+
 	"github.com/fasthttp/router"
 	"github.com/stretchr/testify/require"
 
@@ -242,7 +244,7 @@ func TestComplexityAnalyzerConfigPutPersistsDecision(t *testing.T) {
 	cfg := complexity.DefaultAnalyzerConfig()
 	cfg.Classifier = complexity.ClassifierDecision
 	count := 1
-	cfg.Decision = &complexity.DecisionConfig{PreviousMessageCount: &count, Timeout: 400 * time.Millisecond}
+	cfg.Decision = &complexity.DecisionConfig{PreviousMessageCount: &count, Timeout: testtime.Scale(400 * time.Millisecond)}
 	ctx := newTestRequestCtx(testComplexityAnalyzerPayload(t, cfg))
 	handler.updateComplexityAnalyzerConfig(ctx)
 
@@ -254,7 +256,7 @@ func TestComplexityAnalyzerConfigPutPersistsDecision(t *testing.T) {
 	require.NotNil(t, stored.Decision)
 	require.NotNil(t, stored.Decision.PreviousMessageCount)
 	require.Equal(t, 1, *stored.Decision.PreviousMessageCount)
-	require.Equal(t, 400*time.Millisecond, stored.Decision.Timeout)
+	require.Equal(t, testtime.Scale(400*time.Millisecond), stored.Decision.Timeout)
 	require.Equal(t, 1, manager.reloadCalls)
 }
 

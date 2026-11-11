@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
 	"github.com/capsohq/bifrost/core/providers/anthropic"
@@ -257,7 +259,7 @@ func TestMistralContentArray(t *testing.T) {
 					if provider.GetProviderKey() != providerName {
 						t.Fatalf("provider alias changed: got %q, want %q", provider.GetProviderKey(), providerName)
 					}
-					parent, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					parent, cancel := context.WithTimeout(context.Background(), testtime.Scale(10*time.Second))
 					defer cancel()
 					ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
 					key := schemas.Key{Value: *schemas.NewSecretVar("offline-mistral-content-array-key")}
@@ -299,7 +301,7 @@ func TestMistralContentArray(t *testing.T) {
 					}
 					select {
 					case <-finalized:
-					case <-time.After(time.Second):
+					case <-time.After(testtime.Scale(time.Second)):
 						t.Fatal("stream finalizer not called")
 					}
 					wantErrors := int32(0)

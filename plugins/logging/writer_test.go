@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/plugins/logging/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/logstore"
 	"github.com/capsohq/bifrost/framework/postgresconn"
@@ -736,7 +738,7 @@ func TestBatchWriterGateFalseWritesAsUsual(t *testing.T) {
 // flush at once instead of each waiting out another cap, and the next window
 // (after the lock has been seen released) pauses again.
 func TestBatchWriterKeepsWritingAfterPauseCapUntilLockClears(t *testing.T) {
-	const poll, maxPause = 10 * time.Millisecond, 200 * time.Millisecond
+	var poll, maxPause = testtime.Scale(10 * time.Millisecond), testtime.Scale(200 * time.Millisecond)
 	shrinkMaintenanceTimers(t, poll, maxPause)
 	inner := newTestStore(t)
 	store := &gatedStore{LogStore: inner}
@@ -865,9 +867,9 @@ func TestDeferredUsageWaitsForMigrationAndWriterResume(t *testing.T) {
 // still held when the deferred-usage budget runs out drops the update, counts
 // it, and never touches the store.
 func TestDeferredUsageDroppedWhenMigrationOutlivesBudget(t *testing.T) {
-	shrinkMaintenanceTimers(t, 10*time.Millisecond, time.Minute)
+	shrinkMaintenanceTimers(t, testtime.Scale(10*time.Millisecond), testtime.Scale(time.Minute))
 	prev := deferredUsageDBTimeout
-	deferredUsageDBTimeout = 100 * time.Millisecond
+	deferredUsageDBTimeout = testtime.Scale(100 * time.Millisecond)
 	t.Cleanup(func() { deferredUsageDBTimeout = prev })
 	plugin, store := newUsageGatedPlugin(t)
 
@@ -1422,7 +1424,7 @@ func (s *blockingPresenceStore) IsLogEntryPresent(ctx context.Context, _ string)
 // hold the response.
 func TestEvictedPartialProbeIsBounded(t *testing.T) {
 	prev := evictedPartialProbeTimeout
-	evictedPartialProbeTimeout = 50 * time.Millisecond
+	evictedPartialProbeTimeout = testtime.Scale(50 * time.Millisecond)
 	t.Cleanup(func() { evictedPartialProbeTimeout = prev })
 
 	plugin, err := Init(context.Background(), &Config{}, testLogger{}, &blockingPresenceStore{LogStore: newTestStore(t)}, nil, nil, nil)
@@ -1438,7 +1440,7 @@ func TestEvictedPartialProbeIsBounded(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(1 * time.Second):
+	case <-time.After(testtime.Scale(1 * time.Second)):
 		t.Fatal("PostLLMHook blocked on the presence probe instead of bounding it")
 	}
 }
@@ -2801,7 +2803,7 @@ func shutdownWithProducerStopped(t *testing.T, plugin *LoggerPlugin, stopped <-c
 	t.Helper()
 	select {
 	case <-stopped:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testtime.Scale(3 * time.Second)):
 		t.Fatal("the producer never reached its seam")
 	}
 	cleaned := make(chan struct{})
@@ -2812,13 +2814,13 @@ func shutdownWithProducerStopped(t *testing.T, plugin *LoggerPlugin, stopped <-c
 	waitFor(t, "Cleanup to close admission", plugin.closed.Load)
 	select {
 	case <-cleaned:
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(testtime.Scale(500 * time.Millisecond)):
 	}
 	close(resume)
 	for name, done := range map[string]<-chan struct{}{"producer": produced, "Cleanup": cleaned} {
 		select {
 		case <-done:
-		case <-time.After(5 * time.Second):
+		case <-time.After(testtime.Scale(5 * time.Second)):
 			t.Fatalf("%s deadlocked during shutdown", name)
 		}
 	}

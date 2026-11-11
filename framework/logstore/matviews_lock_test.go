@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -166,7 +168,7 @@ func TestMigrationLockContextCancellationAndSessionRelease(t *testing.T) {
 
 	holderDB, holder := acquireTestAdvisoryLockOnIsolatedPool(t, migrationAdvisoryLockKey)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(50*time.Millisecond))
 	defer cancel()
 	lock, err := acquireMigrationLock(ctx, db, testLogger{})
 	require.Error(t, err)
