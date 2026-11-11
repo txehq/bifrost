@@ -41,12 +41,18 @@ const (
 // Used for plugin HTTP transport interception (supports both native .so and WASM plugins).
 // This type is pooled for allocation control - use AcquireHTTPRequest and ReleaseHTTPRequest.
 type HTTPRequest struct {
-	Method     string            `json:"method"`
-	Path       string            `json:"path"`
-	Headers    map[string]string `json:"headers"`
-	Query      map[string]string `json:"query"`
-	Body       []byte            `json:"body"`
-	PathParams map[string]string `json:"path_params"` // Path variables extracted from the URL pattern (e.g., {model})
+	Method  string            `json:"method"`
+	Path    string            `json:"path"`
+	Headers map[string]string `json:"headers"`
+	// Query holds one value per query parameter name: the first, which is also the value
+	// the gateway's handlers and routing rules read. A plugin may change or add entries.
+	Query map[string]string `json:"query"`
+	// RepeatedQuery holds every value, in the order sent, of each query parameter name the
+	// caller sent more than once; it is nil when no name repeats. It is read-only: the
+	// transport applies changes made to Query, never to RepeatedQuery (fork, TXE-7042).
+	RepeatedQuery map[string][]string `json:"repeated_query,omitempty"`
+	Body          []byte              `json:"body"`
+	PathParams    map[string]string   `json:"path_params"` // Path variables extracted from the URL pattern (e.g., {model})
 }
 
 // CaseInsensitiveHeaderLookup looks up a header key in a case-insensitive manner
@@ -197,6 +203,7 @@ func ReleaseHTTPRequest(req *HTTPRequest) {
 	req.Method = ""
 	req.Path = ""
 	req.Body = nil
+	req.RepeatedQuery = nil
 	httpRequestPool.Put(req)
 }
 

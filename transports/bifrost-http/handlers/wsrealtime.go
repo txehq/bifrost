@@ -274,10 +274,7 @@ func populateRealtimeRequestContext(ctx *fasthttp.RequestCtx, bifrostCtx *schema
 	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, allHeaders)
 	if queryArgs := ctx.Request.URI().QueryArgs(); queryArgs.Len() > 0 {
 		allQuery := make(map[string]string, queryArgs.Len())
-		queryArgs.All()(func(key, value []byte) bool {
-			allQuery[strings.ToLower(string(key))] = string(value)
-			return true
-		})
+		lib.CopyQueryFirstValues(queryArgs, allQuery, true)
 		bifrostCtx.SetValue(schemas.BifrostContextKeyRequestQuery, allQuery)
 	}
 }
