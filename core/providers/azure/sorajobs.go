@@ -473,35 +473,57 @@ func (provider *AzureProvider) soraJobsDownload(ctx *schemas.BifrostContext, key
 		return nil, newAzureSoraJobsInvalidRequest("video_id",
 			fmt.Sprintf("the video is not ready: the job is %s (%s)", task.Status, task.ProviderStatus))
 	}
-	body, contentType, latency, bifrostErr := provider.soraJobsContent(ctx, key, task.Videos[0].ID, content, contentType)
+	// The job lookup above is a buffered call; the file itself is streamed to a caller that
+	// asked for it, never held whole (contract C9 / BF20).
+	response, bifrostErr := provider.soraJobsContent(ctx, key, task.Videos[0].ID, content, contentType, request.Stream)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	return &schemas.BifrostVideoDownloadResponse{
-		VideoID:     request.ID,
-		Content:     body,
-		ContentType: contentType,
-		ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency},
-	}, nil
+	response.VideoID = request.ID
+	return response, nil
 }
 
-// soraJobsContent fetches one generation's video or thumbnail. contentType is the media type
-// to report when Azure sends none.
-func (provider *AzureProvider) soraJobsContent(ctx *schemas.BifrostContext, key schemas.Key, generationID, content, contentType string) ([]byte, string, int64, *schemas.BifrostError) {
+// soraJobsContent fetches one generation's video or thumbnail through
+// providerUtils.FetchVideoContent: streamed when stream is set (the download route), buffered
+// otherwise (the GenAI byte enrichment). contentType is the media type to report when Azure
+// sends none.
+func (provider *AzureProvider) soraJobsContent(ctx *schemas.BifrostContext, key schemas.Key, generationID, content, contentType string, stream bool) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
 	escaped, bifrostErr := providerUtils.EscapeResourceID(generationID, "generation_id")
 	if bifrostErr != nil {
-		return nil, "", 0, bifrostErr
+		return nil, bifrostErr
 	}
-	body, resp, latency, bifrostErr := provider.soraJobsCall(ctx, key, http.MethodGet,
-		fmt.Sprintf("/video/generations/%s/content/%s", escaped, content), nil)
+	endpoint := resolveAzureEndpoint(ctx, key)
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set")
+	}
+	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
 	if bifrostErr != nil {
-		return nil, "", 0, bifrostErr
+		return nil, bifrostErr
 	}
-	if ct := string(resp.Header.ContentType()); ct != "" {
-		contentType = ct
+	req := fasthttp.AcquireRequest()
+	defer fasthttp.ReleaseRequest(req)
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(fmt.Sprintf("%s/openai/v1/video/generations/%s/content/%s?api-version=%s",
+		strings.TrimRight(endpoint, "/"), escaped, content, azureSoraJobsAPIVersion))
+	req.Header.SetMethod(http.MethodGet)
+	for k, v := range authHeaders {
+		req.Header.Set(k, v)
 	}
-	fasthttp.ReleaseResponse(resp)
-	return body, contentType, latency, nil
+	return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
+		Request:                  req,
+		Client:                   provider.client,
+		StreamingClient:          provider.streamingClient,
+		Stream:                   stream,
+		VideoID:                  generationID,
+		StreamIdleTimeoutSeconds: provider.networkConfig.StreamIdleTimeoutInSeconds,
+		ParseError:               parseAzureSoraJobsError,
+		ContentType: func(upstream string) string {
+			if upstream == "" {
+				return contentType
+			}
+			return upstream
+		},
+	})
 }
 
 // soraJobsRetrieveForCaller is the query of the unified retrieve route. A caller that needs the
@@ -521,16 +543,16 @@ func (provider *AzureProvider) soraJobsRetrieveForCaller(ctx *schemas.BifrostCon
 		if video.Type != schemas.VideoOutputTypeContent || video.ID == "" {
 			continue
 		}
-		body, contentType, _, bifrostErr := provider.soraJobsContent(ctx, key, video.ID, "video", azureSoraJobsContentType)
+		file, bifrostErr := provider.soraJobsContent(ctx, key, video.ID, "video", azureSoraJobsContentType, false)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
-		encoded := base64.StdEncoding.EncodeToString(body)
+		encoded := base64.StdEncoding.EncodeToString(file.Content)
 		task.Videos = append(task.Videos, schemas.VideoOutput{
 			ID:          video.ID,
 			Type:        schemas.VideoOutputTypeBase64,
 			Base64Data:  &encoded,
-			ContentType: contentType,
+			ContentType: file.ContentType,
 		})
 	}
 	return task, nil

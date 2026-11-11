@@ -1834,3 +1834,36 @@ func TestAzureSoraJobsQueryCarriesBytesWhenTheCallerAsks(t *testing.T) {
 		t.Fatalf("calls = %+v, want the job query then the generation's content with the key", got)
 	}
 }
+
+// TestAzureSoraJobsDownloadStreamsOnRequest pins contract C9 / BF20 on the jobs API: with Stream
+// set, the generation's file comes back as an open Body read as it arrives, never as buffered
+// Content; the job lookup before it is an ordinary call with the same key.
+func TestAzureSoraJobsDownloadStreamsOnRequest(t *testing.T) {
+	server, calls := azureSoraJobsServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/openai/v1/video/generations/gen_01jwcf0a/content/video" {
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = io.WriteString(w, "mp4-bytes")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, azureSoraJobWithStatus("succeeded"))
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := newAzureDecisionProvider(t).VideoDownload(ctx, newAzureDecisionKey(server.URL),
+		&schemas.BifrostVideoDownloadRequest{Provider: schemas.Azure, ID: "sora1.task_01jwcet0eje35tc5jy54yjax5q:azure", Stream: true})
+	if bifrostErr != nil {
+		t.Fatalf("VideoDownload: %+v", bifrostErr.Error)
+	}
+	if resp.Body == nil || resp.Content != nil || resp.ContentType != "video/mp4" || resp.VideoID != "sora1.task_01jwcet0eje35tc5jy54yjax5q:azure" {
+		t.Fatalf("streamed response = %+v, want an open Body and no Content", resp)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || resp.Body.Close() != nil || string(body) != "mp4-bytes" {
+		t.Fatalf("body = %q, %v", body, err)
+	}
+	got := calls()
+	if len(got) != 2 || got[0].path != "/openai/v1/video/generations/jobs/task_01jwcet0eje35tc5jy54yjax5q" ||
+		got[1].path != "/openai/v1/video/generations/gen_01jwcf0a/content/video" || got[1].query != "api-version=preview" || got[1].apiKey != "test-key" {
+		t.Fatalf("calls = %+v, want the job lookup then the streamed content with the key", got)
+	}
+}
