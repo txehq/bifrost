@@ -1,0 +1,220 @@
+name: Go unit tests (offline)
+
+# The Go unit tests of core, framework, transports and plugins on every pull request (TXE-7078).
+#
+# Before this, the fork's required PR checks (codex-review, API collection offline suites) ran
+# no Go test: pr-tests.yml waits for a manual approval and the release pipeline runs the Go
+# suites only after a merge. PR #144 merged green and main went red in core
+# (TestExtraParamsNeverReplaceTheModelOrInputOnAnyProvider for google-cloud-tts), a
+# cross-provider test of the kind TXE-7018, TXE-7059 and TXE-7065 added so that a new provider
+# cannot omit a rule. This workflow fails that PR instead.
+#
+# - What runs: go-unit-shards.py lists every package with tests on each run and splits them
+#   across the shard matrix, heavy packages by test name. Its header has the rules and the exclusions.
+# - No live calls: the tests run through scripts/test-offline.sh, which removes every
+#   credential variable (TXE-7053); the job uses no secret, and the script prints the number of
+#   *_API_KEY variables it sees (0) and refuses to run with one set.
+# - MCP: core/internal/mcptests and the bifrost-http MCP handler tests drive the STDIO servers
+#   in examples/mcps, built here by `make setup-mcp-tests` as in the release's test-core-unit.
+# - Services: framework and plugin suites use tests/docker-compose.yml (Postgres, ClickHouse,
+#   Redis, the vector stores). In CI an unreachable ClickHouse is a failure, not a skip, so
+#   every shard starts the stack in the background while Go compiles.
+# - Load-sensitive tests are named in LOAD_SENSITIVE_TESTS below with their tickets. Each is
+#   skipped in its package's main run and run alone at the end of its shard.
+# - The required check is the `Go unit tests (offline)` job, which fails unless every shard
+#   passed. No paths filter: a path-filtered required check never reports on a PR outside its
+#   paths, which blocks that PR's merge.
+# - On a push to main, warm-cache compiles every test binary and saves the go-unit build cache
+#   that the shards restore (a cache saved by a pull request is readable by that PR alone).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: go-unit-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # <ticket> <import path> <test name>, one per line. Run alone at the end of its shard.
+  LOAD_SENSITIVE_TESTS: |
+    TXE-7066 github.com/capsohq/bifrost/core TestOverheadResetBetweenRequests
+
+jobs:
+  shard:
+    if: github.event_name == 'pull_request'
+    name: Go unit tests shard ${{ matrix.shard }}
+    # Pull requests whose head branch is in another repository run in pr-testing and wait for
+    # a reviewer; every other run lands on ci-trusted-branch. The job compiles and runs the
+    # PR's own code and installs the MCP servers' npm packages (scripts/test-approval-environment.py).
+    environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          # setup-go, setup-node and the Go module proxy; npm for the TypeScript MCP servers;
+          # Docker Hub, GHCR and Alpine's CDN for tests/docker-compose.yml. The tests dial only
+          # loopback; the _grpc_config, qdrant and weaviate names are lookups the vector-store
+          # clients make, allowlisted as in the release's test-framework job.
+          allowed-endpoints: >
+            _grpc_config.cluster.qdrant.io:443
+            _grpc_config.localhost:443
+            api.github.com:443
+            auth.docker.io:443
+            cluster.qdrant.io:443
+            cluster.weaviate.network:443
+            dl-cdn.alpinelinux.org:443
+            ghcr.io:443
+            github.com:443
+            nodejs.org:443
+            pkg-containers.githubusercontent.com:443
+            production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
+            proxy.golang.org:443
+            registry-1.docker.io:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+            telemetry.qdrant.io:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # Pulled and started now, so the images download while Go compiles; waited on below.
+      - name: Start the test services in the background
+        run: |
+          nohup docker compose -f tests/docker-compose.yml up -d --quiet-pull > "$RUNNER_TEMP/compose.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/compose.pid"
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.3"
+          cache: false
+
+      - name: Restore the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: go-unit
+
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "25"
+
+      - name: Build MCP test servers
+        run: make setup-mcp-tests
+
+      # main.go's go:embed needs a nonempty ui directory; no UI build is needed for unit tests.
+      - name: Stub the UI directory
+        run: |
+          mkdir -p transports/bifrost-http/ui
+          [ -f transports/bifrost-http/ui/.gitkeep ] || echo placeholder > transports/bifrost-http/ui/.gitkeep
+
+      - name: Wait for the test services
+        run: |
+          while kill -0 "$(cat "$RUNNER_TEMP/compose.pid")" 2>/dev/null; do sleep 2; done
+          cat "$RUNNER_TEMP/compose.log"
+          for _ in $(seq 1 60); do
+            if docker compose -f tests/docker-compose.yml exec -T clickhouse wget --spider -q http://127.0.0.1:8123/ping 2>/dev/null &&
+               docker compose -f tests/docker-compose.yml exec -T postgres pg_isready -q 2>/dev/null; then
+              echo "ClickHouse and Postgres are ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose -f tests/docker-compose.yml ps
+          echo "::error::the test services did not become ready within 120s"
+          exit 1
+
+      - name: Run go test (shard ${{ matrix.shard }})
+        # The matrix is the one list of shards: the script plans for strategy.job-total of them.
+        env:
+          SHARD: ${{ strategy.job-index }}
+          SHARDS: ${{ strategy.job-total }}
+        run: scripts/test-offline.sh python3 .github/workflows/scripts/go-unit-shards.py run --shard "$((SHARD + 1))" --shards "$SHARDS"
+
+  # The one check to require on main: it fails unless every shard passed.
+  go-unit-tests:
+    if: always() && github.event_name == 'pull_request'
+    needs: [shard]
+    name: Go unit tests (offline)
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    timeout-minutes: 5
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          allowed-endpoints: >+
+
+      - name: Every shard passed
+        env:
+          RESULT: ${{ needs.shard.result }}
+        run: |
+          echo "shards: $RESULT"
+          [ "$RESULT" = success ]
+
+  warm-cache:
+    if: github.event_name == 'push'
+    name: Save the go-unit build cache
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            proxy.golang.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.3"
+          cache: false
+
+      - name: Restore the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: go-unit
+
+      - name: Stub the UI directory
+        run: |
+          mkdir -p transports/bifrost-http/ui
+          [ -f transports/bifrost-http/ui/.gitkeep ] || echo placeholder > transports/bifrost-http/ui/.gitkeep
+
+      # Compiles and links every test binary the shards run, and runs none of them.
+      - name: Compile every test binary
+        run: scripts/test-offline.sh python3 .github/workflows/scripts/go-unit-shards.py compile
+
+      - name: Save the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: go-unit
+          mode: save
+          max-mb: "1500"
