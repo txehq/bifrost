@@ -4407,7 +4407,7 @@ func openAIVideoFormValue(v string) interface{} {
 	switch trimmed[0] {
 	case 't', 'f', '{', '[', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 		var decoded interface{}
-		if err := json.Unmarshal([]byte(trimmed), &decoded); err == nil {
+		if err := sonic.UnmarshalString(trimmed, &decoded); err == nil {
 			return decoded
 		}
 	}
