@@ -480,6 +480,34 @@ func TestTranscriptionNoResultsIsProviderEmptyResult(t *testing.T) {
 	}
 }
 
+// An extra param never names the model or the language the request already sets, under any
+// spelling, nor a field only the gateway decides (version is Deepgram's name for the model's
+// version): 400 caller_invalid_request naming the param as sent, and nothing is sent. This is
+// the extra-params rule every provider follows (TXE-7018, TXE-7031).
+func TestTranscriptionRefusesExtraParamsThatNameTheModel(t *testing.T) {
+	upstream := newDeepgramUpstream(t, http.StatusOK, deepgramSingleChannelResponse)
+	provider := newTestDeepgramProvider(t, upstream.URL)
+
+	for _, param := range []string{"model", "Model", "MODEL", "language", "Language", "version", "model_id", "modelId", "deployment", "deployment_id", "engine", "stream"} {
+		t.Run(param, func(t *testing.T) {
+			request := fileRequest(map[string]interface{}{param: "nova-2"})
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := provider.Transcription(ctx, deepgramTestKey(), request)
+			if bifrostErr == nil {
+				t.Fatal("the request must be refused")
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest ||
+				bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerInvalidRequest ||
+				bifrostErr.Error == nil || bifrostErr.Error.Param != param {
+				t.Fatalf("error = %v / %+v / %+v, want 400 caller_invalid_request naming %q", bifrostErr.StatusCode, bifrostErr.ExtraFields, bifrostErr.Error, param)
+			}
+		})
+	}
+	if got := upstream.count(); got != 0 {
+		t.Fatalf("upstream calls = %d, want none for refused requests", got)
+	}
+}
+
 // What Bifrost cannot deliver to Deepgram is refused with 400 caller_unsupported_parameter
 // naming the field, and nothing is sent (contract C4, agreement three).
 func TestTranscriptionRefusesWhatItCannotDeliver(t *testing.T) {
@@ -497,8 +525,6 @@ func TestTranscriptionRefusesWhatItCannotDeliver(t *testing.T) {
 			r.Params.ExtraParams["callback"] = "https://example.com/hook"
 		}, "callback"},
 		{"callback_method", func(r *schemas.BifrostTranscriptionRequest) { r.Params.ExtraParams["callback_method"] = "PUT" }, "callback_method"},
-		{"model as an extra param", func(r *schemas.BifrostTranscriptionRequest) { r.Params.ExtraParams["model"] = "nova-2" }, "model"},
-		{"language as an extra param", func(r *schemas.BifrostTranscriptionRequest) { r.Params.ExtraParams["language"] = "fr" }, "language"},
 		{"temperature as an extra param", func(r *schemas.BifrostTranscriptionRequest) { r.Params.ExtraParams["temperature"] = "0.2" }, "temperature"},
 		{"include[] as an extra param", func(r *schemas.BifrostTranscriptionRequest) {
 			r.Params.ExtraParams["include[]"] = []string{"logprobs"}

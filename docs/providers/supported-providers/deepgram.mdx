@@ -146,9 +146,15 @@ Bifrost never drops or rewrites a field it cannot deliver. These requests get `4
 | `response_format` other than `json` | Deepgram answers JSON only |
 | `timestamp_granularities`, `temperature`, `include` | Deepgram has no equivalent. Word timings are always in the raw response |
 | `callback`, `callback_method` | Deepgram would answer with a request id and deliver the transcript elsewhere, so the response would carry no transcript and no usage |
-| `model` or `language` as an extra param (Go SDK) | They are unified fields |
 | `url` together with `file` | Send one |
 | an extra param whose value is an object or a nested list (Go SDK) | It has no query form |
+
+As on every provider, an extra param never names a field the request already sets or one only the gateway decides. These get `400` with `extra_fields.error_type: "caller_invalid_request"` and the param in `error.param`, and no request reaches Deepgram:
+
+| Field | Why |
+|-------|-----|
+| `model` or `language` as an extra param, under any spelling (`Model`, `MODEL`) | The request already sets them |
+| `version`, `model_id`, `deployment`, `deployment_id`, `engine`, `stream` | Names a vendor can read the model under, or the response shape. Deepgram reads `version` as the model's version, so it cannot be set through Bifrost |
 
 ### Response Mapping
 

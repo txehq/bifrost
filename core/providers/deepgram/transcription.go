@@ -51,11 +51,15 @@ var deepgramAudioTypesByExtension = map[string]string{
 // Refused with 400 caller_unsupported_parameter, never dropped or rewritten: a
 // response_format other than json; callback and callback_method (Deepgram would answer
 // with a request id and deliver the transcript elsewhere, so there would be no usage to
-// report); model and language as extra params (they are unified fields); the other unified
+// report); the other unified
 // transcription fields when they arrive as extra params (temperature, include,
 // timestamp_granularities, response_format, prompt), which is how the native route delivers
 // the ones it does not parse; a url next to a file; an extra param whose value is not a
 // string, number, boolean or a list of them.
+//
+// Refused with 400 caller_invalid_request, as on every provider: an extra param that names
+// model or language under any spelling, and one that names a field only the gateway decides
+// (stream, version, model_id, deployment, deployment_id, engine).
 func ToDeepgramTranscriptionRequest(request *schemas.BifrostTranscriptionRequest) (*DeepgramTranscriptionRequest, *schemas.BifrostError) {
 	if request == nil {
 		return nil, providerUtils.NewBifrostOperationError("transcription request is nil", nil)
@@ -94,9 +98,6 @@ func ToDeepgramTranscriptionRequest(request *schemas.BifrostTranscriptionRequest
 		case schemas.TranscriptionURLParam:
 			// Carried in the body, below.
 			continue
-		case "model", "language":
-			return nil, schemas.NewUnsupportedParameterError(key,
-				fmt.Sprintf("%s is a unified field; send it as %s, not as an extra param", key, key))
 		case "temperature", "include", "include[]", "timestamp_granularities", "timestamp_granularities[]", "response_format", "prompt":
 			// The native route reads only some unified fields from the form and leaves the
 			// rest in the extra params; they are the same fields under the same names, and
@@ -107,6 +108,23 @@ func ToDeepgramTranscriptionRequest(request *schemas.BifrostTranscriptionRequest
 		case "callback", "callback_method":
 			return nil, schemas.NewUnsupportedParameterError(key,
 				"deepgram callbacks are not supported: the transcript must come back on this request")
+		}
+		// The extra-params rule every provider follows (providerUtils.MergeExtraParamsIntoJSON,
+		// TXE-7018): an extra param never names a field the request already sets. model and
+		// language are on the query from the typed request, and a second value there, under
+		// any spelling, could be read in their place.
+		for _, field := range [...]string{"model", "language"} {
+			if providerUtils.ExtraParamNamesField(key, field) {
+				bifrostErr, _ := providerUtils.AsBifrostBadRequestError(providerUtils.ExtraParamConflictError(key, field))
+				return nil, bifrostErr
+			}
+		}
+		// Nor can it add a field only the gateway decides (TXE-7031): another name for the
+		// model, or stream. Deepgram reads version as the model's version, so version is
+		// among them and cannot be set.
+		if field := providerUtils.ExtraParamUnsettableField(key); field != "" {
+			bifrostErr, _ := providerUtils.AsBifrostBadRequestError(providerUtils.ExtraParamUnsettableError(key, field))
+			return nil, bifrostErr
 		}
 		values, ok := deepgramQueryValues(value)
 		if !ok {
