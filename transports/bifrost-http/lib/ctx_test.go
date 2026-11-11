@@ -3184,17 +3184,66 @@ func TestApplyQueryChanges(t *testing.T) {
 		{name: "direct write of the first value reads as untouched", mutate: func(r *request) { r.Query["tier"] = "allowed" }, want: sent},
 		{name: "name deleted stays", mutate: func(r *request) { delete(r.Query, "status") }, want: sent},
 	}
+	// Each row runs on the query string as written, which is scanned once per name, and
+	// with enough other names in front of it to take the one-pass path.
+	padding := ""
+	for i := range 2 * maxQueryNamesScannedPerName {
+		padding += fmt.Sprintf("pad%d=%d&", i, i)
+	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := queryTestCtx("/v1/batches?" + sent)
-			args := ctx.Request.URI().QueryArgs()
-			r := &request{Query: map[string]string{}}
-			r.RepeatedQuery = CopyQueryFirstValues(args, r.Query, false)
-			tc.mutate(r)
-			ApplyQueryChanges(args, r)
-			got := string(args.QueryString())
-			if !sameQueryPairs(got, tc.want) {
-				t.Fatalf("query string = %q, want %q", got, tc.want)
+		for pathName, prefix := range map[string]string{"scan per name": "", "one pass": padding} {
+			t.Run(tc.name+"/"+pathName, func(t *testing.T) {
+				ctx := queryTestCtx("/v1/batches?" + prefix + sent)
+				args := ctx.Request.URI().QueryArgs()
+				r := &request{Query: map[string]string{}}
+				r.RepeatedQuery = CopyQueryFirstValues(args, r.Query, false)
+				tc.mutate(r)
+				ApplyQueryChanges(args, r)
+				got := string(args.QueryString())
+				if !sameQueryPairs(got, prefix+tc.want) {
+					t.Fatalf("query string = %q, want %q", got, prefix+tc.want)
+				}
+			})
+		}
+	}
+}
+
+// A caller chooses how many names a query string carries, and the write-back runs before
+// authentication, so a long query string is read in one pass instead of once per name
+// (8,000 names cost 64 million comparisons a pass that way). The result is the same: a
+// pinned name ends with one value and the rest stays as sent (fork, TXE-7042). No time is
+// asserted here; BenchmarkApplyQueryChangesManyNames shows the cost.
+func TestApplyQueryChangesOnAQueryStringOfThousandsOfNames(t *testing.T) {
+	var query strings.Builder
+	for i := range 8000 {
+		fmt.Fprintf(&query, "n%d=%d&", i, i)
+	}
+	sent := query.String() + "status=a&status=b"
+	ctx := queryTestCtx("/v1/batches?" + sent + "&tier=allowed&tier=other")
+	args := ctx.Request.URI().QueryArgs()
+	r := &schemas.HTTPRequest{Query: map[string]string{}}
+	r.RepeatedQuery = CopyQueryFirstValues(args, r.Query, false)
+	r.SetQuery("tier", "allowed")
+	ApplyQueryChanges(args, r)
+	if got, want := string(args.QueryString()), sent+"&tier=allowed"; got != want {
+		t.Fatalf("query string ends %q, want it to end %q", got[max(0, len(got)-60):], want[len(want)-60:])
+	}
+}
+
+func BenchmarkApplyQueryChangesManyNames(b *testing.B) {
+	for _, names := range []int{8, 1000, 8000} {
+		var query strings.Builder
+		for i := range names {
+			fmt.Fprintf(&query, "n%d=%d&", i, i)
+		}
+		ctx := queryTestCtx("/v1/batches?" + query.String() + "tier=allowed&tier=other")
+		args := ctx.Request.URI().QueryArgs()
+		r := &schemas.HTTPRequest{Query: map[string]string{}}
+		r.RepeatedQuery = CopyQueryFirstValues(args, r.Query, false)
+		b.Run(fmt.Sprintf("names=%d", names), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				ApplyQueryChanges(args, r)
 			}
 		})
 	}
