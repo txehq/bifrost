@@ -1905,7 +1905,10 @@ func TestDistributedLock_RefusesALeaseConfirmedAfterItsExpiry(t *testing.T) {
 			require.NoError(t, err)
 			defer release()
 			require.NoError(t, held.Err(), "Acquire never hands back a dead lease")
-			require.EqualValues(t, 3, late.attempts.Load())
+			// Two late confirmations are refused, then a retry gets a lease. On a loaded machine
+			// an ordinary acquire can also outlast the TTL and be refused the same way, so the
+			// count is a floor (TXE-7128: run 42989698636 saw 4).
+			require.GreaterOrEqual(t, late.attempts.Load(), int32(3))
 			row, err := store.GetLock(ctx, "late-retried")
 			require.NoError(t, err)
 			require.NotNil(t, row)
