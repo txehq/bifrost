@@ -4849,3 +4849,42 @@ func callArguments(text string, open int) (string, bool) {
 	}
 	return "", false
 }
+
+// TestEveryFasthttpClientDialsThroughTheGuard fails when a fasthttp client in core is built in a
+// function that never gives it a dialer: fasthttp's own dialer bypasses the offline egress guard
+// (TXE-7083; a Gemini image download did). Each construction's function must call
+// ConfigureDialer, set Dial or DialTimeout, or use network.GuardedFasthttpDial.
+func TestEveryFasthttpClientDialsThroughTheGuard(t *testing.T) {
+	literal := regexp.MustCompile(`fasthttp\.(Client|HostClient|PipelineClient)\{`)
+	dialer := regexp.MustCompile(`ConfigureDialer\(|\.Dial\s*=|\bDial:|\.DialTimeout\s*=|\bDialTimeout:|GuardedFasthttpDial`)
+	found := 0
+	err := filepath.WalkDir(filepath.Join("..", ".."), func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return err
+		}
+		source, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		text := string(source)
+		for _, loc := range literal.FindAllStringIndex(text, -1) {
+			found++
+			start := strings.LastIndex(text[:loc[0]], "\nfunc ")
+			end := strings.Index(text[loc[0]:], "\n}\n")
+			if start < 0 || end < 0 {
+				continue // a package-level literal; none today
+			}
+			if !dialer.MatchString(text[start : loc[0]+end]) {
+				t.Errorf("%s:%d: a fasthttp client with no guarded dialer (use ConfigureDialer or network.GuardedFasthttpDial)",
+					path, strings.Count(text[:loc[0]], "\n")+1)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found < 30 {
+		t.Fatalf("found %d fasthttp clients; the scan no longer sees core's sources", found)
+	}
+}

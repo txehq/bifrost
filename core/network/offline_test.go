@@ -3,14 +3,18 @@ package network
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/valyala/fasthttp"
 )
 
 // testNetAddr is in TEST-NET-3 (RFC 5737): never routed, so a guard failure here cannot reach
@@ -127,6 +131,10 @@ func TestOfflineGuardCoversTheSharedClients(t *testing.T) {
 	// http.DefaultClient and a bare &http.Client{} dial through http.DefaultTransport.
 	_, checks["http.DefaultClient"] = http.DefaultClient.Get("https://" + testNetAddr + "/")
 	_, checks["bare http.Client"] = (&http.Client{}).Get("http://" + testNetAddr + "/")
+	// The factory's fasthttp client and a client given GuardedFasthttpDial (fasthttp's own
+	// dialer would bypass the guard).
+	_, _, checks["factory fasthttp"] = NewHTTPClientFactory(nil, nil).GetFasthttpClient(ClientPurposeInference).Get(nil, "http://"+testNetAddr+"/")
+	_, _, checks["GuardedFasthttpDial"] = (&fasthttp.Client{Dial: GuardedFasthttpDial}).Get(nil, "http://"+testNetAddr+"/")
 
 	resolver := offlineStubResolver{"api.vendor.example": {net.ParseIP("8.8.8.8")}}
 	_, checks["ssrf dialer"] = ssrfSafeDialContext(resolver, GuardDialer(&net.Dialer{}).DialContext, nil)(context.Background(), "tcp", "api.vendor.example:443")
@@ -196,5 +204,46 @@ func BenchmarkOfflineControl(b *testing.B) {
 				_ = offlineControl("tcp4", tc.addr, nil)
 			}
 		})
+	}
+}
+
+// TestEveryNetDialerInCoreIsGuarded fails when core builds a net.Dialer for TCP without the
+// offline egress guard (TXE-7083): a literal must be wrapped in GuardDialer, or dial a unix
+// socket on the same line. offline.go, which builds the guarded dialer, is exempt.
+func TestEveryNetDialerInCoreIsGuarded(t *testing.T) {
+	found := 0
+	err := filepath.WalkDir("..", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == "internal" && filepath.Dir(path) == ".." {
+				return filepath.SkipDir // test-only harness packages (llmtests, mcptests)
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || strings.HasSuffix(path, filepath.Join("network", "offline.go")) {
+			return nil
+		}
+		source, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for i, line := range strings.Split(string(source), "\n") {
+			if !strings.Contains(line, "net.Dialer{") || strings.HasPrefix(strings.TrimSpace(line), "//") {
+				continue
+			}
+			found++
+			if !strings.Contains(line, "GuardDialer(") && !strings.Contains(line, `"unix"`) {
+				t.Errorf("%s:%d: a net.Dialer without the offline egress guard; wrap it in network.GuardDialer", path, i+1)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found < 10 {
+		t.Fatalf("found %d net.Dialer literals; the scan no longer sees core's sources", found)
 	}
 }

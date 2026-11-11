@@ -1015,7 +1015,7 @@ func pushBackoff(attempts int) time.Duration {
 func newPushDeliveryClient(allowPrivate bool) *http.Client {
 	dial := network.SSRFSafeDialContext(pushSendTimeout)
 	if allowPrivate {
-		dial = (&net.Dialer{Timeout: pushSendTimeout}).DialContext
+		dial = network.GuardDialer(&net.Dialer{Timeout: pushSendTimeout}).DialContext // offline egress guard (TXE-7083)
 	}
 	return &http.Client{
 		Transport: &http.Transport{

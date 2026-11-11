@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/capsohq/bifrost/core/network"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
@@ -3323,6 +3324,7 @@ func encodeBytesToBase64String(bytes []byte) string {
 func downloadImageFromURL(ctx context.Context, imageURL string) (string, error) {
 	client := fasthttp.Client{
 		ReadTimeout: time.Second * 30,
+		Dial:        network.GuardedFasthttpDial, // offline egress guard (TXE-7083)
 	}
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()

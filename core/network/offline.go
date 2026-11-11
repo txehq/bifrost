@@ -142,6 +142,24 @@ func GuardDialer(d *net.Dialer) *net.Dialer {
 	return guarded
 }
 
+// GuardedFasthttpDial is a fasthttp.DialFunc that dials through the guard, for a fasthttp
+// client that would otherwise use fasthttp's own dialer (TXE-7083): set it as Dial on any
+// fasthttp.Client that does not go through ConfigureDialer or another guarded dial.
+// core/providers/utils fails on a fasthttp client built without one.
+func GuardedFasthttpDial(addr string) (net.Conn, error) {
+	conn, err := guardedFasthttpDialer.Dial("tcp", addr)
+	if err != nil {
+		host, _, splitErr := net.SplitHostPort(addr)
+		if splitErr != nil {
+			host = addr
+		}
+		return nil, NameOfflineEgress(err, host)
+	}
+	return conn, nil
+}
+
+var guardedFasthttpDialer = GuardDialer(&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second})
+
 // GuardDialerInPlace puts the guard on d itself, for libraries that hand out a *net.Dialer to
 // configure (the AWS SDK's BuildableClient.WithDialerOptions).
 func GuardDialerInPlace(d *net.Dialer) {

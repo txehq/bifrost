@@ -678,6 +678,9 @@ func (f *HTTPClientFactory) newFasthttpBaseClient(purpose ClientPurpose) *fastht
 		MaxConnWaitTimeout:  DefaultClientConfig.ReadTimeout,
 		ConnPoolStrategy:    fasthttp.FIFO,
 		RetryIfErr:          StaleConnectionRetryIfErr,
+		// The offline egress guard (TXE-7083). configureFasthttpProxy's DialTimeout, which
+		// fasthttp prefers when set, is guarded on its own.
+		Dial: GuardedFasthttpDial,
 	}
 
 	// Larger header buffers only for SCIM/OAuth, and only when a caller opted in via
