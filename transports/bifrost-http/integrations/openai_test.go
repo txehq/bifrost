@@ -1789,3 +1789,23 @@ func BenchmarkOpenAIVideoMultipartParse(b *testing.B) {
 		})
 	}
 }
+
+// A repeated after or order on the input-items route reads as its first value, the value
+// a transport plugin and a routing rule read, and include keeps every value in order
+// (fork, TXE-7042). The loop this replaced kept the last after and order.
+func TestResponsesLifecycleQueryReadsFirstValueAndEveryInclude(t *testing.T) {
+	httpCtx := &fasthttp.RequestCtx{}
+	httpCtx.Request.Header.SetMethod(http.MethodGet)
+	httpCtx.Request.SetRequestURI("/openai/v1/responses/resp_1/input_items?after=a1&after=a2&order=asc&order=desc&include=x&include=y")
+	httpCtx.SetUserValue("response_id", "resp_1")
+
+	items := &schemas.BifrostResponsesInputItemsRequest{}
+	require.NoError(t, extractResponsesLifecycleFromPath(nil)(httpCtx, nil, items))
+	require.Equal(t, "a1", items.After)
+	require.Equal(t, "asc", items.Order)
+	require.Equal(t, []string{"x", "y"}, items.Include)
+
+	retrieve := &schemas.BifrostResponsesRetrieveRequest{}
+	require.NoError(t, extractResponsesLifecycleFromPath(nil)(httpCtx, nil, retrieve))
+	require.Equal(t, []string{"x", "y"}, retrieve.Include)
+}

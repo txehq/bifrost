@@ -1045,10 +1045,11 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 
 	// Pass-through unknown query params for provider-specific features
 	extraParams := map[string]interface{}{}
-	for k, v := range ctx.QueryArgs().All() {
-		s := string(k)
+	query := make(map[string]string, ctx.QueryArgs().Len())
+	lib.CopyQueryFirstValues(ctx.QueryArgs(), query, false)
+	for s, v := range query {
 		if s != "provider" && s != "page_size" && s != "page_token" {
-			extraParams[s] = string(v)
+			extraParams[s] = v
 		}
 	}
 	if len(extraParams) > 0 {
@@ -2150,12 +2151,9 @@ func (h *CompletionHandler) responsesRetrieve(ctx *fasthttp.RequestCtx) {
 		Provider:   responsesLifecycleProviderFromQuery(ctx),
 		ResponseID: responseID,
 	}
-	ctx.QueryArgs().VisitAll(func(key, value []byte) {
-		switch string(key) {
-		case "include":
-			bifrostReq.Include = append(bifrostReq.Include, string(value))
-		}
-	})
+	for _, value := range ctx.QueryArgs().PeekMulti("include") {
+		bifrostReq.Include = append(bifrostReq.Include, string(value))
+	}
 	if raw := ctx.QueryArgs().Peek("starting_after"); len(raw) > 0 {
 		n, err := strconv.Atoi(string(raw))
 		if err != nil {
@@ -2313,16 +2311,13 @@ func (h *CompletionHandler) responsesInputItems(ctx *fasthttp.RequestCtx) {
 		Provider:   responsesLifecycleProviderFromQuery(ctx),
 		ResponseID: responseID,
 	}
-	ctx.QueryArgs().VisitAll(func(key, value []byte) {
-		switch string(key) {
-		case "after":
-			bifrostReq.After = string(value)
-		case "include":
-			bifrostReq.Include = append(bifrostReq.Include, string(value))
-		case "order":
-			bifrostReq.Order = string(value)
-		}
-	})
+	// after and order take the first value, the one a plugin and a routing rule read; the
+	// loop this replaced kept the last (fork, TXE-7042).
+	bifrostReq.After = string(ctx.QueryArgs().Peek("after"))
+	bifrostReq.Order = string(ctx.QueryArgs().Peek("order"))
+	for _, value := range ctx.QueryArgs().PeekMulti("include") {
+		bifrostReq.Include = append(bifrostReq.Include, string(value))
+	}
 	if raw := ctx.QueryArgs().Peek("limit"); len(raw) > 0 {
 		n, err := strconv.Atoi(string(raw))
 		if err != nil {
@@ -3712,8 +3707,9 @@ func (h *CompletionHandler) videoList(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Fork: a parameter Bifrost reads is sent once. A repeated one would be read by its first
-	// value here and by its last in a plugin or a routing rule, so it is refused (TXE-6587).
+	// Fork: a parameter Bifrost reads is sent once on this route; a repeated one is refused
+	// (TXE-6587). Elsewhere a handler, a plugin and a routing rule all read the first value
+	// of a repeated parameter (TXE-7042).
 	for _, name := range schemas.VideoListReservedParams {
 		if len(ctx.QueryArgs().PeekMulti(name)) > 1 {
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("%s query parameter must be sent once", name))
@@ -3777,18 +3773,7 @@ func (h *CompletionHandler) videoList(ctx *fasthttp.RequestCtx) {
 // videoListFilters collects the query parameters of GET /v1/videos that Bifrost does not read
 // itself: names and values as sent, repeated values in order.
 func videoListFilters(args *fasthttp.Args) map[string][]string {
-	var filters map[string][]string
-	for name, value := range args.All() {
-		if isVideoListReservedParam(name) {
-			continue
-		}
-		if filters == nil {
-			filters = make(map[string][]string)
-		}
-		key := string(name)
-		filters[key] = append(filters[key], string(value))
-	}
-	return filters
+	return lib.CopyQueryAllValues(args, isVideoListReservedParam)
 }
 
 // isVideoListReservedParam reports whether name is a query parameter of GET /v1/videos that
@@ -4572,11 +4557,13 @@ func (h *CompletionHandler) fileList(ctx *fasthttp.RequestCtx) {
 	// StorageConfig above; other providers (e.g. Bedrock s3_bucket) still flow through here.
 	fileListKnownArgs := map[string]bool{"provider": true, "x-model-provider": true, "purpose": true, "limit": true, "after": true, "order": true, "gcs_bucket": true, "gcs_prefix": true}
 	extraParams := map[string]interface{}{}
-	ctx.QueryArgs().VisitAll(func(k, v []byte) {
-		if argKey := string(k); !fileListKnownArgs[argKey] && len(v) > 0 {
-			extraParams[argKey] = string(v)
+	query := make(map[string]string, ctx.QueryArgs().Len())
+	lib.CopyQueryFirstValues(ctx.QueryArgs(), query, false)
+	for argKey, v := range query {
+		if !fileListKnownArgs[argKey] && v != "" {
+			extraParams[argKey] = v
 		}
-	})
+	}
 
 	// Build Bifrost file list request
 	bifrostFileReq := &schemas.BifrostFileListRequest{
