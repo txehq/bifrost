@@ -506,7 +506,8 @@ var passthroughVideoDerivations = [...]string{"remix", "edits", "extensions"}
 
 // passthroughCreatesTask reports whether a passthrough request creates a batch or a video: a
 // POST whose path, as it will be sent, ends on a task collection, on a task-creating model
-// operation, or on a route under videos that derives a new video.
+// operation, or on a route under videos that derives a new video, or whose body names a video
+// task (Runware).
 func passthroughCreatesTask(r *schemas.BifrostPassthroughRequest) bool {
 	if !strings.EqualFold(r.Method, "POST") {
 		return false
@@ -520,7 +521,54 @@ func passthroughCreatesTask(r *schemas.BifrostPassthroughRequest) bool {
 	if slices.Contains(passthroughTaskOperations[:], operation) {
 		return true
 	}
-	return slices.Contains(passthroughVideoDerivations[:], last) && slices.Contains(segments[:len(segments)-1], "videos")
+	if slices.Contains(passthroughVideoDerivations[:], last) && slices.Contains(segments[:len(segments)-1], "videos") {
+		return true
+	}
+	return passthroughBodyCreatesVideoTask(r.Body)
+}
+
+// runwareVideoTaskType is the taskType of a Runware video task. Runware has one endpoint and
+// names the operation in the body: a POST of [{"taskType": "videoInference", ...}] creates a
+// video task, whatever the path.
+const runwareVideoTaskType = "videoInference"
+
+// passthroughBodyCreatesVideoTask reports whether a raw body holds a task entry that creates a
+// video by naming it in the body rather than in the path. A body that does not mention the
+// task type is not parsed; one that mentions it and does not parse is treated as creating one,
+// since the provider may read what this decoder cannot.
+func passthroughBodyCreatesVideoTask(body []byte) bool {
+	if !bytes.Contains(body, []byte(runwareVideoTaskType)) && !bytes.Contains(body, unicodeEscape) {
+		return false
+	}
+	var decoded any
+	if err := schemas.Unmarshal(body, &decoded); err != nil {
+		return bytes.Contains(body, []byte(runwareVideoTaskType))
+	}
+	var creates func(value any, depth int) bool
+	creates = func(value any, depth int) bool {
+		if depth > openValueDepth {
+			return true
+		}
+		switch v := value.(type) {
+		case map[string]any:
+			if taskType, _ := v["taskType"].(string); taskType == runwareVideoTaskType {
+				return true
+			}
+			for _, item := range v {
+				if creates(item, depth+1) {
+					return true
+				}
+			}
+		case []any:
+			for _, item := range v {
+				if creates(item, depth+1) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return creates(decoded, 0)
 }
 
 // passthroughTuningCollections are the path segments, folded, that name a tuning or

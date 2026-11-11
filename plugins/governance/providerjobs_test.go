@@ -1302,6 +1302,10 @@ func TestPreLLMHookBindsObjectsReferencedInsideRequests(t *testing.T) {
 			// Google's task creates: a Veo video is a model operation, a Vertex batch a collection.
 			"gemini video": pass(schemas.Gemini, "POST", "/v1beta/models/veo-3.1-generate-preview:predictLongRunning", `{"instances":[{"prompt":"p"}]}`),
 			"vertex batch": pass(schemas.Vertex, "POST", "/v1/projects/p/locations/us-central1/batchPredictionJobs", `{"displayName":"b"}`),
+			// Runware names the operation in the body, not the path.
+			"runware video":          pass(schemas.OpenAI, "POST", "/v1", `[{"taskType":"videoInference","taskUUID":"u","positivePrompt":"p"}]`),
+			"runware video, escaped": pass(schemas.OpenAI, "POST", "/v1", `[{"taskType":"video\u0049nference","taskUUID":"u"}]`),
+			"runware video, nested":  pass(schemas.OpenAI, "POST", "/v1", `{"tasks":[{"taskType":"imageInference"},{"taskType":"videoInference"}]}`),
 		} {
 			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), create)
 			require.NoError(t, err)
@@ -1321,6 +1325,8 @@ func TestPreLLMHookBindsObjectsReferencedInsideRequests(t *testing.T) {
 		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.OpenAI, "POST", "/v1/images/edits", `{"model":"m","prompt":"p"}`), "an image edit is no video derivation")
 		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.Gemini, "POST", "/v1beta/models/gemini-2.5-flash:generateContent", `{"contents":[]}`), "a Gemini generateContent creates no task")
 		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.Vertex, "POST", "/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-flash:predict", `{"instances":[]}`), "a Vertex predict creates no task")
+		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.OpenAI, "POST", "/v1", `[{"taskType":"imageInference","taskUUID":"u","positivePrompt":"a videoInference poster"}]`), "a Runware image task that only mentions the word creates no video task")
+		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.OpenAI, "POST", "/v1", `[{"taskType":"getResponse","taskUUID":"u"}]`), "a Runware poll creates no task")
 		allowed(t, emptyCtx(), pass(schemas.OpenAI, "GET", "/v1/batches/batch-unknown", ""), "a request that presented no key is unrestricted")
 		// The Go SDK hands a path over as written, and the HTTP client resolves dot segments and
 		// repeated slashes before sending, so the path is checked as it will be sent.
