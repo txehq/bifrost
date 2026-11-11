@@ -28,9 +28,7 @@ type HuggingFaceProvider struct {
 	sendBackRawRequest        bool
 	customProviderConfig      *schemas.CustomProviderConfig
 	modelProviderMappingCache *sync.Map
-	// hubBaseURL is where the model hub API (/api/models) is asked: huggingface.co, or the
-	// configured base URL when the operator set one (fork, TXE-7117).
-	hubBaseURL string
+	hubBaseURL                string // base URL of the model hub API (/api/models)
 }
 
 var huggingFaceTranscriptionResponsePool = sync.Pool{
