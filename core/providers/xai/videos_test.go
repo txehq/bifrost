@@ -350,8 +350,7 @@ func TestXAIVideoGenerationUnusableAnswerIsNotRepeatable(t *testing.T) {
 				Provider: schemas.XAI, Model: "grok-imagine-video", Input: &schemas.VideoGenerationInput{Prompt: "a dog"},
 			})
 			require.NotNil(t, bifrostErr)
-			unknown, _ := ctx.Value(schemas.BifrostContextKeyUpstreamWriteUnknown).(bool)
-			require.Equal(t, tc.wantUnknown, unknown)
+			require.Equal(t, tc.wantUnknown, bifrostErr.UpstreamWriteUnknown)
 			require.Len(t, captured(), 1)
 		})
 	}

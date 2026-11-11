@@ -415,12 +415,13 @@ func (provider *XAIProvider) doVideoRequest(ctx *schemas.BifrostContext, key sch
 	}
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
+		rawErrBody := append([]byte(nil), resp.Body()...)
+		decodeErr := providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
 		if singleAttempt {
 			// xAI accepted the create; only its answer is unreadable.
-			providerUtils.MarkUpstreamWriteUnknown(ctx)
+			providerUtils.MarkUpstreamWriteUnknown(decodeErr)
 		}
-		rawErrBody := append([]byte(nil), resp.Body()...)
-		return nil, latency, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
+		return nil, latency, decodeErr
 	}
 	return append([]byte(nil), body...), latency, nil
 }
@@ -462,12 +463,10 @@ func (provider *XAIProvider) VideoGeneration(ctx *schemas.BifrostContext, key sc
 	var created XAIVideoGenerationResponse
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &created, jsonData, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
-		providerUtils.MarkUpstreamWriteUnknown(ctx)
-		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
+		return nil, providerUtils.MarkUpstreamWriteUnknown(providerUtils.SetErrorLatency(bifrostErr, latency))
 	}
 	if created.RequestID == "" {
-		providerUtils.MarkUpstreamWriteUnknown(ctx)
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("xai returned no request_id", nil), jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
+		return nil, providerUtils.MarkUpstreamWriteUnknown(providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("xai returned no request_id", nil), jsonData, body, sendBackRawRequest, sendBackRawResponse, latency))
 	}
 
 	// xAI answers a create with the id alone: no status and no time, so the task object says

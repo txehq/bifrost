@@ -2455,29 +2455,28 @@ func neverRetry(_ *fasthttp.Request, _ int, _ error) (resetTimeout bool, retry b
 // MakeRequestWithContext returns.
 //
 // When the send fails with no response (connection failure, timeout, cancellation), whether
-// the upstream has the request is unknown. It then marks ctx with
-// BifrostContextKeyUpstreamWriteUnknown, which makes the failure terminal for core: the
-// retry loop does not call the provider again whatever max_retries says, and no fallback
-// runs. An upstream that answered, with any status, did answer, so its error is retried or
-// not by the ordinary rules.
+// the upstream has the request is unknown. The error returned is then marked
+// (BifrostError.UpstreamWriteUnknown), which makes the failure terminal for core: the retry
+// loop does not call the provider again whatever max_retries says, and no fallback runs. An
+// upstream that answered, with any status, did answer, so its error is retried or not by the
+// ordinary rules.
 func SendSingleAttempt(ctx *schemas.BifrostContext, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError, func()) {
 	req.SetConnectionClose()
 	latency, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
-	if bifrostErr != nil {
-		MarkUpstreamWriteUnknown(ctx)
-	}
-	return latency, bifrostErr, wait
+	return latency, MarkUpstreamWriteUnknown(bifrostErr), wait
 }
 
-// MarkUpstreamWriteUnknown marks ctx so core neither retries the request nor sends it to a
-// fallback (BifrostContextKeyUpstreamWriteUnknown). SendSingleAttempt calls it when a send got
-// no response. A provider calls it itself when the upstream accepted a write-once request with
-// a 2xx but the answer cannot be used (it does not decode, or carries no task id): the task
-// may exist, and its id is lost just the same.
-func MarkUpstreamWriteUnknown(ctx *schemas.BifrostContext) {
-	if ctx != nil {
-		ctx.SetValue(schemas.BifrostContextKeyUpstreamWriteUnknown, true)
+// MarkUpstreamWriteUnknown marks bifrostErr so core neither retries the request nor sends it
+// to a fallback, and returns it. SendSingleAttempt calls it when a send got no response. A
+// provider calls it itself when the upstream accepted a write-once request with a 2xx but the
+// answer cannot be used (it does not decode, or carries no task id): the task may exist, and
+// its id is lost just the same. The mark is on the error, so it cannot outlive the request or
+// reach another request that shares its context.
+func MarkUpstreamWriteUnknown(bifrostErr *schemas.BifrostError) *schemas.BifrostError {
+	if bifrostErr != nil {
+		bifrostErr.UpstreamWriteUnknown = true
 	}
+	return bifrostErr
 }
 
 // BuildStreamingHTTPClient returns an *http.Client for long-lived streaming

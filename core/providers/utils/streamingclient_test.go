@@ -1616,7 +1616,7 @@ func TestBuildSingleAttemptClient_WritesARequestOnce(t *testing.T) {
 			_, bifrostErr, wait := SendSingleAttempt(ctx, client, req, resp)
 			wait()
 			// Only a send that got no response leaves the outcome unknown.
-			if unknown, _ := ctx.Value(schemas.BifrostContextKeyUpstreamWriteUnknown).(bool); unknown != (i == 2) {
+			if unknown := bifrostErr != nil && bifrostErr.UpstreamWriteUnknown; unknown != (i == 2) {
 				t.Fatalf("request %d: upstream-write-unknown = %v", i, unknown)
 			}
 			fasthttp.ReleaseRequest(req)

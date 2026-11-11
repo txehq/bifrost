@@ -9666,6 +9666,9 @@ func TestWriteOnceRequestIsNotRetriedAfterNoResponse(t *testing.T) {
 		defer cancel()
 		resp, bifrostErr := client.VideoGenerationRequest(ctx, &schemas.BifrostVideoGenerationRequest{
 			Provider: schemas.XAI, Model: "grok-imagine-video", Input: &schemas.VideoGenerationInput{Prompt: "a dog"},
+			// A fallback the caller named: it must not run either, so the count below
+			// stays at one create.
+			Fallbacks: []schemas.Fallback{{Provider: schemas.XAI, Model: "grok-imagine-video-fallback"}},
 		})
 		if resp != nil || bifrostErr == nil {
 			t.Fatalf("resp/err = %v/%v, want the connection failure", resp, bifrostErr)
@@ -9677,8 +9680,9 @@ func TestWriteOnceRequestIsNotRetriedAfterNoResponse(t *testing.T) {
 			t.Fatalf("xAI read the create %d times, want exactly 1 (error: %s)", got, bifrostErr.GetErrorString())
 		}
 
-		// The mark belongs to that request. The next request on the same context, a chat
-		// request, keeps its retries: the context is the caller's to reuse.
+		// The mark belongs to that failure. The next request on the same context, a chat
+		// request, keeps its retries: the mark is on the error, so nothing is left on the
+		// context for a later or a concurrent request to inherit or to clear.
 		_, bifrostErr = client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 			Provider: schemas.XAI, Model: "grok-4.5",
 			Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
@@ -9707,10 +9711,11 @@ func TestWriteOnceRequestIsNotRetriedAfterNoResponse(t *testing.T) {
 			calls := 0
 			handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
 				calls++
+				bifrostErr := providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, io.ErrUnexpectedEOF)
 				if tc.mark {
-					ctx.SetValue(schemas.BifrostContextKeyUpstreamWriteUnknown, true)
+					providerUtils.MarkUpstreamWriteUnknown(bifrostErr)
 				}
-				return "", providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, io.ErrUnexpectedEOF)
+				return "", bifrostErr
 			}
 			_, bifrostErr := executeRequestWithRetries(ctx, config, handler, nil, schemas.VideoGenerationRequest, schemas.XAI, "grok-imagine-video", nil, NewDefaultLogger(schemas.LogLevelError))
 			if bifrostErr == nil {
@@ -9737,9 +9742,13 @@ func TestWriteOnceRequestIsNotRetriedAfterNoResponse(t *testing.T) {
 		if !client.shouldTryFallbacks(ctx, req, primaryErr) {
 			t.Fatal("a plain connection failure must still try the caller's fallback")
 		}
-		ctx.SetValue(schemas.BifrostContextKeyUpstreamWriteUnknown, true)
-		if client.shouldTryFallbacks(ctx, req, primaryErr) {
+		marked := providerUtils.MarkUpstreamWriteUnknown(providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, io.ErrUnexpectedEOF))
+		if client.shouldTryFallbacks(ctx, req, marked) {
 			t.Fatal("a write-once request with no response must not be sent to a fallback")
+		}
+		// The mark is the error's: the same context still lets an unmarked failure fall back.
+		if !client.shouldTryFallbacks(ctx, req, primaryErr) {
+			t.Fatal("an unmarked failure on the same context must still try the fallback")
 		}
 	})
 }
@@ -9747,20 +9756,10 @@ func TestWriteOnceRequestIsNotRetriedAfterNoResponse(t *testing.T) {
 // BenchmarkUpstreamWriteUnknown measures the check every failed attempt pays before a retry or
 // a fallback is considered.
 func BenchmarkUpstreamWriteUnknown(b *testing.B) {
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostErr := providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, io.ErrUnexpectedEOF)
 	b.ReportAllocs()
 	for b.Loop() {
-		_ = upstreamWriteUnknown(ctx)
-	}
-}
-
-// BenchmarkResetUpstreamWriteUnknown measures what every request pays at its start to drop
-// an earlier request's mark: one context read when there is none.
-func BenchmarkResetUpstreamWriteUnknown(b *testing.B) {
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	b.ReportAllocs()
-	for b.Loop() {
-		resetUpstreamWriteUnknown(ctx)
+		_ = upstreamWriteUnknown(bifrostErr)
 	}
 }
 

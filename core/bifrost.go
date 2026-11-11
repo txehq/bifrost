@@ -5878,7 +5878,7 @@ func (bifrost *Bifrost) shouldTryFallbacks(ctx *schemas.BifrostContext, req *sch
 		return false
 	}
 
-	if upstreamWriteUnknown(ctx) {
+	if upstreamWriteUnknown(primaryErr) {
 		bifrost.logger.Debug("primary sent a request the vendor may have received, not trying %d fallbacks", len(fallbacks))
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Primary sent a write-once request and got no response (%s); skipping %d fallback(s) so it is not submitted twice", routingErrorSummary(primaryErr), len(fallbacks)))
 		return false
@@ -5939,27 +5939,15 @@ func markWriteOnce(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
 	}
 }
 
-// upstreamWriteUnknown reports whether the attempt that just ended sent a request that must
-// reach the vendor at most once and got no response (providerUtils.SendSingleAttempt). The
-// vendor may have it: a retry, or a fallback, could create a second billed task while the
-// first one's id is lost (contract C3, C7 recovery method 5).
-// resetUpstreamWriteUnknown clears the mark at the start of a logical request, so one left by
-// an earlier request on a reused context (or on bifrost.ctx, which every nil-ctx caller
-// shares) does not cost this request its retries and fallbacks. The mark then lives for this
-// request's own retries and fallbacks, which is what it is for. It writes only when the
-// mark is set.
-func resetUpstreamWriteUnknown(ctx *schemas.BifrostContext) {
-	if upstreamWriteUnknown(ctx) {
-		ctx.SetValue(schemas.BifrostContextKeyUpstreamWriteUnknown, false)
-	}
-}
-
-func upstreamWriteUnknown(ctx *schemas.BifrostContext) bool {
-	if ctx == nil {
-		return false
-	}
-	unknown, _ := ctx.Value(schemas.BifrostContextKeyUpstreamWriteUnknown).(bool)
-	return unknown
+// upstreamWriteUnknown reports whether the attempt that ended with bifrostErr sent a request
+// that must reach the vendor at most once and whose outcome is unknown
+// (providerUtils.SendSingleAttempt, providerUtils.MarkUpstreamWriteUnknown). The vendor may
+// have it: a retry, or a fallback, could create a second billed task while the first one's id
+// is lost (contract C3, C7 recovery method 5). The mark is read from the error, never from the
+// context, so a request that shares a context with another (bifrost.ctx, for every nil-ctx
+// caller) neither inherits its mark nor clears it.
+func upstreamWriteUnknown(bifrostErr *schemas.BifrostError) bool {
+	return bifrostErr != nil && bifrostErr.UpstreamWriteUnknown
 }
 
 // isNoKeySupportsModel reports whether the error is the key pool's refusal for a model none of
@@ -6163,7 +6151,6 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 
 	// Reset first: bifrost.ctx is shared across every nil-ctx caller.
 	ctx.ResetUpstreamLatency()
-	resetUpstreamWriteUnknown(ctx)
 	// Whole-request start for top-down overhead (total minus upstream). On ctx so
 	// tryRequest can stamp the response before post-hooks, where logging reads it.
 	ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, time.Now())
@@ -6321,7 +6308,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s ran a provider-injected tool before failing (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
 			return nil, fallbackErr
 		}
-		if upstreamWriteUnknown(ctx) {
+		if upstreamWriteUnknown(fallbackErr) {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s sent a write-once request and got no response (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
 			return nil, fallbackErr
 		}
@@ -6405,7 +6392,6 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	stampRequestedRoute(ctx, requested)
 
 	ctx.ResetUpstreamLatency()
-	resetUpstreamWriteUnknown(ctx)
 	ctx.ResetStreamOverhead()
 	// Whole-request start for overhead on the streaming short-circuit path; the
 	// normal path derives its total from the final chunk.
@@ -6563,7 +6549,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s ran a provider-injected tool before failing (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
 			return nil, fallbackErr
 		}
-		if upstreamWriteUnknown(ctx) {
+		if upstreamWriteUnknown(fallbackErr) {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s sent a write-once request and got no response (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
 			return nil, fallbackErr
 		}
@@ -7922,7 +7908,7 @@ func executeRequestWithRetries[T any](
 		// A write-once request (a task create the vendor cannot find again) that got no
 		// response is not retried, whatever max_retries says: the vendor may have it, and a
 		// second copy is a second billed task (contract C3, C7).
-		if upstreamWriteUnknown(ctx) {
+		if upstreamWriteUnknown(bifrostError) {
 			break
 		}
 
