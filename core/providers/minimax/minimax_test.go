@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1797,6 +1798,10 @@ func TestMiniMaxVideoDownloadRefusesNonPublicURL(t *testing.T) {
 		"GET /v2/query/video_generation/424010985738629": jsonResponse(http.StatusOK, `{"task":{"id":"424010985738629","model":"MiniMax-H3","status":"succeeded","content":{"url":"`+internal.URL+`/v.mp4?sig=abc123"},"resolution":"768P","ratio":"16:9","duration":6}}`),
 	})
 
+	// A streamed request (TXE-7036) is refused as a held one is.
+	if _, streamErr := provider.VideoDownload(testContext(t), testKey(), &schemas.BifrostVideoDownloadRequest{Provider: schemas.MiniMax, ID: "424010985738629", Stream: true}); streamErr == nil {
+		t.Fatal("expected the loopback download URL to be refused for a streamed request")
+	}
 	_, bifrostErr := provider.VideoDownload(testContext(t), testKey(), &schemas.BifrostVideoDownloadRequest{Provider: schemas.MiniMax, ID: "424010985738629"})
 	if bifrostErr == nil {
 		t.Fatal("expected the loopback download URL to be refused")
@@ -1861,6 +1866,54 @@ func TestMiniMaxCustomProviderReportsItsOwnKey(t *testing.T) {
 	}
 	if retrieved.ID != created.ID {
 		t.Errorf("retrieved id = %q, want the created id %q", retrieved.ID, created.ID)
+	}
+}
+
+// TXE-7036: a streamed download is forwarded as MiniMax's file host sends it, on the same
+// SSRF-checked path. A file larger than the 256 MiB the held download is capped at arrives whole
+// and is never held (the allocation bound of TestFetchVideoContentStreamsPastTheOldCap), with its
+// type still pinned to video/*.
+func TestMiniMaxVideoDownloadStreamsPastTheHeldCap(t *testing.T) {
+	const fileBytes = 264 << 20
+	tunnel := proxytest.NewOriginTunnel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Content-Length", strconv.Itoa(fileBytes))
+		chunk := make([]byte, 1<<20)
+		for written := 0; written < fileBytes; written += len(chunk) {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	})
+	provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+		"GET /v2/query/video_generation/424010985738629": jsonResponse(http.StatusOK, `{"task":{"id":"424010985738629","model":"MiniMax-H3","status":"succeeded","content":{"url":"http://203.0.113.10/large.mp4?sig=abc123"}}}`),
+	})
+	ctx := testContext(t)
+	ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(tunnel.URL)})
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	resp, bifrostErr := provider.VideoDownload(ctx, testKey(), &schemas.BifrostVideoDownloadRequest{Provider: schemas.MiniMax, ID: "424010985738629", Stream: true})
+	if bifrostErr != nil {
+		t.Fatalf("VideoDownload: %+v", bifrostErr.Error)
+	}
+	if resp.Body == nil || resp.Content != nil {
+		t.Fatalf("a streamed download must return Body and no Content, got body=%v content=%d bytes", resp.Body != nil, len(resp.Content))
+	}
+	drained, err := io.CopyBuffer(io.Discard, resp.Body, make([]byte, 64<<10))
+	_ = resp.Body.Close()
+	runtime.ReadMemStats(&after)
+	if err != nil || drained != fileBytes || resp.ContentLength != fileBytes || resp.ContentType != "video/mp4" {
+		t.Fatalf("drained %d bytes (%v), content length %d, type %q", drained, err, resp.ContentLength, resp.ContentType)
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 32<<20 {
+		t.Fatalf("forwarding a %d MiB file allocated %d MiB; the body is being buffered", fileBytes>>20, allocated>>20)
+	}
+
+	// The held download of the same file is still refused at its cap.
+	if _, bifrostErr := provider.VideoDownload(ctx, testKey(), &schemas.BifrostVideoDownloadRequest{Provider: schemas.MiniMax, ID: "424010985738629"}); bifrostErr == nil {
+		t.Fatal("a held download above the 256 MiB cap was not refused")
 	}
 }
 

@@ -438,16 +438,17 @@ func (provider *MiniMaxProvider) VideoDownload(ctx *schemas.BifrostContext, key 
 
 	// Fork: the URL comes from MiniMax's task response, so it is fetched through the SSRF-hardened
 	// media fetcher (public addresses only, checked at dial time and on every redirect, provider
-	// proxy honored, 256 MiB cap) rather than the provider client, whose dialer admits loopback.
-	// No credentials are sent; errors name the URL without its signed query.
-	start := time.Now()
-	contentType, body, err := providerUtils.FetchMediaURL(ctx, *task.Videos[0].URL)
-	latency := time.Since(start)
-	if err != nil {
-		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("failed to download video", err), latency)
-	}
-	// The media fetcher buffers the file, so a streamed request is served from memory here.
-	return providerUtils.NewVideoContentResponse(request, request.ID, body, miniMaxVideoContentType(contentType), latency), nil
+	// proxy honored) rather than the provider client, whose dialer admits loopback. No BaseURL is
+	// given: MiniMax's files are on a storage host, never the API's. No credentials are sent;
+	// errors name the URL without its signed query. A streamed request is forwarded as the file
+	// arrives, with no size cap (TXE-7036); any other is held, within the fetcher's 256 MiB cap.
+	return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
+		VendorURL:                *task.Videos[0].URL,
+		Stream:                   request.Stream,
+		VideoID:                  request.ID,
+		StreamIdleTimeoutSeconds: provider.networkConfig.StreamIdleTimeoutInSeconds,
+		ContentType:              miniMaxVideoContentType,
+	})
 }
 
 // miniMaxVideoContentType pins a downloaded video's Content-Type to a video/* type, video/mp4

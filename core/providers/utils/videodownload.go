@@ -2,8 +2,11 @@ package utils
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -35,6 +38,100 @@ type VideoContentFetch struct {
 	// ContentType maps the vendor's Content-Type to the one returned; nil keeps it, and an
 	// absent one becomes video/mp4.
 	ContentType func(upstream string) string
+	// VendorURL is set when the file's address was named by the vendor (a URL in its task
+	// response) instead of being built from the provider's base URL. It is the address to
+	// fetch, byte for byte. Such an address is not trusted: the file is fetched through the
+	// SSRF-hardened media fetcher (FetchMediaStream, or FetchMediaURL when not streamed), which
+	// admits public addresses only, on every redirect hop, and honors the provider's proxy.
+	// Request then supplies the headers only, which reach the host VendorURL names and no
+	// other host a redirect leads to; Client, StreamingClient and MaxRedirects are not used.
+	// The one exception is a VendorURL on the origin of BaseURL: the operator configured that
+	// host, so it is fetched like any other request to it, by Client and StreamingClient
+	// (fork, TXE-7036).
+	VendorURL string
+	// BaseURL is the provider's configured base URL, for the exception above. Empty means
+	// VendorURL never goes to the provider's clients.
+	BaseURL string
+}
+
+// sameOrigin reports whether two URLs share scheme, host and port, the port defaulted by
+// scheme. A URL that does not parse, or has no host, shares an origin with nothing.
+func sameOrigin(a, b string) bool {
+	ua, errA := url.Parse(a)
+	ub, errB := url.Parse(b)
+	if errA != nil || errB != nil || ua.Host == "" || ub.Host == "" {
+		return false
+	}
+	return strings.EqualFold(ua.Scheme, ub.Scheme) && strings.EqualFold(dialAddr(ua), dialAddr(ub))
+}
+
+// fetchVendorVideoURL is FetchVideoContent for a file at an address the vendor named, off the
+// provider's own origin: the download runs on the SSRF-hardened media fetcher.
+func fetchVendorVideoURL(ctx *schemas.BifrostContext, f VideoContentFetch) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
+	var header http.Header
+	if f.Request != nil {
+		for name, value := range f.Request.Header.All() {
+			switch strings.ToLower(string(name)) {
+			case "host", "user-agent", "content-length", "content-type":
+				continue
+			}
+			if header == nil {
+				header = make(http.Header)
+			}
+			header.Add(string(name), string(value))
+		}
+	}
+	contentTypeOf := func(upstream string) string {
+		if f.ContentType != nil {
+			return f.ContentType(upstream)
+		}
+		if upstream == "" {
+			return "video/mp4"
+		}
+		return upstream
+	}
+	failed := func(err error, latency time.Duration) *schemas.BifrostError {
+		var statusErr *MediaFetchStatusError
+		if errors.As(err, &statusErr) && f.ParseError != nil {
+			// The refusal's body is not read from an untrusted host; ParseError gets the status.
+			errResp := fasthttp.AcquireResponse()
+			defer fasthttp.ReleaseResponse(errResp)
+			errResp.SetStatusCode(statusErr.StatusCode)
+			return SetErrorLatency(f.ParseError(errResp), latency)
+		}
+		return SetErrorLatency(NewBifrostOperationError("failed to download video", err), latency)
+	}
+
+	start := time.Now()
+	if !f.Stream {
+		contentType, body, err := FetchMediaURLWithHeader(ctx, f.VendorURL, header)
+		latency := time.Since(start)
+		if err != nil {
+			return nil, failed(err, latency)
+		}
+		return &schemas.BifrostVideoDownloadResponse{
+			VideoID:     f.VideoID,
+			Content:     body,
+			ContentType: contentTypeOf(contentType),
+			ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()},
+		}, nil
+	}
+	SetStreamIdleTimeoutIfEmpty(ctx, f.StreamIdleTimeoutSeconds)
+	stream, err := FetchMediaStream(ctx, f.VendorURL, MediaStreamOptions{Header: header, IdleTimeout: GetStreamIdleTimeout(ctx)})
+	latency := time.Since(start)
+	if err != nil {
+		return nil, failed(err, latency)
+	}
+	response := &schemas.BifrostVideoDownloadResponse{
+		VideoID:     f.VideoID,
+		ContentType: contentTypeOf(stream.ContentType),
+		Body:        stream.Body,
+		ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()},
+	}
+	if stream.ContentLength > 0 {
+		response.ContentLength = stream.ContentLength
+	}
+	return response, nil
 }
 
 // maxVideoErrorBodyBytes caps how much of a refused download's body is read for its error.
@@ -47,6 +144,9 @@ const maxVideoErrorBodyBytes = 512 * 1024
 // VideoDownload builds its response through this function or NewVideoContentResponse; a test
 // keeps it that way.
 func FetchVideoContent(ctx *schemas.BifrostContext, f VideoContentFetch) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
+	if f.VendorURL != "" && !(f.BaseURL != "" && f.Client != nil && sameOrigin(f.VendorURL, f.BaseURL)) {
+		return fetchVendorVideoURL(ctx, f)
+	}
 	stream := f.Stream && f.StreamingClient != nil
 	client := f.Client
 	resp := fasthttp.AcquireResponse()

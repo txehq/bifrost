@@ -2863,9 +2863,9 @@ func (provider *VertexProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 		req.SetRequestURI(*video.URL)
 		req.Header.SetMethod(http.MethodGet)
 		// Add authentication for Vertex video downloads
+		uri := *video.URL
 		if key.Value.GetValue() != "" {
 			authQuery := fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
-			uri := *video.URL
 			if strings.Contains(uri, "?") {
 				uri += "&" + authQuery
 			} else {
@@ -2884,7 +2884,11 @@ func (provider *VertexProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 			req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 		}
 		return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
-			Request:                  req,
+			Request: req,
+			// Fork: the operation names this address, so off the provider's own origin it is
+			// fetched through the SSRF-hardened media fetcher (TXE-7036).
+			VendorURL:                uri,
+			BaseURL:                  provider.networkConfig.BaseURL,
 			Client:                   provider.client,
 			StreamingClient:          provider.streamingClient,
 			Stream:                   request.Stream,

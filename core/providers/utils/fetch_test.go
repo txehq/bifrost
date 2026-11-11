@@ -726,51 +726,6 @@ func BenchmarkFetchMediaURL(b *testing.B) {
 	}
 }
 
-// originTunnel is a CONNECT proxy whose every tunnel ends at one origin server on loopback,
-// whatever address the tunnel was asked for. proxytest.ForwardProxy answers a tunnelled
-// request from a recorder, so it holds the whole response before sending any of it; a test
-// of a streamed body needs the bytes to cross as the handler writes them.
-type originTunnel struct {
-	URL string
-	// connects counts the tunnels opened: one per connection the fetch client dials.
-	connects atomic.Int32
-}
-
-func newOriginTunnel(t testing.TB, handler http.HandlerFunc) *originTunnel {
-	t.Helper()
-	origin := httptest.NewServer(handler)
-	t.Cleanup(origin.Close)
-	originAddr := strings.TrimPrefix(origin.URL, "http://")
-	proxy := &originTunnel{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodConnect {
-			http.Error(w, "CONNECT only", http.StatusMethodNotAllowed)
-			return
-		}
-		upstream, err := net.Dial("tcp", originAddr)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		defer upstream.Close()
-		conn, buffered, err := w.(http.Hijacker).Hijack()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-		proxy.connects.Add(1)
-		_, _ = conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
-		go func() {
-			_, _ = io.Copy(upstream, io.MultiReader(buffered.Reader, conn))
-			_ = upstream.Close()
-		}()
-		_, _ = io.Copy(conn, upstream)
-	}))
-	t.Cleanup(server.Close)
-	proxy.URL = server.URL
-	return proxy
-}
-
 // mediaStreamProxyCtx is a context whose provider proxy is the given proxy, so a streamed
 // fetch of a public-looking address reaches the test's handler on loopback.
 func mediaStreamProxyCtx(t testing.TB, proxyURL string, timeout time.Duration) context.Context {
@@ -788,7 +743,7 @@ func mediaStreamProxyCtx(t testing.TB, proxyURL string, timeout time.Duration) c
 // on the provider-client download.
 func TestFetchMediaStreamStreamsPastTheBufferedCap(t *testing.T) {
 	fileBytes := int(mediaFetchLimits.maxBytes) + 8<<20
-	proxy := newOriginTunnel(t, func(w http.ResponseWriter, r *http.Request) {
+	proxy := proxytest.NewOriginTunnel(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "video/mp4; codecs=avc1")
 		w.Header().Set("Content-Length", strconv.Itoa(fileBytes))
 		chunk := make([]byte, 1<<20)
@@ -837,7 +792,7 @@ func TestFetchMediaStreamStreamsPastTheBufferedCap(t *testing.T) {
 // rest. A fetch that buffered would never return.
 func TestFetchMediaStreamDeliversBytesBeforeTheVendorFinishes(t *testing.T) {
 	firstHalfRead := make(chan struct{})
-	proxy := newOriginTunnel(t, func(w http.ResponseWriter, r *http.Request) {
+	proxy := proxytest.NewOriginTunnel(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "video/mp4")
 		_, _ = w.Write([]byte("FIRST-HALF|"))
 		w.(http.Flusher).Flush()
@@ -873,7 +828,7 @@ func TestFetchMediaStreamDeliversBytesBeforeTheVendorFinishes(t *testing.T) {
 func TestFetchMediaStreamBoundsAStalledVendor(t *testing.T) {
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
-	proxy := newOriginTunnel(t, func(w http.ResponseWriter, r *http.Request) {
+	proxy := proxytest.NewOriginTunnel(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "video/mp4")
 		_, _ = w.Write([]byte("HEAD|"))
 		w.(http.Flusher).Flush()
@@ -953,7 +908,7 @@ func TestFetchMediaStreamStatusEncodingAndCredentials(t *testing.T) {
 	var seen []seenRequest
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
-	proxy := newOriginTunnel(t, func(w http.ResponseWriter, r *http.Request) {
+	proxy := proxytest.NewOriginTunnel(t, func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		seen = append(seen, seenRequest{r.Host, r.URL.Path, r.Header.Get("x-goog-api-key"), r.Header.Get("Authorization")})
 		mu.Unlock()
@@ -1068,7 +1023,7 @@ func TestFetchMediaStreamStatusEncodingAndCredentials(t *testing.T) {
 // to the pool, so the next download reuses it, and one abandoned half-read does not poison
 // the pool for the download after it.
 func TestFetchMediaStreamReturnsItsConnections(t *testing.T) {
-	proxy := newOriginTunnel(t, func(w http.ResponseWriter, r *http.Request) {
+	proxy := proxytest.NewOriginTunnel(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "video/mp4")
 		_, _ = w.Write(bytes.Repeat([]byte("v"), 256<<10))
 	})
@@ -1091,9 +1046,9 @@ func TestFetchMediaStreamReturnsItsConnections(t *testing.T) {
 		}
 	}
 	fetch(true)
-	before := proxy.connects.Load()
+	before := proxy.Connects()
 	fetch(true)
-	if got := proxy.connects.Load(); got != before {
+	if got := proxy.Connects(); got != before {
 		t.Fatalf("a second download opened %d new connections; the first one's was not pooled", got-before)
 	}
 	fetch(false)
@@ -1107,7 +1062,7 @@ func BenchmarkFetchMediaStream(b *testing.B) {
 	for _, size := range []int{1 << 20, 16 << 20} {
 		b.Run(strconv.Itoa(size>>20)+"MiB", func(b *testing.B) {
 			body := bytes.Repeat([]byte("v"), size)
-			proxy := newOriginTunnel(b, func(w http.ResponseWriter, r *http.Request) {
+			proxy := proxytest.NewOriginTunnel(b, func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "video/mp4")
 				_, _ = w.Write(body)
 			})

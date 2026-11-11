@@ -1197,19 +1197,70 @@ func TestBytePlusVideoDownloadRefusesNonPublicURL(t *testing.T) {
 		"GET /api/v3/contents/generations/tasks/cgt-ssrf": jsonResponse(http.StatusOK, `{"id":"cgt-ssrf","model":"seedance-1-0-pro-fast-251015","status":"succeeded","content":{"video_url":"`+internal.URL+`/v.mp4?X-Tos-Signature=abc123"},"resolution":"720p","ratio":"16:9","duration":5}`),
 	})
 
-	_, bifrostErr := provider.VideoDownload(testContext(t), testKey(), &schemas.BifrostVideoDownloadRequest{Provider: schemas.BytePlus, ID: "cgt-ssrf"})
-	if got := internalHits.Load(); got != 0 {
-		t.Fatalf("download dialed the loopback URL %d times", got)
+	// A streamed request (TXE-7036) is refused as a held one is.
+	for _, stream := range []bool{false, true} {
+		_, bifrostErr := provider.VideoDownload(testContext(t), testKey(), &schemas.BifrostVideoDownloadRequest{Provider: schemas.BytePlus, ID: "cgt-ssrf", Stream: stream})
+		if got := internalHits.Load(); got != 0 {
+			t.Fatalf("stream=%v: download dialed the loopback URL %d times", stream, got)
+		}
+		if bifrostErr == nil {
+			t.Fatalf("stream=%v: expected the loopback download URL to be refused", stream)
+		}
+		msg := bifrostErr.Error.Message
+		if bifrostErr.Error.Error != nil {
+			msg += " " + bifrostErr.Error.Error.Error()
+		}
+		if strings.Contains(msg, "abc123") {
+			t.Errorf("stream=%v: error leaks the signed query: %s", stream, msg)
+		}
 	}
-	if bifrostErr == nil {
-		t.Fatal("expected the loopback download URL to be refused")
+}
+
+// TXE-7036: a streamed download is forwarded as Ark's file host sends it, on the same SSRF-checked
+// path. A file larger than the 256 MiB the held download is capped at arrives whole and is never
+// held (the allocation bound of TestFetchVideoContentStreamsPastTheOldCap), and a task that names
+// a loopback address is refused for a streamed request as it is for a held one.
+func TestBytePlusVideoDownloadStreamsPastTheHeldCap(t *testing.T) {
+	const fileBytes = 264 << 20
+	tunnel := proxytest.NewOriginTunnel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Header().Set("Content-Length", strconv.Itoa(fileBytes))
+		chunk := make([]byte, 1<<20)
+		for written := 0; written < fileBytes; written += len(chunk) {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	})
+	provider, _, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /api/v3/contents/generations/tasks/cgt-large": jsonResponse(http.StatusOK, `{"id":"cgt-large","model":"seedance-1-0-pro-fast-251015","status":"succeeded","content":{"video_url":"http://203.0.113.10/large.mp4?X-Tos-Signature=abc123"},"resolution":"720p","ratio":"16:9","duration":5}`),
+	})
+	ctx := testContext(t)
+	ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(tunnel.URL)})
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	resp, bifrostErr := provider.VideoDownload(ctx, testKey(), &schemas.BifrostVideoDownloadRequest{Provider: schemas.BytePlus, ID: "cgt-large", Stream: true})
+	if bifrostErr != nil {
+		t.Fatalf("VideoDownload: %+v", bifrostErr.Error)
 	}
-	msg := bifrostErr.Error.Message
-	if bifrostErr.Error.Error != nil {
-		msg += " " + bifrostErr.Error.Error.Error()
+	if resp.Body == nil || resp.Content != nil {
+		t.Fatalf("a streamed download must return Body and no Content, got body=%v content=%d bytes", resp.Body != nil, len(resp.Content))
 	}
-	if strings.Contains(msg, "abc123") {
-		t.Errorf("error leaks the signed query: %s", msg)
+	drained, err := io.CopyBuffer(io.Discard, resp.Body, make([]byte, 64<<10))
+	_ = resp.Body.Close()
+	runtime.ReadMemStats(&after)
+	if err != nil || drained != fileBytes || resp.ContentLength != fileBytes || resp.ContentType != "video/mp4" {
+		t.Fatalf("drained %d bytes (%v), content length %d, type %q", drained, err, resp.ContentLength, resp.ContentType)
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 32<<20 {
+		t.Fatalf("forwarding a %d MiB file allocated %d MiB; the body is being buffered", fileBytes>>20, allocated>>20)
+	}
+
+	// The held download of the same file is still refused at its cap.
+	if _, bifrostErr := provider.VideoDownload(ctx, testKey(), &schemas.BifrostVideoDownloadRequest{Provider: schemas.BytePlus, ID: "cgt-large"}); bifrostErr == nil {
+		t.Fatal("a held download above the 256 MiB cap was not refused")
 	}
 }
 

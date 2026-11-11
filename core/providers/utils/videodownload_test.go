@@ -5,6 +5,9 @@ import (
 	"compress/gzip"
 	"context"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,10 +17,12 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/andybalholm/brotli"
+	"github.com/capsohq/bifrost/core/network/proxytest"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -430,6 +435,249 @@ func TestVideoDownloadResponsesAreBuiltByTheSharedHelpers(t *testing.T) {
 			t.Errorf("%s builds a BifrostVideoDownloadResponse by hand; return providerUtils.FetchVideoContent or providerUtils.NewVideoContentResponse so a streamed request is honored", file)
 		}
 	}
+}
+
+// baseURLVideoDownloads lists the FetchVideoContent calls that may omit VendorURL, by file: how
+// many there are and why their address is not the vendor's to choose. Every other call must
+// set VendorURL, which sends it through the SSRF-hardened media fetcher.
+var baseURLVideoDownloads = map[string]struct {
+	calls  int
+	reason string
+}{
+	"openai/openai.go":         {1, "the address is the provider's base URL plus /videos/{id}/content"},
+	"azure/azure.go":           {1, "the address is the deployment endpoint plus /videos/{id}/content"},
+	"volcengine/volcengine.go": {1, "the address is the provider's base URL plus the videos path"},
+	"vertex/vertex.go":         {1, "the gs:// object is read from the Cloud Storage API base, never from an address in the URI"},
+}
+
+// videoDownloadTransportCalls are the calls that send a request on a provider's own client. A
+// function that downloads a video has no use for one: its fetch goes through FetchVideoContent.
+var videoDownloadTransportCalls = map[string]bool{
+	"MakeRequestWithContext": true, "MakeRequestWithContextFollowRedirects": true, "DoStreamingRequest": true,
+	"Do": true, "DoRedirects": true, "DoTimeout": true, "DoDeadline": true,
+	"FetchMediaURL": true, "FetchMediaURLWithHeader": true, "FetchMediaStream": true, "FetchAndEncodeURL": true,
+}
+
+// TestVideoDownloadsOfVendorNamedURLsUseTheHardenedFetcher is the check that keeps TXE-7036 a
+// property of every provider instead of the seven it was written for. A vendor's task response
+// names where its file is, and a provider client's dialer admits loopback and private
+// addresses, so a download of such an address on that client lets the vendor (or whoever
+// answers in its place) read the gateway's network. The check fails a provider source that
+//   - calls FetchVideoContent without VendorURL and is not listed in baseURLVideoDownloads, or
+//   - sends a request itself from a function that downloads a video, instead of handing the
+//     fetch to FetchVideoContent.
+func TestVideoDownloadsOfVendorNamedURLsUseTheHardenedFetcher(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("..", "*", "*.go"))
+	if err != nil || len(files) < 50 {
+		t.Fatalf("provider sources not found: %d files, %v", len(files), err)
+	}
+	baseURLCalls := map[string]int{}
+	vendorURLCalls := 0
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") || filepath.Base(filepath.Dir(file)) == "utils" {
+			continue
+		}
+		name := filepath.ToSlash(strings.TrimPrefix(file, ".."+string(filepath.Separator)))
+		parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("%s: %v", file, err)
+		}
+		for _, decl := range parsed.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			lower := strings.ToLower(fn.Name.Name)
+			downloadsVideo := strings.Contains(lower, "video") && strings.Contains(lower, "download")
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				selector, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				if downloadsVideo && videoDownloadTransportCalls[selector.Sel.Name] {
+					t.Errorf("%s: %s calls %s itself; hand the fetch to providerUtils.FetchVideoContent (with VendorURL when the vendor names the address)", name, fn.Name.Name, selector.Sel.Name)
+				}
+				if selector.Sel.Name != "FetchVideoContent" || len(call.Args) != 2 {
+					return true
+				}
+				literal, ok := call.Args[1].(*ast.CompositeLit)
+				if !ok {
+					t.Errorf("%s: %s passes FetchVideoContent something other than a VideoContentFetch literal, so this check cannot see whether VendorURL is set", name, fn.Name.Name)
+					return true
+				}
+				for _, element := range literal.Elts {
+					if field, ok := element.(*ast.KeyValueExpr); ok {
+						if key, ok := field.Key.(*ast.Ident); ok && key.Name == "VendorURL" {
+							vendorURLCalls++
+							return true
+						}
+					}
+				}
+				baseURLCalls[name]++
+				return true
+			})
+		}
+	}
+	for name, calls := range baseURLCalls {
+		if allowed := baseURLVideoDownloads[name]; calls != allowed.calls {
+			t.Errorf("%s has %d FetchVideoContent calls without VendorURL, %d listed in baseURLVideoDownloads. Set VendorURL when the address comes from the vendor's response; list the call with its reason when the address is built from the provider's base URL", name, calls, allowed.calls)
+		}
+	}
+	for name, allowed := range baseURLVideoDownloads {
+		if baseURLCalls[name] != allowed.calls {
+			t.Errorf("baseURLVideoDownloads lists %d calls in %s (%s) and the source has %d; keep the list exact", allowed.calls, name, allowed.reason, baseURLCalls[name])
+		}
+	}
+	if vendorURLCalls < 7 {
+		t.Fatalf("found %d FetchVideoContent calls with VendorURL, want the 7 of TXE-7036 at least; the scan is not seeing the provider sources", vendorURLCalls)
+	}
+}
+
+// vendorURLFetch is a FetchVideoContent call for an address the vendor named, with a provider
+// proxy that tunnels every address to handler.
+func vendorURLFetch(t testing.TB, handler http.HandlerFunc, f VideoContentFetch) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError, *proxytest.OriginTunnel) {
+	t.Helper()
+	proxy := proxytest.NewOriginTunnel(t, handler)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(proxy.URL)})
+	f.VideoID = "task_1"
+	if f.ParseError == nil {
+		f.ParseError = func(resp *fasthttp.Response) *schemas.BifrostError {
+			return NewBifrostOperationError(fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()), nil)
+		}
+	}
+	resp, bifrostErr := FetchVideoContent(ctx, f)
+	return resp, bifrostErr, proxy
+}
+
+// TestFetchVideoContentVendorURL covers the route TXE-7036 adds to FetchVideoContent: an address
+// the vendor named is fetched by the SSRF-hardened media fetcher, streamed or held as the
+// request asks, with the request's headers; a private address is refused whichever is asked;
+// and the provider's own origin stays on the provider's client.
+func TestFetchVideoContentVendorURL(t *testing.T) {
+	file := bytes.Repeat([]byte("v"), 300<<10)
+	var gotKey atomic.Value
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		gotKey.Store(r.Header.Get("X-Goog-Api-Key"))
+		if r.URL.Path == "/gone.mp4" {
+			http.Error(w, "AccessDenied", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", strconv.Itoa(len(file)))
+		_, _ = w.Write(file)
+	}
+	request := func() *fasthttp.Request {
+		req := fasthttp.AcquireRequest()
+		t.Cleanup(func() { fasthttp.ReleaseRequest(req) })
+		req.Header.SetMethod(http.MethodGet)
+		req.Header.Set("x-goog-api-key", "vendor-key")
+		return req
+	}
+	pinned := func(upstream string) string { return VideoContentTypeOr(upstream, "video/mp4") }
+
+	t.Run("streamed", func(t *testing.T) {
+		resp, bifrostErr, _ := vendorURLFetch(t, handler, VideoContentFetch{VendorURL: "http://203.0.113.10/clip.mp4?sig=abc", Request: request(), Stream: true, ContentType: pinned})
+		if bifrostErr != nil {
+			t.Fatalf("FetchVideoContent: %v", bifrostErr.Error)
+		}
+		defer resp.Body.Close()
+		got, err := io.ReadAll(resp.Body)
+		if err != nil || !bytes.Equal(got, file) || resp.Content != nil {
+			t.Fatalf("read %d bytes, %v, content %d bytes", len(got), err, len(resp.Content))
+		}
+		if resp.ContentLength != int64(len(file)) || resp.ContentType != "video/mp4" || resp.VideoID != "task_1" {
+			t.Fatalf("length %d type %q id %q", resp.ContentLength, resp.ContentType, resp.VideoID)
+		}
+		if gotKey.Load() != "vendor-key" {
+			t.Fatalf("the vendor's host got key %q, want the request's header", gotKey.Load())
+		}
+	})
+
+	t.Run("held", func(t *testing.T) {
+		resp, bifrostErr, _ := vendorURLFetch(t, handler, VideoContentFetch{VendorURL: "http://203.0.113.10/clip.mp4", Request: request()})
+		if bifrostErr != nil {
+			t.Fatalf("FetchVideoContent: %v", bifrostErr.Error)
+		}
+		if resp.Body != nil || !bytes.Equal(resp.Content, file) || resp.ContentType != "application/octet-stream" {
+			t.Fatalf("body %v, %d bytes, type %q", resp.Body != nil, len(resp.Content), resp.ContentType)
+		}
+		if gotKey.Load() != "vendor-key" {
+			t.Fatalf("the vendor's host got key %q, want the request's header", gotKey.Load())
+		}
+	})
+
+	for _, stream := range []bool{true, false} {
+		t.Run(fmt.Sprintf("refusal stream=%v", stream), func(t *testing.T) {
+			_, bifrostErr, _ := vendorURLFetch(t, handler, VideoContentFetch{VendorURL: "http://203.0.113.10/gone.mp4?sig=deadbeefcafe", Stream: stream})
+			if bifrostErr == nil || bifrostErr.Error.Message != "failed to download video: HTTP 403" {
+				t.Fatalf("got %+v, want the provider's ParseError for 403", bifrostErr)
+			}
+		})
+		for name, target := range map[string]string{
+			"loopback": "http://127.0.0.1:1/clip.mp4?sig=deadbeefcafe",
+			"private":  "http://10.0.0.5/clip.mp4?sig=deadbeefcafe",
+			"metadata": "http://169.254.169.254/latest/meta-data/?sig=deadbeefcafe",
+			"scheme":   "file:///etc/passwd?sig=deadbeefcafe",
+		} {
+			t.Run(fmt.Sprintf("%s refused stream=%v", name, stream), func(t *testing.T) {
+				// The provider's clients are given and its base URL is another host: they must
+				// not be used for an address that is not on it.
+				_, bifrostErr, proxy := vendorURLFetch(t, handler, VideoContentFetch{
+					VendorURL: target, Stream: stream, BaseURL: "https://api.vendor.example/v1",
+					Client: &fasthttp.Client{}, StreamingClient: BuildStreamingClient(&fasthttp.Client{}),
+				})
+				if bifrostErr == nil {
+					t.Fatal("the download was not refused")
+				}
+				message := bifrostErr.Error.Message
+				if bifrostErr.Error.Error != nil {
+					message += " " + bifrostErr.Error.Error.Error()
+				}
+				if strings.Contains(message, "deadbeefcafe") {
+					t.Fatalf("the error leaks the signed query: %s", message)
+				}
+				if n := proxy.Connects(); n != 0 {
+					t.Fatalf("the refused address reached the proxy %d times", n)
+				}
+			})
+		}
+	}
+
+	t.Run("the provider's own origin stays on its client", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(handler))
+		t.Cleanup(srv.Close)
+		for _, stream := range []bool{true, false} {
+			req := request()
+			req.SetRequestURI(srv.URL + "/files/clip.mp4")
+			resp, bifrostErr, proxy := vendorURLFetch(t, handler, VideoContentFetch{
+				VendorURL: srv.URL + "/files/clip.mp4", BaseURL: srv.URL + "/v1beta", Request: req, Stream: stream,
+				Client: &fasthttp.Client{}, StreamingClient: BuildStreamingClient(&fasthttp.Client{}),
+			})
+			if bifrostErr != nil {
+				t.Fatalf("stream=%v: a loopback address on the provider's own origin was refused: %v", stream, bifrostErr.Error)
+			}
+			got := resp.Content
+			if resp.Body != nil {
+				got, _ = io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+			}
+			if !bytes.Equal(got, file) {
+				t.Fatalf("stream=%v: read %d bytes", stream, len(got))
+			}
+			if n := proxy.Connects(); n != 0 {
+				t.Fatalf("stream=%v: the provider-origin download went through the media fetcher's proxy path", stream)
+			}
+		}
+		// Another port on the same host is another origin.
+		if !sameOrigin("https://api.vendor.example/v1", "https://API.vendor.example:443/files/x") || sameOrigin(srv.URL, "http://127.0.0.1:1/x") || sameOrigin("http://a.example/x", "https://a.example/x") || sameOrigin("not a url", "not a url") {
+			t.Fatal("sameOrigin compares scheme, host and port")
+		}
+	})
 }
 
 // TestAddVideoListFilters is contract C7 / BF15 at the query: vendor filters are added by their

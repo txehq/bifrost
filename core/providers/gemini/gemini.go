@@ -2674,7 +2674,11 @@ func (provider *GeminiProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 		setGeminiAuthHeader(req, key.Value.GetValue())
 		// Fork: the file is streamed to a caller that asked for it (contract C9 / BF20).
 		return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
-			Request:                  req,
+			Request: req,
+			// Fork: the operation names this address, so off the provider's own origin it is
+			// fetched through the SSRF-hardened media fetcher (TXE-7036).
+			VendorURL:                *video.URL,
+			BaseURL:                  provider.networkConfig.BaseURL,
 			Client:                   provider.client,
 			StreamingClient:          provider.streamingClient,
 			Stream:                   request.Stream,

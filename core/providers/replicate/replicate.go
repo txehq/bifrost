@@ -2823,7 +2823,11 @@ func (provider *ReplicateProvider) VideoDownload(ctx *schemas.BifrostContext, ke
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 	return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
-		Request:                  req,
+		Request: req,
+		// Fork: the task response names this address, so it is fetched through the
+		// SSRF-hardened media fetcher unless it is on the provider's own origin (TXE-7036).
+		VendorURL:                videoUrl,
+		BaseURL:                  provider.networkConfig.BaseURL,
 		Client:                   provider.client,
 		StreamingClient:          provider.streamingClient,
 		Stream:                   request.Stream,
