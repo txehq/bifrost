@@ -3,6 +3,7 @@ package lib
 import (
 	"strings"
 
+	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
 
@@ -62,28 +63,45 @@ func CopyQueryFirstValues(args *fasthttp.Args, dst map[string]string, lowerKeys 
 	return repeated
 }
 
-// ApplyQueryChanges writes back the query parameters a transport plugin changed and
-// leaves the rest of the query string exactly as the caller sent it (fork, TXE-7042).
-// query is HTTPRequest.Query after the plugins ran. A name whose value still equals its
-// first value on the request was not changed, so every value of a repeated parameter
-// stays, in order. A name a plugin set to another value, or added, ends up with that one
-// value: the plugin's value replaces every value the caller sent, so a handler and a
-// vendor never see the plugin's value next to a stale one. A name a plugin deleted from
-// the map stays on the request, as before.
+// ApplyQueryChanges writes back the query parameters a transport plugin set and leaves
+// the rest of the query string exactly as the caller sent it (fork, TXE-7042). req is the
+// request after the plugins ran.
 //
-// A map cannot say whether a plugin assigned a name the value it already held, so that
-// case is "not changed" and a repeated name keeps its other values. A plugin that must
-// pin a value reads HTTPRequest.RepeatedQuery and refuses the request.
-func ApplyQueryChanges(args *fasthttp.Args, query map[string]string) {
-	for key, value := range query {
-		if args.Has(key) && string(args.Peek(key)) == value {
+// A name a plugin set through HTTPRequest.SetQuery ends up with that one value, whatever
+// the caller sent and however many times: the caller sends tier=allowed&tier=other, a
+// plugin calls SetQuery("tier", "allowed"), and only tier=allowed is forwarded. SetQuery
+// is the supported way for a plugin to set a query value, and
+// TestPluginsSetQueryValuesThroughSetQuery fails on in-repo code that writes
+// HTTPRequest.Query directly.
+//
+// A direct write by a plugin built outside this repository is still applied, by
+// comparing text: a name whose value differs from its first value on the request, or
+// that is new, ends up with that one value. A name whose value equals its first value
+// reads as untouched, because a map cannot say it was written, so every value of a
+// repeated parameter stays, in order. A name deleted from the map stays on the request,
+// as before.
+func ApplyQueryChanges(args *fasthttp.Args, req *schemas.HTTPRequest) {
+	for key, value := range req.Query {
+		switch n := countQueryValues(args, key); {
+		case n == 0:
+		case string(args.Peek(key)) == value && (n == 1 || !req.QueryAssigned(key)):
 			continue
-		}
-		if len(args.PeekMulti(key)) > 1 {
+		case n > 1:
 			args.Del(key)
 		}
 		args.Set(key, value)
 	}
+}
+
+// countQueryValues counts how many times args carries name, without allocating.
+func countQueryValues(args *fasthttp.Args, name string) int {
+	n := 0
+	for k := range args.All() {
+		if string(k) == name {
+			n++
+		}
+	}
+	return n
 }
 
 // CopyQueryAllValues collects the query parameters whose name skip does not claim, with

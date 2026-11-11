@@ -1164,8 +1164,8 @@ func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) b
 	for key, value := range req.Headers {
 		ctx.Request.Header.Set(key, value)
 	}
-	// Apply the query params a plugin changed; the rest of the query string stays as sent.
-	lib.ApplyQueryChanges(ctx.Request.URI().QueryArgs(), req.Query)
+	// Apply the query params a plugin assigned; the rest of the query string stays as sent.
+	lib.ApplyQueryChanges(ctx.Request.URI().QueryArgs(), req)
 	// Apply body if set
 	if req.Body != nil {
 		ctx.Request.SetBody(req.Body)
