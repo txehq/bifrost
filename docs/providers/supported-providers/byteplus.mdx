@@ -246,7 +246,7 @@ curl -X POST http://localhost:8080/v1/videos \
 | Create | `POST /v1/videos` | Returns a queued job ID |
 | Get status | `GET /v1/videos/{id}` | Poll until `status: completed`. Ark keeps task records for 7 days. |
 | List | `GET /v1/videos` | `limit` sets the page size. Ark pages by number, so an `after` cursor is rejected with a 400. |
-| Download content | `GET /v1/videos/{id}/content` | Fetches the video from the task's signed URL, which expires after 24 hours. The URL must resolve to a public address, the file can be up to 256 MiB, and it is served with a `video/*` content type. |
+| Download content | `GET /v1/videos/{id}/content` | Fetches the video from the task's signed URL, which expires after 24 hours. The URL must resolve to a public address. The file is forwarded as it arrives, with no size limit, and is served with a `video/*` content type. |
 | Cancel | `POST /v1/videos/{id}/cancel` | Cancels a task that is still queued and returns it with `status: cancelled`. Bifrost queries the task once and sends Ark's `DELETE` only while Ark reports it `queued`. In any other state, or when Ark refuses the cancel because the task has started, the answer is `400` with `error_type: provider_cancel_unsupported` and nothing is deleted. |
 | Delete | `DELETE /v1/videos/{id}` | Ark's own `DELETE`: cancels a queued task or deletes a finished one's record. Use the cancel route to cancel safely. |
 

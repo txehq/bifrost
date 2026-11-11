@@ -89,10 +89,10 @@ bytes, then closes without a `Connection: close` header. The gateway must emit a
 The connection-disposal regression is covered by the Go transport tests. These cases make
 no live provider calls and are skipped unless `providerErrorFixture=1`.
 
-Run from the repository root. Check that ports 8790, 8791 and 8799 (the fixture's stall proxy) are free before starting:
+Run from the repository root. Check that ports 8788 (the fixture's media tunnel), 8790, 8791 and 8799 (the fixture's stall proxy) are free before starting:
 
 ```bash
-lsof -nP -iTCP:8790 -iTCP:8791 -iTCP:8799 -sTCP:LISTEN
+lsof -nP -iTCP:8788 -iTCP:8790 -iTCP:8791 -iTCP:8799 -sTCP:LISTEN
 ```
 
 To run the fixture elsewhere, start it with `PROVIDER_ERROR_FIXTURE_PORT` and
@@ -145,6 +145,22 @@ when the first byte arrived against when the fixture wrote the second half: a ga
 fails with both times in the message. The last row reads `GET /__hits`: one vendor call per request, with the
 named key and the filters unchanged. Run it as the content-length truncation folder above is run, with
 `FEATURE="video content stream"`.
+
+## Vendor-named video files through the media fetcher
+
+Folder 482 pins TXE-7036 on `GET /v1/videos/{id}/content` for BytePlus and MiniMax, whose finished task
+names its file by URL. The gateway fetches such a URL through the SSRF-hardened media fetcher, which refuses
+a loopback address, so the fixture cannot name the file at its own address. It runs a media tunnel on port
+8788 (`PROVIDER_ERROR_FIXTURE_MEDIA_TUNNEL_PORT`): an HTTP proxy that answers every CONNECT and joins the
+tunnel to the fixture itself, counting each one as `__media_tunnel_connects@<host:port>` in `/__hits`. The
+`byteplus` and `minimax` providers of `provider_config/provider-error-fixture.config.json` have it as their
+`proxy_config`, so their API calls cross it too. The fixture's task `fixture-media-gapped` names its file at
+`http://203.0.113.10` (TEST-NET-3: public to the check, routed nowhere) and the file arrives in two halves
+1.5 seconds apart; the content rows use the download probe of folder 405. The task `fixture-media-loopback`
+names a file on the fixture's loopback address, which the gateway must refuse without asking for it. The
+last row reads `GET /__hits`. Run it as the content-length truncation folder above is run, with
+`FEATURE="media fetcher stream"`; when the fixture is not on its default ports, point the two providers'
+`proxy_config` at the tunnel's port as well.
 
 ## Streamed frames timing
 

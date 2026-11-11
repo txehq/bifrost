@@ -201,7 +201,9 @@ video-download:
       The file is streamed: Bifrost forwards the vendor's bytes as they arrive and never
       holds the whole file, so its size is not limited by the gateway's memory. The
       response carries `Content-Length` when the vendor states one and is chunked otherwise.
-      BytePlus and MiniMax files are fetched whole first (at most 256 MiB). A Vertex video
+      A file whose address the vendor's task names (BytePlus, MiniMax, Replicate, Runware,
+      Runway, and a Gemini or Vertex file off the provider's own host) is fetched from that
+      address only when it resolves to a public one, on every redirect. A Vertex video
       written to a Cloud Storage bucket (`gs://`) is read through the Cloud Storage API with
       the key's Google credentials, which need `storage.objects.get` on the bucket.
 

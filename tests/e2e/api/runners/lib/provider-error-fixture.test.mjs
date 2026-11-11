@@ -129,6 +129,26 @@ test("the media tunnel joins a CONNECT for any address to the fixture and counts
   assert.match(answered, /^HTTP\/1\.1 200 /);
 });
 
+// Folder 482: a finished BytePlus or MiniMax task names its file by URL. The gapped file is named at a
+// public-looking address the gateway can only reach through the media tunnel; the loopback task names the
+// fixture's own address, which the gateway's SSRF check must refuse.
+test("media tasks name the gapped file at a public address and the internal one on loopback", async (t) => {
+  const post = await startFixture(t);
+  const get = async (path) => (await fetch(`http://127.0.0.1:${post.port}${path}`)).json();
+  const ark = await get("/pp/byteplus/api/v3/contents/generations/tasks/fixture-media-gapped");
+  assert.equal(ark.status, "succeeded");
+  assert.equal(ark.content.video_url, "http://203.0.113.10/pp/media/gapped.mp4?X-Fixture-Signature=signed");
+  const minimax = await get("/pp/minimax/v2/query/video_generation/fixture-media-loopback");
+  assert.equal(minimax.task.status, "succeeded");
+  assert.equal(minimax.task.content.url, `http://127.0.0.1:${post.port}/pp/media/internal.mp4?X-Fixture-Signature=signed`);
+  const file = await fetch(`http://127.0.0.1:${post.port}/pp/media/gapped.mp4`);
+  assert.equal((await file.arrayBuffer()).byteLength, 2 * 256 * 1024);
+  const hits = (await get("/__hits")).data[0].hits;
+  assert.equal(hits["media.task@byteplus"], 1);
+  assert.equal(hits["media.task@minimax"], 1);
+  assert.equal(hits[`media.gapped@127.0.0.1:${post.port}`], 1);
+});
+
 test("a turns model calls the tool, then answers once the result comes back", async (t) => {
   const post = await startFixture(t);
   const first = await (await post({ model: "turns-priced", messages: [{ role: "user", content: "weather?" }] })).json();

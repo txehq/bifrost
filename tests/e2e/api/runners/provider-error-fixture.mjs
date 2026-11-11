@@ -27,6 +27,9 @@ const STALL_HOLD_MS = 15000;
 // counted under "__media_tunnel_connects@<host:port>" in /__hits, so a case can prove the download left
 // through the provider's proxy, to the address the vendor named.
 const mediaTunnelPort = Number(process.env.PROVIDER_ERROR_FIXTURE_MEDIA_TUNNEL_PORT || "8788");
+// The address a fixture task names its file at: TEST-NET-3 (RFC 5737), public to the gateway's SSRF check and
+// routed nowhere, so the file is reachable through the media tunnel only.
+const MEDIA_PUBLIC_HOST = "203.0.113.10";
 
 // Per-model behaviour for POST /v1/chat/completions. The model name in the request
 // body selects the response, so one fixture serves every case. A model may carry a
@@ -1397,6 +1400,39 @@ const handleRequest = (req, res) => {
 		req.on("data", (c) => body.push(c));
 		req.on("end", () => deepgramAnswer(req, res, Buffer.concat(body)));
 		return undefined;
+	}
+	// Folder 482 (TXE-7036): a finished BytePlus or MiniMax task names its file by URL, and the gateway fetches
+	// that URL through the SSRF-hardened media fetcher. Task ids ending in "media-gapped" name the gapped file at
+	// a public-looking address, which the gateway reaches through the media tunnel (the providers' proxy_config);
+	// ids ending in "media-loopback" name a file on this fixture's own loopback address, which the gateway must
+	// refuse without asking for it. Each file request is counted as "media.<file>@<Host header>".
+	const mediaTask = /^\/pp\/(byteplus\/api\/v3\/contents\/generations\/tasks|minimax\/v2\/query\/video_generation)\/[^/]*media-(gapped|loopback)$/.exec(path);
+	if (req.method === "GET" && mediaTask) {
+		const id = decodeURIComponent(path.slice(path.lastIndexOf("/") + 1));
+		const fileURL = mediaTask[2] === "gapped"
+			? `http://${MEDIA_PUBLIC_HOST}/pp/media/gapped.mp4?X-Fixture-Signature=signed`
+			: `http://127.0.0.1:${port}/pp/media/internal.mp4?X-Fixture-Signature=signed`;
+		countHit(`media.task@${mediaTask[1].split("/")[0]}`);
+		if (mediaTask[1].startsWith("byteplus")) {
+			return send(200, {}, JSON.stringify({ id, model: "seedance-1-0-pro-fast-251015", status: "succeeded", content: { video_url: fileURL }, resolution: "720p", ratio: "16:9", duration: 5 }));
+		}
+		return send(200, {}, JSON.stringify({ task: { id, model: "MiniMax-H3", status: "succeeded", content: { url: fileURL }, resolution: "768P", ratio: "16:9", duration: 6 } }));
+	}
+	if (req.method === "GET" && path === "/pp/media/gapped.mp4") {
+		countHit(`media.gapped@${req.headers.host}`);
+		videoGapSends.length = 0;
+		res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": 2 * VIDEO_HALF.length });
+		videoGapSends.push(performance.now());
+		res.write(VIDEO_HALF);
+		setTimeout(() => {
+			videoGapSends.push(performance.now());
+			res.end(VIDEO_HALF);
+		}, VIDEO_GAP_MS);
+		return undefined;
+	}
+	if (req.method === "GET" && path === "/pp/media/internal.mp4") {
+		countHit(`media.internal@${req.headers.host}`);
+		return send(200, { "Content-Type": "video/mp4" }, "internal");
 	}
 	// MiniMax video query is a GET; the task id "base-resp-<code>" selects the base_resp code (TXE-6588).
 	if (req.method === "GET" && path.startsWith("/pp/minimax/v2/query/video_generation/")) {
