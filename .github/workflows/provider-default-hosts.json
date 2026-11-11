@@ -16,6 +16,7 @@
   "gemini": "generativelanguage.googleapis.com",
   "github-copilot": "",
   "glm": "api.z.ai",
+  "google-cloud-tts": "texttospeech.googleapis.com",
   "groq": "api.groq.com",
   "huggingface": "router.huggingface.co",
   "minimax": "api.minimax.io",
