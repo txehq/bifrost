@@ -1221,6 +1221,7 @@ func BenchmarkVertexBatchCustomIDLabels(b *testing.B) {
 			}
 		})
 	}
+}
 
 // A Claude-on-Vertex line the url names a chat completion is converted with the shared
 // anthropic.BatchChatLineParams even when its body carries none of the OpenAI-only
