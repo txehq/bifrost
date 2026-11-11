@@ -898,6 +898,12 @@ func TestImageEditFieldCheckScope(t *testing.T) {
 	largePayload := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	largePayload.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
 	largePayload.SetValue(schemas.BifrostContextKeyLargePayloadReader, io.Reader(bytes.NewReader([]byte("form"))))
+	// A staged body is forwarded unparsed only for an attempt the eligibility rule allows
+	// (TXE-7082). With no decision on the context the request is converted, so it is checked.
+	if err := checkOpenAIImageEditFields(largePayload, withType(schemas.OpenAI)); err == nil || err.Error.Param != "aspect_ratio" {
+		t.Fatalf("large payload mode with no eligibility decision: %+v, want a refusal naming aspect_ratio", err)
+	}
+	largePayload.SetValue(schemas.BifrostContextKeyLargePayloadEligibility, schemas.LargePayloadEligibility{RawRequest: true, RawResponse: true})
 	if err := checkOpenAIImageEditFields(largePayload, withType(schemas.OpenAI)); err != nil {
 		t.Fatalf("large payload passthrough: refused %+v, want no check", err.Error)
 	}
