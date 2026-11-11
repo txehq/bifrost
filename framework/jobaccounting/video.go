@@ -61,10 +61,6 @@ var videoProviders = map[schemas.ModelProvider]struct{}{
 	schemas.Runware:   {},
 	schemas.MiniMax:   {},
 	schemas.BytePlus:  {},
-	// Fork (TXE-7118): the two Volcano Engine Ark providers serve Seedance tasks through the
-	// same API as BytePlus and were never settled. The coverage test found them.
-	schemas.ModelArk:   {},
-	schemas.Volcengine: {},
 }
 
 // videoSettlementExemptions are the providers that implement video and are deliberately not
@@ -72,7 +68,9 @@ var videoProviders = map[schemas.ModelProvider]struct{}{
 // for a provider that implements video and is in neither this map nor videoProviders
 // (fork, TXE-7118).
 var videoSettlementExemptions = map[schemas.ModelProvider]string{
-	schemas.Azure: "TXE-7054 adds azure: its two video APIs (Sora 2 and the first-generation jobs API) use different ids and dimensions, and settlement must also be reached from /content",
+	schemas.ModelArk:   "TXE-7131 adds modelark with a settle-and-read-cost regression: it serves Seedance tasks through the Ark API and has never been settled",
+	schemas.Volcengine: "TXE-7131 adds volcengine with a settle-and-read-cost regression: it serves Seedance tasks through the Ark API and has never been settled",
+	schemas.Azure:      "TXE-7054 adds azure: its two video APIs (Sora 2 and the first-generation jobs API) use different ids and dimensions, and settlement must also be reached from /content",
 }
 
 // VideoRetriever is the provider call the video settler needs: given a job row,
