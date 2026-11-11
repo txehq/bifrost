@@ -157,6 +157,7 @@
                 "pages": [
                   "providers/supported-providers/overview",
                   "providers/supported-providers/anthropic",
+                  "providers/supported-providers/assemblyai",
                   "providers/supported-providers/azure",
                   "providers/supported-providers/azure-model-router",
                   "providers/supported-providers/azurespeech",

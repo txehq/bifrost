@@ -196,6 +196,12 @@ func TestCheckEnumExcusesBytePlusAsCustomProviderBaseOnly(t *testing.T) {
 	}
 
 	c = newTestChecker(map[string]any{})
+	c.checkEnum([]string{"openai", "minimax", "assemblyai"}, node, basePath, "fixture.BaseProviderType", "schemas.ModelProvider")
+	if got := drift(c.findings); len(got) != 0 {
+		t.Errorf("assemblyai must be excused at base_provider_type, got %+v", got)
+	}
+
+	c = newTestChecker(map[string]any{})
 	c.checkEnum([]string{"openai", "minimax", "byteplus", "newprovider"}, node, basePath, "fixture.BaseProviderType", "schemas.ModelProvider")
 	if got := drift(c.findings); len(got) != 1 || got[0].Detail != "schema missing Go consts [newprovider]" {
 		t.Errorf("a provider other than byteplus must still be drift at base_provider_type, got %+v", got)

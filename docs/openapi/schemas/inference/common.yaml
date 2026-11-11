@@ -44,6 +44,7 @@ ModelProvider:
     - bfl
     - google-cloud-tts
     - azurespeech
+    - assemblyai
 
 Fallback:
   type: object

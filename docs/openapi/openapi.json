@@ -114777,7 +114777,8 @@
           "dashscope",
           "bfl",
           "google-cloud-tts",
-          "azurespeech"
+          "azurespeech",
+          "assemblyai"
         ]
       },
       "Fallback": {

@@ -1063,6 +1063,44 @@ const drain = (req, then) => {
 	req.on("end", then);
 };
 
+// AssemblyAI's Sync API (folder 404, TXE-6435): POST /pp/assemblyai/v1/transcribe answers in the vendor's
+// shape, a transcript for universal-3-5-pro and an RFC 9457 problem body for the aai-upstream-* models. The
+// model is the X-AAI-Model header, as on the real API. Every call is counted under "assemblyai:<model>" and
+// the last one is kept for GET /__assemblyai (its headers and multipart parts), so a case can prove one
+// request made one upstream call and what that call carried. POST /__reset clears it.
+const assemblyAICalls = [];
+const assemblyAITranscript = {
+	text: "The quick brown fox.",
+	words: [
+		{ text: "The", confidence: 0.99, start: 140, end: 260 },
+		{ text: "quick", confidence: 0.98, start: 260, end: 600 },
+		{ text: "brown", confidence: 0.97, start: 600, end: 900 },
+		{ text: "fox.", confidence: 0.96, start: 900, end: 1500 },
+	],
+	confidence: 0.975,
+	audio_duration_ms: 3312,
+	session_id: "0d6c1f7e-6a3b-4a55-9f0e-2a4b8f1c9d10",
+	request_time_ms: 412.6,
+};
+const assemblyAIProblems = {
+	"aai-upstream-429": { status: 429, headers: { "Retry-After": "7" }, title: "Too Many Requests", detail: "Rate limit exceeded." },
+	"aai-upstream-400": { status: 400, headers: {}, title: "Audio Too Short", detail: "Audio must be at least 80 ms long." },
+};
+// The parts of a multipart/form-data body: name, filename, Content-Type, byte length, and the text of a JSON part.
+const multipartParts = (contentType, body) => {
+	const boundary = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType || "");
+	if (!boundary) return [];
+	return body.toString("latin1").split(`--${boundary[1] || boundary[2]}`).slice(1, -1).map((chunk) => {
+		const split = chunk.indexOf("\r\n\r\n");
+		const head = chunk.slice(0, split);
+		const content = chunk.slice(split + 4, chunk.endsWith("\r\n") ? -2 : undefined);
+		const type = /^content-type:\s*(.+)$/im.exec(head)?.[1].trim() || "";
+		const part = { name: /name="([^"]*)"/i.exec(head)?.[1] || "", filename: /filename="([^"]*)"/i.exec(head)?.[1] || "", contentType: type, bytes: content.length };
+		if (type === "application/json") part.text = Buffer.from(content, "latin1").toString("utf8");
+		return part;
+	});
+};
+
 
 // Stale pooled connections, TXE-7071. GET /v1/videos/video_stale_hold is held until staleHold.want requests
 // are waiting, so the gateway needs one upstream connection for each. Then every one is answered and, 50 ms
@@ -1149,7 +1187,31 @@ const server = http.createServer((req, res) => {
 		openAPICalls.length = 0;
 		wireCalls.length = 0;
 		for (const k of Object.keys(sentBodies)) delete sentBodies[k];
+		assemblyAICalls.length = 0;
 		return send(200, {}, JSON.stringify({ data: [{ reset: true }] }));
+	}
+	if (req.method === "POST" && path === "/pp/assemblyai/v1/transcribe") {
+		const body = [];
+		req.on("data", (c) => body.push(c));
+		req.on("end", () => {
+			const model = req.headers["x-aai-model"] || "";
+			countHit(`assemblyai:${model}`);
+			assemblyAICalls.push({
+				model,
+				authorization: req.headers.authorization || "",
+				parts: multipartParts(req.headers["content-type"], Buffer.concat(body)),
+			});
+			const problem = assemblyAIProblems[model];
+			if (problem) {
+				res.writeHead(problem.status, { "Content-Type": "application/problem+json", ...problem.headers });
+				return res.end(JSON.stringify({ status: problem.status, title: problem.title, detail: problem.detail }));
+			}
+			send(200, { "x-aai-fixture": "sync" }, JSON.stringify(assemblyAITranscript));
+		});
+		return undefined;
+	}
+	if (req.method === "GET" && path === "/__assemblyai") {
+		return send(200, {}, JSON.stringify({ data: [{ calls: assemblyAICalls }] }));
 	}
 	if (req.method === "GET" && path === "/openapi-fixture/docs/no-servers.json") {
 		return send(200, {}, JSON.stringify(openAPIDocument));

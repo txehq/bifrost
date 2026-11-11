@@ -1982,6 +1982,12 @@ func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (
 	if responseFormatValues := form.Value["response_format"]; len(responseFormatValues) > 0 && responseFormatValues[0] != "" {
 		transcriptionParams.ResponseFormat = &responseFormatValues[0]
 	}
+	// file_format is the unified field naming the audio's type (TranscriptionParameters.Format).
+	// It is a known field, so it never reaches extra params; before TXE-6435 it was read here
+	// and then dropped.
+	if fileFormatValues := form.Value["file_format"]; len(fileFormatValues) > 0 && fileFormatValues[0] != "" {
+		transcriptionParams.Format = &fileFormatValues[0]
+	}
 	// Repeated "timestamp_granularities[]" fields, matching the OpenAI SDK's encoding and the /openai route.
 	if granularityValues := form.Value["timestamp_granularities[]"]; len(granularityValues) > 0 {
 		transcriptionParams.TimestampGranularities = granularityValues

@@ -185,6 +185,31 @@ test.describe("Providers", () => {
       await expect(providersPage.keysTableEmptyState).toBeVisible();
     });
 
+    test("should add AssemblyAI from the provider list and save its required API key", async ({
+      providersPage,
+    }) => {
+      // AssemblyAI is a standard provider (transcription on the Sync API); it needs a key.
+      if (!(await providersPage.providerExists("assemblyai"))) {
+        await providersPage.addKnownProviderFromDropdown("assemblyai");
+        createdProviders.push("assemblyai");
+      }
+      const providerItem = providersPage.getProviderItem("assemblyai");
+      await expect(providerItem).toBeVisible({ timeout: 15000 });
+      await providersPage.selectProvider("assemblyai");
+
+      const keyData = createProviderKeyData({
+        name: `AssemblyAI-Key-${Date.now()}`,
+        value: "aai-test-e2e-key-12345",
+        weight: 1.0,
+      });
+      createdKeys.push({ provider: "assemblyai", keyName: keyData.name });
+
+      await providersPage.addKey(keyData);
+
+      const keyExists = await providersPage.keyExists(keyData.name);
+      expect(keyExists).toBe(true);
+    });
+
     test("should save a Vertex key with AWS workload identity and re-detect the tab on edit", async ({
       providersPage,
       page,

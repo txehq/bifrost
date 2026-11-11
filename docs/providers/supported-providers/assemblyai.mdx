@@ -1,0 +1,195 @@
+---
+title: "AssemblyAI"
+description: "AssemblyAI conversion guide - pre-recorded speech-to-text through the Sync API: one call, no polling, billable duration in the unified usage"
+icon: "a"
+---
+
+## Overview
+
+AssemblyAI is a speech-to-text provider. Bifrost reaches it through AssemblyAI's **Sync API**, which returns the transcript in the response to a single request:
+
+- **One upstream call** - `POST /v1/transcribe` is called once per request. There is no upload step and no polling.
+- **Model in a header** - the model you request is sent as the `X-AAI-Model` header.
+- **Multipart request** - the audio is sent as the `audio` part and the request fields as a JSON `config` part.
+- **Billable duration** - the vendor's `audio_duration_ms` is reported as `usage.seconds`.
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Transcription (STT) | ✅ | ❌ | `/v1/transcribe` |
+| List Models | ❌ | - | - |
+| Chat Completions | ❌ | ❌ | - |
+| Responses API | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): every operation other than non-streaming transcription returns `UnsupportedOperationError`. The Sync API has no model catalog endpoint, so list the models you use on the key. AssemblyAI's asynchronous transcript API (upload, create, poll) and its streaming API are not used.
+</Note>
+
+---
+
+## Setup
+
+<Tabs>
+<Tab title="Gateway (config.json)">
+
+```json
+{
+  "providers": {
+    "assemblyai": {
+      "keys": [
+        {
+          "name": "assemblyai-key-1",
+          "value": "env.ASSEMBLYAI_API_KEY",
+          "models": ["universal-3-5-pro"],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 60,
+        "max_retries": 0
+      }
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *schemas.BifrostContext, provider schemas.ModelProvider) ([]schemas.Key, error) {
+	if provider == schemas.AssemblyAI {
+		return []schemas.Key{{
+			Value:  *schemas.NewSecretVar("env.ASSEMBLYAI_API_KEY"),
+			Models: []string{"universal-3-5-pro"},
+			Weight: 1.0,
+		}}, nil
+	}
+	return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+</Tab>
+</Tabs>
+
+| Setting | Value |
+|---------|-------|
+| Default base URL | `https://sync.assemblyai.com` (global; routes to the nearest region) |
+| US data residency | set `network_config.base_url` to `https://sync.us.assemblyai.com` |
+| EU data residency | set `network_config.base_url` to `https://sync.eu.assemblyai.com` |
+| Authentication | `Authorization: <api key>` (the key itself, no `Bearer` prefix) |
+
+<Note>
+Keep `max_retries` at `0` when each transcription is billed: a retry is a second upstream call. AssemblyAI ends a Sync API request after 30 seconds on its side and answers `504`.
+</Note>
+
+---
+
+## Transcription
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/transcriptions \
+  -H "x-bf-passthrough-extra-params: true" \
+  -F "model=assemblyai/universal-3-5-pro" \
+  -F "file=@sample.wav" \
+  -F "language=en" \
+  -F "timestamp_granularities[]=word" \
+  -F "keyterms_prompt=Bifrost" \
+  -F "keyterms_prompt=Tokun"
+```
+
+### Routes
+
+| Route | Reaches AssemblyAI | Notes |
+|-------|--------------------|-------|
+| `POST /v1/audio/transcriptions` | ✅ | Extra form fields arrive as text and are sent as the JSON values they spell (below). |
+| `POST /openai/v1/audio/transcriptions` (and the `/litellm`, `/langchain`, `/pydanticai` prefixes) | ✅ | The OpenAI drop-in route decodes extra form fields as JSON before the provider sees them. `temperature` is refused. |
+| `POST /genai/v1beta/models/assemblyai/<model>:generateContent` with inline audio | ✅ | The audio is identified by its signature and the request's text becomes `config.prompt`. Gemini-only request members have no AssemblyAI equivalent. |
+| Go SDK `TranscriptionRequest` | ✅ | `Params.ExtraParams` values are sent with their Go types. |
+| `stream=true` (any route) | ❌ | Streaming transcription is unsupported. |
+
+### Request Mapping
+
+| Bifrost field | Sent to AssemblyAI as |
+|---------------|-----------------------|
+| `model` | `X-AAI-Model` header |
+| `file` | `audio` part, with the `Content-Type` of the audio format |
+| `file_format` (Go SDK `Params.Format`) | the `audio` part's `Content-Type`, when the audio has no signature (for example `pcm`) |
+| `language` | `config.language_codes` (one code) |
+| `prompt` | `config.prompt` |
+| `timestamp_granularities[]=word` | `config.timestamps: true` |
+| `response_format` | `json`, `verbose_json` and `text` are accepted; nothing is sent (the Sync API returns JSON only) |
+| any other form field | `config.<field>`, unchanged |
+
+The `config` part is left out when the request sets none of these.
+
+**Audio format.** The Sync API requires the `audio` part's `Content-Type` to match the audio. Bifrost reads it from the file's signature (WAV, FLAC, Ogg, WebM, MP4/M4A, MP3, AAC), then from `file_format`, then from the filename extension. Raw PCM has no signature, so it needs `file_format: pcm` or a `.pcm`/`.raw` filename. Audio it cannot identify is sent as `application/octet-stream`, and AssemblyAI answers for it. Raw PCM also needs `sample_rate` and `channels` in the config.
+
+**Fields that cannot be delivered.** A request field the Sync API has no equivalent for is refused with `400` and `error_type: caller_unsupported_parameter`, naming the field in `error.param`. It is never dropped. This covers `response_format` values `srt`, `vtt` and `diarized_json`, the `segment` timestamp granularity, `temperature`, and an audio `url` sent in place of the file (the Sync API takes no URL, and Bifrost does not download one).
+
+### Vendor-specific fields
+
+Fields outside Bifrost's unified transcription fields are merged into the `config` part, so every option AssemblyAI prices separately reaches it. A multipart form carries only text, so Bifrost sends each value as the JSON value it spells:
+
+| Form value | Sent as |
+|------------|---------|
+| `true`, `false` | boolean |
+| an integer, such as `16000` | number |
+| text starting with `[` or `{` that parses as JSON | that array or object |
+| a field repeated several times | array of strings |
+| anything else | string |
+
+`prompt`, `conversation_context` and `language_codes` are string-typed in AssemblyAI's config, so their text is never read as a boolean or a number.
+
+To send a config exactly as written, put the whole object in a `config` form field:
+
+```bash
+-F 'config={"timestamps":true,"keyterms_prompt":["Bifrost"],"conversation_context":["Hello.","42"]}'
+```
+
+An extra field never replaces a config member a unified field already set: a request that sends both (for example `language` and `language_codes`) is refused with 400 `caller_invalid_request`, and `error.param` names the extra field. Send the value in one place.
+
+### Response Mapping
+
+| AssemblyAI field | Bifrost field |
+|------------------|---------------|
+| `text` | `text` |
+| `audio_duration_ms` / 1000 | `duration` and `usage{type: "duration", seconds}` |
+| `words[].text`, `start`, `end` (milliseconds) | `words[].word`, `start`, `end` (seconds) |
+| the whole body | `extra_fields.raw_response`, when the raw response is requested |
+
+- `usage` stays empty when AssemblyAI reports no `audio_duration_ms`. Bifrost does not fill in a duration of its own.
+- `words` is returned only when AssemblyAI returned timings (`timestamps: true`). A word it could not align keeps its place with `start` and `end` of `0`. Per-word and overall `confidence`, `session_id` and `request_time_ms` are in the raw response.
+- The Sync API returns no utterances or speaker labels, so `segments` is not filled.
+
+```json
+{
+  "text": "The quick brown fox.",
+  "duration": 3.312,
+  "task": "transcribe",
+  "usage": { "type": "duration", "seconds": 3.312 },
+  "extra_fields": { "provider": "assemblyai", "model_requested": "universal-3-5-pro" }
+}
+```
+
+### Errors
+
+AssemblyAI answers errors as RFC 9457 problem details (`status`, `title`, `detail`). Bifrost returns the same HTTP status, with `detail` as `error.message` and `title` as `error.code`. `extra_fields.error_type` follows the status, and a `Retry-After` header becomes `extra_fields.retry_after_ms`.
+
+| Status | Meaning | `error_type` |
+|--------|---------|--------------|
+| 400 | Audio too short, malformed audio, invalid config | `caller_invalid_request` |
+| 401 | Missing or invalid API key | `provider_auth_failed` |
+| 413 | Audio over 20 minutes or 256 MB | `caller_invalid_request` |
+| 415 | Unsupported audio format | `caller_invalid_request` |
+| 429 | Rate limit exceeded | `provider_rate_limited` |
+| 500 | Model error | `provider_server_error` |
+| 503 | Cold start or concurrency cap | `provider_overloaded` |
+| 504 | The 30-second deadline passed | `provider_timeout` |
+
+### Limits
+
+Set by AssemblyAI's Sync API: audio from 80 ms to 20 minutes, up to 256 MB, and a 30-second deadline per request. It does not accept audio URLs.

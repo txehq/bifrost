@@ -105,6 +105,7 @@ const (
 	// AzureSpeech is Azure AI Speech (text to speech through SSML, fast transcription): a
 	// different API from Azure OpenAI audio, which Azure serves (fork, TXE-6542).
 	AzureSpeech ModelProvider = "azurespeech"
+	AssemblyAI  ModelProvider = "assemblyai"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -176,6 +177,7 @@ var StandardProviders = []ModelProvider{
 	BFL,
 	GoogleCloudTTS,
 	AzureSpeech,
+	AssemblyAI,
 }
 
 // RequestType represents the type of request being made to a provider.

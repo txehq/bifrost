@@ -40,6 +40,25 @@
     ]
   },
   "providers": {
+    "assemblyai": {
+      "keys": [
+        {
+          "name": "assemblyai-fixture",
+          "value": "aai-fixture-key",
+          "models": [
+            "universal-3-5-pro",
+            "aai-upstream-429",
+            "aai-upstream-400"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/assemblyai",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
     "openai": {
       "keys": [
         {

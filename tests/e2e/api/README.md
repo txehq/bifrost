@@ -292,6 +292,12 @@ The same gateway config also registers an Azure key; the fixture answers model `
 which is how the dropped-annotation defect was measured.
 The cases are skipped unless `providerErrorFixture=1`.
 
+The same fixture stands in for AssemblyAI's Sync API (folder 404): the config's `assemblyai` provider points at
+`/pp/assemblyai`, and `POST /pp/assemblyai/v1/transcribe` answers by the `X-AAI-Model` header, a transcript for
+`universal-3-5-pro` and an RFC 9457 problem body for `aai-upstream-429` and `aai-upstream-400`. Each call is
+counted under `assemblyai:<model>`, and `GET /__assemblyai` returns what each call carried (the model header, the
+`Authorization` value and the multipart parts), which is how the cases prove one request made one upstream call.
+
 The fixture also serves the two datasheets a fresh gateway downloads on first start (the config's `framework.pricing` URLs point at it), including the model-parameters row that makes `gpt-5-pro` Responses-only, which is what makes folder 160's chat request convert. The run therefore needs no network. Starting the gateway with `HTTPS_PROXY=http://127.0.0.1:9` is a cheap proof: loopback is exempt from proxying, so only an accidental external call would fail.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.

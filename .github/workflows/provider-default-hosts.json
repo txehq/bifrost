@@ -1,5 +1,6 @@
 {
   "anthropic": "api.anthropic.com",
+  "assemblyai": "sync.assemblyai.com",
   "azure": "",
   "azurespeech": "",
   "bedrock": "",
