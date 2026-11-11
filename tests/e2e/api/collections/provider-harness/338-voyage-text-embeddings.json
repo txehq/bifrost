@@ -850,6 +850,88 @@
           "raw": "{\"model\": \"voyage/voyage-4\", \"input\": [\"hello\"], \"encoding_format\": \"base64\"}"
         }
       }
+    },
+    {
+      "name": "Voyage embeddings missing token quantity stays absent fixture /v1/embeddings voyage-4",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('missing vendor tokens are not fabricated as zero', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(b.data.length).to.equal(1); pm.expect(b.usage).to.equal(null); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "voyage-fixture"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"voyage/voyage-4\", \"input\": [\"voyage-fixture-no-usage\"]}"
+        }
+      }
+    },
+    {
+      "name": "Voyage embeddings missing token quantity stays absent fixture /openai/v1/embeddings voyage-4",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('missing vendor tokens are not fabricated as zero', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(b.data.length).to.equal(1); pm.expect(b.usage).to.equal(null); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "voyage-fixture"
+          }
+        ],
+        "url": "{{baseUrl}}/openai/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"voyage/voyage-4\", \"input\": [\"voyage-fixture-no-usage\"]}"
+        }
+      }
     }
   ]
 }

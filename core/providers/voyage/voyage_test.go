@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"io"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -158,8 +159,14 @@ func TestVoyageParameters(t *testing.T) {
 }
 
 func TestVoyageMissingUsage(t *testing.T) {
-	r := (&voyage.VoyageEmbeddingResponse{}).ToBifrostEmbeddingResponse("voyage-4")
-	require.Nil(t, r.Usage)
+	for _, body := range []string{`{}`, `{"usage":null}`, `{"usage":{}}`, `{"usage":{"total_tokens":null}}`} {
+		var vendor voyage.VoyageEmbeddingResponse
+		require.NoError(t, json.Unmarshal([]byte(body), &vendor))
+		require.Nil(t, vendor.ToBifrostEmbeddingResponse("voyage-4").Usage, body)
+	}
+	var vendor voyage.VoyageEmbeddingResponse
+	require.NoError(t, json.Unmarshal([]byte(`{"usage":{"total_tokens":0}}`), &vendor))
+	require.NotNil(t, vendor.ToBifrostEmbeddingResponse("voyage-4").Usage)
 }
 
 func BenchmarkVoyageEmbeddingConversion(b *testing.B) {
@@ -337,7 +344,7 @@ func BenchmarkVoyageQuantizedResponseConversion(b *testing.B) {
 	}
 }
 
-func TestVoyagePreparedLargePayload(t *testing.T) {
+func TestVoyagePreparedLargePayloadRefused(t *testing.T) {
 	var calls atomic.Int32
 	wireCh := make(chan map[string]interface{}, 1)
 	server := &httptest.Server{Config: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -360,7 +367,7 @@ func TestVoyagePreparedLargePayload(t *testing.T) {
 	p, err := voyage.NewVoyageProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true}}, bifrost.NewNoOpLogger())
 	require.NoError(t, err)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	payload := `{"model":"voyage/voyage-4","input":["hello","world"]}`
+	payload := `{"model":"voyage/voyage-4","input":["hello","world"],"dimensions":256,"task_type":"query","auto_truncate":false}`
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, strings.NewReader(payload))
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, len(payload))
@@ -368,11 +375,44 @@ func TestVoyagePreparedLargePayload(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, &schemas.LargePayloadMetadata{Model: "voyage/voyage-4"})
 	// The transport hydrates only routing metadata when it skips body parsing.
 	got, bfErr := p.Embedding(ctx, schemas.Key{}, &schemas.BifrostEmbeddingRequest{Provider: schemas.Voyage, Model: "voyage-4"})
+	require.Nil(t, got)
+	require.NotNil(t, bfErr)
+	require.Equal(t, 400, *bfErr.StatusCode)
+	require.Equal(t, "large_payload_optimization", bfErr.Error.Param)
+	require.EqualValues(t, "caller_unsupported_parameter", bfErr.ExtraFields.ErrorType)
+	require.EqualValues(t, 0, calls.Load())
+}
+
+func TestVoyageLargeResponseRemainsUnified(t *testing.T) {
+	server := &httptest.Server{Config: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"index":0,"object":"embedding","embedding":[0.1,0.2]}],"usage":{"total_tokens":7}}`))
+	})}}
+	var err error
+	for attempt := 0; attempt < 100; attempt++ {
+		server.Listener, err = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", 20000+rand.IntN(40001)))
+		if err == nil {
+			break
+		}
+	}
+	require.NoError(t, err)
+	server.Start()
+	defer server.Close()
+	p, err := voyage.NewVoyageProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true}}, bifrost.NewNoOpLogger())
+	require.NoError(t, err)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(32))
+	defer func() {
+		if r, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseReader).(io.Closer); ok {
+			_ = r.Close()
+		}
+	}()
+	got, bfErr := p.Embedding(ctx, schemas.Key{}, request("voyage-4"))
 	require.Nil(t, bfErr)
-	require.Len(t, got.Data, 2)
+	require.NotNil(t, got.Usage)
 	require.Equal(t, 7, got.Usage.PromptTokens)
-	require.EqualValues(t, 1, calls.Load())
-	wire := <-wireCh
-	require.Equal(t, "voyage-4", wire["model"])
-	require.Equal(t, []interface{}{"hello", "world"}, wire["input"])
+	require.Equal(t, 7, got.Usage.TotalTokens)
+	require.Len(t, got.Data, 1)
+	require.Equal(t, []float64{0.1, 0.2}, got.Data[0].Embedding.EmbeddingArray)
+	require.NotEqual(t, true, ctx.Value(schemas.BifrostContextKeyLargeResponseMode))
+	require.Nil(t, ctx.Value(schemas.BifrostContextKeyLargeResponseReader))
 }

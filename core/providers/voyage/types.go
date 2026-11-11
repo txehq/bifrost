@@ -23,7 +23,7 @@ type VoyageEmbeddingResponse struct {
 }
 
 type VoyageUsage struct {
-	TotalTokens int `json:"total_tokens"`
+	TotalTokens *int `json:"total_tokens"`
 }
 
 type VoyageError struct {

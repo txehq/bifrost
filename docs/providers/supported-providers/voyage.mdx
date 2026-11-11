@@ -68,3 +68,10 @@ semantics, charging on failures, or how free tokens affect Tokun costs; this
 integration does not infer those facts. Tests use the published response example (with its display ellipses removed) and
 synthetic error fixtures matching the documented schema, not paid live samples. Retail billing verification and the
 fork release are separate rollout steps.
+
+Voyage requires buffered conversion. A prepared large-payload request stream is
+refused before any upstream call with 400 `caller_unsupported_parameter`
+(`error.param: large_payload_optimization`), because forwarding it would bypass
+the unified field mappings. Responses remain buffered and normalized even when
+the gateway's large-response threshold is exceeded, so usage and encoding do not
+change with response size.

@@ -82,12 +82,7 @@ func (provider *VoyageProvider) completeRequest(ctx *schemas.BifrostContext, jso
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	respOwned := true
-	defer func() {
-		if respOwned {
-			fasthttp.ReleaseResponse(resp)
-		}
-	}()
+	defer fasthttp.ReleaseResponse(resp)
 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -99,18 +94,11 @@ func (provider *VoyageProvider) completeRequest(ctx *schemas.BifrostContext, jso
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
 
-	usedLargePayloadBody := providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, schemas.Voyage)
-	if !usedLargePayloadBody {
-		req.SetBody(jsonData)
-	}
-
-	// Send the request with optional large response streaming
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
+	// Voyage requires request and response mapping, so its unary client stays
+	// buffered even when the gateway enables raw large-response optimization.
+	req.SetBody(jsonData)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
-	if usedLargePayloadBody {
-		providerUtils.DrainLargePayloadRemainder(ctx)
-	}
 	if bifrostErr != nil {
 		return nil, latency, nil, bifrostErr
 	}
@@ -120,17 +108,20 @@ func (provider *VoyageProvider) completeRequest(ctx *schemas.BifrostContext, jso
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(parseVoyageError(resp), latency)
 	}
 
-	body, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.logger)
-	if decodeErr != nil {
-		return nil, latency, providerResponseHeaders, decodeErr
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
+	body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
+	if ft != nil {
+		if decodeErr != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, decodeErr.Error())
+		} else {
+			ft.EndSpan(fh, schemas.SpanStatusOk, "")
+		}
 	}
-	if isLargeResp {
-		respOwned = false
-		return nil, latency, providerResponseHeaders, nil
+	if decodeErr != nil {
+		return nil, latency, providerResponseHeaders, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, decodeErr)
 	}
 
 	return body, latency, providerResponseHeaders, nil
@@ -140,6 +131,12 @@ func (provider *VoyageProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	// Check if embedding is allowed
 	if err := providerUtils.CheckOperationAllowed(schemas.Voyage, provider.customProviderConfig, schemas.EmbeddingRequest); err != nil {
 		return nil, err
+	}
+
+	// A prepared reader contains unparsed OpenAI-shaped options. Forwarding it
+	// would bypass dimensions/task/truncation mapping, so fail before any write.
+	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
+		return nil, schemas.NewUnsupportedParameterError("large_payload_optimization", "voyage embeddings require buffered request conversion; request-streaming optimization is not supported")
 	}
 
 	var converted *VoyageEmbeddingRequest
@@ -163,17 +160,6 @@ func (provider *VoyageProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	}
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
-	}
-
-	// Large response mode: return lightweight response with metadata only
-	if isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isLargeResp {
-		return &schemas.BifrostEmbeddingResponse{
-			Model: request.Model,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				Latency:                 latency.Milliseconds(),
-				ProviderResponseHeaders: providerResponseHeaders,
-			},
-		}, nil
 	}
 
 	// Decode the vendor response.

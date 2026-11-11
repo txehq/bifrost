@@ -79,8 +79,8 @@ func (r *VoyageEmbeddingResponse) ToBifrostEmbeddingResponse(model string) *sche
 		model = r.Model
 	}
 	out := &schemas.BifrostEmbeddingResponse{Object: r.Object, Model: model, Data: r.Data}
-	if r.Usage != nil {
-		out.Usage = &schemas.BifrostLLMUsage{PromptTokens: r.Usage.TotalTokens, TotalTokens: r.Usage.TotalTokens}
+	if r.Usage != nil && r.Usage.TotalTokens != nil {
+		out.Usage = &schemas.BifrostLLMUsage{PromptTokens: *r.Usage.TotalTokens, TotalTokens: *r.Usage.TotalTokens}
 	}
 	return out
 }
