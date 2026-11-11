@@ -867,6 +867,14 @@ const wireAnswer = (path, body, bytes) => {
 		if (body.stream === true) return { status: 200, stream: anthropicMessageStream(body.model) };
 		return { status: 200, body: JSON.stringify(anthropicMessage(body.model)) };
 	}
+	// Folder 489 (TXE-7090): a prediction whose urls.get is on the provider's own origin (poll-origin) and one
+	// whose urls.get is on another loopback origin (poll-loopback: the same fixture by the name localhost). The
+	// gateway polls the first on the provider's client and must refuse the second without asking for it.
+	const replicatePoll = /^\/pp\/replicate\/.*\/poll-(origin|loopback)\/predictions$/.exec(path);
+	if (replicatePoll) {
+		const host = replicatePoll[1] === "origin" ? "127.0.0.1" : "localhost";
+		return { status: 201, body: JSON.stringify({ id: `pred_poll_${replicatePoll[1]}`, status: "starting", urls: { get: `http://${host}:${port}/pp/replicate/v1/predictions/pred_poll_${replicatePoll[1]}` } }) };
+	}
 	// Replicate accepts a prediction (201) but the answer names no urls.get to poll it at (folder 456, TXE-7056).
 	if (path.startsWith("/pp/replicate/") && path.endsWith("/predictions")) return { status: 201, body: JSON.stringify({ id: "pred_fixture_no_urls", status: "starting" }) };
 	if (path.endsWith(":predict")) return { status: 200, body: JSON.stringify(imagenPartiallyBlocked) };
@@ -1434,6 +1442,11 @@ const handleRequest = (req, res) => {
 			res.end(VIDEO_HALF);
 		}, VIDEO_GAP_MS);
 		return undefined;
+	}
+	// The poll of a folder 489 prediction, counted under the Host it was asked at.
+	if (req.method === "GET" && path.startsWith("/pp/replicate/v1/predictions/pred_poll_")) {
+		countHit(`replicate.poll@${String(req.headers.host).split(":")[0]}`);
+		return send(200, {}, JSON.stringify({ id: path.slice(path.lastIndexOf("/") + 1), status: "succeeded", output: "https://replicate.delivery/fixture/out.png" }));
 	}
 	if (req.method === "GET" && path === "/pp/media/internal.mp4") {
 		countHit(`media.internal@${req.headers.host}`);

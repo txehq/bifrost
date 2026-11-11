@@ -162,6 +162,17 @@ last row reads `GET /__hits`. Run it as the content-length truncation folder abo
 `FEATURE="media fetcher stream"`; when the fixture is not on its default ports, point the two providers'
 `proxy_config` at the tunnel's port as well.
 
+## Addresses a vendor's response names
+
+Folder 489 pins TXE-7090 on Replicate. A create answers with `urls.get`, the address to poll the prediction
+at. The gateway polls it on the provider's client only when it is on the origin of the provider's configured
+base URL; any other address goes out on the SSRF-hardened client, which refuses a loopback or private one.
+The fixture's model `owner/poll-origin` names `urls.get` on the fixture's own origin, and `owner/poll-loopback`
+names the same fixture by the host name `localhost`, another origin on loopback. The rows expect the image for
+the first and `502 provider_connection_failed` naming a non-public address for the second, and the last row
+reads `GET /__hits`: one poll at `127.0.0.1`, none at `localhost`. Run it as the content-length truncation
+folder above is run, with `FEATURE="vendor named address"`.
+
 ## Streamed frames timing
 
 Folder 308 pins contract C10 BF22 (TXE-6522) on chat (`stream: true`) and speech (`stream_format: "sse"`),

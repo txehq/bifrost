@@ -151,6 +151,22 @@ test("media tasks name the gapped file at a public address and the internal one 
   assert.equal(hits[`media.gapped@127.0.0.1:${post.port}`], 1);
 });
 
+// Folder 489: a Replicate prediction names where to poll it. poll-origin names the fixture's own origin and
+// poll-loopback the same fixture by another loopback name, which a gateway must refuse to follow.
+test("replicate poll predictions name their own origin or another loopback one, and count polls by host", async (t) => {
+  const post = await startFixture(t);
+  const create = async (model) => (await post({ input: { prompt: "x" } }, `/pp/replicate/v1/models/owner/${model}/predictions`)).json();
+  const origin = await create("poll-origin");
+  assert.equal(origin.urls.get, `http://127.0.0.1:${post.port}/pp/replicate/v1/predictions/pred_poll_origin`);
+  const loopback = await create("poll-loopback");
+  assert.equal(loopback.urls.get, `http://localhost:${post.port}/pp/replicate/v1/predictions/pred_poll_loopback`);
+  const polled = await (await fetch(origin.urls.get)).json();
+  assert.equal(polled.status, "succeeded");
+  const hits = (await (await fetch(`http://127.0.0.1:${post.port}/__hits`)).json()).data[0].hits;
+  assert.equal(hits["replicate.poll@127.0.0.1"], 1);
+  assert.equal(hits["replicate.poll@localhost"], undefined);
+});
+
 test("a turns model calls the tool, then answers once the result comes back", async (t) => {
   const post = await startFixture(t);
   const first = await (await post({ model: "turns-priced", messages: [{ role: "user", content: "weather?" }] })).json();

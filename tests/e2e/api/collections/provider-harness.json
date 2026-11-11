@@ -328835,6 +328835,204 @@
           }
         }
       ]
+    },
+    {
+      "name": "489. Replicate polls a prediction on its own origin and refuses a poll address on another loopback host (vendor named address)",
+      "description": "Local fixture regression for TXE-7090, no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs and an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, whose replicate provider has the fixture as base URL, and run with providerErrorFixture=1; every case is skipped otherwise. Replicate answers a create with urls.get, the address to poll the prediction at, so that address is the vendor's to name. The gateway polls it on the provider's client only when it is on the origin of the provider's configured base URL; any other address goes out on the SSRF-hardened client, which refuses a loopback or private one. The fixture's model owner/poll-origin names urls.get on the fixture's own origin and the poll answers succeeded with an output URL: 489.2 gets the image. Its model owner/poll-loopback names the same fixture by the host name localhost, another origin on loopback: 489.3 is refused. 489.4 reads the counters: one poll at 127.0.0.1 and none at localhost. Before the change the gateway polled whatever address the answer named, with the key attached. The Go tests cover the stream address, the deployments next link, HuggingFace audio and the GenAI image download, which no fixture route stands in for.",
+      "item": [
+        {
+          "name": "489.1 fixture hit counters reset before the replicate poll rows (vendor named address)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('counters cleared', function () { pm.expect(j.data[0].reset, pm.response.text()).to.equal(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{providerErrorFixtureUrl}}/__reset",
+              "host": [
+                "{{providerErrorFixtureUrl}}"
+              ],
+              "path": [
+                "__reset"
+              ]
+            }
+          }
+        },
+        {
+          "name": "489.2 replicate/owner/poll-origin POST /v1/images/generations: a poll address on the provider's own origin is polled and the image returned (vendor named address)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the prediction was polled at the provider\\'s own origin and its output returned', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.data && j.data[0] && j.data[0].url, pm.response.text()).to.equal('https://replicate.delivery/fixture/out.png');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"replicate/owner/poll-origin\",\n  \"prompt\": \"a paper boat on a pond\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "489.3 [EXPECT-502] replicate/owner/poll-loopback POST /v1/images/generations: a poll address on another loopback host is refused (vendor named address)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the poll address on another loopback host is refused', function () {",
+                  "  pm.expect(pm.response.code, 'the off-origin loopback address was polled: ' + pm.response.text()).to.eql(502);",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body, body).to.include('non-public address');",
+                  "  pm.expect(pm.response.json().extra_fields.error_type, body).to.equal('provider_connection_failed');",
+                  "  pm.expect(body, body).to.not.include('replicate.delivery');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"replicate/owner/poll-loopback\",\n  \"prompt\": \"a paper boat on a pond\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "489.4 fixture counters for the replicate poll rows: one poll at the provider's origin, none at the other loopback host (vendor named address)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var hits = pm.response.json().data[0].hits;",
+                  "var text = JSON.stringify(hits);",
+                  "pm.test('the prediction on the provider\\'s origin was polled once', function () {",
+                  "  pm.expect(hits['replicate.poll@127.0.0.1'], text).to.equal(1);",
+                  "});",
+                  "pm.test('the address on the other loopback host was never asked for', function () {",
+                  "  pm.expect(hits['replicate.poll@localhost'], text).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{providerErrorFixtureUrl}}/__hits",
+              "host": [
+                "{{providerErrorFixtureUrl}}"
+              ],
+              "path": [
+                "__hits"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
