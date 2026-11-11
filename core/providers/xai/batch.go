@@ -504,17 +504,66 @@ type xaiResponse struct {
 	latency time.Duration
 }
 
-// do sends one request to xAI with key's bearer token. A non-2xx answer is the vendor's
-// error, parsed by ParseXAIError.
-func (provider *XAIProvider) do(ctx *schemas.BifrostContext, key schemas.Key, method, path string, query url.Values, body []byte) (*xaiResponse, *schemas.BifrostError) {
+// collectionURL is the URL of an xAI batch or file call that names no resource (create,
+// list, upload): the default path on the base URL, or a custom provider's
+// request_path_overrides entry for requestType, as every sync call reads it.
+func (provider *XAIProvider) collectionURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType) string {
+	path, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+	if isCompleteURL {
+		return path
+	}
+	return provider.networkConfig.BaseURL + path
+}
+
+// resourceURL is the URL of an xAI batch or file call that names one resource by its id:
+// the default path is prefix + escapedID + suffix. A custom provider's request_path_overrides
+// entry for the call is a template whose placeholder (providerUtils.ResourcePathPlaceholders)
+// is replaced by the escaped id; requestTypes are tried in order and the first with an
+// override wins. An override without its placeholder is a configuration error, never a
+// request to a path that lost the id. The built-in provider has no overrides: one
+// concatenation, as before.
+func (provider *XAIProvider) resourceURL(prefix, escapedID, suffix string, requestTypes ...schemas.RequestType) (string, *schemas.BifrostError) {
+	if provider.customProviderConfig == nil || len(provider.customProviderConfig.RequestPathOverrides) == 0 {
+		return provider.networkConfig.BaseURL + prefix + escapedID + suffix, nil
+	}
+	path, isCompleteURL, err := providerUtils.GetResourceRequestPath(prefix+escapedID+suffix, provider.customProviderConfig, escapedID, requestTypes...)
+	if err != nil {
+		return "", providerUtils.NewConfigurationError(err.Error())
+	}
+	if isCompleteURL {
+		return path, nil
+	}
+	return provider.networkConfig.BaseURL + path, nil
+}
+
+// batchRequestsURL is the URL of the create's second call, which adds the lines to the
+// batch the first call made. That call names the new batch as a sub-resource of the
+// collection it was created in, so it follows the create's URL (createURL: the default
+// /v1/batches or the batch_create override) with /{batch_id}/requests appended to its path,
+// before any query or fragment. One override therefore moves both calls of the create.
+func batchRequestsURL(createURL, escapedID string) string {
+	cut := len(createURL)
+	if i := strings.IndexAny(createURL, "?#"); i >= 0 {
+		cut = i
+	}
+	return strings.TrimRight(createURL[:cut], "/") + "/" + escapedID + "/requests" + createURL[cut:]
+}
+
+// do sends one request to xAI with key's bearer token. requestURL is the full URL
+// (collectionURL, resourceURL); query is appended to whatever query it already carries.
+// A non-2xx answer is the vendor's error, parsed by ParseXAIError.
+func (provider *XAIProvider) do(ctx *schemas.BifrostContext, key schemas.Key, method, requestURL string, query url.Values, body []byte) (*xaiResponse, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	requestURL := provider.networkConfig.BaseURL + path
 	if encoded := query.Encode(); encoded != "" {
-		requestURL += "?" + encoded
+		separator := "?"
+		if strings.Contains(requestURL, "?") {
+			separator = "&"
+		}
+		requestURL += separator + encoded
 	}
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
@@ -650,7 +699,8 @@ func (provider *XAIProvider) BatchCreate(ctx *schemas.BifrostContext, key schema
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 	}
-	created, bifrostErr := provider.do(ctx, key, http.MethodPost, "/v1/batches", nil, createBody)
+	createURL := provider.collectionURL(ctx, "/v1/batches", schemas.BatchCreateRequest)
+	created, bifrostErr := provider.do(ctx, key, http.MethodPost, createURL, nil, createBody)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -668,7 +718,7 @@ func (provider *XAIProvider) BatchCreate(ctx *schemas.BifrostContext, key schema
 		if idErr != nil {
 			return nil, idErr
 		}
-		added, addErr := provider.do(ctx, key, http.MethodPost, "/v1/batches/"+escapedID+"/requests", nil, addBody)
+		added, addErr := provider.do(ctx, key, http.MethodPost, batchRequestsURL(createURL, escapedID), nil, addBody)
 		if addErr != nil {
 			if addErr.Error != nil {
 				addErr.Error.Message = fmt.Sprintf("xai created batch %s but refused its requests: %s", batch.BatchID, addErr.Error.Message)
@@ -722,7 +772,7 @@ func (provider *XAIProvider) BatchList(ctx *schemas.BifrostContext, keys []schem
 	if nativeCursor != "" {
 		query.Set("pagination_token", nativeCursor)
 	}
-	resp, bifrostErr := provider.do(ctx, key, http.MethodGet, "/v1/batches", query, nil)
+	resp, bifrostErr := provider.do(ctx, key, http.MethodGet, provider.collectionURL(ctx, "/v1/batches", schemas.BatchListRequest), query, nil)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -760,8 +810,12 @@ func (provider *XAIProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys []s
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := provider.resourceURL("/v1/batches/", escapedID, "", schemas.BatchRetrieveRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 	return eachKey(keys, func(key schemas.Key) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
-		resp, bifrostErr := provider.do(ctx, key, http.MethodGet, "/v1/batches/"+escapedID, nil, nil)
+		resp, bifrostErr := provider.do(ctx, key, http.MethodGet, requestURL, nil, nil)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -790,8 +844,12 @@ func (provider *XAIProvider) BatchCancel(ctx *schemas.BifrostContext, keys []sch
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := provider.resourceURL("/v1/batches/", escapedID, ":cancel", schemas.BatchCancelRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 	return eachKey(keys, func(key schemas.Key) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
-		resp, bifrostErr := provider.do(ctx, key, http.MethodPost, "/v1/batches/"+escapedID+":cancel", nil, nil)
+		resp, bifrostErr := provider.do(ctx, key, http.MethodPost, requestURL, nil, nil)
 		if bifrostErr != nil {
 			markCancelRefusal(bifrostErr)
 			return nil, bifrostErr
@@ -851,8 +909,12 @@ func (provider *XAIProvider) BatchResults(ctx *schemas.BifrostContext, keys []sc
 	if request.After != nil && *request.After != "" {
 		query.Set("pagination_token", *request.After)
 	}
+	requestURL, urlErr := provider.resourceURL("/v1/batches/", escapedID, "/results", schemas.BatchResultsRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 	return eachKey(keys, func(key schemas.Key) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
-		resp, bifrostErr := provider.do(ctx, key, http.MethodGet, "/v1/batches/"+escapedID+"/results", query, nil)
+		resp, bifrostErr := provider.do(ctx, key, http.MethodGet, requestURL, query, nil)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}

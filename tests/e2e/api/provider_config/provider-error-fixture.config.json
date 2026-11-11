@@ -982,6 +982,51 @@
         "default_request_timeout_in_seconds": 10
       }
     },
+    "tkp_xaicompat": {
+      "keys": [
+        {
+          "name": "tk-key-xaicompat",
+          "value": "xc-fixture-key",
+          "models": [
+            "*"
+          ],
+          "use_for_batch_api": true,
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "xai",
+        "allowed_requests": {
+          "batch_create": true,
+          "batch_list": true,
+          "batch_retrieve": true,
+          "batch_cancel": true,
+          "batch_results": true,
+          "file_upload": true,
+          "file_list": true,
+          "file_retrieve": true,
+          "file_delete": true,
+          "file_content": true
+        },
+        "request_path_overrides": {
+          "batch_create": "/api/v2/batches",
+          "batch_list": "/api/v2/batches",
+          "batch_retrieve": "/api/v2/batches/{batch_id}",
+          "batch_cancel": "/api/v2/batches/{batch_id}:cancel",
+          "batch_results": "/api/v2/batches/{batch_id}/results",
+          "file_upload": "/api/v2/files",
+          "file_list": "/api/v2/files",
+          "file_retrieve": "/api/v2/files/{file_id}",
+          "file_delete": "/api/v2/files/{file_id}",
+          "file_content": "/api/v2/files/{file_id}/content"
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/xaicompat",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
     "pp_vercel": {
       "keys": [
         {

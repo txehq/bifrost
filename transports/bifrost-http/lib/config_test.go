@@ -25071,9 +25071,9 @@ func TestValidateCustomProvider_BaseProviderTypes(t *testing.T) {
 	assert.Contains(t, err.Error(), "unsupported base_provider_type")
 }
 
-// On the openai base an override for a call that names a batch or a file by id must say
-// where the id goes; one that does not is refused when the provider is written. Other
-// base types do not read these overrides and are not checked.
+// On a base that templates them (openai, xai) an override for a call that names a batch
+// or a file by id must say where the id goes; one that does not is refused when the
+// provider is written. Other base types do not read these overrides and are not checked.
 func TestValidateCustomProvider_ResourcePathOverrides(t *testing.T) {
 	withOverrides := func(base schemas.ModelProvider, overrides map[schemas.RequestType]string) configstore.ProviderConfig {
 		return configstore.ProviderConfig{CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: base, RequestPathOverrides: overrides}}
@@ -25103,6 +25103,11 @@ func TestValidateCustomProvider_ResourcePathOverrides(t *testing.T) {
 		assert.Contains(t, err.Error(), "request_path_overrides."+string(requestType), "%s", requestType)
 		assert.Contains(t, err.Error(), providerUtils.ResourcePathPlaceholders[requestType][0], "%s", requestType)
 
+		for _, base := range providerUtils.ResourcePathOverrideBases {
+			err := ValidateCustomProvider(withOverrides(base, map[schemas.RequestType]string{requestType: "/api/v2/batches"}), schemas.ModelProvider("my-"+string(base)))
+			require.Error(t, err, "%s on %s", requestType, base)
+			assert.Contains(t, err.Error(), "request_path_overrides."+string(requestType), "%s on %s", requestType, base)
+		}
 		require.NoError(t, ValidateCustomProvider(withOverrides(schemas.Anthropic, map[schemas.RequestType]string{requestType: "/v1/files"}), "my-anthropic"), "%s on a base that does not read it", requestType)
 		require.NoError(t, ValidateCustomProvider(withOverrides(schemas.OpenAI, map[schemas.RequestType]string{requestType: ""}), "tkp_bigmodel"), "%s blank", requestType)
 	}

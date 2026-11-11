@@ -462,6 +462,7 @@ When a full URL (with scheme and host) is provided in `request_path_overrides`, 
 </Info>
 
 **Calls that name a resource (`openai` base)**
+**Batch and file calls that name a resource (`openai` and `xai` bases)**
 
 An override replaces the whole default path. A call that names its target (a batch, a file, a model, a video, a container, a stored response) carries an id in that path, so for these request types the override is a template: write each placeholder where its id goes, and Bifrost replaces it with the escaped id.
 
@@ -518,6 +519,30 @@ An override for one of these request types that does not contain every placehold
 ```
 
 This is the configuration for Zhipu bigmodel's batch API (`base_url` `https://open.bigmodel.cn`). Inline batch `requests` are uploaded as they are sent, so each line's `url` and the batch's `endpoint` must be the vendor's spelling (`/v4/chat/completions` on bigmodel). A succeeded result line still carries the unified usage of its operation: the endpoint is matched by operation, whatever API version the vendor writes in front of it.
+
+On the `xai` base the same six request types are templates, with xAI's default paths: `batch_retrieve` `/v1/batches/{batch_id}`, `batch_cancel` `/v1/batches/{batch_id}:cancel`, `batch_results` `/v1/batches/{batch_id}/results` (xAI pages its results itself, so no file is downloaded), and the three file calls as above. xAI creates an inline batch in two calls: `POST /v1/batches`, then `POST /v1/batches/{batch_id}/requests` with the lines. The second call names the batch the first created, so it follows the `batch_create` override: Bifrost appends `/{batch_id}/requests` to that override's path, before any query. One `batch_create` override therefore moves both calls.
+
+```json
+{
+    "custom_provider_config": {
+        "base_provider_type": "xai",
+        "request_path_overrides": {
+            "batch_create": "/api/v2/batches",
+            "batch_list": "/api/v2/batches",
+            "batch_retrieve": "/api/v2/batches/{batch_id}",
+            "batch_cancel": "/api/v2/batches/{batch_id}:cancel",
+            "batch_results": "/api/v2/batches/{batch_id}/results",
+            "file_upload": "/api/v2/files",
+            "file_list": "/api/v2/files",
+            "file_retrieve": "/api/v2/files/{file_id}",
+            "file_delete": "/api/v2/files/{file_id}",
+            "file_content": "/api/v2/files/{file_id}/content"
+        }
+    }
+}
+```
+
+The other base types do not read these overrides on batch and file calls yet; the built-in `xai` provider keeps xAI's own paths.
 
 **Example: OpenAI-Compatible Endpoint with Custom Paths**
 

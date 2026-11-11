@@ -2230,6 +2230,15 @@ func GetResourceRequestPathForIDs(defaultPath string, customProviderConfig *sche
 	return path.String(), isCompleteURL, nil
 }
 
+// ResourcePathOverrideBases are the custom-provider base types whose calls that name a
+// resource by id (ResourcePathPlaceholders) read request_path_overrides as templates, through
+// GetResourceRequestPath. A custom provider on one of these bases has its overrides for those
+// calls checked when it is written (ValidateResourcePathOverride). The cross-base test
+// (core TestCustomProviderResourcePathOverrides) runs every such call on every base and fails
+// when a base listed here ignores an override or loses the id, and when a base that honours
+// them is missing here.
+var ResourcePathOverrideBases = []schemas.ModelProvider{schemas.OpenAI, schemas.XAI}
+
 type RequestBodyGetter interface {
 	GetRawRequestBody() []byte
 }
