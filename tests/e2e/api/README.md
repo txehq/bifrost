@@ -366,6 +366,14 @@ The same fixture stands in for AssemblyAI's Sync API (folder 404): the config's 
 counted under `assemblyai:<model>`, and `GET /__assemblyai` returns what each call carried (the model header, the
 `Authorization` value and the multipart parts), which is how the cases prove one request made one upstream call.
 
+The same fixture stands in for a provider that records uploads under a storage URI (folder 483, TXE-7032): the
+config's `storage_uri_files` provider (OpenAI-shaped) points at `/pp/storage`, whose `POST /v1/files` answers with a
+`gs://bifrost-fixture-bucket/uploads/<n>.jsonl` id, unique per upload, and whose chat completes. Vertex and Bedrock
+record uploads in that form and neither host can be pointed at a fixture, so the folder pins the gateway's ownership
+check for the id form (two virtual keys, the second refused with 404 on the first's URI on chat, Responses and image
+edit), not those providers' own converters. Its rows use the management API, so run the augmented collection with
+`--env-var setupToken=<the config's setup_token>`.
+
 The fixture also serves the two datasheets a fresh gateway downloads on first start (the config's `framework.pricing` URLs point at it), including the model-parameters row that makes `gpt-5-pro` Responses-only, which is what makes folder 160's chat request convert. The run therefore needs no network. Starting the gateway with `HTTPS_PROXY=http://127.0.0.1:9` is a cheap proof: loopback is exempt from proxying, so only an accidental external call would fail.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.

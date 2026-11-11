@@ -766,8 +766,27 @@ const seedanceTask = (id) => {
 	return task;
 };
 
+// A provider that records an upload under a storage URI (folder 483, TXE-7032). Vertex's file upload returns
+// "gs://<bucket>/<object>" as the file id and Bedrock's "s3://<bucket>/<key>"; neither host can be pointed at this
+// fixture, so an OpenAI-shaped provider under /pp/storage stands in for the id form: its upload answers with a gs://
+// id, unique per upload so a row kept from an earlier run never names this run's file, and its chat completes. The
+// gateway's ownership check is the same code whatever provider recorded the id.
+let storageUploads = 0;
+const storageAnswer = (path, body) => {
+	if (path === "/pp/storage/v1/files") {
+		storageUploads += 1;
+		const id = `gs://bifrost-fixture-bucket/uploads/${Date.now()}-${storageUploads}.jsonl`;
+		return { status: 200, body: JSON.stringify({ id, object: "file", bytes: 64, created_at: 1, filename: "sample.jsonl", purpose: "user_data", status: "processed" }) };
+	}
+	if (path === "/pp/storage/v1/chat/completions") {
+		return { status: 200, body: JSON.stringify({ id: "chatcmpl_storage", object: "chat.completion", created: 1, model: body.model, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "ok" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) };
+	}
+	return { status: 404, body: JSON.stringify({ error: { message: `no storage fixture route for ${path}` } }) };
+};
+
 const wireAnswer = (path, body, bytes) => {
 	if (isBedrockConversePath(path)) return bedrockConverseAnswer(path);
+	if (path.startsWith("/pp/storage/")) return storageAnswer(path, body);
 	if (path.startsWith("/pp/bfl/v1/")) return { status: 200, body: JSON.stringify(bflSubmitAnswer()) };
 	if (isOpenAIImagePath(path)) return openAIImageAnswer(body, bytes, path === "/v1/images/edits");
 	const geminiImage = geminiImageAnswerFor(path);

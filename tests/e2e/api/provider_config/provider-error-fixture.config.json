@@ -40,6 +40,27 @@
     ]
   },
   "providers": {
+    "storage_uri_files": {
+      "keys": [
+        {
+          "name": "storage-uri-fixture",
+          "value": "storage-fixture-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1,
+          "use_for_batch_api": true
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai"
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/storage",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
     "assemblyai": {
       "keys": [
         {

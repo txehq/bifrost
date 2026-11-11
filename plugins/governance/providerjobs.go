@@ -3,7 +3,6 @@ package governance
 import (
 	"bytes"
 	"fmt"
-	"net/url"
 	"path"
 	"slices"
 	"sort"
@@ -44,6 +43,7 @@ type providerObjectRef struct {
 	indirect  bool // named inside a request that creates or runs something else, not addressed by id
 	// passthroughList is a list through a passthrough route: its raw page cannot be narrowed.
 	passthroughList bool
+	unreadable      bool // names no object: the request's files could not all be read (requestFileIDs), so it is refused
 }
 
 // governanceAutoContainerContextKey marks a request whose code_interpreter tool asked the provider
@@ -255,10 +255,40 @@ func providerObjectReference(req *schemas.BifrostRequest) (providerObjectRef, bo
 // another key's file, video or cache to the caller through the object it is creating or the
 // answer. A file inside a container is an object of its own: a request that addresses one names
 // both the container and the file.
+//
+// The files a request names as inputs are read by one extraction for every request type
+// (requestFileRefs, see filerefs.go) and added to whatever the request's own shape names.
 func providerObjectReferences(req *schemas.BifrostRequest) []providerObjectRef {
 	if req == nil {
 		return nil
 	}
+	refs := namedProviderObjects(req)
+	fileRefs := requestFileRefs(req)
+	if len(fileRefs) == 0 {
+		return refs
+	}
+	if len(refs) == 0 {
+		return fileRefs
+	}
+	for _, fileRef := range fileRefs {
+		known := false
+		for i := range refs {
+			if refs[i].kind == fileRef.kind && refs[i].requestID == fileRef.requestID && !refs[i].isList {
+				known = true
+				break
+			}
+		}
+		if !known {
+			refs = append(refs, fileRef)
+		}
+	}
+	return refs
+}
+
+// namedProviderObjects returns the provider objects a request names through its own shape: the
+// object it addresses, and the objects it copies from, edits or runs on. Files named as
+// inference inputs are not read here (see providerObjectReferences).
+func namedProviderObjects(req *schemas.BifrostRequest) []providerObjectRef {
 	file := configstoreTables.ProviderObjectKindFile
 	containerFile := configstoreTables.ProviderObjectKindContainerFile
 	if req.ContainerCreateRequest != nil {
@@ -300,16 +330,6 @@ func providerObjectReferences(req *schemas.BifrostRequest) []providerObjectRef {
 		}
 		return refs
 	}
-	if r := req.CachedContentCreateRequest; r != nil {
-		var refs []providerObjectRef
-		for _, name := range cachedContentFileNames(r) {
-			if ref, ok := objectRef(file, r.Provider, name); ok {
-				ref.indirect = true
-				refs = append(refs, ref)
-			}
-		}
-		return refs
-	}
 	if provider, containerID, fileID, ok := containerFileAddress(req); ok {
 		var refs []providerObjectRef
 		if ref, ok := objectRef(configstoreTables.ProviderObjectKindContainer, provider, containerID); ok {
@@ -333,11 +353,6 @@ func providerObjectReferences(req *schemas.BifrostRequest) []providerObjectRef {
 				refs = append(refs, ref)
 				seenCache = name
 			}
-		}
-		for _, fileID := range inferenceFileIDs(req) {
-			ref, _ := objectRef(file, provider, fileID)
-			ref.indirect = true
-			refs = append(refs, ref)
 		}
 		refs = append(refs, toolObjectRefs(req, provider)...)
 		return refs
@@ -602,7 +617,7 @@ var unicodeEscape = []byte(`\u`)
 // character (file\u005fid decodes to file_id), so a body carrying one is always parsed; the other
 // escapes (\n, \") cannot produce a marker's letters and leave the shortcut in place.
 func mayNameProviderObjects(body []byte) bool {
-	if bytes.Contains(body, unicodeEscape) {
+	if bytes.Contains(body, unicodeEscape) || mayNameRecordedFile(body) {
 		return true
 	}
 	for _, marker := range providerObjectBodyMarkers {
@@ -613,16 +628,64 @@ func mayNameProviderObjects(body []byte) bool {
 	return false
 }
 
+// mayNameRecordedFile reports whether a raw body could hold a URL in a form uploads are recorded
+// under (see recordedFileID): "gs:" or "s3:" or the Gemini file host, in any case. The slashes
+// are not required, since JSON may write them escaped ("gs:\/\/"). It over-matches (prose that
+// ends a word in "gs:"), which only costs the parse.
+func mayNameRecordedFile(body []byte) bool {
+	for i := 0; i+2 < len(body); i++ {
+		switch body[i] | 0x20 {
+		case 'g':
+			if body[i+1]|0x20 == 's' && body[i+2] == ':' {
+				return true
+			}
+			if len(body)-i >= len(geminiFileHost) && strings.EqualFold(string(body[i:i+len(geminiFileHost)]), geminiFileHost) {
+				return true
+			}
+		case 's':
+			if body[i+1] == '3' && body[i+2] == ':' {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // jsonObjectRefs returns the provider objects a JSON request body names anywhere in it: file_id
-// and file_ids, a code_interpreter tool's container named by id, a Gemini fileUri (or file_uri),
+// and file_ids, a code_interpreter tool's container named by id, any string in a form uploads
+// are recorded under (a Gemini file URI, a gs:// or s3:// storage URI; see recordedFileID),
 // a cached content (cached_content or cachedContent), and the input file a batch or fine-tune
 // runs on (input_file_id, training_file, validation_file, and a Gemini batch's fileName). It
 // reads passthrough bodies and the bodies of inline batch items, which reach the provider as
 // written.
 func jsonObjectRefs(provider schemas.ModelProvider, body any) []providerObjectRef {
 	var refs []providerObjectRef
+	type named struct{ kind, id string }
+	var seen map[named]struct{}
+	full := false
 	add := func(kind, id string) {
-		if ref, ok := objectRef(kind, provider, strings.TrimSpace(id)); ok {
+		id = strings.TrimSpace(id)
+		if full || id == "" {
+			return
+		}
+		// An object named again is the same reference (a file_id that is a storage URI is
+		// reached under its key and again as a string).
+		key := named{kind, id}
+		if _, dup := seen[key]; dup {
+			return
+		}
+		// Each distinct object is an ownership lookup; a body naming more than the bound is
+		// refused rather than looked up (see maxFileReferences).
+		if len(refs) >= maxFileReferences {
+			full = true
+			refs = append(refs, providerObjectRef{kind: kind, provider: string(provider), indirect: true, unreadable: true})
+			return
+		}
+		if seen == nil {
+			seen = make(map[named]struct{}, 4)
+		}
+		seen[key] = struct{}{}
+		if ref, ok := objectRef(kind, provider, id); ok {
 			ref.indirect = true
 			refs = append(refs, ref)
 		}
@@ -655,12 +718,6 @@ func jsonObjectRefs(provider schemas.ModelProvider, body any) []providerObjectRe
 							}
 						}
 					}
-				case "fileUri", "file_uri":
-					if uri, ok := item.(string); ok {
-						if name := geminiFileName(&uri); name != nil {
-							add(configstoreTables.ProviderObjectKindFile, *name)
-						}
-					}
 				case "cached_content", "cachedContent":
 					if name, ok := item.(string); ok {
 						add(configstoreTables.ProviderObjectKindCachedContent, name)
@@ -671,6 +728,13 @@ func jsonObjectRefs(provider schemas.ModelProvider, body any) []providerObjectRe
 		case []any:
 			for _, item := range v {
 				walk(item)
+			}
+		case string:
+			// A location is read under a different key by each provider and operation
+			// (fileUri, gcsUri, uri, url), so the key is not consulted: a string in a form
+			// uploads are recorded under names that file wherever it sits.
+			if id, ok := recordedFileID(v); ok {
+				add(configstoreTables.ProviderObjectKindFile, id)
 			}
 		}
 	}
@@ -695,127 +759,6 @@ func requestsAutomaticContainer(req *schemas.BifrostRequest) bool {
 		}
 	}
 	return false
-}
-
-// geminiFileHost is the host of a Gemini file URI, "https://generativelanguage.googleapis.com/<version>/files/<id>".
-const geminiFileHost = "generativelanguage.googleapis.com"
-
-// geminiFileName returns the name a Gemini file URI's file is recorded under ("files/<id>", the
-// name the upload response carries), or nil when the URL is not a Gemini file URI. The GenAI route
-// turns a native fileData.fileUri into a file or image URL, and Gemini then reads that file under
-// the shared key, so the URI names the file as surely as its id does.
-func geminiFileName(rawURL *string) *string {
-	if rawURL == nil || *rawURL == "" {
-		return nil
-	}
-	parsed, err := url.Parse(strings.TrimSpace(*rawURL))
-	if err != nil || !strings.EqualFold(parsed.Hostname(), geminiFileHost) {
-		return nil
-	}
-	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-	for i := 0; i+1 < len(segments); i++ {
-		if segments[i] == "files" && segments[i+1] != "" {
-			name := "files/" + strings.SplitN(segments[i+1], ":", 2)[0]
-			return &name
-		}
-	}
-	return nil
-}
-
-// cachedContentFileNames returns the Gemini files a cached-content create builds the cache from:
-// every fileData.fileUri (or file_data.file_uri) anywhere in its contents and system instruction.
-func cachedContentFileNames(req *schemas.BifrostCachedContentCreateRequest) []string {
-	var names []string
-	seen := make(map[string]struct{})
-	var walk func(value any)
-	walk = func(value any) {
-		switch v := value.(type) {
-		case map[string]any:
-			for key, item := range v {
-				if key == "fileUri" || key == "file_uri" {
-					if uri, ok := item.(string); ok {
-						if name := geminiFileName(&uri); name != nil {
-							if _, dup := seen[*name]; !dup {
-								seen[*name] = struct{}{}
-								names = append(names, *name)
-							}
-						}
-					}
-					continue
-				}
-				walk(item)
-			}
-		case []any:
-			for _, item := range v {
-				walk(item)
-			}
-		}
-	}
-	for _, content := range req.Contents {
-		walk(content)
-	}
-	walk(req.SystemInstruction)
-	return names
-}
-
-// inferenceFileIDs returns the uploaded files a chat or responses request names by file_id in its
-// messages (a file or image block in chat, an input block in responses), and the Gemini files an
-// image edit names as input image URLs, each once.
-func inferenceFileIDs(req *schemas.BifrostRequest) []string {
-	var ids []string
-	seen := make(map[string]struct{})
-	add := func(id *string) {
-		if id == nil || *id == "" {
-			return
-		}
-		if _, dup := seen[*id]; dup {
-			return
-		}
-		seen[*id] = struct{}{}
-		ids = append(ids, *id)
-	}
-	switch {
-	case req.ChatRequest != nil:
-		for _, message := range req.ChatRequest.Input {
-			if message.Content == nil {
-				continue
-			}
-			for _, block := range message.Content.ContentBlocks {
-				if block.File != nil {
-					add(block.File.FileID)
-					add(geminiFileName(block.File.FileURL))
-				}
-				if block.ImageURLStruct != nil {
-					add(block.ImageURLStruct.FileID)
-					add(geminiFileName(&block.ImageURLStruct.URL))
-				}
-			}
-		}
-	case req.ResponsesRequest != nil:
-		for _, message := range req.ResponsesRequest.Input {
-			if message.Content == nil {
-				continue
-			}
-			for _, block := range message.Content.ContentBlocks {
-				add(block.FileID)
-				if block.ResponsesInputMessageContentBlockFile != nil {
-					add(geminiFileName(block.ResponsesInputMessageContentBlockFile.FileURL))
-				}
-				if block.ResponsesInputMessageContentBlockImage != nil {
-					add(geminiFileName(block.ResponsesInputMessageContentBlockImage.ImageURL))
-				}
-			}
-		}
-	case req.ImageEditRequest != nil:
-		// An image edit's input image given as a URL is forwarded to Gemini as fileData
-		// (TXE-6526), so a Gemini file URI there names an uploaded file like one in chat.
-		if req.ImageEditRequest.Input != nil {
-			for i := range req.ImageEditRequest.Input.Images {
-				add(geminiFileName(&req.ImageEditRequest.Input.Images[i].URL))
-			}
-		}
-	}
-	return ids
 }
 
 // equivalentProviders returns the provider names under which an object on provider may have been
@@ -1200,6 +1143,17 @@ func (p *GovernancePlugin) enforceProviderObjectOwnership(ctx *schemas.BifrostCo
 			Error:      &schemas.ErrorField{Message: "fine-tuning through a passthrough route is not available to virtual keys: tuning jobs and tuned models carry no per-key ownership, so a request could reach another key's job or model"},
 		}}
 	}
+	// Settled before any lookup: a request that could not be read in full, or that names more
+	// objects than the bound, is refused without a query.
+	refs, verifiable := distinctObjectRefs(refs)
+	if !verifiable {
+		ctx.SetValue(governanceRejectedContextKey, true)
+		return &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
+			Type:       bifrost.Ptr(string(DecisionAccessBlocked)),
+			StatusCode: bifrost.Ptr(400),
+			Error:      &schemas.ErrorField{Message: fmt.Sprintf("the objects this request names cannot be verified for this virtual key: it names more than %d files, containers or caches, or its provider-specific fields could not be read (raw JSON that does not parse, or data nested more than %d levels deep)", maxFileReferences, openValueDepth)},
+		}}
+	}
 	for _, ref := range refs {
 		if ref.isList {
 			continue
@@ -1223,6 +1177,38 @@ func (p *GovernancePlugin) enforceProviderObjectOwnership(ctx *schemas.BifrostCo
 		}
 	}
 	return nil
+}
+
+// distinctObjectRefs returns the references of a request with repeats of one object removed,
+// and whether the request can be verified from them. Each remaining reference is one ownership
+// lookup, so the count is bounded over the whole request, however its parts were read (typed
+// fields, extra params, a passthrough body, every inline item of a batch): a request marked
+// unreadable, or one naming more than maxFileReferences distinct objects, cannot be.
+func distinctObjectRefs(refs []providerObjectRef) ([]providerObjectRef, bool) {
+	if len(refs) <= 1 {
+		return refs, len(refs) == 0 || !refs[0].unreadable
+	}
+	type objectKey struct{ kind, provider, id string }
+	seen := make(map[objectKey]struct{}, len(refs))
+	distinct := refs[:0:0]
+	named := 0
+	for _, ref := range refs {
+		if ref.unreadable {
+			return nil, false
+		}
+		if !ref.isList {
+			key := objectKey{ref.kind, ref.provider, ref.requestID}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			if named++; named > maxFileReferences {
+				return nil, false
+			}
+		}
+		distinct = append(distinct, ref)
+	}
+	return distinct, true
 }
 
 // refuseForeignProviderObject is enforceProviderObjectOwnership for one referenced object.
