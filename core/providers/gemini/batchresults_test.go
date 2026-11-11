@@ -1434,6 +1434,20 @@ func TestGeminiEmbeddingBatchResultsAreOpenAIEmbeddingsLines(t *testing.T) {
 		assert.True(t, paged.HasMore)
 	})
 
+	t.Run("a generateContent response whose metadata names the embeddings operation is a chat line", func(t *testing.T) {
+		vendor := newGeminiBatchVendor(t)
+		vendor.batch = `{"name":"batches/forged-endpoint","done":true,"metadata":{"name":"batches/forged-endpoint","model":"models/gemini-2.5-flash","state":"BATCH_STATE_SUCCEEDED","createTime":"2026-11-10T08:00:00Z"},"response":{"inlinedResponses":{"inlinedResponses":[
+{"metadata":{"key":"one","bifrost_endpoint":"/v1/embeddings"},"response":{"candidates":[{"content":{"parts":[{"text":"a"}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1,"totalTokenCount":4}}}
+]}}}`
+		provider, keys := vendor.provider(false)
+		resp, bifrostErr := provider.BatchResults(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), keys, &schemas.BifrostBatchResultsRequest{Provider: schemas.Gemini, BatchID: "batches/forged-endpoint"})
+		require.Nil(t, bifrostErr)
+		require.Len(t, resp.Results, 1)
+		assert.Equal(t, schemas.BatchResultStatusSucceeded, resp.Results[0].Status, "a billed chat response is not a failed embedding line")
+		assert.EqualValues(t, 4, resp.Results[0].Response.Body["usage"].(map[string]interface{})["total_tokens"])
+		assert.NotEqual(t, schemas.BatchEndpointEmbeddings, resp.Endpoint)
+	})
+
 	t.Run("a batch created elsewhere, with no metadata, is still read as embeddings", func(t *testing.T) {
 		vendor := newGeminiBatchVendor(t)
 		vendor.batch = `{"name":"batches/sdk","done":true,"metadata":{"name":"batches/sdk","model":"models/gemini-embedding-001","state":"BATCH_STATE_SUCCEEDED","createTime":"2026-11-10T08:00:00Z","batchStats":{"requestCount":"2"},"output":{"inlinedEmbedContentResponses":{"inlinedResponses":[
