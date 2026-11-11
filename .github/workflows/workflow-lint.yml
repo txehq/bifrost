@@ -97,6 +97,16 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 .github/workflows/scripts/test-api-collections-offline-callers.py
 
+      # A cancelled run of a required check stays on the head and blocks a PR whose other
+      # run passed (TXE-7104): no concurrency group, and no wait outlasting the job's timeout.
+      - name: Check no run of a required check can end cancelled
+        if: ${{ !cancelled() }}
+        run: python3 .github/workflows/scripts/check-required-checks-never-cancel.py
+
+      - name: Check the required-check cancellation rule on fixture workflows
+        if: ${{ !cancelled() }}
+        run: ./.github/workflows/scripts/check-required-checks-never-cancel.test.sh
+
       # The chart renders config.json's client section key by key, so a client setting
       # without a chart value cannot be set through Helm and a later upgrade resets it
       # (TXE-7038). Python and the checked-in files only: no helm, no network.

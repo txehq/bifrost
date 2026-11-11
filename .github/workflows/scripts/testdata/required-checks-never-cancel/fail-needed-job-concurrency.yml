@@ -1,0 +1,23 @@
+# expect: job prepare, which it needs, declares concurrency
+on:
+  pull_request:
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: prepare-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - run: true
+  middle:
+    runs-on: ubuntu-latest
+    needs: prepare
+    steps:
+      - run: true
+  api-collections-offline:
+    name: API collection offline suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [middle]
+    steps:
+      - run: true

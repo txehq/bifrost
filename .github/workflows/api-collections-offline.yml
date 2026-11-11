@@ -29,9 +29,10 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: api-collections-offline-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+# No concurrency group: this job is a required check, and a group cancels one of two runs on
+# the same head (a reopen, a re-run), which leaves the PR blocked beside a passing run
+# (TXE-7104). A run on a head a push superseded finishes on its own; it costs minutes, not a
+# merge. scripts/check-required-checks-never-cancel.py, in workflow-lint, keeps it so.
 
 jobs:
   api-collections-offline:

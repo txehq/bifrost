@@ -75,6 +75,10 @@ its 25-minute wait; `@codex review` on the PR asks for another attempt.
    `codex-review` run reuses the workflow file it was created with. A change to the script
    needs no new event: every run, a re-run included, checks it out from the tip of `main`.
 8. **Merge** with a squash once `codex-review` and the other required checks are green.
+   A reply in a thread or a body edit after the review starts another run on the same head;
+   no run of a required check cancels another (TXE-7104, enforced by
+   `check-required-checks-never-cancel.py` in workflow-lint), so each ends with a verdict and
+   there is nothing to re-run.
 
 ## Limits
 

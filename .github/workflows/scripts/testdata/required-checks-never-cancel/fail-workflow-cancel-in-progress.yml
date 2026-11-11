@@ -1,0 +1,14 @@
+# expect: the workflow declares concurrency
+on:
+  pull_request:
+  pull_request_review:
+concurrency:
+  group: codex-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  codex-review:
+    name: codex-review
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - run: true
