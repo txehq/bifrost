@@ -120,7 +120,9 @@ const (
 // client.extra_fields_placement is "headers", where extra_fields is removed from the body. List
 // values are comma-joined. The large and nested fields (raw_request, raw_response,
 // routing_metadata, guardrail_debug, parse_errors, and on errors key_statuses, billed_usage,
-// mcp_auth_required) have no header and are dropped in that mode.
+// mcp_auth_required) have no header and are dropped in that mode. One exception: an SSE error
+// frame sent after the stream's headers keeps extra_fields.error_type in the frame, since
+// x-bifrost-error-type was written before the error existed (StripStreamErrorExtraFields).
 const (
 	HeaderBifrostLatency                 = "x-bifrost-latency-ms"
 	HeaderBifrostPricingRequestType      = "x-bifrost-pricing-request-type"
@@ -184,6 +186,35 @@ func StripExtraFields(body []byte) []byte {
 // nestedResponseExtraFieldsPath is where a Responses stream event carries the extra_fields of
 // the response it wraps.
 const nestedResponseExtraFieldsPath = "response." + extraFieldsKey
+
+// errorTypePath is where a marshaled BifrostError carries its classification (contract C6).
+const errorTypePath = extraFieldsKey + ".error_type"
+
+// StripStreamErrorExtraFields is StripExtraFields for an SSE error frame sent after the stream
+// started, in headers mode. The stream's headers went out before the error existed, so
+// x-bifrost-error-type cannot carry it: the frame keeps extra_fields reduced to its error_type,
+// {"extra_fields":{"error_type":"..."}}, and every other extra field is removed as usual. A
+// frame with no error_type (a converter's native envelope) is stripped like any other body.
+func StripStreamErrorExtraFields(body []byte) []byte {
+	errorType := providerUtils.GetJSONField(body, errorTypePath)
+	if errorType.Str == "" {
+		return StripExtraFields(body)
+	}
+	reduced := make([]byte, 0, len(`{"error_type":}`)+len(errorType.Raw))
+	reduced = append(reduced, `{"error_type":`...)
+	reduced = append(reduced, errorType.Raw...)
+	reduced = append(reduced, '}')
+	kept, err := providerUtils.SetRawJSONField(body, extraFieldsKey, reduced)
+	if err != nil {
+		return StripExtraFields(body)
+	}
+	if providerUtils.JSONFieldExists(kept, nestedResponseExtraFieldsPath) {
+		if nested, err := providerUtils.DeleteJSONField(kept, nestedResponseExtraFieldsPath); err == nil {
+			kept = nested
+		}
+	}
+	return kept
+}
 
 // applyExtraFieldsScalarHeaders writes the scalar extra_fields that have no body-mode header.
 // latencyKnown says extra came from a finished response, whose body always serializes latency,

@@ -11,6 +11,7 @@ import (
 
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -23,8 +24,18 @@ import (
 // connection and returns the raw SSE body the client would receive.
 func serveStreamingResponse(t *testing.T, chunks []*schemas.BifrostStreamChunk) string {
 	t.Helper()
+	return serveStreamingResponseInPlacement(t, chunks, false)
+}
+
+// serveStreamingResponseInPlacement is serveStreamingResponse with
+// client.extra_fields_placement "headers" when extraFieldsInHeaders is set.
+func serveStreamingResponseInPlacement(t *testing.T, chunks []*schemas.BifrostStreamChunk, extraFieldsInHeaders bool) string {
+	t.Helper()
 
 	handler := func(reqCtx *fasthttp.RequestCtx) {
+		if extraFieldsInHeaders {
+			reqCtx.SetUserValue(lib.FastHTTPUserValueExtraFieldsInHeaders, true)
+		}
 		// A zero Config loads no transport plugins, so no chunk interceptor runs.
 		h := &CompletionHandler{config: &lib.Config{}}
 
@@ -150,5 +161,61 @@ func TestStreamingResponseSendsDoneOnCleanStream(t *testing.T) {
 
 	if !strings.Contains(body, "data: [DONE]") {
 		t.Errorf("expected [DONE] to terminate a clean stream, got:\n%s", body)
+	}
+}
+
+// sseDataFrames returns the data payload of every SSE event in body.
+func sseDataFrames(body string) []string {
+	var frames []string
+	for _, event := range strings.Split(body, "\n\n") {
+		for _, line := range strings.Split(event, "\n") {
+			if value, ok := strings.CutPrefix(line, "data: "); ok {
+				frames = append(frames, value)
+			}
+		}
+	}
+	return frames
+}
+
+// With extra_fields_placement "headers" the stream's headers go out before a provider
+// fails, so x-bifrost-error-type cannot carry the error frame's classification. The frame
+// keeps extra_fields.error_type and nothing else from extra_fields (TXE-6985); content
+// chunks still carry no extra_fields, and body placement keeps the full extra_fields.
+func TestStreamingErrorFrameKeepsErrorTypeInHeadersPlacement(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		inHeader bool
+	}{{"headers placement", true}, {"body placement", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			content := contentChunk("partial answer")
+			content.BifrostChatResponse.ExtraFields.Provider = schemas.OpenAI
+			failure := truncationErrorChunk()
+			failure.BifrostError.ExtraFields.Provider = schemas.OpenAI
+			failure.BifrostError.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+			failure.BifrostError.ExtraFields.Latency = 12
+			body := serveStreamingResponseInPlacement(t, []*schemas.BifrostStreamChunk{content, failure}, tc.inHeader)
+
+			frames := sseDataFrames(body)
+			if len(frames) != 2 {
+				t.Fatalf("want a content frame and an error frame, got %d:\n%s", len(frames), body)
+			}
+			if gjson.Get(frames[0], "extra_fields").Exists() == tc.inHeader {
+				t.Errorf("content frame extra_fields present=%v in %s", !tc.inHeader, frames[0])
+			}
+			errorFrame := frames[1]
+			if got := gjson.Get(errorFrame, "extra_fields.error_type").String(); got != string(schemas.ErrorTypeProviderConnectionFailed) {
+				t.Errorf("error frame error_type = %q, want %q: %s", got, schemas.ErrorTypeProviderConnectionFailed, errorFrame)
+			}
+			if !strings.Contains(errorFrame, schemas.ErrProviderStreamTruncated) {
+				t.Errorf("error frame lost its message: %s", errorFrame)
+			}
+			if tc.inHeader {
+				if got := gjson.Get(errorFrame, "extra_fields").Raw; got != `{"error_type":"provider_connection_failed"}` {
+					t.Errorf("headers placement keeps only error_type in extra_fields, got %s", got)
+				}
+			} else if gjson.Get(errorFrame, "extra_fields.provider").String() != "openai" || gjson.Get(errorFrame, "extra_fields.latency").Int() != 12 {
+				t.Errorf("body placement keeps the full extra_fields, got %s", errorFrame)
+			}
+		})
 	}
 }

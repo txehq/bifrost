@@ -296728,6 +296728,455 @@
       ]
     },
     {
+      "name": "346. In headers placement a stream error frame after the first chunk keeps extra_fields.error_type (stream error type) [SERIAL]",
+      "description": "TXE-6985, contract C6 (BF8). With client.extra_fields_placement = \"headers\" every body and SSE chunk loses extra_fields, and its scalar fields go out as x-bifrost-* headers. A stream's headers are written before the first chunk, so when the provider fails after that, x-bifrost-error-type cannot carry the classification; the error frame keeps extra_fields reduced to {\"error_type\": ...} instead. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs and the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, and run with providerErrorFixture=1; every row is skipped otherwise. openai/upstream-cut sends the first chunk and then drops the connection, which the gateway reports as provider_connection_failed. [SERIAL]: the folder switches client config that other rows depend on, so the harness runs it alone, in order. It reads the stored client config, switches placement to headers, streams upstream-cut through native /v1/chat/completions and the /openai integration, restores the original placement, checks that body placement keeps the full extra_fields on the same error frame, and verifies the stored value. Red before the change: in headers placement the error frame has no extra_fields at all. Run with FEATURE=\"stream error type\".",
+      "item": [
+        {
+          "name": "346.1 [EXPECT-200] openai read current config (stream error type)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream error type: read the stored client config', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var cc = pm.response.json().client_config;",
+                  "  pm.expect(cc, pm.response.text()).to.be.an('object');",
+                  "  // A fresh install reads back log_retention_days 0, which PUT /api/config refuses (must be >= 1).",
+                  "  if (!cc.log_retention_days || cc.log_retention_days < 1) { cc.log_retention_days = 30; }",
+                  "  pm.collectionVariables.set('setClientConfig', JSON.stringify(cc));",
+                  "  pm.collectionVariables.set('setOriginal', cc.extra_fields_placement || 'body');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "346.2 [EXPECT-200] openai switch placement to headers (stream error type)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "var cc = JSON.parse(pm.collectionVariables.get('setClientConfig') || '{}');",
+                  "cc.extra_fields_placement = 'headers';",
+                  "pm.variables.set('setBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream error type: placement switched to headers', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{setBody}}"
+            }
+          }
+        },
+        {
+          "name": "346.3 openai /v1/chat/completions openai/upstream-cut headers placement: an error frame after the first chunk keeps extra_fields.error_type (stream error type)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "// Every SSE data payload except the [DONE] marker, in order.",
+                  "var frames = raw.split('\\n\\n').map(function (e) { return e.split('\\n').filter(function (l) { return l.indexOf('data: ') === 0; }).map(function (l) { return l.slice(6); }).join('\\n'); }).filter(function (d) { return d && d !== '[DONE]'; });",
+                  "var parsed = frames.map(function (d) { try { return JSON.parse(d); } catch (e) { return null; } });",
+                  "var last = parsed[parsed.length - 1] || {};",
+                  "pm.test('the stream started: 200 and SSE', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', raw).to.include('event-stream');",
+                  "});",
+                  "pm.test('the fixture\\'s first chunk reached the client before the cut', function () {",
+                  "  var content = parsed.filter(function (p) { return p && p.choices; });",
+                  "  pm.expect(content.length, raw).to.be.above(0);",
+                  "});",
+                  "pm.test('the stream ends on an error frame, with no [DONE] after it', function () {",
+                  "  pm.expect(last.error, raw).to.be.an('object');",
+                  "  pm.expect(raw, raw).to.not.include('data: [DONE]');",
+                  "});",
+                  "pm.test('headers placement: the error frame keeps extra_fields.error_type and nothing else from extra_fields', function () {",
+                  "  pm.expect(last.extra_fields, raw).to.eql({ error_type: 'provider_connection_failed' });",
+                  "});",
+                  "pm.test('headers placement: content chunks carry no extra_fields', function () {",
+                  "  parsed.slice(0, -1).forEach(function (p) { pm.expect(p && p.extra_fields, raw).to.equal(undefined); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-cut\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "346.4 openai /openai/v1/chat/completions openai/upstream-cut headers placement: an error frame after the first chunk keeps extra_fields.error_type (stream error type)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "// Every SSE data payload except the [DONE] marker, in order.",
+                  "var frames = raw.split('\\n\\n').map(function (e) { return e.split('\\n').filter(function (l) { return l.indexOf('data: ') === 0; }).map(function (l) { return l.slice(6); }).join('\\n'); }).filter(function (d) { return d && d !== '[DONE]'; });",
+                  "var parsed = frames.map(function (d) { try { return JSON.parse(d); } catch (e) { return null; } });",
+                  "var last = parsed[parsed.length - 1] || {};",
+                  "pm.test('the stream started: 200 and SSE', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', raw).to.include('event-stream');",
+                  "});",
+                  "pm.test('the fixture\\'s first chunk reached the client before the cut', function () {",
+                  "  var content = parsed.filter(function (p) { return p && p.choices; });",
+                  "  pm.expect(content.length, raw).to.be.above(0);",
+                  "});",
+                  "pm.test('the stream ends on an error frame, with no [DONE] after it', function () {",
+                  "  pm.expect(last.error, raw).to.be.an('object');",
+                  "  pm.expect(raw, raw).to.not.include('data: [DONE]');",
+                  "});",
+                  "pm.test('headers placement: the error frame keeps extra_fields.error_type and nothing else from extra_fields', function () {",
+                  "  pm.expect(last.extra_fields, raw).to.eql({ error_type: 'provider_connection_failed' });",
+                  "});",
+                  "pm.test('headers placement: content chunks carry no extra_fields', function () {",
+                  "  parsed.slice(0, -1).forEach(function (p) { pm.expect(p && p.extra_fields, raw).to.equal(undefined); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-cut\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "346.5 [EXPECT-200] openai restore original placement (stream error type)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "var cc = JSON.parse(pm.collectionVariables.get('setClientConfig') || '{}');",
+                  "cc.extra_fields_placement = pm.collectionVariables.get('setOriginal') || 'body';",
+                  "pm.variables.set('setBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream error type: original placement restored', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{setBody}}"
+            }
+          }
+        },
+        {
+          "name": "346.6 openai /v1/chat/completions openai/upstream-cut body placement: the error frame keeps the full extra_fields (stream error type)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "// Every SSE data payload except the [DONE] marker, in order.",
+                  "var frames = raw.split('\\n\\n').map(function (e) { return e.split('\\n').filter(function (l) { return l.indexOf('data: ') === 0; }).map(function (l) { return l.slice(6); }).join('\\n'); }).filter(function (d) { return d && d !== '[DONE]'; });",
+                  "var parsed = frames.map(function (d) { try { return JSON.parse(d); } catch (e) { return null; } });",
+                  "var last = parsed[parsed.length - 1] || {};",
+                  "pm.test('the stream started: 200 and SSE', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', raw).to.include('event-stream');",
+                  "});",
+                  "pm.test('the fixture\\'s first chunk reached the client before the cut', function () {",
+                  "  var content = parsed.filter(function (p) { return p && p.choices; });",
+                  "  pm.expect(content.length, raw).to.be.above(0);",
+                  "});",
+                  "pm.test('the stream ends on an error frame, with no [DONE] after it', function () {",
+                  "  pm.expect(last.error, raw).to.be.an('object');",
+                  "  pm.expect(raw, raw).to.not.include('data: [DONE]');",
+                  "});",
+                  "pm.test('body placement: the error frame keeps the full extra_fields', function () {",
+                  "  pm.expect(last.extra_fields, raw).to.be.an('object');",
+                  "  pm.expect(last.extra_fields.error_type, raw).to.equal('provider_connection_failed');",
+                  "  pm.expect(last.extra_fields.provider, raw).to.equal('openai');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-cut\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "346.7 [EXPECT-200] openai original config restored (stream error type)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream error type: extra_fields_placement is back to what it was', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var cc = pm.response.json().client_config || {};",
+                  "  pm.expect(cc.extra_fields_placement || 'body', pm.response.text()).to.eql(pm.collectionVariables.get('setOriginal') || 'body');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "303. Moonshot Kimi Responses API and Anthropic-compatible Messages (moonshot kimi native)",
       "description": "Moonshot (Kimi) serves its own Responses API at /v1/responses and an Anthropic-compatible Messages API at /anthropic/v1/messages (https://platform.kimi.ai/docs/api/responses.md, https://platform.kimi.ai/docs/api/messages.md). The moonshot provider used to convert every Responses request to chat completions, which drops Responses-only fields: a server-side web_search tool never reached Kimi and no web_search_call output item came back. It did not advertise an Anthropic endpoint either, so /anthropic/v1/messages was converted twice (Messages to Responses to chat). The provider now calls Kimi's /v1/responses, and /anthropic/v1/messages with a moonshot/ model is passed through byte for byte to Kimi's Anthropic-compatible endpoint with bearer auth (core/providers/moonshot/moonshot.go, core/providers/anthropicmsg). Byte-exactness of the Messages body is pinned by TestAnthropicMessagesRouteNativeMoonshotEndToEnd and TestMoonshotMessagesPassthroughToKimiAnthropicEndpoint; these cases pin the live wire path. Chat completions on moonshot are unchanged and not covered here.",
       "item": [

@@ -699,6 +699,18 @@ func TestExtraFieldsPlacementHeaders(t *testing.T) {
 		}
 	})
 
+	// An SSE error frame sent after the stream's headers keeps its classification (TXE-6985).
+	t.Run("stream error strip keeps only error_type", func(t *testing.T) {
+		frame := []byte(`{"error":{"message":"cut"},"status_code":502,"extra_fields":{"provider":"openai","latency":4,"error_type":"provider_connection_failed","key_statuses":[{"id":"k"}]}}`)
+		assert.Equal(t, `{"error":{"message":"cut"},"status_code":502,"extra_fields":{"error_type":"provider_connection_failed"}}`, string(StripStreamErrorExtraFields(frame)))
+		native := []byte(`{"type":"error","error":{"type":"api_error","message":"cut"}}`)
+		assert.Equal(t, string(native), string(StripStreamErrorExtraFields(native)), "a native envelope has nothing to keep")
+		untyped := []byte(`{"error":{"message":"cut"},"extra_fields":{"provider":"openai"}}`)
+		assert.Equal(t, `{"error":{"message":"cut"}}`, string(StripStreamErrorExtraFields(untyped)), "no error_type strips like any body")
+		nested := []byte(`{"type":"error","response":{"extra_fields":{"latency":1}},"extra_fields":{"error_type":"provider_timeout","latency":2}}`)
+		assert.Equal(t, `{"type":"error","response":{},"extra_fields":{"error_type":"provider_timeout"}}`, string(StripStreamErrorExtraFields(nested)))
+	})
+
 	t.Run("strip-if is a no-op in body mode", func(t *testing.T) {
 		body := []byte(`{"id":"x","extra_fields":{"latency":1}}`)
 		assert.Equal(t, string(body), string(StripExtraFieldsIfInHeaders(&fasthttp.RequestCtx{}, body)))
@@ -730,6 +742,25 @@ func BenchmarkStripExtraFields_HeadersMode(b *testing.B) {
 			}
 		})
 	}
+}
+
+// BenchmarkStripStreamErrorExtraFields_HeadersMode measures the headers-mode strip of one SSE
+// error frame, sent at most once per stream: "strip" is the StripExtraFields it replaces on
+// error frames, "keep_error_type" the current one.
+func BenchmarkStripStreamErrorExtraFields_HeadersMode(b *testing.B) {
+	frame := []byte(`{"error":{"message":"upstream stream cut","type":"provider_connection_failed"},"status_code":502,"is_bifrost_error":false,"extra_fields":{"routing_info":{"provider":"openai","model":"gpt-4o-mini"},"provider":"openai","request_type":"chat_completion_stream","latency":4,"error_type":"provider_connection_failed"}}`)
+	b.Run("strip", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = StripExtraFields(frame)
+		}
+	})
+	b.Run("keep_error_type", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = StripStreamErrorExtraFields(frame)
+		}
+	})
 }
 
 // BenchmarkApplyBifrostResponseHeaders_BodyMode pins the common-case cost: body mode adds one
