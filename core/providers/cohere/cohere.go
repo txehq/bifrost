@@ -245,8 +245,14 @@ func (provider *CohereProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		if endpoint, ok := request.ExtraParams["endpoint"].(string); ok && endpoint != "" {
 			q.Set("endpoint", endpoint)
 		}
-		if defaultOnly, ok := request.ExtraParams["default_only"].(bool); ok && defaultOnly {
-			q.Set("default_only", "true")
+		// default_only arrives as text from a query string; a bool assertion read it as
+		// absent and listed every model (TXE-7102).
+		defaultOnly, set, bifrostErr := schemas.QueryExtraParamBool(request.ExtraParams, "default_only")
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		if set {
+			q.Set("default_only", strconv.FormatBool(defaultOnly))
 		}
 	}
 	u.RawQuery = q.Encode()

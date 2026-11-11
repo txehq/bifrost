@@ -1,6 +1,12 @@
 package schemas
 
 import (
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -24,6 +30,150 @@ func TestSanitizeImageURLWithAllowedSchemesAcceptsOptIn(t *testing.T) {
 	sanitizedURL, err := SanitizeImageURLWithAllowedSchemes(" gs://my-bucket/path/image.png ", "http", "https", "gs")
 	require.NoError(t, err)
 	assert.Equal(t, "gs://my-bucket/path/image.png", sanitizedURL)
+}
+
+// A boolean parameter that came from a query string is text. It is read as the boolean it
+// spells, and anything that is not one boolean is refused, never read as absent.
+func TestQueryExtraParamBool(t *testing.T) {
+	type result struct{ value, set bool }
+	read := map[string]struct {
+		in   interface{}
+		want result
+	}{
+		"missing":          {nil, result{false, false}},
+		"empty":            {"", result{false, false}},
+		"empty list":       {[]string{}, result{false, false}},
+		"text true":        {"true", result{true, true}},
+		"text false":       {"false", result{false, true}},
+		"one value listed": {[]string{"true"}, result{true, true}},
+		"go bool true":     {true, result{true, true}},
+		"go bool false":    {false, result{false, true}},
+	}
+	for name, tc := range read {
+		extra := map[string]interface{}{}
+		if tc.in != nil {
+			extra["flag"] = tc.in
+		}
+		value, set, bifrostErr := QueryExtraParamBool(extra, "flag")
+		require.Nil(t, bifrostErr, name)
+		assert.Equal(t, tc.want, result{value, set}, name)
+	}
+	_, set, bifrostErr := QueryExtraParamBool(nil, "flag")
+	require.Nil(t, bifrostErr)
+	assert.False(t, set)
+
+	for name, in := range map[string]interface{}{
+		"not a boolean":   "yes",
+		"other case":      "True",
+		"number text":     "1",
+		"sent twice":      []string{"true", "true"},
+		"sent both ways":  []string{"true", "false"},
+		"one bad listed":  []string{"maybe"},
+		"a number":        1,
+		"a nested object": map[string]interface{}{"a": true},
+	} {
+		value, set, bifrostErr := QueryExtraParamBool(map[string]interface{}{"flag": in}, "flag")
+		require.NotNil(t, bifrostErr, name)
+		assert.False(t, value, name)
+		assert.False(t, set, name)
+		require.NotNil(t, bifrostErr.StatusCode, name)
+		assert.Equal(t, 400, *bifrostErr.StatusCode, name)
+		assert.Equal(t, ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType, name)
+		assert.Equal(t, "flag", bifrostErr.Error.Param, name)
+	}
+}
+
+// BenchmarkQueryExtraParamBool is the cost of reading a boolean vendor parameter on a list
+// request (TXE-7102), next to the bool type assertion it replaced ("before"): no extra
+// parameters, the parameter absent, and the parameter sent as text.
+func BenchmarkQueryExtraParamBool(b *testing.B) {
+	for _, tc := range []struct {
+		name  string
+		extra map[string]interface{}
+	}{
+		{"nil", nil},
+		{"absent", map[string]interface{}{"endpoint": "chat"}},
+		{"text", map[string]interface{}{"default_only": "true"}},
+	} {
+		b.Run(tc.name+"/before", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if v, ok := tc.extra["default_only"].(bool); ok && v {
+					b.Fatal("a query string never carries a bool")
+				}
+			}
+		})
+		b.Run(tc.name+"/after", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, _, bifrostErr := QueryExtraParamBool(tc.extra, "default_only"); bifrostErr != nil {
+					b.Fatal(bifrostErr.Error.Message)
+				}
+			}
+		})
+	}
+}
+
+// queryFedTypedParams lists, per provider source file, every parameter of a query-fed
+// request that the provider reads as something other than text. Each is read with a
+// QueryExtraParam* function and has a provider test that sends it as text
+// (cohere: TestListModelsDefaultOnlyArrivesFromAQueryString).
+var queryFedTypedParams = map[string][]string{
+	filepath.Join("cohere", "cohere.go"): {"default_only"},
+}
+
+// TestQueryFedExtraParamsAreNotReadWithATypedAssertion fails when provider code reads an
+// ExtraParams entry of a request the HTTP transport fills from the query string
+// (GET /v1/models, GET /v1/files) with a type assertion to anything but string. A query
+// string carries text, so such a read treats the parameter as absent, without an error:
+// default_only=true never reached Cohere (fork, TXE-7102). It also fails when the
+// QueryExtraParam* reads it finds differ from queryFedTypedParams, so a new typed
+// parameter gets a row and a test.
+func TestQueryFedExtraParamsAreNotReadWithATypedAssertion(t *testing.T) {
+	queryFed := regexp.MustCompile(`\b(BifrostListModelsRequest|BifrostFileListRequest)\b`)
+	assertion := regexp.MustCompile(`ExtraParams\[[^\]]*\]\.\(([^)]+)\)`)
+	typedRead := regexp.MustCompile(`QueryExtraParam[A-Z]\w*\([^,]+,\s*"([^"]+)"\)`)
+	root := filepath.Join("..", "providers")
+	found := map[string][]string{}
+	functions := 0
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		src, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		rel, _ := filepath.Rel(root, path)
+		inQueryFed := false
+		for i, line := range strings.Split(string(src), "\n") {
+			if strings.HasPrefix(line, "func ") {
+				inQueryFed = queryFed.MatchString(line)
+				if inQueryFed {
+					functions++
+				}
+			}
+			if !inQueryFed {
+				continue
+			}
+			if m := assertion.FindStringSubmatch(line); m != nil && m[1] != "string" {
+				t.Errorf("%s:%d reads a query-fed extra parameter with a %s assertion; a query string carries text, use schemas.QueryExtraParamBool or a sibling", path, i+1, m[1])
+			}
+			if m := typedRead.FindStringSubmatch(line); m != nil {
+				found[rel] = append(found[rel], m[1])
+			}
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	require.NotZero(t, functions, "the scan found no function taking a query-fed request; it is looking in the wrong place")
+	for _, names := range found {
+		slices.Sort(names)
+	}
+	assert.Equal(t, queryFedTypedParams, found, "every typed query-fed parameter has a row in queryFedTypedParams and a provider test")
 }
 
 func TestSanitizeImageURLWithAllowedSchemesRejectsUnlisted(t *testing.T) {

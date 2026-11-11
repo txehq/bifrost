@@ -1043,3 +1043,61 @@ func TestXAIImageGenerationIngressToEgress(t *testing.T) {
 		require.Zero(t, egress.calls())
 	})
 }
+
+// GET /v1/models?provider=cohere&default_only=true: the handler forwards default_only as
+// the text a query string carries, and Cohere receives the boolean it spells. The provider
+// read it with a bool assertion before, so it never arrived (fork, TXE-7102). A value that
+// is not a boolean is refused with caller_unsupported_parameter and no vendor call.
+func TestListModelsRouteSendsBooleanVendorParameterToCohere(t *testing.T) {
+	var mu sync.Mutex
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		queries = append(queries, r.URL.RawQuery)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"models":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: audioUpstreamAccount{baseURLs: map[schemas.ModelProvider]string{schemas.Cohere: srv.URL}},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("bifrost.Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	h := &CompletionHandler{client: client, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+	get := func(uri string) *fasthttp.RequestCtx {
+		var req fasthttp.Request
+		req.Header.SetMethod(fasthttp.MethodGet)
+		req.SetRequestURI(uri)
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Init(&req, nil, nil)
+		h.listModels(ctx)
+		return ctx
+	}
+
+	ctx := get("/v1/models?provider=cohere&default_only=maybe")
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest ||
+		!bytes.Contains(ctx.Response.Body(), []byte(`"error_type":"caller_unsupported_parameter"`)) ||
+		!bytes.Contains(ctx.Response.Body(), []byte(`"param":"default_only"`)) {
+		t.Fatalf("status %d, want 400 caller_unsupported_parameter naming default_only: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	mu.Lock()
+	if len(queries) != 0 {
+		t.Fatalf("a refused request reached the vendor: %q", queries)
+	}
+	mu.Unlock()
+
+	for _, value := range []string{"true", "false"} {
+		if ctx := get("/v1/models?provider=cohere&default_only=" + value); ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("default_only=%s: status %d: %s", value, ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"default_only=true&page_size=1000", "default_only=false&page_size=1000"}; !slices.Equal(queries, want) {
+		t.Fatalf("vendor queries = %q, want %q", queries, want)
+	}
+}

@@ -528,6 +528,29 @@ Rows 403.10 and 403.11 are the async route: 403.10 submits a url-only job to
 transcript, the duration usage and exactly one call in `/__wire`. Run them together and in order, as the
 folder does.
 
+## Boolean vendor query parameters on the model list
+
+Folder 491 pins that a boolean vendor parameter on `GET /v1/models` reaches the vendor, against the same
+local fixture and with no live provider calls. The route forwards the query parameters the gateway does
+not read to the provider. A query string carries text, and the Cohere provider read `default_only` with a
+bool type assertion, so `default_only=true` never reached Cohere and every model was listed. The fixture
+answers Cohere's model list at `GET /pp/cohere/v1/models` and keeps each call in `GET /__wire`. The
+`pp_cohere` rows read back `default_only=true` and `default_only=false` as the vendor received them, and
+that `default_only=maybe` is refused with 400 `caller_unsupported_parameter` before any vendor call.
+
+Start the fixture and the isolated gateway as in the provider error fixture section above, then run:
+
+```bash
+newman run tmp/provider-harness.json \
+  --folder "491. A boolean vendor query parameter on GET /v1/models reaches the vendor as sent, or is refused (typed vendor query) [SERIAL]" \
+  --working-dir . \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1 \
+  --env-var providerErrorFixtureUrl=http://127.0.0.1:8791
+```
+
+Every row is skipped unless `providerErrorFixture=1`.
+
 ## Fork deployment switches: provider job accounting off and passthrough heartbeat off
 
 Folder 329 (TXE-6519) uses the same fixture and the same isolated gateway as folder 154. The

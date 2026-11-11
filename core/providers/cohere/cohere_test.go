@@ -330,3 +330,51 @@ func TestCohereInternalEmbeddingGetsTheDocumentedInputType(t *testing.T) {
 	require.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
 	require.Equal(t, int32(2), calls.Load(), "a caller's request without a task is refused before any upstream call")
 }
+
+// GET /v1/models?provider=cohere&default_only=true hands default_only to the provider as
+// text, the only form a query string has. It reaches Cohere as the boolean it spells. The
+// bool assertion this replaced read it as absent, so Cohere listed every model. A value
+// that is not one boolean is refused with caller_unsupported_parameter and nothing is
+// sent (fork, TXE-7102).
+func TestListModelsDefaultOnlyArrivesFromAQueryString(t *testing.T) {
+	var mu sync.Mutex
+	var queries []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		queries = append(queries, r.URL.RawQuery)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models":[]}`))
+	}))
+	defer server.Close()
+	provider, err := cohere.NewCohereProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+	}, bifrost.NewNoOpLogger())
+	require.NoError(t, err)
+	keys := []schemas.Key{{ID: "k1", Value: *schemas.NewSecretVar("co-test"), Models: schemas.WhiteList{"*"}}}
+	list := func(extra map[string]interface{}) *schemas.BifrostError {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		_, bifrostErr := provider.ListModels(ctx, keys, &schemas.BifrostListModelsRequest{Provider: schemas.Cohere, ExtraParams: extra})
+		return bifrostErr
+	}
+
+	for _, refused := range []interface{}{"yes", "1", []string{"true", "false"}} {
+		bifrostErr := list(map[string]interface{}{"default_only": refused})
+		require.NotNil(t, bifrostErr, "%v", refused)
+		require.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType, "%v", refused)
+		require.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode, "%v", refused)
+		require.Equal(t, "default_only", bifrostErr.Error.Param, "%v", refused)
+	}
+	require.Empty(t, queries, "a refused request sends nothing to Cohere")
+
+	require.Nil(t, list(map[string]interface{}{"default_only": "true", "endpoint": "chat"}))
+	require.Nil(t, list(map[string]interface{}{"default_only": "false"}))
+	require.Nil(t, list(map[string]interface{}{"default_only": true}))
+	require.Nil(t, list(nil))
+	require.Equal(t, []string{
+		"default_only=true&endpoint=chat&page_size=1000",
+		"default_only=false&page_size=1000",
+		"default_only=true&page_size=1000",
+		"page_size=1000",
+	}, queries)
+}
