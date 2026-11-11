@@ -7,12 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -3091,5 +3094,159 @@ func TestConvertToBifrostContext_MarksExtraFieldsInHeaders(t *testing.T) {
 	cancel()
 	if !ExtraFieldsInHeaders(headersCtx) {
 		t.Fatal("headers mode must mark the request")
+	}
+}
+
+// queryTestCtx builds a request context for a GET of uri.
+func queryTestCtx(uri string) *fasthttp.RequestCtx {
+	var req fasthttp.Request
+	req.Header.SetMethod("GET")
+	req.SetRequestURI(uri)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, nil, nil)
+	return ctx
+}
+
+// CopyQueryFirstValues keeps the first value of a name, the one Args.Peek returns, and
+// reports every value of a name sent more than once (fork, TXE-7042).
+func TestCopyQueryFirstValues(t *testing.T) {
+	ctx := queryTestCtx("/v1/batches?provider=openai&status=a&Status=c&status=b&flag&limit=5")
+	args := ctx.Request.URI().QueryArgs()
+
+	got := map[string]string{}
+	repeated := CopyQueryFirstValues(args, got, false)
+	want := map[string]string{"provider": "openai", "status": "a", "Status": "c", "flag": "", "limit": "5"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("first values = %v, want %v", got, want)
+	}
+	if wantRepeated := map[string][]string{"status": {"a", "b"}}; !reflect.DeepEqual(repeated, wantRepeated) {
+		t.Fatalf("repeated = %v, want %v", repeated, wantRepeated)
+	}
+	for name, value := range got {
+		if peeked := string(args.Peek(name)); peeked != value {
+			t.Errorf("%s: map holds %q, Peek returns %q", name, value, peeked)
+		}
+	}
+
+	lowered := map[string]string{}
+	repeated = CopyQueryFirstValues(args, lowered, true)
+	if lowered["status"] != "a" {
+		t.Fatalf("lowercased first value = %q, want a", lowered["status"])
+	}
+	if wantRepeated := map[string][]string{"status": {"a", "c", "b"}}; !reflect.DeepEqual(repeated, wantRepeated) {
+		t.Fatalf("lowercased repeated = %v, want %v", repeated, wantRepeated)
+	}
+
+	if repeated := CopyQueryFirstValues(queryTestCtx("/v1/models?a=1&b=2").Request.URI().QueryArgs(), map[string]string{}, false); repeated != nil {
+		t.Fatalf("no name repeats, repeated = %v, want nil", repeated)
+	}
+}
+
+// ApplyQueryChanges leaves what a plugin did not change exactly as sent and replaces every
+// value of a name a plugin changed (fork, TXE-7042).
+func TestApplyQueryChanges(t *testing.T) {
+	const sent = "provider=openai&status=a&status=b&flag&limit=5"
+	cases := []struct {
+		name   string
+		mutate func(query map[string]string)
+		want   string
+	}{
+		{name: "nothing changed", mutate: func(map[string]string) {}, want: sent},
+		{name: "another name changed", mutate: func(q map[string]string) { q["limit"] = "9" }, want: "provider=openai&status=a&status=b&flag&limit=9"},
+		{name: "name added", mutate: func(q map[string]string) { q["injected"] = "yes" }, want: sent + "&injected=yes"},
+		{name: "empty name added", mutate: func(q map[string]string) { q["bare"] = "" }, want: sent + "&bare="},
+		{name: "repeated name changed", mutate: func(q map[string]string) { q["status"] = "z" }, want: "provider=openai&flag&limit=5&status=z"},
+		{name: "repeated name set to its last value", mutate: func(q map[string]string) { q["status"] = "b" }, want: "provider=openai&flag&limit=5&status=b"},
+		{name: "name deleted stays", mutate: func(q map[string]string) { delete(q, "status") }, want: sent},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := queryTestCtx("/v1/batches?" + sent)
+			args := ctx.Request.URI().QueryArgs()
+			query := map[string]string{}
+			CopyQueryFirstValues(args, query, false)
+			tc.mutate(query)
+			ApplyQueryChanges(args, query)
+			if got := string(args.QueryString()); got != tc.want {
+				t.Fatalf("query string = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Routing rules read BifrostContextKeyRequestQuery and handlers read Args.Peek: both must
+// name the same value of a repeated parameter (fork, TXE-7042).
+func TestConvertToBifrostContext_RepeatedQueryParameterReadsAsPeek(t *testing.T) {
+	ctx := queryTestCtx("/v1/batches?Provider=a&provider=b&status=x&status=y")
+	converted, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel()
+	query, _ := converted.Value(schemas.BifrostContextKeyRequestQuery).(map[string]string)
+	if query["status"] != "x" || query["status"] != string(ctx.QueryArgs().Peek("status")) {
+		t.Fatalf("routing rules read status=%q, handlers read %q, want x for both", query["status"], ctx.QueryArgs().Peek("status"))
+	}
+	if query["provider"] != "a" {
+		t.Fatalf("routing rules read provider=%q, want the first value a", query["provider"])
+	}
+}
+
+// The request snapshot a streaming post-hook receives carries the same query view as the
+// pre-hook: first values, and every value of a repeated name (fork, TXE-7042).
+func TestBuildHTTPRequestFromFastHTTP_RepeatedQueryParameter(t *testing.T) {
+	req := BuildHTTPRequestFromFastHTTP(queryTestCtx("/v1/videos?provider=p&status=completed&status=failed"))
+	defer schemas.ReleaseHTTPRequest(req)
+	if req.Query["status"] != "completed" {
+		t.Fatalf("Query[status] = %q, want completed", req.Query["status"])
+	}
+	if want := map[string][]string{"status": {"completed", "failed"}}; !reflect.DeepEqual(req.RepeatedQuery, want) {
+		t.Fatalf("RepeatedQuery = %v, want %v", req.RepeatedQuery, want)
+	}
+}
+
+// TestQueryStringIsCopiedInOnePlace fails when a transport source file walks the whole
+// query string itself instead of calling CopyQueryFirstValues. Every such walk that built
+// a map kept the last value of a repeated parameter while handlers read the first
+// (fork, TXE-7042). Read one name with Peek or PeekMulti; copy all of them with
+// CopyQueryFirstValues. The two allowed files scan for a metadata_ prefix on management
+// routes and send nothing to a vendor or a plugin.
+func TestQueryStringIsCopiedInOnePlace(t *testing.T) {
+	allowed := map[string]bool{
+		filepath.Join("lib", "query.go"):           true,
+		filepath.Join("handlers", "logging.go"):    true,
+		filepath.Join("handlers", "governance.go"): true,
+	}
+	walk := regexp.MustCompile(`(?i)(QueryArgs\(\)|queryArgs|args)\.(All|VisitAll)\(`)
+	root := ".."
+	found := 0
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == "ui" || d.Name() == "node_modules" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, path)
+		src, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if walk.Match(src) {
+			found++
+			if !allowed[rel] {
+				t.Errorf("%s walks the query string itself; use lib.CopyQueryFirstValues, Peek or PeekMulti", rel)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found != len(allowed) {
+		t.Errorf("%d files walk the query string, the allow list names %d: drop the entries that no longer apply", found, len(allowed))
 	}
 }
