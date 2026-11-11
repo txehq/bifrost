@@ -444,7 +444,7 @@ with its key and JSON body (`GET /__kling-calls`) and counted under
 Kling, one upstream call per create and per query, and none for a refused request:
 
 ```bash
-newman run tests/e2e/api/collections/provider-harness.json \
+newman run tmp/provider-harness.json \
   --folder "416. Kling video on the contract: create by model path, query by task id or client_reference_id, Units as vendor_cost, refusals (kling video contract, provider error fixture)" \
   --env-var baseUrl=http://127.0.0.1:8790 \
   --env-var providerErrorFixture=1
