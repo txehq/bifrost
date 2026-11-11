@@ -487,7 +487,7 @@ test.describe("Providers", () => {
 
   // TXE-7062: a BFL key's webhook secret saves through the form, comes back redacted, and an
   // edit that leaves the masked value untouched keeps the stored secret.
-  test("should save a BFL key's webhook secret and keep it across an unchanged edit", async ({
+  test("should save a BFL key's webhook secret and keep it across an edit that leaves it untouched", async ({
     providersPage,
     page,
   }) => {
@@ -527,13 +527,20 @@ test.describe("Providers", () => {
     const redacted = await storedSecret();
     expect(redacted, "the key must carry a webhook secret").toBeTruthy();
 
-    // Reopen and save without touching the masked secret: the stored one must survive.
+    // Reopen and change only the weight, leaving the masked secret untouched (the form saves only
+    // a changed key): the stored secret must survive the save.
     await providersPage.dismissToasts();
     await providersPage.openKeyEditor(keyName);
+    const weightInput = page.getByLabel("Weight");
+    await expect(weightInput).toBeVisible();
+    await weightInput.clear();
+    await weightInput.fill("2");
+    await expect(providersPage.keySaveBtn).toBeEnabled();
     await providersPage.keySaveBtn.click();
     await providersPage.waitForSuccessToast();
     await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
-    expect(await storedSecret(), "an unchanged edit must keep the stored secret").toBe(redacted);
+    expect(await storedSecret(), "an edit that leaves the secret untouched must keep it").toBe(redacted);
+    expect(await providersPage.getKeyWeight(keyName)).toContain("2");
   });
 
   for (const { name, label } of REGISTRATION_ONLY_PROVIDERS) {
