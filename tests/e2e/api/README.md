@@ -230,6 +230,53 @@ truncation above, then:
 make run-provider-harness-test PROVIDER=xai FEATURE="xai vendor cost" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
 ```
 
+## Offline runs and egress
+
+A fixture run must not reach a real vendor (TXE-7083). Dummy keys are not enough: a provider that
+ignores `network_config.base_url` still dials its vendor. Bedrock builds its host from the region, so a
+TXE-7080 fixture run sent two requests to `bedrock-runtime.us-east-1.amazonaws.com`. So a fixture run
+starts all three processes (the fixture, the gateway and the harness) under `scripts/test-offline.sh`:
+
+- Bifrost's dial guard refuses a TCP connection to an address that is not loopback before it is
+  attempted, naming it: `offline run (BIFROST_TEST_OFFLINE=1): egress to <host> (<ip:port>) refused`.
+  It covers Bifrost's own dialers (provider, proxy, SSRF, fasthttp, WebSocket, gRPC), `http.DefaultTransport`
+  and the AWS SDK client. Libraries that dial on their own are held only by the macOS sandbox
+  (`AGENTS.md`, "Run local tests through `scripts/test-offline.sh`").
+- The runner removes the proxy variables, and on macOS it runs the command under `sandbox-exec` with a
+  loopback-only profile, so any process it starts (node, newman, curl) is held to loopback too.
+- `make run-provider-harness-test` refuses a fixture run (`providerErrorFixture=1`) outside the runner. It
+  also fails closed unless the gateway's `egress_probe` provider (base_url on TEST-NET-3) comes back with
+  the guard's refusal. So a gateway not started under the runner is refused, and so is one whose config
+  lacks the probe or that asks for authentication (set `BIFROST_E2E_AUTH_HEADER`). Every fixture config
+  with providers carries `egress_probe`, and `runners/lib/base-url-support.test.mjs` checks it.
+- The AWS SDK's own HTTP client (Bedrock and Vertex credential loading: STS, IMDS, SSO) carries the
+  guard too. `core/providers/utils` fails on a `config.LoadDefaultConfig` call without it.
+
+`core/providers/base_url_support.json` says how to point each provider at a fixture. Most honour
+`network_config.base_url`. Azure takes `azure_key_config.endpoint`, and Databricks takes
+`databricks_key_config.workspace_url`. Bedrock and Bedrock Mantle take `bedrock_key_config.endpoints` and
+`bedrock_mantle_key_config.endpoints`. Vertex has no override, so it stays out of fixture configs.
+`runners/lib/base-url-support.test.mjs` (offline suites) fails when a registered provider is missing from
+the table, or when a fixture config sets base_url on a provider that ignores it.
+
+Bedrock always dials `https://`, so the fixture also serves its routes on a TLS listener
+(`PROVIDER_ERROR_FIXTURE_TLS_PORT`, default 8793). The certificate is a throwaway self-signed one made with
+`openssl` at start-up. The fixture config's `bedrock` provider sets
+`bedrock_key_config.endpoints.runtime: "127.0.0.1:8793"` and `network_config.insecure_skip_verify: true`.
+The fixture answers `POST /model/<id>/converse`, and it does not check SigV4 signatures.
+
+Folder 476 pins this. Row 1 is Bedrock through the endpoint override. Rows 2 and 3 point Bedrock and a
+base_url provider at TEST-NET-3 (`203.0.113.10`, never routed), and an offline gateway must refuse both,
+naming the address. With random ports (substitute them into a copy of the config, including 8793):
+
+```bash
+PROVIDER_ERROR_FIXTURE_PORT=$FX PROVIDER_ERROR_FIXTURE_STALL_PORT=$ST PROVIDER_ERROR_FIXTURE_TLS_PORT=$TLS \
+  scripts/test-offline.sh node tests/e2e/api/runners/provider-error-fixture.mjs
+scripts/test-offline.sh make dev PORT=$GW APP_DIR="$APP_DIR"     # config.json from provider-error-fixture.config.json
+scripts/test-offline.sh make run-provider-harness-test FEATURE="offline egress" BASE_URL=http://127.0.0.1:$GW \
+  APP_DIR="$APP_DIR" ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 PARALLEL=0
+```
+
 ## Provider 5xx failover and 429 retry-hint propagation
 
 These deterministic cases use a local HTTP fixture and an isolated gateway. They make no live

@@ -155,7 +155,7 @@ type ipLookuper = IPLookuper
 // private address after validation (DNS rebinding TOCTOU). Because the check
 // runs per dial, it also holds across redirects and connection-pool re-dials.
 func SSRFSafeDialContext(dialTimeout time.Duration) func(ctx context.Context, netw, addr string) (net.Conn, error) {
-	dialer := &net.Dialer{Timeout: dialTimeout}
+	dialer := GuardDialer(&net.Dialer{Timeout: dialTimeout})
 	return ssrfSafeDialContext(net.DefaultResolver, dialer.DialContext, nil)
 }
 
@@ -176,7 +176,7 @@ func SSRFSafeDialContext(dialTimeout time.Duration) func(ctx context.Context, ne
 // fetch, webhooks, skills serving); those must keep blocking all private
 // targets unconditionally.
 func SSRFSafeDialContextWithAllowlist(dialTimeout time.Duration, allow *Allowlist) func(ctx context.Context, netw, addr string) (net.Conn, error) {
-	dialer := &net.Dialer{Timeout: dialTimeout}
+	dialer := GuardDialer(&net.Dialer{Timeout: dialTimeout})
 	return ssrfSafeDialContext(net.DefaultResolver, dialer.DialContext, allow)
 }
 
@@ -201,7 +201,8 @@ func ssrfSafeDialContext(resolver ipLookuper, dial func(ctx context.Context, net
 				return nil, fmt.Errorf("blocked connection to non-public address %s (host %s)", ip, host)
 			}
 		}
-		return dial(ctx, netw, net.JoinHostPort(ips[0].String(), port))
+		conn, err := dial(ctx, netw, net.JoinHostPort(ips[0].String(), port))
+		return conn, NameOfflineEgress(err, host)
 	}
 }
 
@@ -457,7 +458,7 @@ func CheckPrivateNetworkLiteral(host string) error {
 // function is a defense-in-depth backstop against link-local/metadata
 // targets, not an authorization check.
 func PrivateNetworkDialContext(dialTimeout time.Duration) func(ctx context.Context, netw, addr string) (net.Conn, error) {
-	dialer := &net.Dialer{Timeout: dialTimeout}
+	dialer := GuardDialer(&net.Dialer{Timeout: dialTimeout})
 	return func(ctx context.Context, netw, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
@@ -493,7 +494,7 @@ func PrivateNetworkDialContext(dialTimeout time.Duration) func(ctx context.Conte
 // without rebuilding the transport; a nil allowlist permits only public
 // destinations.
 func AllowlistedPrivateDialContext(dialTimeout time.Duration, allow func() *Allowlist) func(ctx context.Context, netw, addr string) (net.Conn, error) {
-	dialer := &net.Dialer{Timeout: dialTimeout}
+	dialer := GuardDialer(&net.Dialer{Timeout: dialTimeout})
 	return allowlistedPrivateDialContext(net.DefaultResolver, dialer.DialContext, allow)
 }
 

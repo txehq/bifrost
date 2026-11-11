@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"io"
 	"net"
 	"net/http"
@@ -661,10 +662,10 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 			if resolveErr != nil {
 				return nil, resolveErr
 			}
-			dialer := &net.Dialer{
+			dialer := network.GuardDialer(&net.Dialer{
 				Timeout:         client.ReadTimeout,
 				KeepAliveConfig: keepAliveCfg,
-			}
+			})
 			var lastErr error
 			for _, ip := range ips {
 				// Unspecified (0.0.0.0, ::) and link-local (169.254.x.x, fe80::) are always blocked
@@ -686,7 +687,8 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 			}
 			if conn == nil {
 				if lastErr != nil {
-					return nil, lastErr
+					// An offline test run refused the address (TXE-7083): say which host it was.
+					return nil, network.NameOfflineEgress(lastErr, host)
 				}
 				return nil, fmt.Errorf("no usable address resolved for %s", host)
 			}
@@ -1022,6 +1024,12 @@ func ConfigureWebSocketProxy(dialer *ws.Dialer, proxyConfig *schemas.ProxyConfig
 		dialer.TLSClientConfig = tlsConfig
 	}
 	if proxy == nil {
+		// Without a proxy the library would dial with its own net.Dialer, which the offline
+		// egress guard never sees (TXE-7083). Give it the guarded dialer; for wss:// it still
+		// runs its own TLS over the connection.
+		if dialer.NetDial == nil && dialer.NetDialContext == nil && dialer.NetDialTLSContext == nil {
+			dialer.NetDialContext = network.GuardDialer(&net.Dialer{}).DialContext
+		}
 		return dialer, nil
 	}
 	// The websocket library's own proxy support knows http and socks5 but not https
@@ -1065,10 +1073,17 @@ func dialWebSocketUpstream(ctx context.Context, proxy func(*http.Request) (*url.
 		return nil, err
 	}
 	if proxyURL == nil {
-		return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+		return network.GuardDialer(&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	}
 	return network.DialViaProxyTLS(ctx, proxyURL, addr, proxyTLS)
 }
+
+// GuardedAWSHTTPClient is the HTTP client every AWS SDK config Bifrost loads passes through
+// config.WithHTTPClient: the SDK's default BuildableClient with the offline egress guard on its
+// dialer (TXE-7083). Without it the SDK builds its own client, so credential loading (STS
+// AssumeRole, IMDS, SSO) would dial AWS in an offline run although the inference transport is
+// guarded. utils_test.go fails on a config.LoadDefaultConfig call that does not pass it.
+var GuardedAWSHTTPClient = awshttp.NewBuildableClient().WithDialerOptions(network.GuardDialerInPlace)
 
 // NewProviderHTTPClient builds the *http.Client a provider hands to libraries that
 // only accept one, for calls that do not go to its inference endpoint: OAuth token
@@ -1122,7 +1137,7 @@ func namesProxy(proxyConfig *schemas.ProxyConfig) bool {
 // instance-metadata targets, no_proxy matches (errBypassProxy) and a client with no
 // proxy dialer at all connect directly with a plain dial.
 func directForLocalTargets(proxyDial fasthttp.DialFunc, timeout time.Duration) fasthttp.DialFunc {
-	dialer := &net.Dialer{Timeout: timeout}
+	dialer := network.GuardDialer(&net.Dialer{Timeout: timeout})
 	direct := func(addr string) (net.Conn, error) {
 		return dialer.Dial("tcp", addr)
 	}

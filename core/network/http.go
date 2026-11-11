@@ -445,7 +445,7 @@ func envGRPCDial(ctx context.Context, addr string) (net.Conn, error) {
 		return nil, err
 	}
 	if proxyURL == nil {
-		return (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext(ctx, "tcp", addr)
+		return GuardDialer(&net.Dialer{KeepAlive: 30 * time.Second}).DialContext(ctx, "tcp", addr)
 	}
 	return DialViaProxy(ctx, proxyURL, addr)
 }
@@ -678,6 +678,9 @@ func (f *HTTPClientFactory) newFasthttpBaseClient(purpose ClientPurpose) *fastht
 		MaxConnWaitTimeout:  DefaultClientConfig.ReadTimeout,
 		ConnPoolStrategy:    fasthttp.FIFO,
 		RetryIfErr:          StaleConnectionRetryIfErr,
+		// The offline egress guard (TXE-7083). configureFasthttpProxy's DialTimeout, which
+		// fasthttp prefers when set, is guarded on its own.
+		Dial: GuardedFasthttpDial,
 	}
 
 	// Larger header buffers only for SCIM/OAuth, and only when a caller opted in via
@@ -764,7 +767,7 @@ func (f *HTTPClientFactory) configureFasthttpProxy(client *fasthttp.Client, purp
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		if connectDirect(DialAddrHost(addr), proxyCfg) {
-			return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+			return GuardDialer(&net.Dialer{}).DialContext(ctx, "tcp", addr)
 		}
 		return DialViaProxyTLS(ctx, proxyURL, addr, proxyCfg.proxyTLS())
 	}
@@ -799,7 +802,7 @@ func DialAddrHost(addr string) string {
 // createHTTPClient creates an inner net/http client for key with the current proxy
 // settings. The caller holds f.mu.
 func (f *HTTPClientFactory) createHTTPClient(key httpClientKey) *http.Client {
-	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	dialer := GuardDialer(&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second})
 	transport := &http.Transport{
 		DialContext:           dialer.DialContext,
 		MaxIdleConns:          DefaultClientConfig.MaxConnsPerHost,
@@ -1101,7 +1104,7 @@ func (f *HTTPClientFactory) GRPCDialer(purpose ClientPurpose) func(ctx context.C
 		f.mu.RUnlock()
 
 		if proxyURL == nil || connectDirect(DialAddrHost(addr), proxyCfg) {
-			return (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext(ctx, "tcp", addr)
+			return GuardDialer(&net.Dialer{KeepAlive: 30 * time.Second}).DialContext(ctx, "tcp", addr)
 		}
 		return DialViaProxyTLS(ctx, proxyURL, addr, proxyCfg.proxyTLS())
 	}
@@ -1132,7 +1135,7 @@ func DialViaProxyTLS(ctx context.Context, proxyURL *url.URL, addr string, proxyT
 		ctx, cancel = context.WithTimeout(ctx, ProxyHandshakeTimeout)
 		defer cancel()
 	}
-	dialer := &net.Dialer{KeepAlive: 30 * time.Second}
+	dialer := GuardDialer(&net.Dialer{KeepAlive: 30 * time.Second})
 	switch proxyURL.Scheme {
 	case "socks5", "socks5h":
 		var auth *xproxy.Auth

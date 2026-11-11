@@ -38,11 +38,12 @@ func uploadToS3(
 
 		cfg, err = config.LoadDefaultConfig(ctx,
 			config.WithRegion(region),
+			config.WithHTTPClient(providerUtils.GuardedAWSHTTPClient),
 			config.WithCredentialsProvider(creds),
 		)
 	} else {
 		// Use default credentials chain (IAM role, env vars, etc.)
-		cfg, err = config.LoadDefaultConfig(ctx, config.WithRegion(region))
+		cfg, err = config.LoadDefaultConfig(ctx, config.WithRegion(region), config.WithHTTPClient(providerUtils.GuardedAWSHTTPClient))
 	}
 
 	if err != nil {

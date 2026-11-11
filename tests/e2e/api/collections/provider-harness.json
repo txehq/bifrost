@@ -323925,6 +323925,190 @@
           }
         }
       ]
+    },
+    {
+      "name": "476. Offline runs reach loopback only; Bedrock reaches the fixture through its endpoint override (offline egress)",
+      "description": "TXE-7083, local fixture regression with no live provider calls. Start provider-error-fixture.mjs and an isolated gateway on provider-error-fixture.config.json, both under scripts/test-offline.sh, and run newman under it too (README: Offline runs and egress). Bedrock ignores network_config.base_url: its host comes from the region, which is how a TXE-7080 fixture run reached AWS. Row 1 covers Bedrock the documented way, with bedrock_key_config.endpoints.runtime on the fixture's TLS listener and network_config.insecure_skip_verify. Rows 2 and 3 point a provider at TEST-NET-3 (203.0.113.10, never routed): an offline gateway refuses the dial before connecting and names the address, for Bedrock's net/http client and for a base_url provider on the shared fasthttp dialer. Against a gateway not started under the runner, rows 2 and 3 fail (and make run-provider-harness-test refuses to start).",
+      "item": [
+        {
+          "name": "476.1 bedrock /v1/chat/completions bedrock/amazon.nova-lite-v1:0 reaches the fixture through bedrock_key_config.endpoints.runtime (offline egress)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "var body = pm.response.json();",
+                  "pm.test('the answer is the fixture\\'s Converse reply', function () {",
+                  "  pm.expect(body.choices[0].message.content, raw).to.equal('hello from the bedrock fixture (amazon.nova-lite-v1:0)');",
+                  "});",
+                  "pm.test('the fixture key served it', function () {",
+                  "  pm.expect(body.extra_fields.routing_info.provider, raw).to.equal('bedrock');",
+                  "  pm.expect(body.extra_fields.routing_info.key, raw).to.equal('local-error-fixture');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/amazon.nova-lite-v1:0\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "476.2 [EXPECT-400] bedrock /v1/chat/completions bedrock/amazon.egress-probe-v1:0 a Bedrock endpoint that is not loopback is refused before connecting, naming it (offline egress)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(400);",
+                  "var body = {}; try { body = pm.response.json(); } catch (e) {}",
+                  "var detail = (body.error && (body.error.error || body.error.message)) || '';",
+                  "pm.test('the offline gateway refused the dial, naming the address (TXE-7083)', function () {",
+                  "  pm.expect(detail, raw).to.include(\"offline run (BIFROST_TEST_OFFLINE=1): egress to 203.0.113.10:443 refused\");",
+                  "});",
+                  "pm.test('the refusal came from the provider the row targets', function () {",
+                  "  var ri = (body.extra_fields && body.extra_fields.routing_info) || {};",
+                  "  pm.expect(ri.provider, raw).to.equal(\"bedrock\");",
+                  "  pm.expect(ri.key, raw).to.equal(\"egress-probe\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/amazon.egress-probe-v1:0\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "476.3 [EXPECT-502] egress_probe /v1/chat/completions egress_probe/egress-probe a base_url that is not loopback is refused before connecting, naming it (offline egress)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(502);",
+                  "var body = {}; try { body = pm.response.json(); } catch (e) {}",
+                  "var detail = (body.error && (body.error.error || body.error.message)) || '';",
+                  "pm.test('the offline gateway refused the dial, naming the address (TXE-7083)', function () {",
+                  "  pm.expect(detail, raw).to.include(\"offline run (BIFROST_TEST_OFFLINE=1): egress to 203.0.113.10:443 refused\");",
+                  "});",
+                  "pm.test('the refusal came from the provider the row targets', function () {",
+                  "  var ri = (body.extra_fields && body.extra_fields.routing_info) || {};",
+                  "  pm.expect(ri.provider, raw).to.equal(\"egress_probe\");",
+                  "  pm.expect(ri.key, raw).to.equal(\"local-error-fixture\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"egress_probe/egress-probe\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

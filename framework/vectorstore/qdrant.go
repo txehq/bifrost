@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/google/uuid"
 	"github.com/qdrant/go-client/qdrant"
@@ -410,6 +411,9 @@ func newQdrantStore(ctx context.Context, config *QdrantConfig, logger schemas.Lo
 		SkipCompatibilityCheck: true,
 		GrpcOptions: []grpc.DialOption{
 			grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(maxRecvMsgSize)),
+			// Dial through Bifrost's gRPC dialer, as the OTLP exporters do: it applies the
+			// global proxy and the offline egress guard (TXE-7083).
+			grpc.WithContextDialer(network.DefaultGRPCDialer(network.ClientPurposeAPI)),
 		},
 	})
 	if err != nil {

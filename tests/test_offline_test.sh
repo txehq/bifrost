@@ -165,6 +165,68 @@ status=$?
 set -e
 if [ "$status" -eq 2 ]; then pass "no command is a usage error"; else fail "no command exited $status, want 2"; fi
 
+# --- Egress (TXE-7083): a run under the runner reaches loopback only. ---
+
+# Proxy variables are removed, so no client can hand a request to a proxy that carries it out.
+child=$(HTTP_PROXY=http://proxy.invalid:3128 https_proxy=http://proxy.invalid:3128 ALL_PROXY=socks5://proxy.invalid:1080 NO_PROXY=example.com \
+	"$RUN" env -0 | tr '\0' '\n')
+if printf '%s\n' "$child" | grep -qiE '^(http|https|all|no)_proxy='; then
+	fail "proxy variables reached the child: $(printf '%s\n' "$child" | grep -iE '^(http|https|all|no)_proxy=' | cut -d= -f1 | tr '\n' ' ')"
+else
+	pass "proxy variables are removed"
+fi
+if printf '%s\n' "$child" | grep -qx 'BIFROST_TEST_OFFLINE=1'; then
+	pass "the child runs with BIFROST_TEST_OFFLINE=1"
+else
+	fail "BIFROST_TEST_OFFLINE=1 is missing in the child"
+fi
+
+# Bifrost's dial guard is on from the environment alone: a dial to a non-loopback address
+# (TEST-NET-3, never routed) fails before connecting and names it. The control run without the runner skips the test, so the runner is
+# what turns the guard on.
+if command -v go >/dev/null 2>&1; then
+	guard_test='^TestOfflineRunTurnsOnTheGuard$'
+	guarded=$(cd "$ROOT/core" && "$RUN" go test ./network/ -run "$guard_test" -count=1 -v 2>&1 || true)
+	unguarded=$(cd "$ROOT/core" && env -u BIFROST_TEST_OFFLINE go test ./network/ -run "$guard_test" -count=1 -v 2>&1 || true)
+	if ! printf '%s\n' "$unguarded" | grep -q -- '--- SKIP: TestOfflineRunTurnsOnTheGuard'; then
+		fail "control: without the runner the guard test did not skip: $(printf '%s\n' "$unguarded" | tail -3)"
+	elif printf '%s\n' "$guarded" | grep -q -- '--- PASS: TestOfflineRunTurnsOnTheGuard' &&
+		printf '%s\n' "$guarded" | grep -q 'egress to 203.0.113.10:443 refused'; then
+		pass "under the runner Bifrost refuses a non-loopback address before connecting, naming it (the control run skips)"
+	else
+		fail "under the runner the Go dial guard did not refuse loudly: $(printf '%s\n' "$guarded" | tail -5)"
+	fi
+else
+	echo "  skip - Go dial guard: go is not installed here"
+fi
+
+# On macOS every process the runner starts is sandboxed, not only Bifrost: a raw socket to
+# TEST-NET-1 (192.0.2.1, never routed, so the control cannot reach anything either) gets EPERM
+# under the runner, while a loopback listener stays reachable.
+if [ "$(uname -s)" = Darwin ] && command -v python3 >/dev/null 2>&1; then
+	socket_probe='
+import errno, socket
+srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(1)
+loop = socket.create_connection(srv.getsockname(), timeout=3); loop.close()
+s = socket.socket(); s.settimeout(3)
+try:
+    s.connect(("192.0.2.1", 443)); print("outbound=connected")
+except OSError as e:
+    print("outbound=" + ("EPERM" if e.errno == errno.EPERM else "errno%s" % (e.errno,)))
+'
+	sandboxed=$("$RUN" python3 -I -c "$socket_probe" 2>&1 | tail -1)
+	plain=$(env -u BIFROST_TEST_OFFLINE_SANDBOX python3 -I -c "$socket_probe" 2>&1 | tail -1)
+	if [ "$sandboxed" != "outbound=EPERM" ]; then
+		fail "macOS sandbox: a non-loopback connection under the runner gave '$sandboxed', want outbound=EPERM"
+	elif [ "$plain" = "outbound=EPERM" ] && [ "${BIFROST_TEST_OFFLINE_SANDBOX:-}" != sandbox-exec ]; then
+		fail "control: the probe got EPERM without the runner too, so it proves nothing"
+	else
+		pass "macOS sandbox: a non-loopback connection fails with EPERM, loopback works (control: $plain)"
+	fi
+else
+	echo "  skip - OS egress sandbox: macOS only (this run relies on the dial guard)"
+fi
+
 if [ "$failures" -gt 0 ]; then
 	echo "$failures failed" >&2
 	exit 1

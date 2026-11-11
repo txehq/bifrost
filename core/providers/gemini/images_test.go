@@ -7,10 +7,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/bytedance/sonic"
+	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -980,5 +982,25 @@ func BenchmarkGeminiImageToBifrostResponse(b *testing.B) {
 		if _, bifrostErr := response.ToBifrostImageGenerationResponse(); bifrostErr != nil {
 			b.Fatal(bifrostErr.Error.Message)
 		}
+	}
+}
+
+// TestDownloadImageFromURLHonoursTheOfflineGuard: the image a GenAI response names by URL is
+// downloaded on its own fasthttp client, which carries the offline egress guard (TXE-7083): a
+// non-loopback URL is refused before connecting, naming the address, and a loopback one works.
+func TestDownloadImageFromURLHonoursTheOfflineGuard(t *testing.T) {
+	defer network.SetOfflineEgressGuard(true)()
+	_, err := downloadImageFromURL(context.Background(), "http://203.0.113.10/image.png")
+	if err == nil || !strings.Contains(err.Error(), network.OfflineEgressMarker) || !strings.Contains(err.Error(), "203.0.113.10:80") {
+		t.Fatalf("want the offline refusal naming 203.0.113.10:80, got %v", err)
+	}
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("png"))
+	}))
+	defer fixture.Close()
+	encoded, err := downloadImageFromURL(context.Background(), fixture.URL+"/image.png")
+	if err != nil || encoded != "cG5n" {
+		t.Fatalf("loopback image: %q, %v", encoded, err)
 	}
 }
