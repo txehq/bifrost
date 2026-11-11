@@ -1,6 +1,8 @@
 package schemas
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"slices"
@@ -319,6 +321,36 @@ func foldJSONFieldRune(r rune) rune {
 	return smallest
 }
 
+// extraParamObject returns value as the JSON object the extra-params merge would apply, and
+// whether it is one. The merge serializes each extra param and treats whatever comes out as
+// an object as one, so a Go caller's map[string]int, struct or json.RawMessage is an object
+// there exactly as a map[string]interface{} is, and must be one here. The values a JSON body
+// decodes to are answered without serializing anything.
+func extraParamObject(value interface{}) (map[string]interface{}, bool) {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		return v, true
+	case nil, string, bool, float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64,
+		[]interface{}, []string, json.Number:
+		return nil, false
+	}
+	encoded, err := MarshalSorted(value)
+	if err != nil {
+		return nil, false
+	}
+	trimmed := bytes.TrimSpace(encoded)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, false
+	}
+	var object map[string]interface{}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.UseNumber()
+	if decoder.Decode(&object) != nil {
+		return nil, false
+	}
+	return object, true
+}
+
 // nestedExtraParamSet reports whether extraParams sets a non-empty value at a body path,
 // following objects only and reading each name as SameJSONFieldName does, which is how the
 // merge reads it. Every spelling of
@@ -342,7 +374,7 @@ func nestedExtraParamSet(current map[string]interface{}, names []string, keys []
 				continue
 			}
 		} else {
-			next, isObject := value.(map[string]interface{})
+			next, isObject := extraParamObject(value)
 			if !isObject || !nestedExtraParamSet(next, names[1:], best[1:len(names)]) {
 				continue
 			}
@@ -365,7 +397,7 @@ func nestedPriceFieldAmong(baseProvider ModelProvider, requestType RequestType, 
 	// request has none, and the table is not read for it.
 	hasObject := false
 	for _, value := range extraParams {
-		if object, isObject := value.(map[string]interface{}); isObject && len(object) > 0 {
+		if object, isObject := extraParamObject(value); isObject && len(object) > 0 {
 			hasObject = true
 			break
 		}

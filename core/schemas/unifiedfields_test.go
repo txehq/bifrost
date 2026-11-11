@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"encoding/json"
 	"reflect"
 	"slices"
 	"strings"
@@ -616,6 +617,9 @@ func TestCheckExtraParamPriceFieldsForNestedBoundaries(t *testing.T) {
 		{"the parent is not an object", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", "durationSeconds")})},
 		{"the same names under another parent", Gemini, video(&VideoGenerationParameters{ExtraParams: object("metadata", object("durationSeconds", 8))})},
 		{"a path of another operation", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", object("sampleCount", 4))})},
+		{"a typed map with no price field", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", map[string]string{"personGeneration": "allow_adult"})})},
+		{"raw JSON that is not an object", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", json.RawMessage(`["durationSeconds"]`))})},
+		{"a value that cannot be serialized", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", make(chan int))})},
 		{"an operation outside the C4 table", Gemini, &BifrostRequest{RequestType: ChatCompletionRequest, ChatRequest: &BifrostChatRequest{Params: &ChatParameters{ExtraParams: object("generationConfig", object("imageConfig", object("aspectRatio", "16:9")))}}}},
 	}
 	for _, tc := range accepted {
@@ -642,6 +646,16 @@ func TestCheckExtraParamPriceFieldsForNestedBoundaries(t *testing.T) {
 		{"an empty spelling of the parent after a populated one", Gemini, video(&VideoGenerationParameters{ExtraParams: object("PARAMETERS", object("durationSeconds", 8), "parameters", object())}), "PARAMETERS.durationSeconds"},
 		{"an empty spelling of the field beside a set one", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", object("DurationSeconds", nil, "duration_seconds", 8))}), "parameters.duration_seconds"},
 		{"a parent that is not an object beside one that is", Gemini, video(&VideoGenerationParameters{ExtraParams: object("Parameters", "x", "parameters", object("durationSeconds", 8))}), "parameters.durationSeconds"},
+		// The merge serializes an extra param and applies whatever is a JSON object, so a Go
+		// caller's typed map, struct or raw JSON is an object to the check too, at any level.
+		{"a typed map", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", map[string]int{"durationSeconds": 8})}), "parameters.durationSeconds"},
+		{"raw JSON", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", json.RawMessage(`{"durationSeconds": 8}`))}), "parameters.durationSeconds"},
+		{"a struct", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", struct {
+			DurationSeconds int `json:"durationSeconds"`
+		}{8})}), "parameters.durationSeconds"},
+		{"a pointer to a map", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", &map[string]interface{}{"durationSeconds": 8})}), "parameters.durationSeconds"},
+		{"a typed map in the middle, three levels down", Gemini, extraOnlyRequest(t, ImageGenerationRequest, object("generationConfig", map[string]map[string]string{"imageConfig": {"imageSize": "4K"}})), "generationConfig.imageConfig.imageSize"},
+		{"raw JSON in the middle", Gemini, extraOnlyRequest(t, ImageGenerationRequest, object("generationConfig", object("imageConfig", json.RawMessage(`{"imageSize":"4K"}`)))), "generationConfig.imageConfig.imageSize"},
 		// The merge folds names as Go's encoding/json does, so the long s is an s.
 		{"a parent spelled with a letter that folds to the same one", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameter\u017f", object("duration\u017feconds", 8))}), "parameter\u017f.duration\u017feconds"},
 		{"two populated spellings: the first in sorted order is named", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", object("durationSeconds", 8), "Parameters", object("durationSeconds", 4))}), "Parameters.durationSeconds"},
