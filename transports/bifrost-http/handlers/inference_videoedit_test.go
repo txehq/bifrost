@@ -751,6 +751,9 @@ func BenchmarkVideoListFilters(b *testing.B) {
 				_ = videoListFilters(&args)
 			}
 		})
+	}
+}
+
 // vertexVideoAccount configures Vertex with an API key behind an HTTP proxy, so a test sees
 // which Google host a request dials without reaching it.
 type vertexVideoAccount struct{ proxyURL string }

@@ -1,6 +1,7 @@
 package vertex
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"io"
@@ -8,11 +9,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/core/providers/anthropic"
 	"github.com/capsohq/bifrost/core/providers/gemini"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
@@ -2018,6 +2022,85 @@ func BenchmarkClassifyURLSource(b *testing.B) {
 				_ = classifyURLSource("https://example.com/video-eval/clip.mp4", family)
 			}
 		})
+	}
+}
+
+// TestVertexVideoDownloadStreamsGCSArtifact is contract C9 for a Veo task whose video is in
+// the caller's bucket (TXE-6537): the operation Vertex returns becomes a content entry whose id
+// is the gs:// URI, VideoDownload selects the Cloud Storage read for exactly that entry, and an
+// object far larger than any read buffer reaches the caller as a stream, byte for byte, without
+// being held in Content.
+func TestVertexVideoDownloadStreamsGCSArtifact(t *testing.T) {
+	const objectSize = 6 << 20
+	object := make([]byte, objectSize)
+	for i := range object {
+		object[i] = byte(i*31 + i>>11)
+	}
+	var requests atomic.Int64
+	storage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.RequestURI != "/storage/v1/b/tokun-out/o/task_123%2Fsample_0.mp4?alt=media" || r.Header.Get("Authorization") != "Bearer ya29.token" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Header().Set("Content-Length", strconv.Itoa(objectSize))
+		for offset := 0; offset < objectSize; offset += 64 << 10 {
+			_, _ = w.Write(object[offset : offset+64<<10])
+			w.(http.Flusher).Flush()
+		}
+	}))
+	defer storage.Close()
+
+	var operation gemini.GenerateVideosOperation
+	if err := sonic.Unmarshal([]byte(`{"name":"projects/p/locations/us-central1/publishers/google/models/veo-3.1-generate-001/operations/op-1","done":true,"response":{"videos":[{"gcsUri":"gs://tokun-out/task_123/sample_0.mp4","mimeType":"video/mp4"}]}}`), &operation); err != nil {
+		t.Fatalf("operation: %v", err)
+	}
+	task, bifrostErr := gemini.ToBifrostVideoGenerationResponse(&operation, "")
+	if bifrostErr != nil || len(task.Videos) != 1 {
+		t.Fatalf("task = %+v, %v", task, bifrostErr)
+	}
+	video := task.Videos[0]
+	if !isGCSVideoOutput(video) || video.URL != nil || video.ID != "gs://tokun-out/task_123/sample_0.mp4" {
+		t.Fatalf("the bucket video is not a content entry named by its gs:// URI: %+v", video)
+	}
+	for _, other := range []schemas.VideoOutput{
+		{Type: schemas.VideoOutputTypeURL, URL: schemas.Ptr("https://example.com/v.mp4")},
+		{Type: schemas.VideoOutputTypeBase64, Base64Data: schemas.Ptr("AAAA")},
+		{Type: schemas.VideoOutputTypeContent, ID: "file_123"},
+	} {
+		if isGCSVideoOutput(other) {
+			t.Fatalf("%+v is not a Cloud Storage object", other)
+		}
+	}
+
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 30}}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	bucket, objectKey, err := parseGCSURI(video.ID)
+	if err != nil {
+		t.Fatalf("parseGCSURI: %v", err)
+	}
+	request := &schemas.BifrostVideoDownloadRequest{Provider: schemas.Vertex, ID: providerUtils.AddVideoIDProviderSuffix(operation.Name, schemas.Vertex), Stream: true}
+	streamed, bifrostErr := provider.fetchGCSVideo(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), storage.URL+"/storage/v1", "Bearer ya29.token", request, bucket, objectKey, video.ContentType)
+	if bifrostErr != nil {
+		t.Fatalf("streamed GCS download: %v", bifrostErr.Error)
+	}
+	if streamed.Body == nil || streamed.Content != nil || streamed.ContentType != "video/mp4" || streamed.ContentLength != objectSize {
+		t.Fatalf("streamed response: body %v, content %d bytes, type %q, length %d", streamed.Body != nil, len(streamed.Content), streamed.ContentType, streamed.ContentLength)
+	}
+	got, readErr := io.ReadAll(streamed.Body)
+	if readErr != nil || streamed.Body.Close() != nil {
+		t.Fatalf("reading the stream: %v", readErr)
+	}
+	if !bytes.Equal(got, object) {
+		t.Fatalf("streamed %d bytes that differ from the %d-byte object", len(got), objectSize)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("Cloud Storage requests = %d, want 1", requests.Load())
 	}
 }
 

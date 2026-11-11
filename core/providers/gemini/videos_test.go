@@ -190,8 +190,9 @@ func TestGeminiVideoDeliversTheUnifiedAspectRatio(t *testing.T) {
 	for _, extra := range []map[string]interface{}{nil, {"personGeneration": "allow_adult"}, {"aspectRatio": "9:16"}} {
 		got, err := gemini.ToGeminiVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
 			Provider: schemas.Gemini, Model: "veo-3.1-generate-preview",
-			Input:  &schemas.VideoGenerationInput{Prompt: "a paper boat"},
-			Params: &schemas.VideoGenerationParameters{Size: "1280x720", AspectRatio: "9:16", ExtraParams: extra},
+			Input: &schemas.VideoGenerationInput{Prompt: "a paper boat"},
+			// The size agrees with the aspect ratio: one that contradicts it is refused (TXE-6537).
+			Params: &schemas.VideoGenerationParameters{Size: "720x1280", AspectRatio: "9:16", ExtraParams: extra},
 		})
 		require.NoError(t, err)
 		require.NotNil(t, got.Parameters)
