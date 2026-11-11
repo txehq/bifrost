@@ -2785,8 +2785,13 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	: "run in which a selected row would be skipped for a missing key: a fixture needs no vendor key,"; \
 	: "so that only happens when augment read the wrong profile, and the run would exit 0 having sent"; \
 	: "almost nothing (TXE-7099). ALLOW_SKIPPED=1 lets such a run through. A live run is never refused."; \
+	: "The cache-parity rows are part of the selection only when a cache pass replays them. A menu"; \
+	: "pick that deselects cache-parity carves them out of the forks and runs them nowhere, so they"; \
+	: "are not selected; counting them would report deselected rows as skipped."; \
 	SELECTED_FILE="tmp/harness-augmented.json"; \
-	if [ -n "$(PROVIDER)" ] || [ -n "$(FEATURE)" ] || [ -n "$(FOLDER)" ] || [ -n "$(RERUN_FAILED)" ] || [ -n "$$PICKED_FEATURES" ] || [ -n "$$SMOKE_MANIFEST" ]; then \
+	SELECT_EXCLUDE_FLAG=""; \
+	if [ "$$CARVE_OUT" = "1" ] && [ "$$CACHE_PASS" != "1" ]; then SELECT_EXCLUDE_FLAG="--exclude-feature-any cache-parity"; fi; \
+	if [ -n "$(PROVIDER)" ] || [ -n "$(FEATURE)" ] || [ -n "$(FOLDER)" ] || [ -n "$(RERUN_FAILED)" ] || [ -n "$$PICKED_FEATURES" ] || [ -n "$$SMOKE_MANIFEST" ] || [ -n "$$SELECT_EXCLUDE_FLAG" ]; then \
 		$(USE_NODE); if run_quiet node tests/e2e/api/runners/filter-collection.mjs \
 			--source tmp/harness-augmented.json \
 			--out tmp/harness-selected.json \
@@ -2794,6 +2799,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			$(if $(FEATURE),--feature "$(FEATURE)",) \
 			$(if $(FOLDER),--folder "$(FOLDER)",) \
 			$${PICKED_FEATURES:+--feature-any "$$PICKED_FEATURES"} \
+			$$SELECT_EXCLUDE_FLAG \
 			$${SMOKE_MANIFEST:+--smoke "$$SMOKE_MANIFEST"} \
 			$(if $(RERUN_FAILED),--rerun-failed --report tmp/newman-report.json,); then \
 			SELECTED_FILE="tmp/harness-selected.json"; \
