@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
-	"github.com/capsohq/bifrost/core/providers/gemini"
 	"github.com/capsohq/bifrost/core/providers/openai"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -329,7 +328,7 @@ func ToXAIBatchRequests(ctx *schemas.BifrostContext, endpoint schemas.BatchEndpo
 		if len(item.RequestBody()) == 0 {
 			return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("requests[%d].body is required", i))
 		}
-		if err := gemini.CheckBatchLineModel(item, schemas.XAI, batchModel, resolve); err != nil {
+		if err := providerUtils.CheckBatchLineModel(item, schemas.XAI, batchModel, resolve); err != nil {
 			bifrostErr := providerUtils.NewBifrostBadRequestError(fmt.Sprintf("requests[%d].body.model: %v", i, err))
 			bifrostErr.Error.Param = fmt.Sprintf("requests[%d].body.model", i)
 			return nil, bifrostErr
