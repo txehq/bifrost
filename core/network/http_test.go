@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/network/proxytest"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
@@ -733,10 +735,10 @@ var factoryMatrixSources = []factoryMatrixSource{
 // returns its error. The route is read from the recorders.
 func sendFactoryMatrixRequest(t *testing.T, factory *HTTPClientFactory, purpose ClientPurpose, kind, targetURL, hostPort string, expectDirect bool) error {
 	t.Helper()
-	timeout := 3 * time.Second
+	timeout := testtime.Scale(3 * time.Second)
 	if expectDirect && kind == "ssrf" {
 		// A direct fetch to the documentation-range target never connects.
-		timeout = 150 * time.Millisecond
+		timeout = testtime.Scale(150 * time.Millisecond)
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
@@ -989,10 +991,10 @@ func TestHTTPClientFactoryLiveClientsKeepTimeouts(t *testing.T) {
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 	req.SetRequestURI("https://api.bifrost.test/resource")
-	if err := factory.GetFasthttpClient(ClientPurposeAPI).DoTimeout(req, resp, 200*time.Millisecond); err == nil {
+	if err := factory.GetFasthttpClient(ClientPurposeAPI).DoTimeout(req, resp, testtime.Scale(200*time.Millisecond)); err == nil {
 		t.Error("fasthttp request through a hanging proxy succeeded")
 	}
-	if elapsed := time.Since(start); elapsed > 3*time.Second {
+	if elapsed := time.Since(start); elapsed > testtime.Scale(3*time.Second) {
 		t.Errorf("DoTimeout(200ms) took %v through the live client", elapsed)
 	}
 
@@ -1001,7 +1003,7 @@ func TestHTTPClientFactoryLiveClientsKeepTimeouts(t *testing.T) {
 		resp.Body.Close()
 		t.Error("net/http request through a hanging proxy succeeded")
 	}
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
+	if elapsed := time.Since(start); elapsed > testtime.Scale(5*time.Second) {
 		t.Errorf("the 1s global proxy timeout took %v to end the request", elapsed)
 	}
 }
@@ -1492,7 +1494,7 @@ func TestGRPCGuardedProxyRebinding(t *testing.T) {
 		require.NoError(t, err)
 		return conn
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testtime.Scale(3*time.Second))
 	defer cancel()
 	conn := newClient()
 	result, err := healthpb.NewHealthClient(conn).Check(ctx, &healthpb.HealthCheckRequest{})
@@ -1504,7 +1506,7 @@ func TestGRPCGuardedProxyRebinding(t *testing.T) {
 	private.Store(true)
 	conn = newClient()
 	defer conn.Close()
-	ctx2, cancel2 := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	ctx2, cancel2 := context.WithTimeout(t.Context(), testtime.Scale(200*time.Millisecond))
 	defer cancel2()
 	_, err = healthpb.NewHealthClient(conn).Check(ctx2, &healthpb.HealthCheckRequest{})
 	require.Error(t, err)

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,11 +21,12 @@ import (
 // comfortably outlasts it, including on a database clock. contractBackoff is
 // longer because its cases assert "not yet due" across several round trips,
 // which a loaded -race run can stretch past contractLease.
-const (
-	contractLease       = 400 * time.Millisecond
-	contractWait        = 700 * time.Millisecond
-	contractBackoff     = 1500 * time.Millisecond
-	contractBackoffWait = 2 * time.Second
+// All four scale together (testtime, TXE-7128) so they keep that order at any factor.
+var (
+	contractLease       = testtime.Scale(400 * time.Millisecond)
+	contractWait        = testtime.Scale(700 * time.Millisecond)
+	contractBackoff     = testtime.Scale(1500 * time.Millisecond)
+	contractBackoffWait = testtime.Scale(2 * time.Second)
 	longLease           = time.Minute
 )
 
@@ -497,7 +500,7 @@ func TestMemoryStoreClosed(t *testing.T) {
 	ctx := context.Background()
 	assert.ErrorIs(t, s.Append(ctx, []*Message{newMsg("t", "", "x")}), ErrClosed)
 	assert.ErrorIs(t, s.EnsureGroup(ctx, "t", "g", StartFromLatest), ErrClosed)
-	_, err := s.Claim(ctx, ClaimRequest{Topic: "t", Group: "g", RunnerID: "r", Max: 1, Lease: time.Second})
+	_, err := s.Claim(ctx, ClaimRequest{Topic: "t", Group: "g", RunnerID: "r", Max: 1, Lease: testtime.Scale(time.Second)})
 	assert.ErrorIs(t, err, ErrClosed)
 	assert.ErrorIs(t, s.Ping(ctx), ErrClosed)
 }

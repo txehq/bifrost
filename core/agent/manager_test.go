@@ -30,6 +30,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
 	"github.com/a2aproject/a2a-go/v2/a2aclient/agentcard"
@@ -591,7 +593,7 @@ func TestAgentOAuthFetchesAreScopedAndCancellable(t *testing.T) {
 		_, err := m.oauthAccessToken(ctx, "shared", auth("shared"))
 		cancelledResult <- err
 	}()
-	require.Eventually(t, func() bool { return sharedCalls.Load() == 1 }, time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return sharedCalls.Load() == 1 }, testtime.Scale(time.Second), testtime.Scale(time.Millisecond))
 
 	waitingResult := make(chan error, 1)
 	go func() {
@@ -1749,7 +1751,7 @@ func TestClientGenerationReplacementDrainsOldLease(t *testing.T) {
 	require.Same(t, newGeneration, newLease.generation)
 	newLease.release()
 	lease.release()
-	require.Eventually(t, func() bool { return oldClient.destroyed.Load() == 1 }, time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return oldClient.destroyed.Load() == 1 }, testtime.Scale(time.Second), testtime.Scale(time.Millisecond))
 
 	runtime.close()
 	require.Equal(t, int64(1), oldClient.destroyed.Load())
@@ -1824,7 +1826,7 @@ func TestCanceledInitializationWaiterDoesNotCancelSharedAttempt(t *testing.T) {
 	first := make(chan error, 1)
 	second := make(chan error, 1)
 	go func() { _, acquireErr := runtime.acquire(canceledCtx, m); first <- acquireErr }()
-	require.Eventually(t, func() bool { return state.calls.Load() == 1 }, time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return state.calls.Load() == 1 }, testtime.Scale(time.Second), testtime.Scale(time.Millisecond))
 	go func() {
 		lease, acquireErr := runtime.acquire(context.Background(), m)
 		if lease != nil {
@@ -1862,7 +1864,7 @@ func TestLazyInitializationTimeoutAllowsRetry(t *testing.T) {
 	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
-	m.buildTimeout = 20 * time.Millisecond
+	m.buildTimeout = testtime.Scale(20 * time.Millisecond)
 	runtime, _ := m.runtimes.load("fixture")
 
 	_, err = runtime.acquire(context.Background(), m)
@@ -1895,7 +1897,7 @@ func TestRefreshTimeoutAllowsRetry(t *testing.T) {
 	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
-	m.buildTimeout = 20 * time.Millisecond
+	m.buildTimeout = testtime.Scale(20 * time.Millisecond)
 	runtime := m.buildRuntime(schemas.AgentRegistration{Name: "fixture", AgentCardURL: server.URL, Enabled: true})
 	source := newClientGeneration(&a2a.AgentCard{Name: "stale"}, &fakeSDKClient{}, string(a2a.TransportProtocolJSONRPC))
 	require.NoError(t, runtime.replaceGeneration(source))
@@ -1905,7 +1907,7 @@ func TestRefreshTimeoutAllowsRetry(t *testing.T) {
 		runtime.mu.Lock()
 		defer runtime.mu.Unlock()
 		return calls.Load() == 1 && !runtime.refreshing
-	}, time.Second, time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(time.Millisecond))
 
 	runtime.mu.Lock()
 	runtime.lastRefresh = time.Time{}
@@ -1915,7 +1917,7 @@ func TestRefreshTimeoutAllowsRetry(t *testing.T) {
 		runtime.mu.Lock()
 		defer runtime.mu.Unlock()
 		return calls.Load() == 2 && runtime.generation != source && !runtime.refreshing
-	}, time.Second, time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(time.Millisecond))
 }
 
 func TestCloseDuringInitializationPreventsLatePublish(t *testing.T) {
@@ -1929,7 +1931,7 @@ func TestCloseDuringInitializationPreventsLatePublish(t *testing.T) {
 	runtime, _ := m.runtimes.load("fixture")
 	done := make(chan error, 1)
 	go func() { _, acquireErr := runtime.acquire(context.Background(), m); done <- acquireErr }()
-	require.Eventually(t, func() bool { return state.calls.Load() == 1 }, time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return state.calls.Load() == 1 }, testtime.Scale(time.Second), testtime.Scale(time.Millisecond))
 	m.Close()
 	close(release)
 	require.Error(t, <-done)
@@ -1981,7 +1983,7 @@ func TestManagerCloseWaitsForGenerationLeaseAndDestroysOnce(t *testing.T) {
 		default:
 			return false
 		}
-	}, 50*time.Millisecond, time.Millisecond, "close must wait for an in-flight generation lease")
+	}, testtime.Scale(50*time.Millisecond), testtime.Scale(time.Millisecond), "close must wait for an in-flight generation lease")
 	require.Zero(t, client.destroyed.Load())
 
 	lease.release()
@@ -1992,7 +1994,7 @@ func TestManagerCloseWaitsForGenerationLeaseAndDestroysOnce(t *testing.T) {
 		default:
 			return false
 		}
-	}, time.Second, time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(time.Millisecond))
 	require.Equal(t, int64(1), client.destroyed.Load())
 }
 
@@ -2020,7 +2022,7 @@ func TestManagerCloseCancelsBlockedUnaryCall(t *testing.T) {
 
 	select {
 	case <-closed:
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("manager close did not cancel the blocked unary call")
 	}
 	require.ErrorIs(t, <-callDone, context.Canceled)
@@ -2043,7 +2045,7 @@ func TestManagerCloseAfterUnaryClientPanic(t *testing.T) {
 
 	select {
 	case <-closed:
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("manager close blocked on a lease leaked by the panicking unary client")
 	}
 	require.Equal(t, int64(1), client.destroyed.Load())
@@ -2331,7 +2333,7 @@ func TestInboundRequestCancellationPreservesSDKExecutionLifetime(t *testing.T) {
 		default:
 			return false
 		}
-	}, 100*time.Millisecond, time.Millisecond, "HTTP request cancellation must not become A2A execution cancellation")
+	}, testtime.Scale(100*time.Millisecond), testtime.Scale(time.Millisecond), "HTTP request cancellation must not become A2A execution cancellation")
 	close(release)
 
 	result, err := client.SendMessage(context.Background(), &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("healthy"))})
@@ -2418,7 +2420,7 @@ func TestStaleStatusRefreshesAfterAdvancingAcrossCachedCandidates(t *testing.T) 
 	require.Equal(t, int64(1), secondCalls.Load())
 	select {
 	case <-refreshStarted:
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("Agent Card refresh did not start")
 	}
 	close(allowRefresh)
@@ -2426,7 +2428,7 @@ func TestStaleStatusRefreshesAfterAdvancingAcrossCachedCandidates(t *testing.T) 
 		handler.runtime.mu.Lock()
 		defer handler.runtime.mu.Unlock()
 		return discoveries.Load() == 1 && !handler.runtime.refreshing
-	}, time.Second, time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(time.Millisecond))
 }
 
 // unreachableCardURL is a card URL that always fails to connect, so tests can
@@ -2498,7 +2500,7 @@ func TestRegistrationDiscoveryUsesBuildTimeout(t *testing.T) {
 			m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 			require.NoError(t, err)
 			defer m.Close()
-			m.buildTimeout = 20 * time.Millisecond
+			m.buildTimeout = testtime.Scale(20 * time.Millisecond)
 			cardURL := upstream.URL + agentCardPath
 
 			switch operation {
@@ -2542,7 +2544,7 @@ func TestManagerCloseWaitsForSupersededRuntimeDrain(t *testing.T) {
 		default:
 			return false
 		}
-	}, 50*time.Millisecond, time.Millisecond, "close must wait for a superseded runtime still draining")
+	}, testtime.Scale(50*time.Millisecond), testtime.Scale(time.Millisecond), "close must wait for a superseded runtime still draining")
 	require.Zero(t, client.destroyed.Load())
 
 	lease.release()
@@ -2553,7 +2555,7 @@ func TestManagerCloseWaitsForSupersededRuntimeDrain(t *testing.T) {
 		default:
 			return false
 		}
-	}, time.Second, time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(time.Millisecond))
 	require.Equal(t, int64(1), client.destroyed.Load())
 }
 
@@ -3095,7 +3097,7 @@ func TestHTTPJSONCancelTaskPreservesNativeNotFoundError(t *testing.T) {
 	require.ErrorIs(t, err, a2a.ErrTaskNotFound)
 	require.Equal(t, []string{"CancelTask"}, upstreamHandler.calls())
 	require.Equal(t, initialFallbackCalls, fallbackCalls.Load(), "a protocol error must not advance to another candidate")
-	require.Never(t, func() bool { return cardCalls.Load() != initialCardCalls }, 100*time.Millisecond, time.Millisecond, "a protocol error must not refresh the Agent Card")
+	require.Never(t, func() bool { return cardCalls.Load() != initialCardCalls }, testtime.Scale(100*time.Millisecond), testtime.Scale(time.Millisecond), "a protocol error must not refresh the Agent Card")
 }
 
 func TestTaskIDIsAlwaysForwardedToTheAddressedUpstream(t *testing.T) {
@@ -3443,7 +3445,7 @@ func TestAgentOAuthSecurityBoundaries(t *testing.T) {
 							http.Error(w, "invalid CONNECT", http.StatusBadRequest)
 							return
 						}
-						upstream, err := net.DialTimeout("tcp", r.Host, time.Second)
+						upstream, err := net.DialTimeout("tcp", r.Host, testtime.Scale(time.Second))
 						if err != nil {
 							http.Error(w, "dial failed", http.StatusBadGateway)
 							return
@@ -3468,7 +3470,7 @@ func TestAgentOAuthSecurityBoundaries(t *testing.T) {
 					transport.Proxy = http.ProxyURL(proxyURL)
 				}
 				manager := &Manager{
-					httpClient:         &http.Client{Transport: transport, Timeout: 3 * time.Second},
+					httpClient:         &http.Client{Transport: transport, Timeout: testtime.Scale(3 * time.Second)},
 					privateAllowlistFn: func() []string { return tc.allow },
 				}
 				auth := &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{
@@ -3608,7 +3610,7 @@ func TestAgentOAuthSecurityProxyDNS(t *testing.T) {
 					return
 				}
 				// The mock proxy represents the public IP with a local service; no external connection is made.
-				upstream, err := net.DialTimeout("tcp", strings.TrimPrefix(service.URL, "http://"), time.Second)
+				upstream, err := net.DialTimeout("tcp", strings.TrimPrefix(service.URL, "http://"), testtime.Scale(time.Second))
 				if err != nil {
 					http.Error(w, "dial failed", http.StatusBadGateway)
 					return
@@ -3632,7 +3634,7 @@ func TestAgentOAuthSecurityProxyDNS(t *testing.T) {
 			require.NoError(t, err)
 			transport := http.DefaultTransport.(*http.Transport).Clone()
 			transport.Proxy = http.ProxyURL(proxyURL)
-			manager := &Manager{httpClient: &http.Client{Transport: transport, Timeout: 3 * time.Second}}
+			manager := &Manager{httpClient: &http.Client{Transport: transport, Timeout: testtime.Scale(3 * time.Second)}}
 			auth := &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{
 				DiscoveryURL: origin + "/discover", ClientID: schemas.NewSecretVar("client"), ClientSecret: schemas.NewSecretVar("secret"),
 			}}

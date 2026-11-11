@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -420,19 +422,19 @@ func TestBedrockPassthroughStreamForwardsInvokeAgentChunksAsTheyArrive(t *testin
 
 // A long agent run is not bound by the unary whole-response timeout; only a stalled connection is.
 func TestBedrockPassthroughStreamHasNoOverallDeadline(t *testing.T) {
-	target := newStreamingPassthroughTarget(t, 150*time.Millisecond, func(w http.ResponseWriter, r *http.Request) {
+	target := newStreamingPassthroughTarget(t, testtime.Scale(150*time.Millisecond), func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		for i := 0; i < 5; i++ {
 			_, _ = w.Write([]byte("x"))
 			w.(http.Flusher).Flush()
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(testtime.Scale(100 * time.Millisecond))
 		}
 	})
 	ch, bifrostErr := target.provider.PassthroughStream(passthroughStreamCtx(t, 0), passthroughNoHooks, nil, target.key(""), passthroughRequest(agentPassthroughPath))
 	require.Nil(t, bifrostErr)
 	total := 0
 	for {
-		c, ok := nextChunk(t, ch, 3*time.Second)
+		c, ok := nextChunk(t, ch, testtime.Scale(3*time.Second))
 		if !ok {
 			break
 		}
@@ -458,11 +460,11 @@ func TestBedrockPassthroughStreamStalledUpstreamHitsTheIdleTimeout(t *testing.T)
 		}
 	})
 	t.Cleanup(func() { close(done) })
-	ch, bifrostErr := target.provider.PassthroughStream(passthroughStreamCtx(t, 300*time.Millisecond), passthroughNoHooks, nil, target.key(""), passthroughRequest(agentPassthroughPath))
+	ch, bifrostErr := target.provider.PassthroughStream(passthroughStreamCtx(t, testtime.Scale(300*time.Millisecond)), passthroughNoHooks, nil, target.key(""), passthroughRequest(agentPassthroughPath))
 	require.Nil(t, bifrostErr)
 	sawError := false
 	for {
-		c, ok := nextChunk(t, ch, 3*time.Second)
+		c, ok := nextChunk(t, ch, testtime.Scale(3*time.Second))
 		if !ok {
 			break
 		}
@@ -505,17 +507,17 @@ func TestBedrockPassthroughStreamRefusesRoutesOutsideTheAllowList(t *testing.T) 
 // bounded: it escapes the whole-response timeout like the stream does, and refuses a body past the cap.
 func TestBedrockPassthroughUnaryInvokeAgentIsBoundedNotTimedOut(t *testing.T) {
 	slow := func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(testtime.Scale(300 * time.Millisecond))
 		_, _ = w.Write([]byte("done"))
 	}
 	t.Run("InvokeAgent outlives the unary timeout", func(t *testing.T) {
-		target := newStreamingPassthroughTarget(t, 100*time.Millisecond, slow)
+		target := newStreamingPassthroughTarget(t, testtime.Scale(100*time.Millisecond), slow)
 		resp, bifrostErr := target.provider.Passthrough(passthroughStreamCtx(t, 0), target.key(""), passthroughRequest(agentPassthroughPath))
 		require.Nil(t, bifrostErr, "InvokeAgent is not bound by the unary whole-response timeout")
 		assert.Equal(t, "done", string(resp.Body))
 	})
 	t.Run("Retrieve keeps the unary timeout", func(t *testing.T) {
-		target := newStreamingPassthroughTarget(t, 100*time.Millisecond, slow)
+		target := newStreamingPassthroughTarget(t, testtime.Scale(100*time.Millisecond), slow)
 		_, bifrostErr := target.provider.Passthrough(passthroughStreamCtx(t, 0), target.key(""), passthroughRequest(retrievePassthroughPath))
 		require.NotNil(t, bifrostErr, "a plain request/response operation still times out")
 	})

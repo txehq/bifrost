@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
+
 	"github.com/pion/ice/v4"
 	"github.com/pion/logging"
 	"github.com/pion/transport/v5/vnet"
@@ -54,7 +56,7 @@ func TestWebRTCRelayCloseDrainsBrowserMessages(t *testing.T) {
 	answer, err := browser.CreateAnswer(nil)
 	require.NoError(t, err)
 	require.NoError(t, sender.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: gatheredSDP(t, browser, answer)}))
-	require.Eventually(t, func() bool { return dc.ReadyState() == webrtc.DataChannelStateOpen }, 5*time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return dc.ReadyState() == webrtc.DataChannelStateOpen }, testtime.Scale(5*time.Second), testtime.Scale(time.Millisecond))
 
 	// Make the final frame wait for retransmission, independently of CPU speed.
 	blockPackets.Store(true)
@@ -66,7 +68,7 @@ func TestWebRTCRelayCloseDrainsBrowserMessages(t *testing.T) {
 	select {
 	case <-done:
 		t.Fatal("relay closed while the browser's final frame was still buffered")
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(testtime.Scale(100 * time.Millisecond)):
 	}
 	blockPackets.Store(false)
 	select {
@@ -88,9 +90,9 @@ func TestWebRTCRelayDownstreamDrainIsBounded(t *testing.T) {
 	relay.sendDownstream([]byte(`{"type":"error"}`), true)
 	require.True(t, relay.hasPendingDownstream(), "an unopened channel may still deliver pending frames")
 	started := time.Now()
-	relay.drainDownstream(20 * time.Millisecond)
-	assert.GreaterOrEqual(t, time.Since(started), 20*time.Millisecond)
-	assert.Less(t, time.Since(started), time.Second, "a channel that never opens cannot block teardown")
+	relay.drainDownstream(testtime.Scale(20 * time.Millisecond))
+	assert.GreaterOrEqual(t, time.Since(started), testtime.Scale(20*time.Millisecond))
+	assert.Less(t, time.Since(started), testtime.Scale(time.Second), "a channel that never opens cannot block teardown")
 	require.True(t, relay.hasPendingDownstream(), "the timeout must not pretend output was delivered")
 	require.NoError(t, dc.Close())
 	assert.False(t, relay.hasPendingDownstream(), "a departed browser cannot receive queued output")

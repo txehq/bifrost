@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/objectstore"
@@ -1802,7 +1804,7 @@ func TestHybrid_BatchUpdateSkipsARowThePartialOwnerDoesNotHold(t *testing.T) {
 	assert.Never(t, func() bool {
 		keys, err := objects.ListByPrefix(ctx, "")
 		return err == nil && len(keys) > 0
-	}, 300*time.Millisecond, 20*time.Millisecond, "the skipped update uploaded an object")
+	}, testtime.Scale(300*time.Millisecond), testtime.Scale(20*time.Millisecond), "the skipped update uploaded an object")
 }
 
 // completesAfterReadStore is an inner store whose row completes right after the
@@ -1905,7 +1907,7 @@ func TestHybrid_BatchUpdateDropsTheUploadOfARefusedFinish(t *testing.T) {
 	assert.Never(t, func() bool {
 		keys, err := objects.ListByPrefix(ctx, "")
 		return err == nil && len(keys) > 0
-	}, 300*time.Millisecond, 20*time.Millisecond, "the refused finish uploaded an object")
+	}, testtime.Scale(300*time.Millisecond), testtime.Scale(20*time.Millisecond), "the refused finish uploaded an object")
 }
 
 func TestHybrid_BatchUpdateMergesOutputIntoStoredObject(t *testing.T) {

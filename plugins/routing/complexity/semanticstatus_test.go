@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/plugins/routing/internal/testtime"
+
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
@@ -67,7 +69,7 @@ func requireSemanticReady(t *testing.T, classifier *SemanticClassifier) {
 	t.Helper()
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusReady
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 }
 
 // TestSemanticClassifierStatusNamesTheServingNamespace guards the only handle an

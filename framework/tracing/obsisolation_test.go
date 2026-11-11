@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -145,17 +147,17 @@ func TestWaitForFlushes_TimesOutOnHungPlugin(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for hung.started.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+		time.Sleep(testtime.Scale(time.Millisecond))
 	}
 	if hung.started.Load() == 0 {
 		t.Fatal("hung plugin was never injected")
 	}
 
 	start := time.Now()
-	if completed := tracer.waitForFlushes(200 * time.Millisecond); completed {
+	if completed := tracer.waitForFlushes(testtime.Scale(200 * time.Millisecond)); completed {
 		t.Fatal("waitForFlushes reported completion while a plugin was still blocked")
 	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
+	if elapsed := time.Since(start); elapsed > testtime.Scale(2*time.Second) {
 		t.Fatalf("waitForFlushes did not honour its timeout: took %v", elapsed)
 	}
 
@@ -289,7 +291,7 @@ func TestCompleteAndFlushTrace_InjectTimeoutReleasesSlot(t *testing.T) {
 	// both flushes below would acquire a slot immediately regardless of whether
 	// cancellation actually released one.
 	limits := map[string]schemas.ObservabilityLimits{
-		"ctx-aware-connector": {SemaphoreSize: 1, InjectTimeout: 50 * time.Millisecond},
+		"ctx-aware-connector": {SemaphoreSize: 1, InjectTimeout: testtime.Scale(50 * time.Millisecond)},
 	}
 	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, limits)
 
@@ -317,7 +319,7 @@ func TestCompleteAndFlushTrace_InjectTimeoutReleasesSlot(t *testing.T) {
 	if dropped := tracer.ObservabilityDropCounts()["ctx-aware-connector"]; dropped != 0 {
 		t.Fatalf("expected no traces dropped, got %d", dropped)
 	}
-	if elapsed := time.Since(start); elapsed > time.Second {
+	if elapsed := time.Since(start); elapsed > testtime.Scale(time.Second) {
 		t.Fatalf("flushes took %v, expected them to be bounded by the ~50ms inject timeout each", elapsed)
 	}
 }

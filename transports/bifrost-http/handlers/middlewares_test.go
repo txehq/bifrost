@@ -22,6 +22,8 @@ import (
 	"testing/iotest"
 	"time"
 
+	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
+
 	"github.com/andybalholm/brotli"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
@@ -5032,7 +5034,7 @@ func TestTracingMiddleware_DeferredCompletionWaitsForWorker(t *testing.T) {
 	select {
 	case <-plugin.done:
 		t.Fatal("trace was flushed at handler return despite a worker still owning it")
-	case <-time.After(150 * time.Millisecond):
+	case <-time.After(testtime.Scale(150 * time.Millisecond)):
 	}
 
 	// The worker now finishes: it writes the late attributes, then completes the trace.

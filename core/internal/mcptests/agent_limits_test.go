@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -525,7 +527,7 @@ func TestAgent_Timeout(t *testing.T) {
 		"A tool that takes a long time",
 		func(args any) (string, error) {
 			// This will definitely exceed the 200ms timeout
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(testtime.Scale(500 * time.Millisecond))
 			return `{"result": "should not reach here"}`, nil
 		},
 		slowToolSchema,
@@ -536,7 +538,7 @@ func TestAgent_Timeout(t *testing.T) {
 	require.NoError(t, err)
 
 	// Timeout set to 200ms - tool takes 500ms, so it MUST timeout
-	ctx, cancel := createTestContextWithTimeout(200 * time.Millisecond)
+	ctx, cancel := createTestContextWithTimeout(testtime.Scale(200 * time.Millisecond))
 	defer cancel()
 
 	mockLLM := &MockLLMCaller{
@@ -599,7 +601,7 @@ func TestAgent_TimeoutDuringExecution(t *testing.T) {
 		"A tool that takes 1 full second",
 		func(args any) (string, error) {
 			// This takes 1 second - much longer than 150ms timeout
-			time.Sleep(1 * time.Second)
+			time.Sleep(testtime.Scale(1 * time.Second))
 			return `{"result": "should never complete"}`, nil
 		},
 		slowToolSchema,
@@ -610,7 +612,7 @@ func TestAgent_TimeoutDuringExecution(t *testing.T) {
 	require.NoError(t, err)
 
 	// Timeout is 150ms, tool takes 1000ms - MUST timeout during execution
-	ctx, cancel := createTestContextWithTimeout(150 * time.Millisecond)
+	ctx, cancel := createTestContextWithTimeout(testtime.Scale(150 * time.Millisecond))
 	defer cancel()
 
 	mockLLM := &MockLLMCaller{
@@ -654,7 +656,7 @@ func TestAgent_Timeout_ChatFormat(t *testing.T) {
 
 	err := manager.RegisterTool("slow_chat_tool", "Tool for timeout test",
 		func(args any) (string, error) {
-			time.Sleep(400 * time.Millisecond) // Longer than 150ms timeout
+			time.Sleep(testtime.Scale(400 * time.Millisecond)) // Longer than 150ms timeout
 			return `{"status": "should not complete"}`, nil
 		}, slowToolSchema)
 	require.NoError(t, err)
@@ -662,7 +664,7 @@ func TestAgent_Timeout_ChatFormat(t *testing.T) {
 	err = SetInternalClientAutoExecute(manager, []string{"slow_chat_tool"})
 	require.NoError(t, err)
 
-	ctx, cancel := createTestContextWithTimeout(150 * time.Millisecond)
+	ctx, cancel := createTestContextWithTimeout(testtime.Scale(150 * time.Millisecond))
 	defer cancel()
 
 	mockLLM := &MockLLMCaller{
@@ -699,7 +701,7 @@ func TestAgent_Timeout_ResponsesFormat(t *testing.T) {
 
 	err := manager.RegisterTool("slow_responses_tool", "Tool for timeout test",
 		func(args any) (string, error) {
-			time.Sleep(400 * time.Millisecond) // Longer than 150ms timeout
+			time.Sleep(testtime.Scale(400 * time.Millisecond)) // Longer than 150ms timeout
 			return `{"status": "should not complete"}`, nil
 		}, slowToolSchema)
 	require.NoError(t, err)
@@ -707,7 +709,7 @@ func TestAgent_Timeout_ResponsesFormat(t *testing.T) {
 	err = SetInternalClientAutoExecute(manager, []string{"slow_responses_tool"})
 	require.NoError(t, err)
 
-	ctx, cancel := createTestContextWithTimeout(150 * time.Millisecond)
+	ctx, cancel := createTestContextWithTimeout(testtime.Scale(150 * time.Millisecond))
 	defer cancel()
 
 	mockLLM := &MockLLMCaller{

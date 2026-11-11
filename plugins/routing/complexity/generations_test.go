@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/plugins/routing/internal/testtime"
+
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
@@ -189,7 +191,7 @@ func TestDeleteGenerationRefusesWhileWarming(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusWarming
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 
 	err := classifier.DeleteGeneration(context.Background(), SemanticVectorStoreNamespace+"_whatever")
 	require.ErrorIs(t, err, ErrGenerationActive,
@@ -345,7 +347,7 @@ func TestWorkerDoesNotSpawnADuplicateWhileWaitingOnDeletion(t *testing.T) {
 		classifier.mu.Lock()
 		defer classifier.mu.Unlock()
 		return classifier.warming
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 
 	// Parked waiting on the deletion, the worker must still count as warming so
 	// nothing else starts one.
@@ -361,7 +363,7 @@ func TestWorkerDoesNotSpawnADuplicateWhileWaitingOnDeletion(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return classifier.Status().Namespace == target
-	}, 3*time.Second, 25*time.Millisecond)
+	}, testtime.Scale(3*time.Second), testtime.Scale(25*time.Millisecond))
 }
 
 // TestCloseReleasesAWorkerWaitingOnDeletion keeps Close from blocking on a

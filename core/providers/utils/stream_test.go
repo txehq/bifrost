@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	schemas "github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -35,7 +37,7 @@ func TestCheckStreamPreambleNilClassifierCancellation(t *testing.T) {
 		if err.AllowFallbacks == nil || *err.AllowFallbacks {
 			t.Fatal("cancellation must block fallbacks")
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("nil classifier blocked cancellation")
 	}
 	done := <-cleanup
@@ -47,13 +49,13 @@ func TestCheckStreamPreambleNilClassifierCancellation(t *testing.T) {
 	closeSource()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("cancelled stream failed to drain")
 	}
 }
 
 func TestCheckStreamPreambleDeadlineAllowsFallbacks(t *testing.T) {
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-testtime.Scale(time.Second)))
 	defer cancel()
 	source := make(chan *schemas.BifrostStreamChunk)
 	closeSource := sync.OnceFunc(func() { close(source) })
@@ -76,7 +78,7 @@ func TestCheckStreamPreambleDeadlineAllowsFallbacks(t *testing.T) {
 	closeSource()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("timed-out stream failed to drain")
 	}
 }
@@ -84,7 +86,7 @@ func TestCheckStreamPreambleDeadlineAllowsFallbacks(t *testing.T) {
 func TestCheckStreamPreambleCancellation(t *testing.T) {
 	for _, phase := range []string{"startup", "replay"} {
 		t.Run(phase, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(time.Second))
 			defer cancel()
 			source := make(chan *schemas.BifrostStreamChunk, 2)
 			closeSource := sync.OnceFunc(func() { close(source) })
@@ -135,7 +137,7 @@ func TestCheckStreamPreambleCancellation(t *testing.T) {
 			closeSource()
 			select {
 			case <-done:
-			case <-time.After(time.Second):
+			case <-time.After(testtime.Scale(time.Second)):
 				t.Fatal("cancelled stream failed to drain")
 			}
 			key := streamPreambleKey{requestID: t.Name(), source: source}
@@ -192,7 +194,7 @@ func TestCheckStreamPreambleForError(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(time.Second))
 			defer cancel()
 			source := make(chan *schemas.BifrostStreamChunk, len(tt.input))
 			for _, chunk := range tt.input {
@@ -492,7 +494,7 @@ func TestCheckFirstStreamChunk_CtxCancelUnblocksWrapper(t *testing.T) {
 
 	select {
 	case <-drainDone:
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("drainDone did not close after ctx cancel; forwarder goroutine leaked")
 	}
 }
@@ -649,13 +651,13 @@ func TestCheckFirstStreamChunk_CtxCancelUnblocksPeek(t *testing.T) {
 	closeSrc()
 	select {
 	case <-got.done:
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("cancelled peek failed to drain the source")
 	}
 }
 
 func TestCheckFirstStreamChunk_DeadlineAllowsFallbacks(t *testing.T) {
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-testtime.Scale(time.Second)))
 	defer cancel()
 	src := make(chan *schemas.BifrostStreamChunk)
 	closeSrc := sync.OnceFunc(func() { close(src) })
@@ -680,7 +682,7 @@ func TestCheckFirstStreamChunk_DeadlineAllowsFallbacks(t *testing.T) {
 	closeSrc()
 	select {
 	case <-got.done:
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("timed-out peek failed to drain the source")
 	}
 }
@@ -711,7 +713,7 @@ func TestCheckFirstStreamChunk_BufferedChunkWinsOverCancelledCtx(t *testing.T) {
 	}
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("closed source failed to drain")
 	}
 }
@@ -837,7 +839,7 @@ func TestAttemptAbort_FireAndDisarmHaveOneWinner(t *testing.T) {
 // A provider that sends only startup events and then stalls is cut off at the
 // deadline, and its source still drains once the provider closes it.
 func TestCheckStreamPreamble_FirstTokenDeadlineCutsOffStartupOnlyStream(t *testing.T) {
-	ctx, abort := withAttemptAbort(t, 100*time.Millisecond)
+	ctx, abort := withAttemptAbort(t, testtime.Scale(100*time.Millisecond))
 	source := make(chan *schemas.BifrostStreamChunk, 1)
 	closeSource := sync.OnceFunc(func() { close(source) })
 	defer closeSource()
@@ -845,7 +847,7 @@ func TestCheckStreamPreamble_FirstTokenDeadlineCutsOffStartupOnlyStream(t *testi
 
 	start := time.Now()
 	wrapped, done, err := CheckStreamPreambleForError(ctx, t.Name(), source, isTestPreamble)
-	if elapsed := time.Since(start); elapsed > time.Second {
+	if elapsed := time.Since(start); elapsed > testtime.Scale(time.Second) {
 		t.Fatalf("deadline took %v to fire", elapsed)
 	}
 	if wrapped != nil {
@@ -858,7 +860,7 @@ func TestCheckStreamPreamble_FirstTokenDeadlineCutsOffStartupOnlyStream(t *testi
 	closeSource()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("cut-off stream failed to drain")
 	}
 }
@@ -1058,7 +1060,7 @@ func TestCheckStreamPreamble_CloseAfterFiredDeadlineIsAMiss(t *testing.T) {
 }
 
 func TestCheckFirstStreamChunk_FirstTokenDeadlineCutsOffSilentStream(t *testing.T) {
-	ctx, _ := withAttemptAbort(t, 50*time.Millisecond)
+	ctx, _ := withAttemptAbort(t, testtime.Scale(50*time.Millisecond))
 	source := make(chan *schemas.BifrostStreamChunk)
 	closeSource := sync.OnceFunc(func() { close(source) })
 	defer closeSource()
@@ -1071,7 +1073,7 @@ func TestCheckFirstStreamChunk_FirstTokenDeadlineCutsOffSilentStream(t *testing.
 	closeSource()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("cut-off stream failed to drain")
 	}
 }

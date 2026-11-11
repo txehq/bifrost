@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -51,8 +53,8 @@ func TestSubscribeOptionsApply(t *testing.T) {
 
 func TestSubscribeOptionsValidation(t *testing.T) {
 	cases := map[string][]SubscribeOption{
-		"lease too short":  {WithLeaseDuration(time.Millisecond)},
-		"backoff inverted": {WithBackoff(time.Minute, time.Second)},
+		"lease too short":  {WithLeaseDuration(testtime.Scale(time.Millisecond))},
+		"backoff inverted": {WithBackoff(time.Minute, testtime.Scale(time.Second))},
 		"bad start":        {WithStartFrom("middle")},
 		"bad dead letter":  {WithDeadLetterTopic("not valid")},
 	}

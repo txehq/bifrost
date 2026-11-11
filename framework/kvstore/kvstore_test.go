@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/capsohq/bifrost/framework/internal/testtime"
 )
 
 func TestStoreSetGetDelete(t *testing.T) {
@@ -40,18 +42,18 @@ func TestStoreSetGetDelete(t *testing.T) {
 
 func TestStoreTTLExpiration(t *testing.T) {
 	store, err := New(Config{
-		CleanupInterval: 10 * time.Millisecond,
+		CleanupInterval: testtime.Scale(10 * time.Millisecond),
 	})
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
 	defer store.Close()
 
-	if err := store.SetWithTTL("exp", "value", 25*time.Millisecond); err != nil {
+	if err := store.SetWithTTL("exp", "value", testtime.Scale(25*time.Millisecond)); err != nil {
 		t.Fatalf("set with ttl failed: %v", err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(testtime.Scale(50 * time.Millisecond))
 
 	if _, err := store.Get("exp"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound after expiry, got: %v", err)

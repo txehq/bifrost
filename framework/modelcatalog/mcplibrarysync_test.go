@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/network/proxytest"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -138,7 +140,7 @@ func TestWithRetries_TableDriven(t *testing.T) {
 		{
 			name:         "succeeds after N retries",
 			maxRetries:   3,
-			maxBackoff:   time.Millisecond,
+			maxBackoff:   testtime.Scale(time.Millisecond),
 			failCount:    2,
 			wantAttempts: 3,
 			wantVal:      "ok",
@@ -146,7 +148,7 @@ func TestWithRetries_TableDriven(t *testing.T) {
 		{
 			name:         "succeeds on first attempt",
 			maxRetries:   3,
-			maxBackoff:   time.Millisecond,
+			maxBackoff:   testtime.Scale(time.Millisecond),
 			failCount:    0,
 			wantAttempts: 1,
 			wantVal:      "ok",
@@ -154,7 +156,7 @@ func TestWithRetries_TableDriven(t *testing.T) {
 		{
 			name:         "exhausts all retries",
 			maxRetries:   2,
-			maxBackoff:   time.Millisecond,
+			maxBackoff:   testtime.Scale(time.Millisecond),
 			failCount:    -1,
 			wantAttempts: 3, // 1 initial + 2 retries
 			wantErr:      errTransient,
@@ -166,15 +168,15 @@ func TestWithRetries_TableDriven(t *testing.T) {
 			// retries.
 			name:       "context cancelled before success",
 			maxRetries: 5,
-			maxBackoff: time.Second,
+			maxBackoff: testtime.Scale(time.Second),
 			failCount:  -1,
-			ctxTimeout: 20 * time.Millisecond,
+			ctxTimeout: testtime.Scale(20 * time.Millisecond),
 			wantErr:    context.DeadlineExceeded,
 		},
 		{
 			name:         "backoff does not exceed cap",
 			maxRetries:   6,
-			maxBackoff:   2 * time.Millisecond,
+			maxBackoff:   testtime.Scale(2 * time.Millisecond),
 			failCount:    -1,
 			wantAttempts: 7, // 1 initial + 6 retries
 			wantErr:      errTransient,
@@ -230,7 +232,7 @@ func TestWithRetries_TableDriven(t *testing.T) {
 			// it's at most 6*2 = 12ms. We allow a generous margin.
 			if tt.name == "backoff does not exceed cap" {
 				elapsed := time.Since(start)
-				require.Less(t, elapsed, 200*time.Millisecond,
+				require.Less(t, elapsed, testtime.Scale(200*time.Millisecond),
 					"total elapsed time suggests backoff was not capped")
 			}
 		})

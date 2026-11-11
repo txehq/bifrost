@@ -16,6 +16,8 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
+
 	"github.com/capsohq/bifrost/framework/vectorstore"
 	"github.com/capsohq/bifrost/plugins/semanticcache"
 
@@ -1890,7 +1892,7 @@ func TestPluginInitContextOutlivesTheReloadRequest(t *testing.T) {
 	cancelServer()
 	select {
 	case <-initCtx.Done():
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Error("plugin init context outlived server shutdown; it must be the server context")
 	}
 }

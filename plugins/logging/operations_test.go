@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/plugins/logging/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	cstables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/capsohq/bifrost/framework/jobaccounting"
@@ -697,7 +699,7 @@ func TestEmitAggregateLogSkipsSettlementSpanWithoutCost(t *testing.T) {
 	select {
 	case <-capture.spans:
 		t.Fatal("unpriced aggregate row must not emit a settlement span")
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(testtime.Scale(200 * time.Millisecond)):
 	}
 
 	// Nil tracer must not panic.

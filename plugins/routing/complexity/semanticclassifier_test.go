@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/plugins/routing/internal/testtime"
+
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
@@ -33,7 +35,7 @@ func TestSemanticClassifierClassifiesNearestSharedTierPhrase(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusReady
-	}, time.Second, 10*time.Millisecond, "semantic classifier did not finish warmup")
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond), "semantic classifier did not finish warmup")
 
 	result, err := classifier.Classify(context.Background(), ComplexityInput{LastUserText: "simple request"})
 	require.NoError(t, err)
@@ -78,7 +80,7 @@ func TestSemanticClassifierNamesMatchedExemplarFromReusedGeneration(t *testing.T
 
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusReady
-	}, time.Second, 10*time.Millisecond, "semantic classifier did not adopt the warmed generation")
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond), "semantic classifier did not adopt the warmed generation")
 
 	result, err := classifier.Classify(context.Background(), ComplexityInput{LastUserText: "medium request"})
 	require.NoError(t, err)
@@ -160,7 +162,7 @@ func TestSemanticClassifierEmbedsConfiguredMessageWindow(t *testing.T) {
 	classifier.Configure(&config)
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusReady
-	}, time.Second, 10*time.Millisecond, "semantic classifier did not finish warmup")
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond), "semantic classifier did not finish warmup")
 
 	_, err := classifier.Classify(context.Background(), ComplexityInput{
 		PriorUserTexts: []string{"older turn", "previous turn"},
@@ -199,7 +201,7 @@ func TestSemanticClassifierAppliesMinSimilarity(t *testing.T) {
 
 			require.Eventually(t, func() bool {
 				return classifier.Status().State == SemanticStatusReady
-			}, time.Second, 10*time.Millisecond, "semantic classifier did not finish warmup")
+			}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond), "semantic classifier did not finish warmup")
 
 			result, err := classifier.Classify(context.Background(), ComplexityInput{LastUserText: "borderline request"})
 			require.NoError(t, err)
@@ -228,7 +230,7 @@ func TestSemanticClassifierFallsBackWhenNoStoreIsConfigured(t *testing.T) {
 	classifier.Configure(&config)
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusReady
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 
 	assert.NotNil(t, classifier.ownedStore, "a missing configured store must be replaced by the embedded one")
 	assert.Same(t, classifier.ownedStore, classifier.store)
@@ -324,7 +326,7 @@ func TestSemanticClassifierDefersStoreSelectionUntilDependenciesAreWired(t *test
 
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusReady
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 	assert.Same(t, configuredStore, classifier.store)
 	assert.Nil(t, classifier.ownedStore)
 }
@@ -380,7 +382,7 @@ func TestSemanticClassifierSwitchesGenerationsOnlyAfterSuccessfulWarmup(t *testi
 	classifier.Configure(&v1)
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusReady
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 
 	classifier.mu.Lock()
 	v1Namespace := classifier.active.namespace
@@ -402,7 +404,7 @@ func TestSemanticClassifierSwitchesGenerationsOnlyAfterSuccessfulWarmup(t *testi
 	require.Eventually(t, func() bool {
 		status := classifier.Status()
 		return status.State == SemanticStatusWarming && status.ServingPrevious
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 
 	// F1 remains queryable while the first F2 embedding is deliberately blocked.
 	duringWarmup, err := classifier.Classify(context.Background(), ComplexityInput{LastUserText: "routing request"})
@@ -414,7 +416,7 @@ func TestSemanticClassifierSwitchesGenerationsOnlyAfterSuccessfulWarmup(t *testi
 	close(releaseV2)
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusReady
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 
 	classifier.mu.Lock()
 	v2Namespace := classifier.active.namespace
@@ -440,7 +442,7 @@ func TestSemanticClassifierSwitchesGenerationsOnlyAfterSuccessfulWarmup(t *testi
 	require.Eventually(t, func() bool {
 		status := classifier.Status()
 		return status.State == SemanticStatusFailed && status.ServingPrevious
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 
 	// A failed F3 keeps both the F2 namespace and F2 embedding configuration.
 	afterFailure, err := classifier.Classify(context.Background(), ComplexityInput{LastUserText: "routing request"})
@@ -488,7 +490,7 @@ func TestSemanticClassifierDefersEmbeddedCleanupUntilInFlightRequestFinishes(t *
 	classifier.Configure(&v1)
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusReady
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 
 	classifier.mu.Lock()
 	v1Namespace := classifier.active.namespace
@@ -508,7 +510,7 @@ func TestSemanticClassifierDefersEmbeddedCleanupUntilInFlightRequestFinishes(t *
 	}()
 	select {
 	case <-requestStarted:
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("classification did not acquire F1")
 	}
 
@@ -518,7 +520,7 @@ func TestSemanticClassifierDefersEmbeddedCleanupUntilInFlightRequestFinishes(t *
 	classifier.Configure(&v2)
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusReady
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 
 	v1Markers, err := activeStore.GetChunks(context.Background(), v1Namespace, []string{v1MarkerID})
 	require.NoError(t, err)
@@ -532,7 +534,7 @@ func TestSemanticClassifierDefersEmbeddedCleanupUntilInFlightRequestFinishes(t *
 	require.Eventually(t, func() bool {
 		_, err := activeStore.GetChunks(context.Background(), v1Namespace, []string{v1MarkerID})
 		return errors.Is(err, vectorstore.ErrNotFound)
-	}, time.Second, 10*time.Millisecond, "F1 must be reclaimed after its last request releases it")
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond), "F1 must be reclaimed after its last request releases it")
 }
 
 func TestSemanticClassifierDeletesPreviousConfiguredChromemGeneration(t *testing.T) {
@@ -559,7 +561,7 @@ func TestSemanticClassifierDeletesPreviousConfiguredChromemGeneration(t *testing
 	classifier.Configure(&v1)
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusReady
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 	v1Fingerprint := semanticFingerprint(&v1, semanticExemplars(&v1), testSemanticDimension)
 	v1Namespace := semanticGenerationNamespace(v1Fingerprint)
 	v1MarkerID := semanticMarkerID(v1Fingerprint)
@@ -570,7 +572,7 @@ func TestSemanticClassifierDeletesPreviousConfiguredChromemGeneration(t *testing
 	classifier.Configure(&v2)
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusReady
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 
 	v1Markers, err := store.GetChunks(context.Background(), v1Namespace, []string{v1MarkerID})
 	require.ErrorIs(t, err, vectorstore.ErrNotFound)
@@ -633,7 +635,7 @@ func TestSemanticClassifierRetainsPreviousExternalGeneration(t *testing.T) {
 	classifier.Configure(&v1)
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusReady
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 	v1Fingerprint := semanticFingerprint(&v1, semanticExemplars(&v1), testSemanticDimension)
 	v1Namespace := semanticGenerationNamespace(v1Fingerprint)
 	v1MarkerID := semanticMarkerID(v1Fingerprint)
@@ -644,7 +646,7 @@ func TestSemanticClassifierRetainsPreviousExternalGeneration(t *testing.T) {
 	classifier.Configure(&v2)
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusReady
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 
 	v1Markers, err := store.GetChunks(context.Background(), v1Namespace, []string{v1MarkerID})
 	require.NoError(t, err)
@@ -680,7 +682,7 @@ func TestSemanticClassifierStoreSwitchKeepsActiveSameFingerprintNamespace(t *tes
 	classifier.Configure(&config)
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusReady
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 
 	fingerprint := semanticFingerprint(&config, semanticExemplars(&config), testSemanticDimension)
 	namespace := semanticGenerationNamespace(fingerprint)
@@ -690,7 +692,7 @@ func TestSemanticClassifierStoreSwitchKeepsActiveSameFingerprintNamespace(t *tes
 		classifier.mu.Lock()
 		defer classifier.mu.Unlock()
 		return classifier.status.State == SemanticStatusReady && classifier.active != nil && classifier.active.store == secondStore
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 
 	_, err := firstStore.GetChunks(context.Background(), namespace, []string{markerID})
 	require.ErrorIs(t, err, vectorstore.ErrNotFound, "retired namespace must be deleted from its own local store")
@@ -710,7 +712,7 @@ func TestSemanticClassifierReusesEmbeddedNamespaceForScalarOnlyChange(t *testing
 	classifier.Configure(&config)
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusReady
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 
 	classifier.mu.Lock()
 	namespace := classifier.active.namespace
@@ -721,7 +723,7 @@ func TestSemanticClassifierReusesEmbeddedNamespaceForScalarOnlyChange(t *testing
 	classifier.Configure(&config)
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusReady
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 
 	classifier.mu.Lock()
 	assert.Equal(t, namespace, classifier.active.namespace)
@@ -905,7 +907,7 @@ func testSemanticClassifierConfig(vectorStore string) AnalyzerConfig {
 		Semantic: &SemanticConfig{
 			Provider:       schemas.ModelProvider("openai"),
 			EmbeddingModel: "test-embedding-model",
-			Timeout:        time.Second,
+			Timeout:        testtime.Scale(time.Second),
 			VectorStore:    vectorStore,
 		},
 	}
@@ -1012,7 +1014,7 @@ func TestSemanticClassifierRearmsForProviderOnlyWhenFailed(t *testing.T) {
 	classifier.Configure(&config)
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusFailed
-	}, time.Second, 10*time.Millisecond, "warmup should fail while the provider cannot serve")
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond), "warmup should fail while the provider cannot serve")
 
 	// A provider this classifier does not embed through is none of its business:
 	// re-arming on every provider edit would re-embed every phrase for nothing.
@@ -1020,12 +1022,12 @@ func TestSemanticClassifierRearmsForProviderOnlyWhenFailed(t *testing.T) {
 	classifier.RearmForProvider(schemas.ModelProvider("anthropic"))
 	require.Never(t, func() bool {
 		return classifier.Status().State != SemanticStatusFailed
-	}, 200*time.Millisecond, 20*time.Millisecond, "an unrelated provider must not restart warmup")
+	}, testtime.Scale(200*time.Millisecond), testtime.Scale(20*time.Millisecond), "an unrelated provider must not restart warmup")
 
 	classifier.RearmForProvider(config.Semantic.Provider)
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusReady
-	}, time.Second, 10*time.Millisecond, "the configured provider coming back should restart warmup")
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond), "the configured provider coming back should restart warmup")
 
 	// Healthy classifiers stay put: warmup re-embeds every phrase, so reacting to
 	// unrelated key edits on a serving provider would bill tokens for no gain.
@@ -1059,14 +1061,14 @@ func TestSemanticClassifierRetryWarmupRetriesOnlyFailedState(t *testing.T) {
 	classifier.Configure(&config)
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusFailed
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 
 	serving.Store(true)
 	_, retried := classifier.RetryWarmup()
 	require.True(t, retried)
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusReady
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 
 	_, retried = classifier.RetryWarmup()
 	require.False(t, retried, "a ready classifier must not schedule another warmup")
@@ -1164,7 +1166,7 @@ func TestSemanticClassifierStatusReportsCacheCoverage(t *testing.T) {
 	classifier.Configure(&config)
 	require.Eventually(t, func() bool {
 		return classifier.Status().State == SemanticStatusReady
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 
 	assert.Equal(t, len(semanticExemplars(&config)), classifier.Status().CachedPhrases,
 		"a warmed classifier holds one vector per active phrase")

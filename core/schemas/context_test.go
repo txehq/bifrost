@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/capsohq/bifrost/core/internal/testtime"
 )
 
 type traceAttributeTestTracer struct {
@@ -221,7 +223,7 @@ func BenchmarkBifrostContextErr(b *testing.B) {
 
 func TestNewBifrostContext_DeadlineExpires(t *testing.T) {
 	// Create context with short deadline
-	deadline := time.Now().Add(50 * time.Millisecond)
+	deadline := time.Now().Add(testtime.Scale(50 * time.Millisecond))
 	ctx := NewBifrostContext(context.Background(), deadline)
 
 	// Should not be done yet
@@ -233,7 +235,7 @@ func TestNewBifrostContext_DeadlineExpires(t *testing.T) {
 	}
 
 	// Wait for deadline
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(testtime.Scale(100 * time.Millisecond))
 
 	// Should be done now
 	select {

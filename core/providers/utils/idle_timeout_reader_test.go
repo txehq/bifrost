@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -190,13 +192,13 @@ func TestIdleTimeoutReader_NormalRead(t *testing.T) {
 	defer pr.Close()
 
 	// Use pr as bodyStream — closing pr unblocks reads.
-	wrapped, cleanup := NewIdleTimeoutReader(pr, pr, 500*time.Millisecond, nil)
+	wrapped, cleanup := NewIdleTimeoutReader(pr, pr, testtime.Scale(500*time.Millisecond), nil)
 	defer cleanup()
 
 	// Writer sends 5 chunks quickly.
 	go func() {
 		for i := 0; i < 5; i++ {
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(testtime.Scale(10 * time.Millisecond))
 			pw.Write([]byte("chunk"))
 		}
 		pw.Close()
@@ -226,7 +228,7 @@ func TestIdleTimeoutReader_TimeoutClosesStream(t *testing.T) {
 	defer pw.Close()
 
 	// 100ms timeout, write nothing — should timeout and close the pipe reader.
-	wrapped, cleanup := NewIdleTimeoutReader(pr, pr, 100*time.Millisecond, nil)
+	wrapped, cleanup := NewIdleTimeoutReader(pr, pr, testtime.Scale(100*time.Millisecond), nil)
 	defer cleanup()
 
 	start := time.Now()
@@ -239,7 +241,7 @@ func TestIdleTimeoutReader_TimeoutClosesStream(t *testing.T) {
 	}
 
 	// Should complete within ~200ms (100ms timeout + margin), not hang.
-	if elapsed > 500*time.Millisecond {
+	if elapsed > testtime.Scale(500*time.Millisecond) {
 		t.Fatalf("read took %v, expected ~100ms timeout", elapsed)
 	}
 }
@@ -249,13 +251,13 @@ func TestIdleTimeoutReader_TimeoutAfterPartialData(t *testing.T) {
 	pr, pw := io.Pipe()
 
 	// 200ms idle timeout.
-	wrapped, cleanup := NewIdleTimeoutReader(pr, pr, 200*time.Millisecond, nil)
+	wrapped, cleanup := NewIdleTimeoutReader(pr, pr, testtime.Scale(200*time.Millisecond), nil)
 	defer cleanup()
 
 	// Writer sends 3 chunks then stops.
 	go func() {
 		for i := 0; i < 3; i++ {
-			time.Sleep(20 * time.Millisecond)
+			time.Sleep(testtime.Scale(20 * time.Millisecond))
 			pw.Write([]byte("data"))
 		}
 		// stop writing — idle timeout should fire after 200ms and close pr
@@ -285,12 +287,12 @@ func TestIdleTimeoutReader_ResetOnData(t *testing.T) {
 	pr, pw := io.Pipe()
 
 	// 200ms timeout, but data arrives every 150ms — should never timeout.
-	wrapped, cleanup := NewIdleTimeoutReader(pr, pr, 200*time.Millisecond, nil)
+	wrapped, cleanup := NewIdleTimeoutReader(pr, pr, testtime.Scale(200*time.Millisecond), nil)
 	defer cleanup()
 
 	go func() {
 		for i := 0; i < 5; i++ {
-			time.Sleep(150 * time.Millisecond)
+			time.Sleep(testtime.Scale(150 * time.Millisecond))
 			pw.Write([]byte("ok"))
 		}
 		pw.Close()
@@ -324,12 +326,12 @@ func TestIdleTimeoutReader_CleanupStopsTimer(t *testing.T) {
 
 	spy := &readCloserSpy{}
 
-	_, cleanup := NewIdleTimeoutReader(pr, spy, 100*time.Millisecond, nil)
+	_, cleanup := NewIdleTimeoutReader(pr, spy, testtime.Scale(100*time.Millisecond), nil)
 	// Call cleanup immediately — timer should be stopped.
 	cleanup()
 
 	// Wait well past the timeout duration.
-	time.Sleep(250 * time.Millisecond)
+	time.Sleep(testtime.Scale(250 * time.Millisecond))
 
 	if spy.closeCount() != 0 {
 		t.Fatalf("expected closer to NOT be called after cleanup, but was called %d times", spy.closeCount())
@@ -342,11 +344,11 @@ func TestIdleTimeoutReader_DoubleCloseIsSafe(t *testing.T) {
 
 	br := &zeroThenBlockReader{first: atomic.Bool{}, pipeRd: nil}
 	// Use spy as bodyStream — it implements both io.Reader and io.Closer.
-	_, cleanup := NewIdleTimeoutReader(br, spy, 50*time.Millisecond, nil)
+	_, cleanup := NewIdleTimeoutReader(br, spy, testtime.Scale(50*time.Millisecond), nil)
 	defer cleanup()
 
 	// Let the timer fire (closes spy via sync.Once).
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(testtime.Scale(100 * time.Millisecond))
 
 	// Manually close again — should not panic.
 	spy.Close()
@@ -368,7 +370,7 @@ func TestIdleTimeoutReader_ZeroBytesDoNotResetTimer(t *testing.T) {
 	// Use pr as bodyStream — when idle timeout fires, it closes pr,
 	// which causes reads on pr to return io.ErrClosedPipe.
 	zr := &zeroThenBlockReader{pipeRd: pr}
-	wrapped, cleanup := NewIdleTimeoutReader(zr, pr, 100*time.Millisecond, nil)
+	wrapped, cleanup := NewIdleTimeoutReader(zr, pr, testtime.Scale(100*time.Millisecond), nil)
 	defer cleanup()
 
 	done := make(chan error, 1)
@@ -387,7 +389,7 @@ func TestIdleTimeoutReader_ZeroBytesDoNotResetTimer(t *testing.T) {
 	select {
 	case <-done:
 		// Timer fired and closed the pipe — Read() returned an error. Good.
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(testtime.Scale(500 * time.Millisecond)):
 		t.Fatal("expected idle timeout to fire, but read is still blocking")
 	}
 }
@@ -399,7 +401,7 @@ func TestIdleTimeoutReader_ErrorFromClosedPipe(t *testing.T) {
 
 	// Use pr as bodyStream — when idle timeout fires, it closes pr,
 	// which makes Read return io.ErrClosedPipe.
-	wrapped, cleanup := NewIdleTimeoutReader(pr, pr, 50*time.Millisecond, nil)
+	wrapped, cleanup := NewIdleTimeoutReader(pr, pr, testtime.Scale(50*time.Millisecond), nil)
 	defer cleanup()
 
 	buf := make([]byte, 64)
@@ -417,7 +419,7 @@ func TestIdleTimeoutReader_ErrorFromClosedPipe(t *testing.T) {
 
 func TestIdleTimeoutReader_NilContextDoesNotPanic(t *testing.T) {
 	t.Parallel()
-	wrapped, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, &readCloserSpy{}, time.Second, nil)
+	wrapped, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, &readCloserSpy{}, testtime.Scale(time.Second), nil)
 	defer cleanup()
 
 	_, err := wrapped.Read(make([]byte, 1))
@@ -430,7 +432,7 @@ func TestIdleTimeoutReader_ClosedContextReturnsError(t *testing.T) {
 	t.Parallel()
 	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 	ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
-	wrapped, cleanup := NewIdleTimeoutReader(panicReader{}, &readCloserSpy{}, time.Second, ctx)
+	wrapped, cleanup := NewIdleTimeoutReader(panicReader{}, &readCloserSpy{}, testtime.Scale(time.Second), ctx)
 	defer cleanup()
 
 	_, err := wrapped.Read(make([]byte, 1))
@@ -441,10 +443,10 @@ func TestIdleTimeoutReader_ClosedContextReturnsError(t *testing.T) {
 
 func TestIdleTimeoutReader_RecoversReadPanicAfterTimeout(t *testing.T) {
 	t.Parallel()
-	wrapped, cleanup := NewIdleTimeoutReader(panicReader{}, &readCloserSpy{}, 10*time.Millisecond, nil)
+	wrapped, cleanup := NewIdleTimeoutReader(panicReader{}, &readCloserSpy{}, testtime.Scale(10*time.Millisecond), nil)
 	defer cleanup()
 
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(testtime.Scale(50 * time.Millisecond))
 
 	_, err := wrapped.Read(make([]byte, 1))
 	if !errors.Is(err, ErrStreamIdleTimeout) {
@@ -467,7 +469,7 @@ func TestIdleTimeoutReader_RecoversReadPanicAfterTimeout(t *testing.T) {
 func TestIdleTimeoutReader_RecoversCloseStreamPanicOnTimerFire(t *testing.T) {
 	t.Parallel()
 	body := newTimerPanicCloser()
-	_, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, body, 10*time.Millisecond, nil)
+	_, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, body, testtime.Scale(10*time.Millisecond), nil)
 
 	// Wait until the timer goroutine has actually entered CloseWithError (about to
 	// panic). This proves the guarded path was exercised; a fixed sleep could be
@@ -497,7 +499,7 @@ func TestIdleTimeoutReader_LogsRecoveredTimerPanic(t *testing.T) {
 	t.Cleanup(func() { SetLogger(prev) })
 
 	body := newTimerPanicCloser()
-	_, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, body, 10*time.Millisecond, nil)
+	_, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, body, testtime.Scale(10*time.Millisecond), nil)
 	select {
 	case <-body.called:
 	case <-time.After(2 * time.Second):
@@ -513,11 +515,11 @@ func TestIdleTimeoutReader_LogsRecoveredTimerPanic(t *testing.T) {
 func TestIdleTimeoutReader_CleanupWaitsForRunningTimerCallback(t *testing.T) {
 	t.Parallel()
 	body := newBlockingCloserSpy()
-	_, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, body, 10*time.Millisecond, nil)
+	_, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, body, testtime.Scale(10*time.Millisecond), nil)
 
 	select {
 	case <-body.started:
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(testtime.Scale(500 * time.Millisecond)):
 		t.Fatal("expected idle timeout callback to start closing the body")
 	}
 
@@ -530,14 +532,14 @@ func TestIdleTimeoutReader_CleanupWaitsForRunningTimerCallback(t *testing.T) {
 	select {
 	case <-cleanupDone:
 		t.Fatal("cleanup returned before the running timer callback finished")
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(testtime.Scale(50 * time.Millisecond)):
 	}
 
 	body.unblock()
 
 	select {
 	case <-cleanupDone:
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(testtime.Scale(500 * time.Millisecond)):
 		t.Fatal("cleanup did not return after timer callback finished")
 	}
 }
@@ -695,7 +697,7 @@ func TestStreamClose_ExactlyOnceAcrossOwners(t *testing.T) {
 		ctx := schemas.NewBifrostContext(goCtx, time.Time{})
 
 		// Tiny idle timeout so the timer races the cancellation.
-		_, cleanup := NewIdleTimeoutReader(body, body, time.Millisecond, ctx)
+		_, cleanup := NewIdleTimeoutReader(body, body, testtime.Scale(time.Millisecond), ctx)
 		stop := SetupStreamCancellation(ctx, body, getLogger())
 
 		go cancel() // fire cancellation concurrently with the idle timer
@@ -704,7 +706,7 @@ func TestStreamClose_ExactlyOnceAcrossOwners(t *testing.T) {
 		// than relying on a fixed sleep that can miss both close paths on slow CI.
 		deadline := time.Now().Add(2 * time.Second)
 		for body.closeCount.Load() == 0 && time.Now().Before(deadline) {
-			time.Sleep(50 * time.Microsecond)
+			time.Sleep(testtime.Scale(50 * time.Microsecond))
 		}
 		stop()
 		cleanup()
@@ -845,7 +847,7 @@ func TestSetupStreamCancellation_DisarmedDeadlineStillHonoursCtx(t *testing.T) {
 	select {
 	case <-body.closed:
 		t.Fatal("a disarmed deadline closed the body")
-	case <-time.After(150 * time.Millisecond):
+	case <-time.After(testtime.Scale(150 * time.Millisecond)):
 	}
 	cancel()
 	select {

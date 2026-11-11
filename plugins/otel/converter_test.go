@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/plugins/otel/internal/testtime"
+
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/agent"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -544,17 +546,17 @@ func TestA2AExportWireProfiles(t *testing.T) {
 	collectorpb.RegisterTraceServiceServer(server, grpcCollector)
 	go func() { _ = server.Serve(listener) }()
 	defer server.Stop()
-	httpClient, err := NewOtelClientHTTP(httpCollector.URL, nil, "", true, time.Second)
+	httpClient, err := NewOtelClientHTTP(httpCollector.URL, nil, "", true, testtime.Scale(time.Second))
 	require.NoError(t, err)
 	defer httpClient.Close()
 	grpcClient, err := NewOtelClientGRPC(listener.Addr().String(), nil, "", true)
 	require.NoError(t, err)
 	defer grpcClient.Close()
 	p := &OtelPlugin{targets: []*otelTarget{
-		{client: httpClient, serviceName: "structured", exportTimeout: time.Second},
-		{client: httpClient, serviceName: "raw", exportRawPayloads: true, exportTimeout: time.Second},
-		{client: grpcClient, serviceName: "disabled", disableContentLogging: true, exportRawPayloads: true, exportTimeout: time.Second},
-		{client: grpcClient, serviceName: "root suppressed", disableRootSpanContent: true, exportRawPayloads: true, exportTimeout: time.Second, excludedAttributes: []string{schemas.AttrBifrostRawRequest}},
+		{client: httpClient, serviceName: "structured", exportTimeout: testtime.Scale(time.Second)},
+		{client: httpClient, serviceName: "raw", exportRawPayloads: true, exportTimeout: testtime.Scale(time.Second)},
+		{client: grpcClient, serviceName: "disabled", disableContentLogging: true, exportRawPayloads: true, exportTimeout: testtime.Scale(time.Second)},
+		{client: grpcClient, serviceName: "root suppressed", disableRootSpanContent: true, exportRawPayloads: true, exportTimeout: testtime.Scale(time.Second), excludedAttributes: []string{schemas.AttrBifrostRawRequest}},
 	}}
 	trace := a2aExportTrace(t)
 	for _, vkDisabled := range []bool{false, true} {
@@ -619,15 +621,15 @@ func TestA2AExportStatusMessageFollowsContentPolicy(t *testing.T) {
 	collectorpb.RegisterTraceServiceServer(server, grpcCollector)
 	go func() { _ = server.Serve(listener) }()
 	defer server.Stop()
-	httpClient, err := NewOtelClientHTTP(httpCollector.URL, nil, "", true, time.Second)
+	httpClient, err := NewOtelClientHTTP(httpCollector.URL, nil, "", true, testtime.Scale(time.Second))
 	require.NoError(t, err)
 	defer httpClient.Close()
 	grpcClient, err := NewOtelClientGRPC(listener.Addr().String(), nil, "", true)
 	require.NoError(t, err)
 	defer grpcClient.Close()
 	p := &OtelPlugin{targets: []*otelTarget{
-		{client: httpClient, serviceName: "content", exportTimeout: time.Second},
-		{client: grpcClient, serviceName: "disabled", disableContentLogging: true, exportTimeout: time.Second},
+		{client: httpClient, serviceName: "content", exportTimeout: testtime.Scale(time.Second)},
+		{client: grpcClient, serviceName: "disabled", disableContentLogging: true, exportTimeout: testtime.Scale(time.Second)},
 	}}
 
 	trace := a2aGateTrace(t, func(*schemas.BifrostA2ARequest, func(*schemas.BifrostA2AEvent)) (*schemas.BifrostA2AResponse, error) {

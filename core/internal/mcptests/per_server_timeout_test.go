@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -64,7 +66,7 @@ func TestPerServerTimeout_OverridesGlobal(t *testing.T) {
 		ConnectionType:       schemas.MCPConnectionTypeInProcess,
 		InProcessServer:      buildPerServerDelayServer(t),
 		ToolsToExecute:       []string{"*"},
-		ToolExecutionTimeout: 1 * time.Second,
+		ToolExecutionTimeout: testtime.Scale(1 * time.Second),
 	}
 
 	manager := setupMCPManager(t)
@@ -81,7 +83,7 @@ func TestPerServerTimeout_OverridesGlobal(t *testing.T) {
 	result, bifrostErr := bf.ExecuteChatMCPTool(ctx, &toolCall)
 	elapsed := time.Since(start)
 
-	assert.Less(t, elapsed, 2500*time.Millisecond,
+	assert.Less(t, elapsed, testtime.Scale(2500*time.Millisecond),
 		"per-server timeout (1s) should fire before the 3s tool delay; got %v", elapsed)
 	// Timeout surfaces either as a BifrostError or as an error message in the result content.
 	if bifrostErr != nil && bifrostErr.Error != nil {
@@ -152,7 +154,7 @@ func TestPerServerTimeout_FallsBackToGlobal(t *testing.T) {
 	bf.SetMCPManager(manager)
 
 	// Short context deadline — demonstrates that global/context applies when per-server = 0.
-	ctx, cancel := createTestContextWithTimeout(500 * time.Millisecond)
+	ctx, cancel := createTestContextWithTimeout(testtime.Scale(500 * time.Millisecond))
 	defer cancel()
 
 	start := time.Now()
@@ -160,7 +162,7 @@ func TestPerServerTimeout_FallsBackToGlobal(t *testing.T) {
 	result, bifrostErr := bf.ExecuteChatMCPTool(ctx, &toolCall)
 	elapsed := time.Since(start)
 
-	assert.Less(t, elapsed, 2*time.Second,
+	assert.Less(t, elapsed, testtime.Scale(2*time.Second),
 		"context deadline should cancel the tool (per-server=0 falls back to global); got %v", elapsed)
 	// Cancellation surfaces either as a BifrostError or as an error message in the result content.
 	if bifrostErr != nil && bifrostErr.Error != nil {

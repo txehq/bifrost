@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -85,11 +87,11 @@ func TestWaitForAdvisoryLockWaitsOutBusyHolder(t *testing.T) {
 	conn := waiterConn(t)
 	start := time.Now()
 	err = WaitForAdvisoryLock(context.Background(), conn, nil, AdvisoryWaitOptions{
-		Key: advisoryTestKey, Label: "test", RetryInterval: 200 * time.Millisecond,
-		Timeout: time.Second, BusyTimeout: 10 * time.Second, RecentActivityWindow: 500 * time.Millisecond,
+		Key: advisoryTestKey, Label: "test", RetryInterval: testtime.Scale(200 * time.Millisecond),
+		Timeout: testtime.Scale(time.Second), BusyTimeout: testtime.Scale(10 * time.Second), RecentActivityWindow: testtime.Scale(500 * time.Millisecond),
 	})
 	require.NoError(t, err, "a busy holder must be waited out past the idle timeout")
-	require.GreaterOrEqual(t, time.Since(start), 2*time.Second)
+	require.GreaterOrEqual(t, time.Since(start), testtime.Scale(2*time.Second))
 }
 
 // TestWaitForAdvisoryLockGivesUpOnIdleHolder pins that a holder with no running
@@ -98,16 +100,16 @@ func TestWaitForAdvisoryLockWaitsOutBusyHolder(t *testing.T) {
 func TestWaitForAdvisoryLockGivesUpOnIdleHolder(t *testing.T) {
 	holderPod := openAdvisoryTestDB(t, "bifrost-migrate:crashed-pod")
 	holdAdvisoryKey(t, holderPod)
-	time.Sleep(600 * time.Millisecond) // let the holder go quiet
+	time.Sleep(testtime.Scale(600 * time.Millisecond)) // let the holder go quiet
 
 	conn := waiterConn(t)
 	start := time.Now()
 	err := WaitForAdvisoryLock(context.Background(), conn, nil, AdvisoryWaitOptions{
-		Key: advisoryTestKey, Label: "test", RetryInterval: 200 * time.Millisecond,
-		Timeout: time.Second, BusyTimeout: 30 * time.Second, RecentActivityWindow: 500 * time.Millisecond,
+		Key: advisoryTestKey, Label: "test", RetryInterval: testtime.Scale(200 * time.Millisecond),
+		Timeout: testtime.Scale(time.Second), BusyTimeout: testtime.Scale(30 * time.Second), RecentActivityWindow: testtime.Scale(500 * time.Millisecond),
 	})
 	require.Error(t, err)
-	require.Less(t, time.Since(start), 5*time.Second, "an idle holder must not earn the busy budget")
+	require.Less(t, time.Since(start), testtime.Scale(5*time.Second), "an idle holder must not earn the busy budget")
 	require.Contains(t, err.Error(), "lingering database session")
 	require.Contains(t, err.Error(), "bifrost-migrate:crashed-pod")
 }
@@ -122,12 +124,12 @@ func TestWaitForAdvisoryLockBusyErrorDescribesHolder(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sleeper.Close() })
 	go func() { _, _ = sleeper.ExecContext(context.Background(), "SELECT pg_sleep(5)") }()
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(testtime.Scale(200 * time.Millisecond))
 
 	conn := waiterConn(t)
 	err = WaitForAdvisoryLock(context.Background(), conn, nil, AdvisoryWaitOptions{
-		Key: advisoryTestKey, Label: "test", RetryInterval: 200 * time.Millisecond,
-		Timeout: 500 * time.Millisecond, BusyTimeout: 1500 * time.Millisecond, RecentActivityWindow: 500 * time.Millisecond,
+		Key: advisoryTestKey, Label: "test", RetryInterval: testtime.Scale(200 * time.Millisecond),
+		Timeout: testtime.Scale(500 * time.Millisecond), BusyTimeout: testtime.Scale(1500 * time.Millisecond), RecentActivityWindow: testtime.Scale(500 * time.Millisecond),
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "pg_sleep")
@@ -160,8 +162,8 @@ func TestWaitForAdvisoryLockRetriesWhenHolderJustReleased(t *testing.T) {
 
 	conn := waiterConn(t)
 	err = WaitForAdvisoryLock(context.Background(), conn, nil, AdvisoryWaitOptions{
-		Key: advisoryTestKey, Label: "test", RetryInterval: 20 * time.Millisecond,
-		Timeout: 500 * time.Millisecond, BusyTimeout: 10 * time.Second, RecentActivityWindow: 50 * time.Millisecond,
+		Key: advisoryTestKey, Label: "test", RetryInterval: testtime.Scale(20 * time.Millisecond),
+		Timeout: testtime.Scale(500 * time.Millisecond), BusyTimeout: testtime.Scale(10 * time.Second), RecentActivityWindow: testtime.Scale(50 * time.Millisecond),
 	})
 	require.NoError(t, err, "the waiter must take the lock once it is released, not give up")
 }

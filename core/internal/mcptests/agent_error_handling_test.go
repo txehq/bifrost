@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -128,7 +130,7 @@ func TestAgent_ErrorHandling_TimeoutInLoop(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create context with short timeout
-	ctx, cancel := createTestContextWithTimeout(500 * time.Millisecond)
+	ctx, cancel := createTestContextWithTimeout(testtime.Scale(500 * time.Millisecond))
 	defer cancel()
 
 	toolCalls := []schemas.ChatAssistantMessageToolCall{

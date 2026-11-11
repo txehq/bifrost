@@ -16,6 +16,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
+
+	"regexp"
+	"slices"
+	"sync/atomic"
+
 	"github.com/bytedance/sonic"
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/providers/anthropic"
@@ -29,9 +35,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
-	"regexp"
-	"slices"
-	"sync/atomic"
 )
 
 func TestParsePassthroughBody_MultipartExtractsModelAfterFilePart(t *testing.T) {
@@ -889,7 +892,7 @@ func TestCreateHandler_ParseFailureClosesKeepAliveSocket(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 		assert.True(t, resp.Close)
 
-		require.NoError(t, conn.SetReadDeadline(time.Now().Add(time.Second)))
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(testtime.Scale(time.Second))))
 		_, err = reader.Peek(1)
 		require.Error(t, err)
 	})

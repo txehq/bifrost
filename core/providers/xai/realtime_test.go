@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -169,7 +171,7 @@ func TestXAIRealtimeCancelledMint(t *testing.T) {
 		w.WriteHeader(500)
 	}))
 	defer server.Close()
-	provider := &XAIProvider{client: &fasthttp.Client{ReadTimeout: time.Second}, networkConfig: schemas.NetworkConfig{BaseURL: server.URL}}
+	provider := &XAIProvider{client: &fasthttp.Client{ReadTimeout: testtime.Scale(time.Second)}, networkConfig: schemas.NetworkConfig{BaseURL: server.URL}}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.Cancel()
 	out, err := provider.CreateRealtimeClientSecret(ctx, schemas.Key{Value: *schemas.NewSecretVar("synthetic")}, json.RawMessage(`{}`))
@@ -190,7 +192,7 @@ func TestXAIRealtimeActiveMintCancellation(t *testing.T) {
 	}))
 	defer server.Close()
 	defer close(released)
-	client := providerUtils.ConfigureDialer(&fasthttp.Client{ReadTimeout: 3 * time.Second}, true)
+	client := providerUtils.ConfigureDialer(&fasthttp.Client{ReadTimeout: testtime.Scale(3 * time.Second)}, true)
 	provider := &XAIProvider{client: client, networkConfig: schemas.NetworkConfig{BaseURL: server.URL}}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	defer ctx.Cancel()
@@ -201,7 +203,7 @@ func TestXAIRealtimeActiveMintCancellation(t *testing.T) {
 	}()
 	select {
 	case <-entered:
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("mint did not reach upstream")
 	}
 	ctx.Cancel()
@@ -210,7 +212,7 @@ func TestXAIRealtimeActiveMintCancellation(t *testing.T) {
 		if !rejected {
 			t.Fatal("cancelled mint returned a secret")
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("cancellation did not stop the configured transport")
 	}
 }

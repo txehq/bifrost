@@ -14,6 +14,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -24,8 +26,8 @@ import (
 func fastOpts(extra ...SubscribeOption) []SubscribeOption {
 	return append([]SubscribeOption{
 		WithPollInterval(20 * time.Millisecond),
-		WithLeaseDuration(400 * time.Millisecond),
-		WithBackoff(time.Millisecond, 5*time.Millisecond),
+		WithLeaseDuration(testtime.Scale(400 * time.Millisecond)),
+		WithBackoff(time.Millisecond, testtime.Scale(5*time.Millisecond)),
 	}, extra...)
 }
 
@@ -57,7 +59,7 @@ func waitStats(t *testing.T, q Queue, topic, group string, want Stats) {
 		st, err := q.Stats(context.Background(), topic, group)
 		assert.NoError(c, err)
 		assert.Equal(c, want, st)
-	}, 5*time.Second, 10*time.Millisecond)
+	}, testtime.Scale(5*time.Second), 10*time.Millisecond)
 }
 
 // engineBackend returns n stores that share one backend, one per simulated
@@ -255,7 +257,7 @@ func engineContractHeartbeatKeepsLongHandlersExclusive(t *testing.T, backend eng
 	h := func(ctx context.Context, d *Delivery) error {
 		calls.Add(1)
 		select {
-		case <-time.After(1500 * time.Millisecond): // ~4 leases
+		case <-time.After(testtime.Scale(1500 * time.Millisecond)): // ~4 leases
 			return nil
 		case <-ctx.Done():
 			return context.Cause(ctx)
@@ -284,7 +286,7 @@ func (s slowExtendStore) Extend(ctx context.Context, cs []*Claimed, lease time.D
 }
 
 func engineContractLeaseLossCancelsHandler(t *testing.T, backend engineBackend) {
-	const lease = 400 * time.Millisecond
+	lease := testtime.Scale(400 * time.Millisecond)
 	q := engineQueues(t, []Store{slowExtendStore{Store: backend(t, 1)[0], delay: 2 * lease}})[0]
 	topic := uniqueTopic(t)
 	started := make(chan struct{})
@@ -320,12 +322,12 @@ func engineContractAttemptsSpentByLostLeases(t *testing.T, backend engineBackend
 	// Two holders "crash": each lease expires unfinished.
 	for range 2 {
 		require.Eventually(t, func() bool {
-			cs, err := stores[0].Claim(ctx, ClaimRequest{Topic: topic, Group: "w", RunnerID: "crashed", Max: 1, Lease: time.Millisecond})
+			cs, err := stores[0].Claim(ctx, ClaimRequest{Topic: topic, Group: "w", RunnerID: "crashed", Max: 1, Lease: testtime.Scale(time.Millisecond)})
 			require.NoError(t, err)
 			return len(cs) == 1
-		}, 10*time.Second, 20*time.Millisecond)
+		}, testtime.Scale(10*time.Second), testtime.Scale(20*time.Millisecond))
 	}
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(testtime.Scale(50 * time.Millisecond))
 	var calls atomic.Int32
 	subscribe(t, q, topic, "w", func(ctx context.Context, d *Delivery) error {
 		calls.Add(1)
@@ -354,7 +356,7 @@ func engineContractCloseDrainsInFlight(t *testing.T, backend engineBackend) {
 	select {
 	case <-closed:
 		t.Fatal("Close returned while a handler was running")
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(testtime.Scale(100 * time.Millisecond)):
 	}
 	close(release)
 	require.NoError(t, <-closed)
@@ -379,7 +381,7 @@ func engineContractCloseDeadlineKeepsRunningLease(t *testing.T, backend engineBa
 	publish(t, q, &Message{Topic: topic})
 	<-started
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(50*time.Millisecond))
 	defer cancel()
 	require.NoError(t, sub.Close(ctx))
 	assert.ErrorIs(t, <-cause, errSubscriptionClosed)
@@ -584,7 +586,7 @@ func engineContractAckErrorRedeliversAfterLease(t *testing.T, backend engineBack
 	subscribe(t, q, topic, "w", func(ctx context.Context, d *Delivery) error {
 		calls.Add(1)
 		return nil
-	}, WithLeaseDuration(400*time.Millisecond))
+	}, WithLeaseDuration(testtime.Scale(400*time.Millisecond)))
 	publish(t, q, &Message{Topic: topic})
 	waitStats(t, q, topic, "w", Stats{})
 	assert.Equal(t, int32(2), calls.Load(), "the unacknowledged delivery runs again once its lease expires")
@@ -627,7 +629,7 @@ func engineContractDeadLetterPublishFailureRetries(t *testing.T, backend engineB
 	select {
 	case d := <-dlq:
 		t.Fatalf("a second dead-letter copy %s was published", d.ID)
-	case <-time.After(300 * time.Millisecond):
+	case <-time.After(testtime.Scale(300 * time.Millisecond)):
 	}
 }
 
@@ -645,13 +647,13 @@ func engineContractHeartbeatErrorKeepsLease(t *testing.T, backend engineBackend)
 			f.inject("Extend", 1, errPermanent)
 		}
 		select {
-		case <-time.After(1200 * time.Millisecond):
+		case <-time.After(testtime.Scale(1200 * time.Millisecond)):
 			return nil
 		case <-ctx.Done():
 			cancelled <- context.Cause(ctx)
 			return ctx.Err()
 		}
-	}, WithLeaseDuration(600*time.Millisecond))
+	}, WithLeaseDuration(testtime.Scale(600*time.Millisecond)))
 	publish(t, q, &Message{Topic: topic})
 	waitStats(t, q, topic, "w", Stats{})
 	assert.Equal(t, int32(1), calls.Load())
@@ -664,7 +666,7 @@ func engineContractHeartbeatErrorKeepsLease(t *testing.T, backend engineBackend)
 // delivery itself: the handler must still be cancelled once the lease it last
 // confirmed has run out, before another instance may take the delivery over.
 func engineContractLapsedLeaseCancelsWithoutFreeSlots(t *testing.T, backend engineBackend) {
-	const lease = 400 * time.Millisecond
+	lease := testtime.Scale(400 * time.Millisecond)
 	f := newFaultStore(backend(t, 1)[0])
 	q := engineQueues(t, []Store{f})[0]
 	topic := uniqueTopic(t)
@@ -705,7 +707,7 @@ func engineContractLapsedLeaseCancelsWithoutFreeSlots(t *testing.T, backend engi
 // then return a Permanent error: the delivery now belongs to another claim,
 // so no dead-letter copy may be published for it.
 func engineContractStaleHandlerDoesNotDeadLetter(t *testing.T, backend engineBackend) {
-	const lease = 400 * time.Millisecond
+	lease := testtime.Scale(400 * time.Millisecond)
 	q := engineQueues(t, []Store{slowExtendStore{Store: backend(t, 1)[0], delay: 2 * lease}})[0]
 	topic := uniqueTopic(t)
 	dlqTopic := topic + ".dlq"
@@ -727,7 +729,7 @@ func engineContractStaleHandlerDoesNotDeadLetter(t *testing.T, backend engineBac
 	select {
 	case d := <-dlq:
 		t.Fatalf("a stale handler dead-lettered delivery %s", d.Headers[HeaderDeadLetterDeliveryID])
-	case <-time.After(300 * time.Millisecond):
+	case <-time.After(testtime.Scale(300 * time.Millisecond)):
 	}
 }
 
@@ -748,7 +750,7 @@ func engineContractRepeatedHeartbeatErrorsLoseLease(t *testing.T, backend engine
 		cause <- context.Cause(ctx)
 		f.inject("Extend", 0, nil)
 		return ctx.Err()
-	}, WithLeaseDuration(400*time.Millisecond))
+	}, WithLeaseDuration(testtime.Scale(400*time.Millisecond)))
 	publish(t, q, &Message{Topic: topic})
 	select {
 	case err := <-cause:
@@ -1016,14 +1018,14 @@ func engineContractScheduledOnTime(t *testing.T, backend engineBackend) {
 		got <- d
 		return nil
 	}, WithPollInterval(poll))
-	at := time.Now().Add(500 * time.Millisecond)
+	at := time.Now().Add(testtime.Scale(500 * time.Millisecond))
 	publish(t, q, &Message{Topic: topic, DeliverAt: at})
 	select {
 	case when := <-ran:
 		d := <-got
 		assert.False(t, when.Before(at), "ran %s early", at.Sub(when))
 		assert.Less(t, when.Sub(at), poll*3, "ran %s late", when.Sub(at))
-		assert.WithinDuration(t, at, d.DeliverAt, time.Millisecond)
+		assert.WithinDuration(t, at, d.DeliverAt, testtime.Scale(time.Millisecond))
 	case <-time.After(10 * time.Second):
 		t.Fatal("scheduled message never ran")
 	}
@@ -1106,7 +1108,7 @@ func (b blockingStore) Purge(ctx context.Context, policy PurgePolicy, batch int)
 // Close must return close to its own deadline instead of waiting out the
 // calls' internal timeouts.
 func TestCloseHonoursDeadlineWithStuckStoreCalls(t *testing.T) {
-	const deadline = 100 * time.Millisecond
+	deadline := testtime.Scale(100 * time.Millisecond)
 	const slack = 400 * time.Millisecond
 
 	t.Run("heartbeat", func(t *testing.T) {
@@ -1122,7 +1124,7 @@ func TestCloseHonoursDeadlineWithStuckStoreCalls(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, q.Publish(context.Background(), &Message{Topic: "t"}))
 		<-started
-		time.Sleep(1100 * time.Millisecond) // the first heartbeat is now stuck in Extend
+		time.Sleep(testtime.Scale(1100 * time.Millisecond)) // the first heartbeat is now stuck in Extend
 		ctx, cancel := context.WithTimeout(context.Background(), deadline)
 		defer cancel()
 		start := time.Now()
@@ -1140,7 +1142,7 @@ func TestCloseHonoursDeadlineWithStuckStoreCalls(t *testing.T) {
 		require.NoError(t, store.EnsureGroup(ctx, "t", "g", StartFromLatest))
 		require.NoError(t, q.Publish(ctx, &Message{Topic: "t"}))
 		s := newSubscription(sq, "t", "g", func(context.Context, *Delivery) error { return nil }, SubscribeOptions{}.WithDefaults(), ctx)
-		cs, err := store.Claim(ctx, ClaimRequest{Topic: "t", Group: "g", RunnerID: sq.runnerID, Max: 1, Lease: time.Minute})
+		cs, err := store.Claim(ctx, ClaimRequest{Topic: "t", Group: "g", RunnerID: sq.runnerID, Max: 1, Lease: testtime.Scale(time.Minute)})
 		require.NoError(t, err)
 		require.True(t, s.track(cs[0], time.Now().Add(time.Minute)))
 		close(s.claimerDone)
@@ -1157,7 +1159,7 @@ func TestCloseHonoursDeadlineWithStuckStoreCalls(t *testing.T) {
 		q, err := NewStoreQueue(blockingStore{Store: newMemoryStore(), block: map[string]bool{"Purge": true}},
 			EngineConfig{JanitorInterval: "10ms"}, nil)
 		require.NoError(t, err)
-		time.Sleep(100 * time.Millisecond) // a janitor pass is now stuck in Purge
+		time.Sleep(testtime.Scale(100 * time.Millisecond)) // a janitor pass is now stuck in Purge
 		ctx, cancel := context.WithTimeout(context.Background(), deadline)
 		defer cancel()
 		start := time.Now()
@@ -1254,7 +1256,7 @@ func TestEngineValidation(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidName)
 	_, err = q.Subscribe(ctx, "t", "g", nil)
 	assert.Error(t, err)
-	_, err = q.Subscribe(ctx, "t", "g", noop, WithLeaseDuration(time.Millisecond))
+	_, err = q.Subscribe(ctx, "t", "g", noop, WithLeaseDuration(testtime.Scale(time.Millisecond)))
 	assert.Error(t, err)
 	// A dead-letter copy published back onto the consumed topic would be
 	// consumed, fail, and be dead-lettered again under a new ID, forever.
@@ -1458,7 +1460,7 @@ func engineContractLapsedLeaseRedeliveryIsReportedLost(t *testing.T, backend eng
 		}
 		completions.Add(1)
 		return nil
-	}, WithConcurrency(1), WithLeaseDuration(400*time.Millisecond))
+	}, WithConcurrency(1), WithLeaseDuration(testtime.Scale(400*time.Millisecond)))
 	publish(t, q, &Message{Topic: topic})
 	waitStats(t, q, topic, "w", Stats{})
 	require.Equal(t, int32(2), completions.Load(), "the delivery runs again after its lease lapsed")
@@ -1500,7 +1502,7 @@ func engineContractSupersededClaimIsReportedLost(t *testing.T, backend engineBac
 		}
 		completions.Add(1)
 		return nil
-	}, WithConcurrency(2), WithLeaseDuration(400*time.Millisecond))
+	}, WithConcurrency(2), WithLeaseDuration(testtime.Scale(400*time.Millisecond)))
 	publish(t, q, &Message{Topic: topic})
 	waitStats(t, q, topic, "w", Stats{})
 	require.Equal(t, int32(2), completions.Load(), "the delivery runs again after it was claimed a second time")
@@ -1541,7 +1543,7 @@ func engineContractSilentRedeliveryIsNotReportedLost(t *testing.T, backend engin
 			close(twice)
 		}
 		return nil
-	}, WithConcurrency(1), WithLeaseDuration(400*time.Millisecond))
+	}, WithConcurrency(1), WithLeaseDuration(testtime.Scale(400*time.Millisecond)))
 	publish(t, q, &Message{Topic: topic})
 	select {
 	case <-twice:

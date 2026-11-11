@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	ws "github.com/fasthttp/websocket"
 	"github.com/stretchr/testify/assert"
@@ -268,7 +270,7 @@ func TestPoolGetSkipsStaleIdleConnection(t *testing.T) {
 		}
 		current := connectionCount.Add(1)
 		if current == 1 {
-			_ = conn.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, "done"), time.Now().Add(time.Second))
+			_ = conn.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, "done"), time.Now().Add(testtime.Scale(time.Second)))
 			_ = conn.Close()
 			close(serverClosed)
 			return

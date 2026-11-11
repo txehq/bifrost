@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/postgres"
@@ -827,7 +829,7 @@ func TestDistributedLock_IsHeld_NotAcquired(t *testing.T) {
 func TestDistributedLock_IsHeld_Expired(t *testing.T) {
 	store := setupLockTestStore(t)
 	logger := newMockLogger()
-	manager := NewDistributedLockManager(store, logger, WithDefaultTTL(50*time.Millisecond))
+	manager := NewDistributedLockManager(store, logger, WithDefaultTTL(testtime.Scale(50*time.Millisecond)))
 	ctx := context.Background()
 
 	lock, err := manager.NewLock("test-lock")
@@ -836,7 +838,7 @@ func TestDistributedLock_IsHeld_Expired(t *testing.T) {
 	require.NoError(t, err)
 
 	// Wait for lock to expire
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(testtime.Scale(100 * time.Millisecond))
 
 	held, err := lock.IsHeld(ctx)
 	require.NoError(t, err)
@@ -1109,7 +1111,7 @@ func TestDistributedLock_ZeroTTL(t *testing.T) {
 func TestDistributedLock_VeryShortTTL(t *testing.T) {
 	store := setupLockTestStore(t)
 	logger := newMockLogger()
-	manager := NewDistributedLockManager(store, logger, WithDefaultTTL(50*time.Millisecond))
+	manager := NewDistributedLockManager(store, logger, WithDefaultTTL(testtime.Scale(50*time.Millisecond)))
 	ctx := context.Background()
 
 	lock, err := manager.NewLock("short-ttl-lock")
@@ -1120,7 +1122,7 @@ func TestDistributedLock_VeryShortTTL(t *testing.T) {
 	assert.True(t, acquired)
 
 	// Wait for TTL to expire
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(testtime.Scale(100 * time.Millisecond))
 
 	// Another lock should be able to acquire
 	lock2, err := manager.NewLock("short-ttl-lock")
@@ -1160,7 +1162,7 @@ func TestDistributedLock_ReacquireAfterUnlock(t *testing.T) {
 func TestDistributedLock_ExtendMultipleTimes(t *testing.T) {
 	store := setupLockTestStore(t)
 	logger := newMockLogger()
-	manager := NewDistributedLockManager(store, logger, WithDefaultTTL(100*time.Millisecond))
+	manager := NewDistributedLockManager(store, logger, WithDefaultTTL(testtime.Scale(100*time.Millisecond)))
 	ctx := context.Background()
 
 	lock, err := manager.NewLock("test-lock")
@@ -1170,7 +1172,7 @@ func TestDistributedLock_ExtendMultipleTimes(t *testing.T) {
 
 	// Extend multiple times
 	for i := 0; i < 5; i++ {
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(testtime.Scale(20 * time.Millisecond))
 		err = lock.Extend(ctx)
 		require.NoError(t, err, "Extension %d failed", i+1)
 	}
@@ -1255,7 +1257,7 @@ func TestDistributedLockManager_AcquireExcludesUntilReleased(t *testing.T) {
 		t.Fatal("second Acquire succeeded while the key was held")
 	case err := <-failed:
 		t.Fatalf("second Acquire failed while waiting on the held key: %v", err)
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(testtime.Scale(100 * time.Millisecond)):
 	}
 
 	cancel()
@@ -1277,13 +1279,13 @@ func TestDistributedLockManager_AcquireExcludesUntilReleased(t *testing.T) {
 // the lease expired mid-write and another instance walked straight in.
 func TestDistributedLockManager_AcquireRenewsWhileHeld(t *testing.T) {
 	store := setupLockTestStore(t)
-	manager := NewDistributedLockManager(store, newMockLogger(), WithDefaultTTL(150*time.Millisecond), WithRetryInterval(10*time.Millisecond))
+	manager := NewDistributedLockManager(store, newMockLogger(), WithDefaultTTL(testtime.Scale(150*time.Millisecond)), WithRetryInterval(10*time.Millisecond))
 
 	held, release, err := manager.Acquire(context.Background(), "renew-key")
 	require.NoError(t, err)
 	defer release()
 
-	time.Sleep(500 * time.Millisecond) // over three TTLs
+	time.Sleep(testtime.Scale(500 * time.Millisecond)) // over three TTLs
 	require.NoError(t, held.Err(), "a renewed lock is still held")
 	other, err := manager.NewLock("renew-key")
 	require.NoError(t, err)
@@ -1296,7 +1298,7 @@ func TestDistributedLockManager_AcquireRenewsWhileHeld(t *testing.T) {
 // removed - the holder must be told, not keep writing as if it were protected.
 func TestDistributedLockManager_AcquireReportsLeaseLoss(t *testing.T) {
 	store := setupLockTestStore(t)
-	manager := NewDistributedLockManager(store, newMockLogger(), WithDefaultTTL(150*time.Millisecond), WithRetryInterval(10*time.Millisecond))
+	manager := NewDistributedLockManager(store, newMockLogger(), WithDefaultTTL(testtime.Scale(150*time.Millisecond)), WithRetryInterval(10*time.Millisecond))
 
 	held, release, err := manager.Acquire(context.Background(), "lost-key")
 	require.NoError(t, err)
@@ -1395,7 +1397,7 @@ func newLockTestManager(store LockStore, ttl time.Duration) *DistributedLockMana
 func TestDistributedLockManager_NextHolderNeverOverlapsAStoppedHolder(t *testing.T) {
 	forEachLockBackend(t, func(t *testing.T, open func() *RDBConfigStore) {
 		ctx := context.Background()
-		const ttl = 400 * time.Millisecond
+		ttl := testtime.Scale(400 * time.Millisecond)
 		wedged := make(chan struct{})
 		t.Cleanup(func() { close(wedged) })
 		for name, renew := range map[string]func(context.Context, func(context.Context) error) error{
@@ -1501,13 +1503,13 @@ func TestDistributedLockManager_CancelledHolderGivesTheLockBack(t *testing.T) {
 func TestDistributedLockManager_LateRenewalDoesNotReviveTheHolder(t *testing.T) {
 	forEachLockBackend(t, func(t *testing.T, open func() *RDBConfigStore) {
 		ctx := context.Background()
-		const ttl = 300 * time.Millisecond
+		ttl := testtime.Scale(300 * time.Millisecond)
 		answered := make(chan struct{})
 		first := &faultyLockStore{LockStore: open()}
 		var once sync.Once
 		first.renew = func(_ context.Context, next func(context.Context) error) error {
 			err := next(ctx)
-			time.Sleep(ttl + 100*time.Millisecond)
+			time.Sleep(ttl + testtime.Scale(100*time.Millisecond))
 			once.Do(func() { close(answered) })
 			return err
 		}
@@ -1543,7 +1545,7 @@ func (s *contendedReleaseStore) ReleaseLock(ctx context.Context, lockKey, holder
 // past which the row is any holder's to take, instead of hanging its caller.
 func TestDistributedLockManager_ReleaseIsBoundedByTheLease(t *testing.T) {
 	store := &contendedReleaseStore{LockStore: setupLockTestStore(t)}
-	ttl := 200 * time.Millisecond
+	ttl := testtime.Scale(200 * time.Millisecond)
 	manager := NewDistributedLockManager(store, newMockLogger(), WithDefaultTTL(ttl), WithRetryInterval(10*time.Millisecond))
 
 	_, release, err := manager.Acquire(context.Background(), "contended-key")
@@ -1556,7 +1558,7 @@ func TestDistributedLockManager_ReleaseIsBoundedByTheLease(t *testing.T) {
 	}()
 	select {
 	case <-done:
-		require.LessOrEqual(t, time.Since(start), ttl+200*time.Millisecond)
+		require.LessOrEqual(t, time.Since(start), ttl+testtime.Scale(200*time.Millisecond))
 	case <-time.After(3 * time.Second):
 		t.Fatal("a release blocked in the store outlived the lease")
 	}
@@ -1568,7 +1570,7 @@ func TestDistributedLockManager_ReleaseIsBoundedByTheLease(t *testing.T) {
 func TestDistributedLockManager_ReleaseBlockedOnAPostgresRowLock(t *testing.T) {
 	open := postgresLockTestStores(t)
 	ctx := context.Background()
-	const ttl = 400 * time.Millisecond
+	ttl := testtime.Scale(400 * time.Millisecond)
 	held, release, err := newLockTestManager(open(), ttl).Acquire(ctx, "row-lock-key")
 	require.NoError(t, err)
 
@@ -1582,7 +1584,7 @@ func TestDistributedLockManager_ReleaseBlockedOnAPostgresRowLock(t *testing.T) {
 	go func() { release(); close(done) }()
 	select {
 	case <-done:
-		assert.LessOrEqual(t, time.Since(start), ttl+300*time.Millisecond)
+		assert.LessOrEqual(t, time.Since(start), ttl+testtime.Scale(300*time.Millisecond))
 	case <-time.After(5 * time.Second):
 		t.Fatal("a release blocked on a row lock outlived the lease")
 	}
@@ -1599,7 +1601,7 @@ func TestDistributedLockManager_ReleaseBlockedOnAPostgresRowLock(t *testing.T) {
 func TestDistributedLockManager_StoppedHoldersLeaveNoWorkBehind(t *testing.T) {
 	store := setupLockTestStore(t)
 	ctx := context.Background()
-	const ttl = 100 * time.Millisecond
+	ttl := testtime.Scale(100 * time.Millisecond)
 	const holders = 40
 	wedged := make(chan struct{})
 
@@ -1629,7 +1631,7 @@ func TestDistributedLockManager_StoppedHoldersLeaveNoWorkBehind(t *testing.T) {
 				assert.EqualValues(t, holders, faulty.renewals.Load(), "a wedged renewal must stay one call per lock")
 				close(wedged)
 			}
-			require.Eventually(t, func() bool { return runtime.NumGoroutine() <= before+2 }, 2*time.Second, 10*time.Millisecond,
+			require.Eventually(t, func() bool { return runtime.NumGoroutine() <= before+2 }, testtime.Scale(2*time.Second), testtime.Scale(10*time.Millisecond),
 				"renewal goroutines outlived the lease they renewed")
 		})
 	}
@@ -1733,7 +1735,7 @@ func (s *ledgerStore) ReleaseLock(ctx context.Context, key, holder string) (bool
 func TestDistributedLockManager_ContendedHoldersStayExclusive(t *testing.T) {
 	forEachLockBackend(t, func(t *testing.T, open func() *RDBConfigStore) {
 		ctx := context.Background()
-		const ttl = 200 * time.Millisecond
+		ttl := testtime.Scale(200 * time.Millisecond)
 		ledger := &leaseLedger{leases: map[string]time.Time{}, unconfirmed: map[string]time.Time{}}
 		var entries atomic.Int32
 		var wg sync.WaitGroup
@@ -1751,7 +1753,7 @@ func TestDistributedLockManager_ContendedHoldersStayExclusive(t *testing.T) {
 					select {
 					case <-held.Done():
 						assert.ErrorIs(t, context.Cause(held), ErrLockLost)
-					case <-time.After(ttl/3 + 5*time.Millisecond):
+					case <-time.After(ttl/3 + testtime.Scale(5*time.Millisecond)):
 					}
 					release()
 				}
@@ -1818,7 +1820,7 @@ func (s *commitThenTimeoutStore) UpdateLockExpiry(ctx context.Context, key, hold
 func TestDistributedLockManager_RenewalCommittedAfterTheClientGaveUp(t *testing.T) {
 	forEachLockBackend(t, func(t *testing.T, open func() *RDBConfigStore) {
 		ctx := context.Background()
-		const ttl = 300 * time.Millisecond
+		ttl := testtime.Scale(300 * time.Millisecond)
 		store := open()
 		ledger := &leaseLedger{leases: map[string]time.Time{}, unconfirmed: map[string]time.Time{}}
 		timeouts := &commitThenTimeoutStore{LockStore: store}
@@ -1842,7 +1844,7 @@ func TestDistributedLockManager_RenewalCommittedAfterTheClientGaveUp(t *testing.
 			var err error
 			row, err = store.GetLock(ctx, "unconfirmed-renewal")
 			return err == nil && row != nil && ledger.explainsLiveRow(row)
-		}, 2*ttl, 5*time.Millisecond, "the row is exactly the write the holder could not confirm")
+		}, 2*ttl, testtime.Scale(5*time.Millisecond), "the row is exactly the write the holder could not confirm")
 		require.True(t, row.ExpiresAt.After(told), "the row outlives the holder that was told to stop")
 		require.False(t, row.ExpiresAt.After(acquiredAt.Add(3*ttl)), "at most one TTL from the last renewal write")
 
@@ -1878,8 +1880,8 @@ func (s *lateConfirmStore) TryAcquireLock(ctx context.Context, lock *tables.Tabl
 // A store can confirm a lease after it ran out: the expiry is fixed before the write.
 // Such a lease is refused, the holder owns nothing, and a retry gets a live one.
 func TestDistributedLock_RefusesALeaseConfirmedAfterItsExpiry(t *testing.T) {
-	const ttl = 100 * time.Millisecond
-	const delay = 150 * time.Millisecond
+	ttl := testtime.Scale(100 * time.Millisecond)
+	delay := testtime.Scale(150 * time.Millisecond) // outlasts ttl at any factor
 	forEachLockBackend(t, func(t *testing.T, open func() *RDBConfigStore) {
 		ctx := context.Background()
 		store := open()
@@ -1916,7 +1918,7 @@ func TestDistributedLock_RefusesALeaseConfirmedAfterItsExpiry(t *testing.T) {
 			late.late.Store(1)
 			late.whileLate = func() {
 				var err error
-				newer, err = newLockTestManager(store, 30*time.Second).NewLock("late-overtaken")
+				newer, err = newLockTestManager(store, testtime.Scale(30*time.Second)).NewLock("late-overtaken")
 				require.NoError(t, err)
 				acquired, err := newer.TryLock(ctx)
 				require.NoError(t, err)
@@ -1942,7 +1944,7 @@ func TestDistributedLock_RefusesALeaseConfirmedAfterItsExpiry(t *testing.T) {
 			_, _, err := manager.Acquire(ctx, "late-bounded")
 			require.ErrorIs(t, err, ErrLockNotAcquired)
 			require.EqualValues(t, 3, late.attempts.Load())
-			require.Eventually(t, func() bool { return runtime.NumGoroutine() <= before+2 }, 2*time.Second, 10*time.Millisecond)
+			require.Eventually(t, func() bool { return runtime.NumGoroutine() <= before+2 }, testtime.Scale(2*time.Second), testtime.Scale(10*time.Millisecond))
 		})
 
 		t.Run("cancellation ends the retries", func(t *testing.T) {
@@ -1960,10 +1962,10 @@ func TestDistributedLock_RefusesALeaseConfirmedAfterItsExpiry(t *testing.T) {
 
 // A manager with no store takes no lease, so nothing may report one lost.
 func TestDistributedLockManager_AcquireWithoutStore(t *testing.T) {
-	held, release, err := NewDistributedLockManager(nil, newMockLogger(), WithDefaultTTL(time.Millisecond)).
+	held, release, err := NewDistributedLockManager(nil, newMockLogger(), WithDefaultTTL(testtime.Scale(time.Millisecond))).
 		Acquire(context.Background(), "no-store-key")
 	require.NoError(t, err)
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(testtime.Scale(20 * time.Millisecond))
 	require.NoError(t, held.Err())
 	release()
 	release()

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/network"
 	"github.com/valyala/fasthttp"
 )
@@ -323,7 +325,7 @@ func TestConfigureDialer_SSRFProtection(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := &fasthttp.Client{ReadTimeout: time.Second}
+			client := &fasthttp.Client{ReadTimeout: testtime.Scale(time.Second)}
 			ConfigureDialer(client, false)
 			_, err := client.Dial(tt.addr)
 			if err == nil {
@@ -365,7 +367,7 @@ func TestConfigureDialer_ProxyBypassSkipsDialTimeoutCallback(t *testing.T) {
 	for _, addr := range []string{"10.0.0.1:80", "169.254.169.254:80", "0.0.0.0:80"} {
 		t.Run(addr, func(t *testing.T) {
 			var timeoutCalls atomic.Int32
-			client := &fasthttp.Client{ReadTimeout: time.Second}
+			client := &fasthttp.Client{ReadTimeout: testtime.Scale(time.Second)}
 			client.Dial = func(string) (net.Conn, error) { return nil, errBypassProxy }
 			client.DialTimeout = func(addr string, _ time.Duration) (net.Conn, error) {
 				timeoutCalls.Add(1)
@@ -414,7 +416,7 @@ func TestConfigureDialer_SSRFMultiIPAllFail(t *testing.T) {
 		t.Fatalf("close listener: %v", err)
 	}
 
-	client := &fasthttp.Client{ReadTimeout: 200 * time.Millisecond}
+	client := &fasthttp.Client{ReadTimeout: testtime.Scale(200 * time.Millisecond)}
 	ConfigureDialer(client, false)
 
 	_, err = client.Dial(addr)

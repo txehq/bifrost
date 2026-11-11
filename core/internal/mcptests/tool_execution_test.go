@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -219,7 +221,7 @@ func TestToolExecutionTimeout(t *testing.T) {
 	bifrost.SetMCPManager(manager)
 
 	// Create context with short timeout (100ms)
-	ctx, cancel := createTestContextWithTimeout(100 * time.Millisecond)
+	ctx, cancel := createTestContextWithTimeout(testtime.Scale(100 * time.Millisecond))
 	defer cancel()
 
 	// Try to execute delay tool with long duration (5 seconds)

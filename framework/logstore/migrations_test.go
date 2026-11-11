@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/migrator"
 	"github.com/capsohq/bifrost/framework/postgresconn"
@@ -1668,7 +1670,7 @@ func TestMigrationLockProbeWaitersHonourContext(t *testing.T) {
 	select {
 	case got := <-second:
 		assert.False(t, got, "a caller whose context ended must fail open")
-	case <-time.After(time.Second):
+	case <-time.After(testtime.Scale(time.Second)):
 		t.Fatal("a caller with an ended context waited for another caller's probe")
 	}
 	releaseOnce()

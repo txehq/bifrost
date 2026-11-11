@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
@@ -391,20 +393,20 @@ func TestClickHouseClaimAbortsWhenLockIsLost(t *testing.T) {
 func TestClickHouseScheduledRowsLiveUntilDue(t *testing.T) {
 	env := setupClickHouse(t)
 	s := env.store(t, NewProcessLocker())
-	s.retention = time.Second
+	s.retention = testtime.Scale(time.Second)
 	ctx := context.Background()
 	mustGroup(t, s, "due", "g", StartFromLatest)
 	m := newMsg("due", "", "later")
-	m.DeliverAt = time.Now().Add(1500 * time.Millisecond)
+	m.DeliverAt = time.Now().Add(testtime.Scale(1500 * time.Millisecond))
 	mustAppend(t, s, m)
 
-	time.Sleep(1200 * time.Millisecond) // past retention from publish, not yet due
+	time.Sleep(testtime.Scale(1200 * time.Millisecond)) // past retention from publish, not yet due
 	st, err := s.Stats(ctx, "due", "g")
 	require.NoError(t, err)
 	assert.Equal(t, Stats{Pending: 1}, st, "still retained")
 	assert.Empty(t, mustClaim(t, s, "due", "g", 1, longLease))
 
-	time.Sleep(time.Until(m.DeliverAt) + 100*time.Millisecond)
+	time.Sleep(time.Until(m.DeliverAt) + testtime.Scale(100*time.Millisecond))
 	assert.Equal(t, []string{"later"}, payloads(mustClaim(t, s, "due", "g", 1, longLease)))
 }
 
@@ -639,12 +641,12 @@ func TestClickHouseRegistrationWaitsForInFlightPublish(t *testing.T) {
 	<-paused
 
 	registered := make(chan struct{})
-	releaseAfter(registered, time.Second, release)
+	releaseAfter(registered, testtime.Scale(time.Second), release)
 	require.NoError(t, s.EnsureGroup(ctx, "inflight", "g", StartFromEarliest))
 	close(registered)
 	require.NoError(t, <-published)
 
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(testtime.Scale(200 * time.Millisecond))
 	assert.Equal(t, []string{"x"}, payloads(mustClaim(t, s, "inflight", "g", 10, longLease)))
 }
 
@@ -656,7 +658,7 @@ func TestClickHousePurgeWaitsForEarliestBackfill(t *testing.T) {
 	s := env.store(t, NewProcessLocker())
 	ctx := context.Background()
 	mustAppend(t, s, newMsg("purgerace", "", "x"))
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(testtime.Scale(50 * time.Millisecond))
 
 	hook, paused, release := pauseAt("INSERT INTO queue_deliveries")
 	defer release()
@@ -664,8 +666,8 @@ func TestClickHousePurgeWaitsForEarliestBackfill(t *testing.T) {
 	go func() { registered <- s.EnsureGroup(withCHHook(ctx, hook), "purgerace", "g", StartFromEarliest) }()
 	<-paused
 	purged := make(chan struct{})
-	releaseAfter(purged, time.Second, release)
-	_, err := s.Purge(ctx, PurgePolicy{DeadRetention: time.Millisecond, AckedRetention: time.Millisecond}, 100)
+	releaseAfter(purged, testtime.Scale(time.Second), release)
+	_, err := s.Purge(ctx, PurgePolicy{DeadRetention: testtime.Scale(time.Millisecond), AckedRetention: testtime.Scale(time.Millisecond)}, 100)
 	close(purged)
 	require.NoError(t, err)
 	require.NoError(t, <-registered)
@@ -723,9 +725,9 @@ func TestClickHouseStaleRetryCannotEraseNewClaim(t *testing.T) {
 	ctx := context.Background()
 	mustGroup(t, a, "stale", "g", StartFromLatest)
 	mustAppend(t, a, newMsg("stale", "", "x"))
-	old := mustClaim(t, a, "stale", "g", 1, 100*time.Millisecond)
+	old := mustClaim(t, a, "stale", "g", 1, testtime.Scale(100*time.Millisecond))
 	require.Len(t, old, 1)
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(testtime.Scale(300 * time.Millisecond))
 
 	hook, paused, release := pauseAt("INSERT INTO queue_deliveries")
 	defer release()
@@ -739,7 +741,7 @@ func TestClickHouseStaleRetryCannotEraseNewClaim(t *testing.T) {
 	select {
 	case <-paused:
 		claimed := make(chan struct{})
-		releaseAfter(claimed, time.Second, release)
+		releaseAfter(claimed, testtime.Scale(time.Second), release)
 		cs = mustClaim(t, b, "stale", "g", 1, longLease)
 		close(claimed)
 		require.NoError(t, <-retried)
@@ -765,9 +767,9 @@ func TestClickHouseClaimPausedAfterScanCannotReviveAck(t *testing.T) {
 	ctx := context.Background()
 	mustGroup(t, a, "revive-ack", "g", StartFromLatest)
 	mustAppend(t, a, newMsg("revive-ack", "", "x"))
-	old := mustClaim(t, b, "revive-ack", "g", 1, 100*time.Millisecond)
+	old := mustClaim(t, b, "revive-ack", "g", 1, testtime.Scale(100*time.Millisecond))
 	require.Len(t, old, 1)
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(testtime.Scale(300 * time.Millisecond))
 
 	hook, paused, release := pauseAt("INSERT INTO queue_deliveries")
 	defer release()
@@ -782,7 +784,7 @@ func TestClickHouseClaimPausedAfterScanCannotReviveAck(t *testing.T) {
 	}()
 	<-paused
 	acked := make(chan struct{})
-	releaseAfter(acked, time.Second, release)
+	releaseAfter(acked, testtime.Scale(time.Second), release)
 	ackHeld, err := ackOne(ctx, b, old[0])
 	close(acked)
 	require.NoError(t, err)
@@ -832,7 +834,7 @@ func TestClickHouseLateRetryLosesToTakeover(t *testing.T) {
 	ctx := context.Background()
 	mustGroup(t, a, "late-retry", "g", StartFromLatest)
 	mustAppend(t, a, newMsg("late-retry", "", "x"))
-	const lease = 500 * time.Millisecond
+	lease := testtime.Scale(500 * time.Millisecond)
 	old := mustClaim(t, a, "late-retry", "g", 1, lease)
 	require.Len(t, old, 1)
 
@@ -848,7 +850,7 @@ func TestClickHouseLateRetryLosesToTakeover(t *testing.T) {
 		retried <- result{held, err}
 	}()
 	<-paused
-	time.Sleep(lease + 200*time.Millisecond)
+	time.Sleep(lease + testtime.Scale(200*time.Millisecond))
 	cs := mustClaim(t, b, "late-retry", "g", 1, longLease)
 	release()
 	res := <-retried
@@ -872,7 +874,7 @@ func purgedAckRetry(t *testing.T, env clickhouseTestEnv, topic string, policy Pu
 	ctx := context.Background()
 	mustGroup(t, a, topic, "g", StartFromLatest)
 	mustAppend(t, a, newMsg(topic, "", "x"))
-	const lease = 500 * time.Millisecond
+	lease := testtime.Scale(500 * time.Millisecond)
 	old := mustClaim(t, a, topic, "g", 1, lease)
 	require.Len(t, old, 1)
 
@@ -884,13 +886,13 @@ func purgedAckRetry(t *testing.T, env clickhouseTestEnv, topic string, policy Pu
 		retried <- err
 	}()
 	<-paused
-	time.Sleep(lease + 200*time.Millisecond)
+	time.Sleep(lease + testtime.Scale(200*time.Millisecond))
 	cs := mustClaim(t, b, topic, "g", 1, longLease)
 	require.Len(t, cs, 1)
 	held, err := ackOne(ctx, b, cs[0])
 	require.NoError(t, err)
 	require.True(t, held)
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(testtime.Scale(20 * time.Millisecond))
 	_, err = b.Purge(ctx, policy, 100)
 	require.NoError(t, err)
 	release()
@@ -953,7 +955,7 @@ func TestClickHouseLateAckLosesToTakeover(t *testing.T) {
 	ctx := context.Background()
 	mustGroup(t, a, "late-ack", "g", StartFromLatest)
 	mustAppend(t, a, newMsg("late-ack", "", "x"))
-	const lease = 500 * time.Millisecond
+	lease := testtime.Scale(500 * time.Millisecond)
 	old := mustClaim(t, b, "late-ack", "g", 1, lease)
 	require.Len(t, old, 1)
 
@@ -969,7 +971,7 @@ func TestClickHouseLateAckLosesToTakeover(t *testing.T) {
 		acked <- result{held, err}
 	}()
 	<-paused
-	time.Sleep(lease + 200*time.Millisecond)
+	time.Sleep(lease + testtime.Scale(200*time.Millisecond))
 	cs := mustClaim(t, a, "late-ack", "g", 1, longLease)
 	release()
 	res := <-acked

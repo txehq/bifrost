@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	codemcp "github.com/capsohq/bifrost/core/mcp"
 	"github.com/capsohq/bifrost/core/schemas"
 )
@@ -88,7 +90,7 @@ func TestHandleExecuteToolCodeBudgetResults(t *testing.T) {
 func TestHandleExecuteToolCodeMarksSandboxErrors(t *testing.T) {
 	mode := NewStarlarkCodeMode(&codemcp.CodeModeConfig{
 		BindingLevel:         schemas.CodeModeBindingLevelTool,
-		ToolExecutionTimeout: time.Second,
+		ToolExecutionTimeout: testtime.Scale(time.Second),
 	}, nil)
 	mode.clientManager = &testClientManager{}
 

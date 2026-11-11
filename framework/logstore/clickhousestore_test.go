@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/objectstore"
 	"github.com/capsohq/bifrost/framework/queryscope"
@@ -1677,7 +1679,7 @@ func TestClickHouseWarpWritesWaitForTheSharedOwnerLock(t *testing.T) {
 		case err := <-done:
 			release()
 			t.Fatalf("write finished while another instance held the owner's lock (err=%v)", err)
-		case <-time.After(300 * time.Millisecond):
+		case <-time.After(testtime.Scale(300 * time.Millisecond)):
 		}
 		release()
 		select {
@@ -1706,7 +1708,7 @@ func TestClickHouseWarpWritesWaitForTheSharedOwnerLock(t *testing.T) {
 		waitsForLock(t, func() error { return replica.DeleteWarpConversation(ctx, owner, owner+"-delete") })
 	})
 	t.Run("prune", func(t *testing.T) {
-		seed(owner+"-prune-old", now.Add(-time.Hour), 1)
+		seed(owner+"-prune-old", now.Add(-testtime.Scale(time.Hour)), 1)
 		seed(owner+"-prune-new", now, 1)
 		waitsForLock(t, func() error {
 			_, err := replica.PruneWarpConversations(ctx, owner, 1)

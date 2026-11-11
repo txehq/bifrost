@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/capsohq/bifrost/plugins/otel"
 	"net"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/capsohq/bifrost/plugins/otel"
+	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
 
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
@@ -954,7 +956,7 @@ func TestUpdatePlugin_ConcurrentSavesOfOnePluginDoNotInterleave(t *testing.T) {
 	// waits for the first, so give it a moment either way before letting the first fail.
 	select {
 	case <-succeedingDone:
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(testtime.Scale(500 * time.Millisecond)):
 	}
 	close(loader.release)
 	<-failingDone

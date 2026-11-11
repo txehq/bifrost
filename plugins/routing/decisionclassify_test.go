@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/plugins/routing/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	"github.com/capsohq/bifrost/plugins/routing/complexity"
@@ -105,7 +107,7 @@ func TestClassifyDecisionComplexityRequestShape(t *testing.T) {
 	count := 2
 	var captured *schemas.BifrostDecisionRequest
 	var remaining time.Duration
-	p := decisionTestPlugin(&complexity.DecisionConfig{PreviousMessageCount: &count, Timeout: 250 * time.Millisecond},
+	p := decisionTestPlugin(&complexity.DecisionConfig{PreviousMessageCount: &count, Timeout: testtime.Scale(250 * time.Millisecond)},
 		func(ctx *schemas.BifrostContext, req *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 			captured = req
 			deadline, ok := ctx.Deadline()
@@ -125,7 +127,7 @@ func TestClassifyDecisionComplexityRequestShape(t *testing.T) {
 		{Role: "user", Content: "current question"},
 	}, conversationOf(captured.Input))
 	assert.Greater(t, remaining, time.Duration(0))
-	assert.LessOrEqual(t, remaining, 250*time.Millisecond)
+	assert.LessOrEqual(t, remaining, testtime.Scale(250*time.Millisecond))
 
 	require.Len(t, captured.Questions, 1)
 	question := captured.Questions[0]
@@ -366,7 +368,7 @@ func TestClassifyDecisionComplexityCarriesConfidence(t *testing.T) {
 // TestClassifyDecisionComplexityTimesOut checks that a slow decision-model call is cut at
 // the configured timeout and reported as a timeout, not a generic failure.
 func TestClassifyDecisionComplexityTimesOut(t *testing.T) {
-	p := decisionTestPlugin(&complexity.DecisionConfig{Timeout: 20 * time.Millisecond},
+	p := decisionTestPlugin(&complexity.DecisionConfig{Timeout: testtime.Scale(20 * time.Millisecond)},
 		func(ctx *schemas.BifrostContext, _ *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 			<-ctx.Done()
 			return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "context deadline exceeded"}}
@@ -375,11 +377,11 @@ func TestClassifyDecisionComplexityTimesOut(t *testing.T) {
 	start := time.Now()
 	proposal := p.classifyDecisionComplexity(decisionTestContext(t), decisionTestInput())
 
-	assert.Less(t, time.Since(start), time.Second)
+	assert.Less(t, time.Since(start), testtime.Scale(time.Second))
 	assert.Nil(t, proposal.Result)
 	assert.Equal(t, complexity.MechanismSkipped, proposal.Mechanism)
 	assert.Equal(t, schemas.LogLevelWarn, proposal.LogLevel)
-	assert.Contains(t, proposal.LogMessage, "timed out after 20ms (model=typesafe/jev-latest)")
+	assert.Contains(t, proposal.LogMessage, "timed out after "+testtime.Scale(20*time.Millisecond).String()+" (model=typesafe/jev-latest)")
 }
 
 // TestClassifyDecisionComplexityProviderErrorPublishesNothing covers an upstream

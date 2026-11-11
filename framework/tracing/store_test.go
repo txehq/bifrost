@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -291,7 +293,7 @@ func TestSetTraceAttribute(t *testing.T) {
 }
 
 func TestCleanupOldTraces_RemovesOrphanedDeferredSpans(t *testing.T) {
-	store := NewTraceStore(10*time.Millisecond, nil)
+	store := NewTraceStore(testtime.Scale(10*time.Millisecond), nil)
 	defer store.Stop()
 
 	// Simulate a streaming request whose trace completer never ran: the trace
@@ -302,7 +304,7 @@ func TestCleanupOldTraces_RemovesOrphanedDeferredSpans(t *testing.T) {
 
 	// Let the orphan exceed the TTL, then register a fresh deferred span that
 	// must survive the sweep.
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(testtime.Scale(20 * time.Millisecond))
 	freshTraceID := store.CreateTrace("")
 	store.StoreDeferredSpan(freshTraceID, "fresh-span")
 
@@ -376,7 +378,7 @@ func TestCreateTrace_ConcurrentSharedInheritedTraceID(t *testing.T) {
 // sweep must export it, with any span left open closed rather than carrying a zero
 // EndTime.
 func TestCleanupOldTraces_ExportsExpiredTraceInsteadOfDropping(t *testing.T) {
-	store := NewTraceStore(10*time.Millisecond, nil)
+	store := NewTraceStore(testtime.Scale(10*time.Millisecond), nil)
 	defer store.Stop()
 	tracer := NewTracer(store, nil, nil)
 	defer tracer.Stop()
@@ -390,7 +392,7 @@ func TestCleanupOldTraces_ExportsExpiredTraceInsteadOfDropping(t *testing.T) {
 	tracer.SetAttribute(handle, "gen_ai.usage.cost", 0.0421)
 	// Deliberately never ended: this is what an expired trace looks like.
 
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(testtime.Scale(20 * time.Millisecond))
 	store.cleanupOldTraces()
 
 	select {

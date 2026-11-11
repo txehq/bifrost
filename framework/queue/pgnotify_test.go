@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/capsohq/bifrost/framework/postgresconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -82,7 +84,7 @@ func (p *pgTestInstance) awaitListening(t *testing.T) {
 		select {
 		case <-p.store.probes:
 			return
-		case <-time.After(50 * time.Millisecond):
+		case <-time.After(testtime.Scale(50 * time.Millisecond)):
 		case <-deadline:
 			t.Fatal("the LISTEN session never came up")
 		}
@@ -297,7 +299,7 @@ func TestCloseStopsWaitingForAStuckListener(t *testing.T) {
 	q, err := NewStoreQueue(store, EngineConfig{}, nil)
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(200*time.Millisecond))
 	defer cancel()
 	closed := make(chan error, 1)
 	go func() { closed <- q.Close(ctx) }()

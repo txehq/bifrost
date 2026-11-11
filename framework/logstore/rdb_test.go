@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -799,7 +801,7 @@ func (m *backlogRetentionManager) DeleteLogsBatch(ctx context.Context, _ time.Ti
 	select {
 	case <-ctx.Done():
 		return 0, ctx.Err()
-	case <-time.After(2 * time.Millisecond):
+	case <-time.After(testtime.Scale(2 * time.Millisecond)):
 	}
 	return int64(size), nil
 }
@@ -817,7 +819,7 @@ func (m *backlogRetentionManager) DeleteMCPToolLogsBatch(_ context.Context, _ ti
 func TestHighFixesCleanerMCPNotStarvedByLogsBacklog(t *testing.T) {
 	t.Run("logs backlog outlasts the deadline", func(t *testing.T) {
 		m := &backlogRetentionManager{}
-		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(300*time.Millisecond))
 		defer cancel()
 		NewLogsCleaner(m, CleanerConfig{RetentionDays: 7}, testLogger{}).cleanupOldLogs(ctx)
 		require.Positive(t, m.mcpBatches.Load(), "a logs backlog must not starve MCP tool-log retention")

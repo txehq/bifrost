@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -101,7 +103,7 @@ func TestContext_CancellationPropagation(t *testing.T) {
 	bifrost.SetMCPManager(manager)
 
 	// Create context that will be cancelled
-	ctx, cancel := createTestContextWithTimeout(500 * time.Millisecond)
+	ctx, cancel := createTestContextWithTimeout(testtime.Scale(500 * time.Millisecond))
 	defer cancel()
 
 	toolCall := schemas.ChatAssistantMessageToolCall{
@@ -118,7 +120,7 @@ func TestContext_CancellationPropagation(t *testing.T) {
 	elapsed := time.Since(start)
 
 	// Should timeout/cancel before tool completes
-	assert.Less(t, elapsed, 2*time.Second, "should cancel before tool completes")
+	assert.Less(t, elapsed, testtime.Scale(2*time.Second), "should cancel before tool completes")
 
 	if bifrostErr != nil {
 		t.Logf("Cancellation propagated with error: %v", bifrostErr.Error)
@@ -350,7 +352,7 @@ func TestContext_TimeoutPropagation(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create context with 250ms timeout
-	ctx, cancel := createTestContextWithTimeout(250 * time.Millisecond)
+	ctx, cancel := createTestContextWithTimeout(testtime.Scale(250 * time.Millisecond))
 	defer cancel()
 
 	// Call all three tools (100ms, 200ms, 300ms) in parallel

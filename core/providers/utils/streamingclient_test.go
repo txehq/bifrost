@@ -18,6 +18,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -106,8 +108,8 @@ func TestBuildStreamingClient_LongStreamSurvives(t *testing.T) {
 	defer srv.Close()
 
 	base := &fasthttp.Client{
-		ReadTimeout:  1 * time.Second, // would abort the stream without the fix
-		WriteTimeout: 1 * time.Second,
+		ReadTimeout:  testtime.Scale(1 * time.Second), // would abort the stream without the fix
+		WriteTimeout: testtime.Scale(1 * time.Second),
 	}
 	ConfigureDialer(base, false)
 	stream := BuildStreamingClient(base)
@@ -190,7 +192,7 @@ func TestBuildStreamingHTTPClient_LongStreamSurvives(t *testing.T) {
 			if flusher != nil {
 				flusher.Flush()
 			}
-			time.Sleep(400 * time.Millisecond)
+			time.Sleep(testtime.Scale(400 * time.Millisecond))
 		}
 	}))
 	defer srv.Close()
@@ -198,14 +200,14 @@ func TestBuildStreamingHTTPClient_LongStreamSurvives(t *testing.T) {
 	base := &http.Client{
 		Transport: &http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
-			DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
-			ResponseHeaderTimeout: 5 * time.Second,
+			DialContext:           (&net.Dialer{Timeout: testtime.Scale(5 * time.Second)}).DialContext,
+			ResponseHeaderTimeout: testtime.Scale(5 * time.Second),
 		},
-		Timeout: 500 * time.Millisecond, // would abort the stream without the fix
+		Timeout: testtime.Scale(500 * time.Millisecond), // would abort the stream without the fix
 	}
 	stream := BuildStreamingHTTPClient(base)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(5*time.Second))
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
 	if err != nil {
@@ -392,8 +394,8 @@ func TestDoStreamingRequest_SilentUpstreamTimesOutAtHeaderWait(t *testing.T) {
 	upstream := newSilentUpstream(t)
 
 	base := &fasthttp.Client{
-		ReadTimeout:  300 * time.Millisecond,
-		WriteTimeout: 300 * time.Millisecond,
+		ReadTimeout:  testtime.Scale(300 * time.Millisecond),
+		WriteTimeout: testtime.Scale(300 * time.Millisecond),
 	}
 	ConfigureDialer(base, true)
 	stream := BuildStreamingClient(base)
@@ -411,7 +413,7 @@ func TestDoStreamingRequest_SilentUpstreamTimesOutAtHeaderWait(t *testing.T) {
 		if !errors.Is(err, fasthttp.ErrTimeout) {
 			t.Fatalf("DoStreamingRequest error = %v, want fasthttp.ErrTimeout", err)
 		}
-		if elapsed > 2*time.Second {
+		if elapsed > testtime.Scale(2*time.Second) {
 			t.Fatalf("timed out after %v, want roughly the 300ms ReadTimeout", elapsed)
 		}
 		fasthttp.ReleaseRequest(req)
@@ -474,8 +476,8 @@ func TestBuildLargeResponseClient_SilentUpstreamTimesOutAtHeaderWait(t *testing.
 	upstream := newSilentUpstream(t)
 
 	base := &fasthttp.Client{
-		ReadTimeout:  300 * time.Millisecond,
-		WriteTimeout: 300 * time.Millisecond,
+		ReadTimeout:  testtime.Scale(300 * time.Millisecond),
+		WriteTimeout: testtime.Scale(300 * time.Millisecond),
 	}
 	ConfigureDialer(base, true)
 
@@ -509,7 +511,7 @@ func TestBuildLargeResponseClient_SilentUpstreamTimesOutAtHeaderWait(t *testing.
 		if res.err.Error.Type == nil || *res.err.Error.Type != schemas.RequestTimedOut {
 			t.Fatalf("error type = %v, want RequestTimedOut", res.err.Error.Type)
 		}
-		if elapsed := time.Since(start); elapsed > 2*time.Second {
+		if elapsed := time.Since(start); elapsed > testtime.Scale(2*time.Second) {
 			t.Fatalf("timed out after %v, want roughly the 300ms ReadTimeout", elapsed)
 		}
 		fasthttp.ReleaseRequest(req)
@@ -546,8 +548,8 @@ func TestBuildLargeResponseClient_HeaderDeadlineDoesNotCapBody(t *testing.T) {
 	defer srv.Close()
 
 	base := &fasthttp.Client{
-		ReadTimeout:  1 * time.Second,
-		WriteTimeout: 1 * time.Second,
+		ReadTimeout:  testtime.Scale(1 * time.Second),
+		WriteTimeout: testtime.Scale(1 * time.Second),
 	}
 	ConfigureDialer(base, true)
 
@@ -643,7 +645,7 @@ func largeResponseRequest(t *testing.T, srv *httptest.Server, idle time.Duration
 // pinned for as long as the upstream keeps the socket open (PR #7104 review).
 func TestFinalizeResponseWithLargeDetection_StallDuringPrefetchReturnsError(t *testing.T) {
 	srv := stallingLargeServer(t, 256*1024, 10) // 10 bytes, then silence
-	ctx, resp, release := largeResponseRequest(t, srv, 300*time.Millisecond)
+	ctx, resp, release := largeResponseRequest(t, srv, testtime.Scale(300*time.Millisecond))
 	defer release()
 
 	type result struct {
@@ -661,7 +663,7 @@ func TestFinalizeResponseWithLargeDetection_StallDuringPrefetchReturnsError(t *t
 		if res.isLarge || res.err == nil {
 			t.Fatalf("expected a decode error from the stalled prefetch, got isLarge=%v err=%v", res.isLarge, res.err)
 		}
-		if elapsed := time.Since(start); elapsed > 2*time.Second {
+		if elapsed := time.Since(start); elapsed > testtime.Scale(2*time.Second) {
 			t.Fatalf("prefetch stall took %v to surface, want roughly the 300ms idle timeout", elapsed)
 		}
 	case <-time.After(3 * time.Second):
@@ -676,7 +678,7 @@ func TestFinalizeResponseWithLargeDetection_StallDuringPrefetchReturnsError(t *t
 // Close must not hang afterwards.
 func TestFinalizeResponseWithLargeDetection_StallAfterPrefetchUnblocksReader(t *testing.T) {
 	srv := stallingLargeServer(t, 256*1024, 96*1024) // more than the 64KB prefetch, then silence
-	ctx, resp, release := largeResponseRequest(t, srv, 300*time.Millisecond)
+	ctx, resp, release := largeResponseRequest(t, srv, testtime.Scale(300*time.Millisecond))
 	defer release()
 
 	_, isLarge, bifrostErr := FinalizeResponseWithLargeDetection(ctx, resp, nil)
@@ -707,7 +709,7 @@ func TestFinalizeResponseWithLargeDetection_StallAfterPrefetchUnblocksReader(t *
 		if !errors.Is(err, ErrStreamIdleTimeout) {
 			t.Fatalf("reader error = %v, want ErrStreamIdleTimeout", err)
 		}
-		if elapsed := time.Since(start); elapsed > 2*time.Second {
+		if elapsed := time.Since(start); elapsed > testtime.Scale(2*time.Second) {
 			t.Fatalf("stall took %v to surface, want roughly the 300ms idle timeout", elapsed)
 		}
 	case <-time.After(3 * time.Second):
@@ -840,7 +842,7 @@ func TestFinalizeResponseWithLargeDetection_StallInGzipHeaderReturnsError(t *tes
 	t.Cleanup(srv.Close)
 	t.Cleanup(func() { close(hold) })
 
-	ctx, resp, release := largeResponseRequest(t, srv, 300*time.Millisecond)
+	ctx, resp, release := largeResponseRequest(t, srv, testtime.Scale(300*time.Millisecond))
 	defer release()
 
 	done := make(chan *schemas.BifrostError, 1)
@@ -854,7 +856,7 @@ func TestFinalizeResponseWithLargeDetection_StallInGzipHeaderReturnsError(t *tes
 		if err == nil {
 			t.Fatal("expected an error from the stalled gzip header")
 		}
-		if elapsed := time.Since(start); elapsed > 2*time.Second {
+		if elapsed := time.Since(start); elapsed > testtime.Scale(2*time.Second) {
 			t.Fatalf("gzip header stall took %v to surface, want roughly the 300ms idle timeout", elapsed)
 		}
 	case <-time.After(3 * time.Second):
@@ -1089,10 +1091,10 @@ func postOnce(ctx context.Context, client *fasthttp.Client, target string) *sche
 // with no mark, keep the stale-connection retry as it was.
 func TestContextTransport_WriteOnceRequestIsNeverResent(t *testing.T) {
 	newClient := func() *fasthttp.Client {
-		return ConfigureDialer(&fasthttp.Client{ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, TLSConfig: &tls.Config{InsecureSkipVerify: true}}, true)
+		return ConfigureDialer(&fasthttp.Client{ReadTimeout: testtime.Scale(5 * time.Second), WriteTimeout: testtime.Scale(5 * time.Second), TLSConfig: &tls.Config{InsecureSkipVerify: true}}, true)
 	}
 	chatContext := func(t *testing.T) *schemas.BifrostContext {
-		ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 20*time.Second)
+		ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), testtime.Scale(20*time.Second))
 		t.Cleanup(cancel)
 		return ctx
 	}
@@ -1152,7 +1154,7 @@ func TestContextTransport_WriteOnceRequestIsNeverResent(t *testing.T) {
 			if err := postOnce(writeOnceContext(t), client, up.target); err != nil {
 				t.Fatalf("request 1 failed: %+v", err.Error)
 			}
-			time.Sleep(200 * time.Millisecond) // let the close reach the pooled socket
+			time.Sleep(testtime.Scale(200 * time.Millisecond)) // let the close reach the pooled socket
 			if err := postOnce(writeOnceContext(t), client, up.target); err != nil {
 				t.Fatalf("request 2 failed on a stale pooled connection: %+v", err.Error)
 			}
@@ -1173,12 +1175,12 @@ func TestContextTransport_WriteOnceRequestIsNeverResent(t *testing.T) {
 	// short timeout it has passed by the next request, which must still reuse the connection.
 	t.Run("an expired deadline left on a pooled connection does not cost a new one", func(t *testing.T) {
 		up := newWriteOnceUpstream(t, false, func(_, _ int32) upstreamAction { return answerAndKeep })
-		client := ConfigureDialer(&fasthttp.Client{ReadTimeout: 50 * time.Millisecond, WriteTimeout: 50 * time.Millisecond}, true)
+		client := ConfigureDialer(&fasthttp.Client{ReadTimeout: testtime.Scale(50 * time.Millisecond), WriteTimeout: testtime.Scale(50 * time.Millisecond)}, true)
 		for i := 1; i <= 3; i++ {
 			if err := postOnce(writeOnceContext(t), client, up.target); err != nil {
 				t.Fatalf("request %d failed: %+v", i, err.Error)
 			}
-			time.Sleep(120 * time.Millisecond) // past the deadline the request left behind
+			time.Sleep(testtime.Scale(120 * time.Millisecond)) // past the deadline the request left behind
 		}
 		if got, conns := up.requests.Load(), up.accepted.Load(); got != 3 || conns != 1 {
 			t.Fatalf("upstream read %d requests on %d connections, want 3 on 1", got, conns)
@@ -1211,7 +1213,7 @@ func TestContextTransport_WriteOnceRequestIsNeverResent(t *testing.T) {
 		}
 		deadline := time.Now().Add(10 * time.Second)
 		for up.requests.Load() < burst && time.Now().Before(deadline) {
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(testtime.Scale(10 * time.Millisecond))
 		}
 		close(release)
 		wg.Wait()
@@ -1225,7 +1227,7 @@ func TestContextTransport_WriteOnceRequestIsNeverResent(t *testing.T) {
 			t.Fatalf("the burst used %d connections, want %d", conns, burst)
 		}
 		closeAll.Store(true)
-		time.Sleep(300 * time.Millisecond) // every pooled socket has seen the upstream's close
+		time.Sleep(testtime.Scale(300 * time.Millisecond)) // every pooled socket has seen the upstream's close
 		if err := postOnce(writeOnceContext(t), client, up.target); err != nil {
 			t.Fatalf("the request after the burst failed with %d dead pooled connections: %+v", burst, err.Error)
 		}

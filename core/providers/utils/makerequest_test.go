@@ -15,6 +15,8 @@ import (
 	"testing/iotest"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -81,7 +83,7 @@ func TestMakeRequestWithContext_SuccessReturnsNoopWait(t *testing.T) {
 
 func TestMakeRequestWithContext_DeadlineExceededReturnsTimeoutError(t *testing.T) {
 	// Server takes 500ms to respond
-	client, cleanup := newTestServer(t, 500*time.Millisecond, 200)
+	client, cleanup := newTestServer(t, testtime.Scale(500*time.Millisecond), 200)
 	defer cleanup()
 
 	req := fasthttp.AcquireRequest()
@@ -89,7 +91,7 @@ func TestMakeRequestWithContext_DeadlineExceededReturnsTimeoutError(t *testing.T
 	req.SetRequestURI("http://test/")
 
 	// Deadline exceeded almost immediately
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(10*time.Millisecond))
 	defer cancel()
 
 	_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
@@ -111,7 +113,7 @@ func TestMakeRequestWithContext_DeadlineExceededReturnsTimeoutError(t *testing.T
 	elapsed := time.Since(start)
 
 	// The wait should have taken roughly the remaining server delay (~490ms)
-	if elapsed < 200*time.Millisecond {
+	if elapsed < testtime.Scale(200*time.Millisecond) {
 		t.Fatalf("wait() returned too quickly (%v), expected it to block until goroutine finishes", elapsed)
 	}
 
@@ -170,7 +172,7 @@ func TestMakeRequestWithContext_WaitPreventsDataRace(t *testing.T) {
 	// Run with: go test -race -run TestMakeRequestWithContext_WaitPreventsDataRace
 
 	// Server responds after 200ms
-	client, cleanup := newTestServer(t, 200*time.Millisecond, 200)
+	client, cleanup := newTestServer(t, testtime.Scale(200*time.Millisecond), 200)
 	defer cleanup()
 
 	for range 10 {
@@ -180,7 +182,7 @@ func TestMakeRequestWithContext_WaitPreventsDataRace(t *testing.T) {
 			req.SetRequestURI("http://test/")
 
 			// Cancel context after 5ms — well before server responds
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(5*time.Millisecond))
 			defer cancel()
 
 			_, _, wait := MakeRequestWithContext(ctx, client, req, resp)
@@ -196,7 +198,7 @@ func TestMakeRequestWithContext_WaitPreventsDataRace(t *testing.T) {
 }
 
 func TestMakeRequestWithContext_WaitIsIdempotent(t *testing.T) {
-	client, cleanup := newTestServer(t, 50*time.Millisecond, 200)
+	client, cleanup := newTestServer(t, testtime.Scale(50*time.Millisecond), 200)
 	defer cleanup()
 
 	req := fasthttp.AcquireRequest()
@@ -206,7 +208,7 @@ func TestMakeRequestWithContext_WaitIsIdempotent(t *testing.T) {
 
 	req.SetRequestURI("http://test/")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(5*time.Millisecond))
 	defer cancel()
 
 	_, _, wait := MakeRequestWithContext(ctx, client, req, resp)
@@ -227,7 +229,7 @@ func TestMakeRequestWithContext_WaitIsIdempotent(t *testing.T) {
 		// Second wait() completed — but note this actually WILL deadlock with
 		// the current implementation since <-errChan can only be read once.
 		// This documents the behavior: wait() should only be called once.
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(testtime.Scale(100 * time.Millisecond)):
 		// Expected: second wait() blocks forever because errChan is already drained.
 		// This is fine — callers should only call wait() once (via a single defer).
 	}
@@ -258,7 +260,7 @@ func TestMakeRequestWithContext_ConcurrentRequestsWithCancellation(t *testing.T)
 	// Simulate the production scenario: multiple concurrent requests where some
 	// contexts cancel while the HTTP call is in-flight. Under -race, this would
 	// detect the original bug where deferred Release races with client.Do.
-	client, cleanup := newTestServer(t, 100*time.Millisecond, 200)
+	client, cleanup := newTestServer(t, testtime.Scale(100*time.Millisecond), 200)
 	defer cleanup()
 
 	const numRequests = 20
@@ -281,9 +283,9 @@ func TestMakeRequestWithContext_ConcurrentRequestsWithCancellation(t *testing.T)
 			var ctx context.Context
 			var cancel context.CancelFunc
 			if completed.Load()%2 == 0 {
-				ctx, cancel = context.WithTimeout(context.Background(), 5*time.Millisecond)
+				ctx, cancel = context.WithTimeout(context.Background(), testtime.Scale(5*time.Millisecond))
 			} else {
-				ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+				ctx, cancel = context.WithTimeout(context.Background(), testtime.Scale(5*time.Second))
 			}
 
 			_, _, wait := MakeRequestWithContext(ctx, client, req, resp)
@@ -329,8 +331,8 @@ func TestMakeRequestWithContext_ClientError(t *testing.T) {
 		Dial: func(addr string) (net.Conn, error) {
 			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "no such host", Name: "nonexistent.invalid"}}
 		},
-		ReadTimeout:  1 * time.Second,
-		WriteTimeout: 1 * time.Second,
+		ReadTimeout:  testtime.Scale(1 * time.Second),
+		WriteTimeout: testtime.Scale(1 * time.Second),
 	}
 
 	req := fasthttp.AcquireRequest()
@@ -357,7 +359,7 @@ func TestMakeRequestWithContext_ClientError(t *testing.T) {
 	// wait should be noop since the goroutine completed (with error)
 	start := time.Now()
 	wait()
-	if time.Since(start) > 10*time.Millisecond {
+	if time.Since(start) > testtime.Scale(10*time.Millisecond) {
 		t.Fatal("wait() should be noop on error path")
 	}
 }
@@ -382,7 +384,7 @@ func TestNewBifrostUpstreamConnectionError(t *testing.T) {
 func TestMakeRequestWithContext_DeferOrderingPattern(t *testing.T) {
 	// Verify the exact defer pattern used by callers works correctly under -race.
 	// This mirrors the real provider code pattern.
-	client, cleanup := newTestServer(t, 150*time.Millisecond, 200)
+	client, cleanup := newTestServer(t, testtime.Scale(150*time.Millisecond), 200)
 	defer cleanup()
 
 	// Track the order of operations
@@ -407,7 +409,7 @@ func TestMakeRequestWithContext_DeferOrderingPattern(t *testing.T) {
 			order = append(order, "release-resp")
 		}()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(10*time.Millisecond))
 		defer cancel()
 
 		_, _, wait := MakeRequestWithContext(ctx, client, req, resp)
@@ -1121,7 +1123,7 @@ func TestContextTransport_CancelWhileWaitingForAConnection(t *testing.T) {
 	t.Cleanup(func() { close(hold) })
 	client := srv.client(10 * time.Second)
 	client.MaxConnsPerHost = 1
-	client.MaxConnWaitTimeout = 10 * time.Second
+	client.MaxConnWaitTimeout = testtime.Scale(10 * time.Second)
 
 	// Occupy the single slot.
 	busyCtx, cancelBusy := context.WithCancel(context.Background())
@@ -1136,7 +1138,7 @@ func TestContextTransport_CancelWhileWaitingForAConnection(t *testing.T) {
 	}()
 	deadline := time.Now().Add(2 * time.Second)
 	for srv.accepted.Load() < 1 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(testtime.Scale(5 * time.Millisecond))
 	}
 
 	req, resp := fasthttp.AcquireRequest(), fasthttp.AcquireResponse()
@@ -1144,12 +1146,12 @@ func TestContextTransport_CancelWhileWaitingForAConnection(t *testing.T) {
 	defer fasthttp.ReleaseResponse(resp)
 	req.SetRequestURI("http://test/waiting")
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(100*time.Millisecond, cancel)
+	time.AfterFunc(testtime.Scale(100*time.Millisecond), cancel)
 
 	start := time.Now()
 	_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
 	wait()
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
+	if elapsed := time.Since(start); elapsed > testtime.Scale(2*time.Second) {
 		t.Fatalf("a request cancelled while waiting for a connection returned after %v, want about 100ms", elapsed)
 	}
 	if bifrostErr == nil || bifrostErr.Error.Type == nil || *bifrostErr.Error.Type != schemas.RequestCancelled {
@@ -1165,7 +1167,7 @@ func TestContextTransport_CancelWhileWaitingForAConnection(t *testing.T) {
 	fasthttp.ReleaseResponse(busyResp)
 	settle := time.Now().Add(3 * time.Second)
 	for runtime.NumGoroutine() >= before && time.Now().Before(settle) {
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(testtime.Scale(10 * time.Millisecond))
 	}
 	if runtime.NumGoroutine() >= before {
 		t.Fatalf("goroutines = %d after the slot freed, want fewer than %d: the abandoned acquisition is still running", runtime.NumGoroutine(), before)
@@ -1203,10 +1205,10 @@ func TestMakeRequestWithDoFunc_TransportCancellationMatchesContextBranch(t *test
 // retained indefinitely.
 func TestContextTransport_AbandonedConnectionCloseAcquisitionIsClosed(t *testing.T) {
 	upstream := newSilentUpstream(t)
-	client := &fasthttp.Client{ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second}
+	client := &fasthttp.Client{ReadTimeout: testtime.Scale(10 * time.Second), WriteTimeout: testtime.Scale(10 * time.Second)}
 	ConfigureDialer(client, true)
 	client.MaxConnsPerHost = 1
-	client.MaxConnWaitTimeout = 10 * time.Second
+	client.MaxConnWaitTimeout = testtime.Scale(10 * time.Second)
 
 	busyCtx, cancelBusy := context.WithCancel(context.Background())
 	defer cancelBusy()
@@ -1222,7 +1224,7 @@ func TestContextTransport_AbandonedConnectionCloseAcquisitionIsClosed(t *testing
 	req, resp := newSilentStreamingRequest(upstream.URL())
 	req.SetConnectionClose()
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(100*time.Millisecond, cancel)
+	time.AfterFunc(testtime.Scale(100*time.Millisecond), cancel)
 	_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
 	wait()
 	require.NotNil(t, bifrostErr, "the waiting request must return on cancellation")
@@ -1433,10 +1435,10 @@ func TestContextTransport_HonorsDoDeadline(t *testing.T) {
 
 	for name, do := range map[string]func(req *fasthttp.Request, resp *fasthttp.Response) error{
 		"DoDeadline": func(req *fasthttp.Request, resp *fasthttp.Response) error {
-			return client.DoDeadline(req, resp, time.Now().Add(200*time.Millisecond))
+			return client.DoDeadline(req, resp, time.Now().Add(testtime.Scale(200*time.Millisecond)))
 		},
 		"DoTimeout": func(req *fasthttp.Request, resp *fasthttp.Response) error {
-			return client.DoTimeout(req, resp, 200*time.Millisecond)
+			return client.DoTimeout(req, resp, testtime.Scale(200*time.Millisecond))
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1453,7 +1455,7 @@ func TestContextTransport_HonorsDoDeadline(t *testing.T) {
 				if !errors.Is(err, fasthttp.ErrTimeout) {
 					t.Fatalf("err = %v, want fasthttp.ErrTimeout", err)
 				}
-				if elapsed := time.Since(start); elapsed > 2*time.Second {
+				if elapsed := time.Since(start); elapsed > testtime.Scale(2*time.Second) {
 					t.Fatalf("returned after %v, want close to the 200ms deadline", elapsed)
 				}
 				fasthttp.ReleaseRequest(req)

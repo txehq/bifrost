@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/capsohq/bifrost/core/internal/testtime"
 )
 
 // TestMain boots examples/mcps/remote-test-server and points the remote-transport
@@ -181,7 +183,7 @@ func waitForPort(ctx context.Context, port int, timeout time.Duration) error {
 	for time.Now().Before(deadline) {
 		// Per-attempt deadline on top of the caller's context, so one hung dial cannot eat the
 		// whole readiness budget while the loop still has time left to retry.
-		attemptCtx, cancelAttempt := context.WithTimeout(ctx, 500*time.Millisecond)
+		attemptCtx, cancelAttempt := context.WithTimeout(ctx, testtime.Scale(500*time.Millisecond))
 		conn, err := d.DialContext(attemptCtx, "tcp", addr)
 		cancelAttempt()
 		if err == nil {
@@ -193,7 +195,7 @@ func waitForPort(ctx context.Context, port int, timeout time.Duration) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(testtime.Scale(100 * time.Millisecond))
 	}
 	return fmt.Errorf("timed out after %s", timeout)
 }

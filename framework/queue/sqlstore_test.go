@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/framework/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -221,7 +223,7 @@ func TestSQLiteLeaseStartsAfterTheWriteLock(t *testing.T) {
 	_, err = holder.ExecContext(ctx, "BEGIN IMMEDIATE")
 	require.NoError(t, err)
 
-	const lease = 300 * time.Millisecond
+	lease := testtime.Scale(300 * time.Millisecond)
 	claimed := make(chan []*Claimed, 1)
 	go func() {
 		cs, err := s.Claim(ctx, ClaimRequest{Topic: "lock", Group: "g", RunnerID: "first", Max: 1, Lease: lease})
@@ -524,13 +526,13 @@ func TestPostgresMigrationLockHeldFailsClearly(t *testing.T) {
 	defer func() { _, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", pgMigrationLockKey) }()
 
 	prev := pgLockTimeout
-	pgLockTimeout = time.Second
+	pgLockTimeout = testtime.Scale(time.Second)
 	t.Cleanup(func() { pgLockTimeout = prev })
 	start := time.Now()
 	_, err = newSQLStore(ctx, openTestPostgres(t), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "still held by another session")
-	assert.Less(t, time.Since(start), 10*time.Second)
+	assert.Less(t, time.Since(start), testtime.Scale(10*time.Second))
 }
 
 // TestPostgresKeyLanesStayConsistentUnderConcurrency publishes to a few hot
@@ -579,7 +581,7 @@ func TestPostgresKeyLanesStayConsistentUnderConcurrency(t *testing.T) {
 		go func() {
 			defer consumers.Done()
 			for consumeCtx.Err() == nil {
-				cs, err := stores[c].Claim(consumeCtx, ClaimRequest{Topic: topic, Group: "g", RunnerID: fmt.Sprintf("c%d", c), Max: 8, Lease: time.Minute})
+				cs, err := stores[c].Claim(consumeCtx, ClaimRequest{Topic: topic, Group: "g", RunnerID: fmt.Sprintf("c%d", c), Max: 8, Lease: testtime.Scale(time.Minute)})
 				if consumeCtx.Err() != nil {
 					return
 				}
@@ -590,7 +592,7 @@ func TestPostgresKeyLanesStayConsistentUnderConcurrency(t *testing.T) {
 					select {
 					case <-consumeCtx.Done():
 						return
-					case <-time.After(5 * time.Millisecond):
+					case <-time.After(testtime.Scale(5 * time.Millisecond)):
 						continue
 					}
 				}
@@ -614,7 +616,7 @@ func TestPostgresKeyLanesStayConsistentUnderConcurrency(t *testing.T) {
 	require.Eventually(t, func() bool {
 		st, err := stores[0].Stats(ctx, topic, "g")
 		return err == nil && st == Stats{}
-	}, 60*time.Second, 50*time.Millisecond, "deliveries left waiting or pending")
+	}, testtime.Scale(60*time.Second), testtime.Scale(50*time.Millisecond), "deliveries left waiting or pending")
 	stopConsumers()
 	consumers.Wait()
 	mu.Lock()
@@ -709,7 +711,7 @@ func TestPostgresRenewalCannotLiftCap(t *testing.T) {
 	topic := "renew-capped"
 	mustGroup(t, holder, topic, "g", StartFromLatest)
 	mustAppend(t, holder, newMsg(topic, "", "a"), newMsg(topic, "", "b"))
-	const lease = time.Second
+	lease := testtime.Scale(time.Second)
 	held, err := holder.Claim(ctx, ClaimRequest{Topic: topic, Group: "g", RunnerID: "holder", Max: 1, Lease: lease, MaxInFlight: 1})
 	require.NoError(t, err)
 	require.Len(t, held, 1)
@@ -739,22 +741,22 @@ func TestPostgresRenewalCannotLiftCap(t *testing.T) {
 
 	renewed := make(chan []string, 1)
 	go func() {
-		ids, err := holder.Extend(ctx, held, time.Minute)
+		ids, err := holder.Extend(ctx, held, testtime.Scale(time.Minute))
 		assert.NoError(t, err)
 		renewed <- ids
 	}()
 	// The renewal has started; wait out the lease it is renewing.
-	time.Sleep(time.Until(claimedAt.Add(lease + 300*time.Millisecond)))
+	time.Sleep(time.Until(claimedAt.Add(lease + testtime.Scale(300*time.Millisecond))))
 	claimed := make(chan []*Claimed, 1)
 	go func() {
-		cs, err := claimer.Claim(ctx, ClaimRequest{Topic: topic, Group: "g", RunnerID: "claimer", Max: 1, Lease: time.Minute, MaxInFlight: 1})
+		cs, err := claimer.Claim(ctx, ClaimRequest{Topic: topic, Group: "g", RunnerID: "claimer", Max: 1, Lease: testtime.Scale(time.Minute), MaxInFlight: 1})
 		assert.NoError(t, err)
 		claimed <- cs
 	}()
 	var cs []*Claimed
 	select {
 	case cs = <-claimed: // claimed beside the renewal
-	case <-time.After(500 * time.Millisecond): // waiting for the renewal
+	case <-time.After(testtime.Scale(500 * time.Millisecond)): // waiting for the renewal
 	}
 	open()
 	ids := <-renewed

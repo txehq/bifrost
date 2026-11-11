@@ -5,13 +5,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/internal/testtime"
+
 	"github.com/capsohq/bifrost/core/providers/azure"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
 func TestAzureChatUsageCommitsStream(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(time.Second))
 	defer cancel()
 	usage := &schemas.BifrostStreamChunk{
 		BifrostChatResponse: &schemas.BifrostChatResponse{
@@ -175,11 +177,11 @@ func TestAzureTextStreamPreamble(t *testing.T) {
 }
 
 func TestAzureResponsesRetriesAfterStartupEvents(t *testing.T) {
-	parent, cancel := context.WithTimeout(context.Background(), time.Second)
+	parent, cancel := context.WithTimeout(context.Background(), testtime.Scale(time.Second))
 	defer cancel()
 	ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
-	config := createTestConfig(1, time.Millisecond, time.Millisecond)
+	config := createTestConfig(1, testtime.Scale(time.Millisecond), testtime.Scale(time.Millisecond))
 	logger := NewDefaultLogger(schemas.LogLevelError)
 	attempts := 0
 	success := &schemas.BifrostStreamChunk{
@@ -400,14 +402,14 @@ func TestOpenAIModelsRetryAfterStartupEvents(t *testing.T) {
 			for _, failure := range failures {
 				name := string(host.provider) + "/" + host.model + "/" + req.name + "/" + failure.name
 				t.Run(name, func(t *testing.T) {
-					parent, cancel := context.WithTimeout(context.Background(), time.Second)
+					parent, cancel := context.WithTimeout(context.Background(), testtime.Scale(time.Second))
 					defer cancel()
 					ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
 					ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
 					if host.baseProvider != "" {
 						ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, host.baseProvider)
 					}
-					config := createTestConfig(1, time.Millisecond, time.Millisecond)
+					config := createTestConfig(1, testtime.Scale(time.Millisecond), testtime.Scale(time.Millisecond))
 					logger := NewDefaultLogger(schemas.LogLevelError)
 					attempts := 0
 					success := &schemas.BifrostStreamChunk{
@@ -480,11 +482,11 @@ func TestOpenAIModelsRetryAfterStartupEvents(t *testing.T) {
 }
 
 func TestAzureChatRetriesAfterStartupEvents(t *testing.T) {
-	parent, cancel := context.WithTimeout(context.Background(), time.Second)
+	parent, cancel := context.WithTimeout(context.Background(), testtime.Scale(time.Second))
 	defer cancel()
 	ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
-	config := createTestConfig(1, time.Millisecond, time.Millisecond)
+	config := createTestConfig(1, testtime.Scale(time.Millisecond), testtime.Scale(time.Millisecond))
 	logger := NewDefaultLogger(schemas.LogLevelError)
 	attempts := 0
 	success := &schemas.BifrostStreamChunk{

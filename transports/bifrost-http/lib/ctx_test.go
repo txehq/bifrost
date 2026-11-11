@@ -21,6 +21,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
+
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
@@ -1360,7 +1362,7 @@ func TestConvertToBifrostContextStaysAliveWhileClientConnected(t *testing.T) {
 		select {
 		case <-bifrostCtx.Done():
 			outcome <- bifrostCtx.Err()
-		case <-time.After(1 * time.Second):
+		case <-time.After(testtime.Scale(1 * time.Second)):
 			outcome <- errBifrostContextStillLive
 		}
 	})

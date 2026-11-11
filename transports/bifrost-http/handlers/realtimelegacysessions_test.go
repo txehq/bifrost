@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/transports/v2/internal/testtime"
+
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
@@ -315,7 +317,7 @@ func TestLegacyRealtimeSessionSecretOpensUpstreamThroughBifrost(t *testing.T) {
 	mapping := raw2.(realtimeEphemeralKeyMapping)
 	require.Equal(t, string(schemas.OpenAI), mapping.Provider, "the mapping records the issuing provider")
 	mapping.Provider = string(schemas.Anthropic)
-	require.NoError(t, kv.SetWithTTL(buildRealtimeEphemeralKeyMappingKey(session.ClientSecret.Value), mapping, time.Minute))
+	require.NoError(t, kv.SetWithTTL(buildRealtimeEphemeralKeyMappingKey(session.ClientSecret.Value), mapping, testtime.Scale(time.Minute)))
 	refused, _, err := ws.DefaultDialer.Dial("ws://"+ln.Addr().String()+"/v1/realtime?model=openai/gpt-realtime", header)
 	require.NoError(t, err)
 	defer refused.Close()
@@ -326,6 +328,6 @@ func TestLegacyRealtimeSessionSecretOpensUpstreamThroughBifrost(t *testing.T) {
 	select {
 	case got := <-upstreamAuth:
 		t.Fatalf("a refused secret still reached the upstream with %q", got)
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(testtime.Scale(200 * time.Millisecond)):
 	}
 }
