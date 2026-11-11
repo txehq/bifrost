@@ -9622,9 +9622,17 @@ func TestWriteOnceRequestIsNotRetriedAfterNoResponse(t *testing.T) {
 	// Through the real path: the xai provider, three retries configured, an upstream that reads
 	// the create and drops the connection without a response byte.
 	t.Run("xai video create through Bifrost with max_retries 3", func(t *testing.T) {
-		var creates atomic.Int64
+		var creates, chats atomic.Int64
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.Copy(io.Discard, r.Body)
+			// A chat request is answered, with an error core retries.
+			if r.URL.Path == "/v1/chat/completions" {
+				chats.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = io.WriteString(w, `{"error":{"message":"overloaded","type":"server_error"}}`)
+				return
+			}
 			if r.Method == http.MethodPost && r.URL.Path == "/v1/videos/generations" {
 				creates.Add(1)
 			}
@@ -9667,6 +9675,19 @@ func TestWriteOnceRequestIsNotRetriedAfterNoResponse(t *testing.T) {
 		}
 		if got := creates.Load(); got != 1 {
 			t.Fatalf("xAI read the create %d times, want exactly 1 (error: %s)", got, bifrostErr.GetErrorString())
+		}
+
+		// The mark belongs to that request. The next request on the same context, a chat
+		// request, keeps its retries: the context is the caller's to reuse.
+		_, bifrostErr = client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+			Provider: schemas.XAI, Model: "grok-4.5",
+			Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		})
+		if bifrostErr == nil {
+			t.Fatal("the chat request was answered 503, want an error")
+		}
+		if got, want := chats.Load(), int64(cfg.NetworkConfig.MaxRetries+1); got != want {
+			t.Fatalf("the chat request after the failed create was sent %d times, want %d (max_retries %d): the earlier request's mark was still on the context", got, want, cfg.NetworkConfig.MaxRetries)
 		}
 	})
 
@@ -9730,6 +9751,16 @@ func BenchmarkUpstreamWriteUnknown(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		_ = upstreamWriteUnknown(ctx)
+	}
+}
+
+// BenchmarkResetUpstreamWriteUnknown measures what every request pays at its start to drop
+// an earlier request's mark: one context read when there is none.
+func BenchmarkResetUpstreamWriteUnknown(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	b.ReportAllocs()
+	for b.Loop() {
+		resetUpstreamWriteUnknown(ctx)
 	}
 }
 

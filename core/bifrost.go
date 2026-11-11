@@ -5943,6 +5943,17 @@ func markWriteOnce(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
 // reach the vendor at most once and got no response (providerUtils.SendSingleAttempt). The
 // vendor may have it: a retry, or a fallback, could create a second billed task while the
 // first one's id is lost (contract C3, C7 recovery method 5).
+// resetUpstreamWriteUnknown clears the mark at the start of a logical request, so one left by
+// an earlier request on a reused context (or on bifrost.ctx, which every nil-ctx caller
+// shares) does not cost this request its retries and fallbacks. The mark then lives for this
+// request's own retries and fallbacks, which is what it is for. It writes only when the
+// mark is set.
+func resetUpstreamWriteUnknown(ctx *schemas.BifrostContext) {
+	if upstreamWriteUnknown(ctx) {
+		ctx.SetValue(schemas.BifrostContextKeyUpstreamWriteUnknown, false)
+	}
+}
+
 func upstreamWriteUnknown(ctx *schemas.BifrostContext) bool {
 	if ctx == nil {
 		return false
@@ -6152,6 +6163,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 
 	// Reset first: bifrost.ctx is shared across every nil-ctx caller.
 	ctx.ResetUpstreamLatency()
+	resetUpstreamWriteUnknown(ctx)
 	// Whole-request start for top-down overhead (total minus upstream). On ctx so
 	// tryRequest can stamp the response before post-hooks, where logging reads it.
 	ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, time.Now())
@@ -6393,6 +6405,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	stampRequestedRoute(ctx, requested)
 
 	ctx.ResetUpstreamLatency()
+	resetUpstreamWriteUnknown(ctx)
 	ctx.ResetStreamOverhead()
 	// Whole-request start for overhead on the streaming short-circuit path; the
 	// normal path derives its total from the final chunk.
