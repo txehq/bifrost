@@ -3,6 +3,8 @@ package jobaccounting
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -728,4 +730,102 @@ func TestVideoSweeper_SettlesCustomProviderJob(t *testing.T) {
 	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, settled.AccountingStatus)
 	require.Len(t, reporter.reports, 1, "governance must receive the custom provider's video cost")
 	assert.NotNil(t, store.logs[AccountingLogID(ProviderJobKindVideo, "my-minimax", "vid_custom")], "the aggregate row keeps the custom provider name")
+}
+
+// videoCoverageAccount configures every standard provider at one base URL with one test key.
+type videoCoverageAccount struct {
+	baseURL string
+}
+
+func (a *videoCoverageAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return schemas.StandardProviders, nil
+}
+
+func (a *videoCoverageAccount) GetKeysForProvider(_ context.Context, _ schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "k", Name: "k", Value: *schemas.NewSecretVar("test-key"), Weight: 1, Models: schemas.WhiteList{"*"}}}, nil
+}
+
+func (a *videoCoverageAccount) GetConfigForProvider(_ schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	return &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{
+		BaseURL: a.baseURL, DefaultRequestTimeoutInSeconds: 5, MaxRetries: 0, AllowPrivateNetwork: true,
+	}}, nil
+}
+
+// TestVideoSettlerCoversEveryProviderThatImplementsVideo (TXE-7118) reads the set of video
+// providers from the providers themselves. videoProviders is a hand-kept list, and a provider
+// missing from it has its video jobs recorded and never settled: nothing is charged to the
+// virtual key (found on dashscope, TXE-6432, and azure, TXE-7054). A provider implements video
+// when neither its VideoGeneration nor its VideoRetrieve answers unsupported_operation. Such a
+// provider must be in videoProviders or in videoSettlementExemptions with a reason.
+//
+// It runs on every pull request in the Go unit tests (offline) job (TXE-7078), which finds
+// every framework package with tests; it needs no CI entry of its own.
+func TestVideoSettlerCoversEveryProviderThatImplementsVideo(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":{"message":"video coverage fixture"}}`, http.StatusInternalServerError)
+	}))
+	t.Cleanup(upstream.Close)
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: &videoCoverageAccount{baseURL: upstream.URL}, Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1,
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+
+	unsupported := func(bifrostErr *schemas.BifrostError) bool {
+		return bifrostErr != nil && bifrostErr.Error != nil && bifrostErr.Error.Code != nil && *bifrostErr.Error.Code == "unsupported_operation"
+	}
+	key := schemas.Key{ID: "k", Name: "k", Value: *schemas.NewSecretVar("test-key"), Weight: 1, Models: schemas.WhiteList{"*"}}
+	// implements reports whether one operation gets past the unsupported stub. A provider that
+	// panics on a bare test key or request is past the stub too.
+	implements := func(call func() *schemas.BifrostError) (implemented bool) {
+		defer func() {
+			if recover() != nil {
+				implemented = true
+			}
+		}()
+		return !unsupported(call())
+	}
+
+	settler := NewVideoSettler(nil)
+	var built int
+	for _, provider := range schemas.StandardProviders {
+		instance := client.GetProviderByKey(provider)
+		if instance == nil {
+			continue
+		}
+		built++
+		creates := implements(func() *schemas.BifrostError {
+			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, bifrostErr := instance.VideoGeneration(ctx, key, &schemas.BifrostVideoGenerationRequest{
+				Provider: provider, Model: "video-coverage-model", Input: &schemas.VideoGenerationInput{Prompt: "a paper boat"},
+			})
+			return bifrostErr
+		})
+		retrieves := implements(func() *schemas.BifrostError {
+			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, bifrostErr := instance.VideoRetrieve(ctx, key, &schemas.BifrostVideoRetrieveRequest{Provider: provider, ID: "video-coverage-task"})
+			return bifrostErr
+		})
+		implementsVideo := creates && retrieves
+		reason, exempt := videoSettlementExemptions[provider]
+		settled := settler.SupportsProvider(provider)
+		t.Logf("%-18s create=%v retrieve=%v settled=%v exempt=%v", provider, creates, retrieves, settled, exempt)
+		switch {
+		case implementsVideo && !settled && !exempt:
+			t.Errorf("%s implements video create and retrieve but is not in videoProviders: its jobs are recorded and never settled or charged. Add it to videoProviders, or to videoSettlementExemptions with the reason", provider)
+		case settled && exempt:
+			t.Errorf("%s is in videoProviders and in videoSettlementExemptions (%q): keep one", provider, reason)
+		case exempt && !implementsVideo:
+			t.Errorf("%s is in videoSettlementExemptions (%q) but does not implement video: remove the exemption", provider, reason)
+		case exempt && reason == "":
+			t.Errorf("%s is in videoSettlementExemptions without a reason", provider)
+		case settled && !implementsVideo:
+			t.Errorf("%s is in videoProviders but does not implement video create and retrieve: the sweeper would poll a provider that answers unsupported", provider)
+		}
+	}
+	// A provider that cannot be built from a base URL and a key would be skipped silently.
+	assert.Equal(t, len(schemas.StandardProviders), built, "every standard provider must be built, or it is not checked")
 }
