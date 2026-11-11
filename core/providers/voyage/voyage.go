@@ -143,17 +143,13 @@ func (provider *VoyageProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	}
 
 	var converted *VoyageEmbeddingRequest
-	if _, raw := providerUtils.CheckAndGetRawRequestBody(ctx, request); !raw {
-		var validationErr *schemas.BifrostError
-		converted, validationErr = ToVoyageEmbeddingRequest(request)
-		if validationErr != nil {
-			return nil, validationErr
-		}
-	}
-	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
+	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(ctx, request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			var validationErr *schemas.BifrostError
+			converted, validationErr = ToVoyageEmbeddingRequest(request)
+			if validationErr != nil {
+				return nil, providerUtils.ConverterBifrostError(validationErr)
+			}
 			return converted, nil
 		})
 	if bifrostErr != nil {

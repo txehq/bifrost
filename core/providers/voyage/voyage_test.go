@@ -336,3 +336,43 @@ func BenchmarkVoyageQuantizedResponseConversion(b *testing.B) {
 		}
 	}
 }
+
+func TestVoyagePreparedLargePayload(t *testing.T) {
+	var calls atomic.Int32
+	wireCh := make(chan map[string]interface{}, 1)
+	server := &httptest.Server{Config: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var wire map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&wire)
+		wireCh <- wire
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"index":0,"object":"embedding","embedding":[0.1,0.2]},{"index":1,"object":"embedding","embedding":[0.3,0.4]}],"usage":{"total_tokens":7}}`))
+	})}}
+	var err error
+	for attempt := 0; attempt < 100; attempt++ {
+		server.Listener, err = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", 20000+rand.IntN(40001)))
+		if err == nil {
+			break
+		}
+	}
+	require.NoError(t, err)
+	server.Start()
+	defer server.Close()
+	p, err := voyage.NewVoyageProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true}}, bifrost.NewNoOpLogger())
+	require.NoError(t, err)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	payload := `{"model":"voyage/voyage-4","input":["hello","world"]}`
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, strings.NewReader(payload))
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, len(payload))
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentType, "application/json")
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, &schemas.LargePayloadMetadata{Model: "voyage/voyage-4"})
+	// The transport hydrates only routing metadata when it skips body parsing.
+	got, bfErr := p.Embedding(ctx, schemas.Key{}, &schemas.BifrostEmbeddingRequest{Provider: schemas.Voyage, Model: "voyage-4"})
+	require.Nil(t, bfErr)
+	require.Len(t, got.Data, 2)
+	require.Equal(t, 7, got.Usage.PromptTokens)
+	require.EqualValues(t, 1, calls.Load())
+	wire := <-wireCh
+	require.Equal(t, "voyage-4", wire["model"])
+	require.Equal(t, []interface{}{"hello", "world"}, wire["input"])
+}
