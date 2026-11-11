@@ -15,6 +15,11 @@ on:
       # The chart-coverage check below reads these two (TXE-7038).
       - "transports/config.schema.json"
       - "helm-charts/bifrost/**"
+      # check-egress-allowlist.sh reads these two for the hosts the provider harness
+      # names. A PR that touches only them never ran the check, and a harness row that
+      # named replicate.delivery turned main red after it merged (TXE-7139).
+      - "tests/e2e/api/collections/provider-harness.json"
+      - "tests/integrations/python/config.json"
 
 permissions:
   contents: read

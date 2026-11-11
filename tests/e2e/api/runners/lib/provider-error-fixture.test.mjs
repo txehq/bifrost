@@ -166,7 +166,7 @@ test("replicate answers name poll, stream, next-page and image addresses on the 
   assert.deepEqual((await create("picture-public")).urls, { get: `${base}/predictions/pred_picture_public` });
 
   const polled = async (id) => (await (await fetch(`${base}/predictions/${id}`)).json()).output;
-  assert.equal(await polled("pred_poll_origin"), "https://replicate.delivery/fixture/out.png");
+  assert.equal(await polled("pred_poll_origin"), "https://replicate-delivery.invalid/fixture/out.png");
   assert.equal(await polled("pred_picture_public"), "http://203.0.113.10/pp/media/image.png?X-Fixture-Signature=signed");
   assert.equal(await polled("pred_picture_loopback"), `http://127.0.0.1:${post.port}/pp/media/internal.png?X-Fixture-Signature=signed`);
   assert.equal(await (await fetch(`${base}/streams/pred_stream_origin`)).text(), "event: output\nid: 1\ndata: fixture stream text\n\nevent: done\nid: 2\ndata: {}\n\n");

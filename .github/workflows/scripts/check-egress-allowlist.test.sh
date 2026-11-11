@@ -168,6 +168,30 @@ run_case "tld-that-only-ends-like-a-reserved-one" fail "files.unlisted.contest" 
 run_case "example-dot-com-subdomain-is-not-reserved" fail "files.example.com" \
   "$(collection '' '' | sed 's#{\\"model\\": \\"m\\"}#{\\"image_url\\": \\"https://files.example.com/a.png\\"}#')"
 
+# The check reads files outside .github/workflows. The workflow that runs it must be
+# triggered by a change to each of them, or a PR that touches only that file merges
+# unchecked and the next PR finds main red (TXE-7139).
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/../../.." && pwd)"
+lint_workflow="$repo_root/.github/workflows/workflow-lint.yml"
+inputs="$(sed -n 's/^[A-Z_]* = os\.path\.join(REPO_ROOT, "\([^"]*\)")$/\1/p' "$script_dir/check-egress-allowlist.sh")"
+if [[ "$(printf '%s\n' "$inputs" | grep -c .)" -lt 3 ]]; then
+  echo "FAIL trigger-covers-inputs: found fewer than 3 input files in check-egress-allowlist.sh; the scan is not reading it"
+  failures=$((failures + 1))
+fi
+while IFS= read -r input; do
+  [[ -z "$input" ]] && continue
+  case "$input" in
+    .github/workflows/*) continue ;; # covered by the ".github/workflows/**" trigger
+  esac
+  if grep -qF -- "- \"$input\"" "$lint_workflow"; then
+    echo "ok   trigger-covers-$input"
+  else
+    echo "FAIL trigger-covers-$input: workflow-lint.yml is not triggered by a change to $input, which check-egress-allowlist.sh reads"
+    failures=$((failures + 1))
+  fi
+done <<< "$inputs"
+
 if [[ $failures -gt 0 ]]; then
   echo ""
   echo "$failures case(s) failed."
