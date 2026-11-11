@@ -1027,8 +1027,22 @@ test("the vidvendor upstream answers only under /api/v3 with each id in its plac
   assert.equal((await call("DELETE", "/api/v3/tasks/video_477")).body.deleted, true);
   assert.equal((await call("GET", "/api/v3/models/glm-video-1")).body.object, "model");
   assert.equal((await call("GET", "/api/v3/items/cfile_477/in/cntr_477")).body.container_id, "cntr_477");
+  // Every other templated call answers at its own path, in the order below.
+  const rest = [
+    ["GET", "/api/v3/tasks/video_477/file"], ["POST", "/api/v3/tasks/video_477/remix"],
+    ["GET", "/api/v3/boxes/cntr_477"], ["DELETE", "/api/v3/boxes/cntr_477"], ["POST", "/api/v3/boxes/cntr_477/items"], ["GET", "/api/v3/boxes/cntr_477/items"],
+    ["GET", "/api/v3/items/cfile_477/in/cntr_477/bytes"], ["DELETE", "/api/v3/items/cfile_477/in/cntr_477"],
+    ["GET", "/api/v3/answers/resp_477"], ["GET", "/api/v3/answers/resp_477/events"], ["DELETE", "/api/v3/answers/resp_477"],
+    ["POST", "/api/v3/answers/resp_477/stop"], ["GET", "/api/v3/answers/resp_477/inputs"],
+  ];
+  for (const [method, path] of rest) {
+    const res = await fetch(base + path, { method, headers: auth });
+    assert.equal(res.status, 200, `${method} ${path}`);
+    const text = await res.text();
+    if (path.endsWith("/events")) assert.match(text, /event: response\.completed/);
+  }
   // A default /v1 path, a path that lost its id, and ids in each other's place are all 404.
-  for (const path of ["/v1/videos/video_477", "/api/v3/tasks", "/api/v3/tasks/", "/api/v3/items/cntr_477/in/cfile_477"]) {
+  for (const path of ["/v1/videos/video_477", "/api/v3/tasks", "/api/v3/tasks/", "/api/v3/items/cntr_477/in/cfile_477", "/v1/responses/resp_477", "/api/v3/answers"]) {
     assert.equal((await call("GET", path)).status, 404, path);
   }
   const wire = await (await fetch(`http://127.0.0.1:${post.port}/__wire`)).json();
