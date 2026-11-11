@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/capsohq/bifrost/core/network"
@@ -78,7 +80,7 @@ func sanitizeFetchError(err error, redacted string) error {
 // and the tunnel is opened to the checked address rather than the hostname; see
 // newFetchClient. With no proxy configured the fetch connects directly, as before.
 func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType string, encoded string, err error) {
-	mediaType, body, err := fetchURL(ctx, resourceURL, defaultFetchLimits)
+	mediaType, body, err := fetchURL(ctx, resourceURL, defaultFetchLimits, nil)
 	if err != nil {
 		return "", "", err
 	}
@@ -92,8 +94,170 @@ func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType strin
 // time). Media is larger than an inline document, so the body cap is 256 MiB and the whole
 // fetch is bounded by 5 minutes; the clients for this limit are cached separately.
 func FetchMediaURL(ctx context.Context, resourceURL string) (mediaType string, body []byte, err error) {
-	return fetchURL(ctx, resourceURL, mediaFetchLimits)
+	return fetchURL(ctx, resourceURL, mediaFetchLimits, nil)
 }
+
+// FetchMediaURLWithHeader is FetchMediaURL for a file whose host wants a credential: header is
+// sent to the host resourceURL names and to no other host a redirect leads to.
+func FetchMediaURLWithHeader(ctx context.Context, resourceURL string, header http.Header) (mediaType string, body []byte, err error) {
+	return fetchURL(ctx, resourceURL, mediaFetchLimits, header)
+}
+
+// MediaStream is a media file being downloaded by FetchMediaStream.
+type MediaStream struct {
+	// ContentType is the vendor's Content-Type without its parameters, "" when it sent none.
+	ContentType string
+	// ContentLength is the number of bytes Body yields, or -1 when the vendor stated none or
+	// encoded the body.
+	ContentLength int64
+	// Header is the vendor's response header.
+	Header http.Header
+	// Body yields the file as the vendor sends it. A read fails with ErrStreamIdleTimeout
+	// when the vendor sends nothing for the idle timeout, and with the context's error once
+	// the context ends. The caller must Close it, which releases the vendor connection.
+	Body io.ReadCloser
+}
+
+// MediaStreamOptions are FetchMediaStream's optional settings.
+type MediaStreamOptions struct {
+	// Header is sent with the request, to the host the URL names and to no other host a
+	// redirect leads to: it carries the credential of a vendor whose file needs one.
+	Header http.Header
+	// IdleTimeout is how long the vendor may send nothing before a read fails. Zero or
+	// less means DefaultStreamIdleTimeout.
+	IdleTimeout time.Duration
+}
+
+// FetchMediaStream is FetchMediaURL for a caller that forwards the file instead of holding it
+// (fork, TXE-7036). It opens the download on the same SSRF-hardened, proxy-aware path (http
+// and https only; every resolved address checked at dial time, on every redirect hop; a
+// proxied tunnel bound to the checked address; errors that name the URL without its query)
+// and returns once the vendor's headers are in. The body then arrives as the caller reads
+// it: there is no size cap and no bound on the whole download, only the idle timeout and
+// the context. Dial, request write and the wait for the headers are bounded per hop.
+//
+// A gzip body is decoded on the way through; any other Content-Encoding is refused, since
+// the file would otherwise reach the caller encoded with nothing saying so.
+func FetchMediaStream(ctx context.Context, resourceURL string, opts MediaStreamOptions) (*MediaStream, error) {
+	resp, redacted, err := openFetch(ctx, resourceURL, mediaStreamLimits, opts.Header)
+	if err != nil {
+		return nil, err
+	}
+	stream := &MediaStream{
+		ContentType:   mediaTypeOf(resp.Header.Get("Content-Type")),
+		ContentLength: resp.ContentLength,
+		Header:        resp.Header,
+	}
+	body := newMediaStreamBody(ctx, resp.Body, opts.IdleTimeout, redacted)
+	switch strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding"))) {
+	case "", "identity":
+		stream.Body = body
+	case "gzip", "x-gzip":
+		// The length on the wire is not the file's. The gzip header is read from the socket
+		// here, through the guarded body, so a vendor that stalls on it is still timed out.
+		stream.ContentLength = -1
+		decoded, err := gzip.NewReader(body)
+		if err != nil {
+			_ = body.Close()
+			return nil, fmt.Errorf("failed to read body from %q: %w", redacted, err)
+		}
+		stream.Body = &gzipMediaStreamBody{Reader: decoded, body: body}
+	default:
+		_ = body.Close()
+		return nil, fmt.Errorf("resource at %q has unsupported Content-Encoding %q", redacted, resp.Header.Get("Content-Encoding"))
+	}
+	return stream, nil
+}
+
+// gzipMediaStreamBody decodes a gzip media stream and closes the guarded body under it.
+type gzipMediaStreamBody struct {
+	*gzip.Reader
+	body io.Closer
+}
+
+func (g *gzipMediaStreamBody) Close() error {
+	_ = g.Reader.Close()
+	return g.body.Close()
+}
+
+// mediaStreamBody guards a streamed media body: a read that waits longer than the idle
+// timeout, or past the end of the context, closes the vendor connection and fails. The
+// timer runs only while a read is waiting on the vendor, so a slow reader of the file is
+// never mistaken for a stalled vendor.
+type mediaStreamBody struct {
+	ctx       context.Context
+	body      io.ReadCloser
+	idle      time.Duration
+	timer     *time.Timer
+	stopCtx   func() bool
+	idleFired atomic.Bool
+	closeOnce sync.Once
+	redacted  string
+}
+
+func newMediaStreamBody(ctx context.Context, body io.ReadCloser, idle time.Duration, redacted string) *mediaStreamBody {
+	if idle <= 0 {
+		idle = DefaultStreamIdleTimeout
+	}
+	b := &mediaStreamBody{ctx: ctx, body: body, idle: idle, redacted: redacted}
+	b.timer = time.AfterFunc(idle, func() {
+		b.idleFired.Store(true)
+		b.closeBody()
+	})
+	b.timer.Stop()
+	b.stopCtx = context.AfterFunc(ctx, b.closeBody)
+	return b
+}
+
+func (b *mediaStreamBody) closeBody() {
+	b.closeOnce.Do(func() { _ = b.body.Close() })
+}
+
+func (b *mediaStreamBody) Read(p []byte) (int, error) {
+	b.timer.Reset(b.idle)
+	n, err := b.body.Read(p)
+	b.timer.Stop()
+	if err == nil || err == io.EOF {
+		return n, err
+	}
+	if b.idleFired.Load() {
+		return n, ErrStreamIdleTimeout
+	}
+	if ctxErr := b.ctx.Err(); ctxErr != nil {
+		return n, ctxErr
+	}
+	return n, fmt.Errorf("failed to read body from %q: %w", b.redacted, sanitizeFetchError(err, b.redacted))
+}
+
+func (b *mediaStreamBody) Close() error {
+	b.timer.Stop()
+	b.stopCtx()
+	b.closeBody()
+	return nil
+}
+
+// MediaFetchStatusError is a media fetch the host answered with a status outside 2xx.
+type MediaFetchStatusError struct {
+	// URL is the redacted resource URL.
+	URL        string
+	StatusCode int
+}
+
+func (e *MediaFetchStatusError) Error() string {
+	return fmt.Sprintf("fetch %q returned non-2xx status %d", e.URL, e.StatusCode)
+}
+
+// mediaTypeOf is a Content-Type without its parameters.
+func mediaTypeOf(contentType string) string {
+	if i := strings.Index(contentType, ";"); i != -1 {
+		return strings.TrimSpace(contentType[:i])
+	}
+	return contentType
+}
+
+// fetchCredentialHeadersKey carries, on a fetch's request context, the names of the headers
+// its caller supplied, for the redirect check to drop when a hop leaves the first host.
+type fetchCredentialHeadersKey struct{}
 
 // VideoContentTypeOr pins the Content-Type of a downloaded video to a video/* type. The bytes come
 // from a URL the upstream names, and /v1/videos/{id}/content serves them with this type on the
@@ -115,45 +279,68 @@ func VideoContentTypeOr(contentType, fallback string) string {
 	return ct
 }
 
-// fetchURL is the shared body of FetchAndEncodeURL and FetchMediaURL.
-func fetchURL(ctx context.Context, resourceURL string, limits fetchLimits) (mediaType string, body []byte, err error) {
-	maxBytes := limits.maxBytes
-
+// openFetch is the shared opening of every fetch: it checks the URL, picks the client for the
+// provider's proxy and the fetch class, sends the GET and returns the 2xx response with its
+// body unread, plus the redacted URL for the caller's own errors. header, when set, is sent
+// to the first host only (see fetchCheckRedirect).
+func openFetch(ctx context.Context, resourceURL string, limits fetchLimits, header http.Header) (*http.Response, string, error) {
 	// Every error below names the resource by its redacted form only; see
 	// RedactURLForError for why the query and userinfo never make it into a message.
 	redacted := RedactURLForError(resourceURL)
 
 	parsed, err := url.Parse(resourceURL)
 	if err != nil {
-		return "", nil, fmt.Errorf("invalid resource URL %q: %w", redacted, sanitizeFetchError(err, redacted))
+		return nil, redacted, fmt.Errorf("invalid resource URL %q: %w", redacted, sanitizeFetchError(err, redacted))
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", nil, fmt.Errorf("unsupported URL scheme %q (only http/https allowed)", parsed.Scheme)
+		return nil, redacted, fmt.Errorf("unsupported URL scheme %q (only http/https allowed)", parsed.Scheme)
 	}
 
 	client, err := fetchClientForLimits(ctx, limits)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to fetch from %q: %w", redacted, err)
+		return nil, redacted, fmt.Errorf("failed to fetch from %q: %w", redacted, err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, resourceURL, nil)
+	reqCtx := ctx
+	if len(header) > 0 {
+		names := make([]string, 0, len(header))
+		for name := range header {
+			names = append(names, name)
+		}
+		reqCtx = context.WithValue(ctx, fetchCredentialHeadersKey{}, names)
+	}
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, resourceURL, nil)
 	if err != nil {
-		return "", nil, fmt.Errorf("invalid resource URL %q: %w", redacted, sanitizeFetchError(err, redacted))
+		return nil, redacted, fmt.Errorf("invalid resource URL %q: %w", redacted, sanitizeFetchError(err, redacted))
+	}
+	for name, values := range header {
+		req.Header[http.CanonicalHeaderKey(name)] = append([]string(nil), values...)
 	}
 	req.Header.Set("User-Agent", "bifrost-fetch/1")
 
 	resp, err := DoHTTPRequest(client, req)
 	if err != nil {
 		if errors.Is(err, fasthttp.ErrBodyTooLarge) {
-			return "", nil, fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, maxBytes)
+			return nil, redacted, fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, limits.maxBytes)
 		}
-		return "", nil, fmt.Errorf("failed to fetch from %q: %w", redacted, sanitizeFetchError(err, redacted))
+		return nil, redacted, fmt.Errorf("failed to fetch from %q: %w", redacted, sanitizeFetchError(err, redacted))
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_ = resp.Body.Close()
+		return nil, redacted, &MediaFetchStatusError{URL: redacted, StatusCode: resp.StatusCode}
+	}
+	return resp, redacted, nil
+}
+
+// fetchURL is the shared body of FetchAndEncodeURL and FetchMediaURL.
+func fetchURL(ctx context.Context, resourceURL string, limits fetchLimits, header http.Header) (mediaType string, body []byte, err error) {
+	maxBytes := limits.maxBytes
+
+	resp, redacted, err := openFetch(ctx, resourceURL, limits, header)
+	if err != nil {
+		return "", nil, err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", nil, fmt.Errorf("fetch %q returned non-2xx status %d", redacted, resp.StatusCode)
-	}
 
 	if n := resp.ContentLength; n > maxBytes {
 		return "", nil, fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, maxBytes)
@@ -175,21 +362,19 @@ func fetchURL(ctx context.Context, resourceURL string, limits fetchLimits) (medi
 		}
 	}
 
-	mediaType = resp.Header.Get("Content-Type")
-	if i := strings.Index(mediaType, ";"); i != -1 {
-		mediaType = strings.TrimSpace(mediaType[:i])
-	}
-
-	return mediaType, body, nil
+	return mediaTypeOf(resp.Header.Get("Content-Type")), body, nil
 }
 
 // maxFetchBytes caps a fetched resource at 25 MiB.
 const maxFetchBytes int64 = 25 * 1024 * 1024
 
 // fetchLimits bounds one class of fetch: the body cap and the timeout of the whole request.
+// A streamed class has no body cap, and its timeout bounds each hop's dial, request write
+// and wait for the headers, never the body.
 type fetchLimits struct {
 	maxBytes int64
 	timeout  time.Duration
+	stream   bool
 }
 
 var (
@@ -197,6 +382,8 @@ var (
 	defaultFetchLimits = fetchLimits{maxBytes: maxFetchBytes, timeout: 20 * time.Second}
 	// mediaFetchLimits is FetchMediaURL's provider-hosted media download (fork).
 	mediaFetchLimits = fetchLimits{maxBytes: 256 * 1024 * 1024, timeout: 5 * time.Minute}
+	// mediaStreamLimits is FetchMediaStream's forwarded media download (fork, TXE-7036).
+	mediaStreamLimits = fetchLimits{timeout: time.Minute, stream: true}
 )
 
 // proxyEnvVars are the variables golang.org/x/net/http/httpproxy reads.
@@ -285,6 +472,7 @@ func newFetchClientWithLimits(proxyConfig *schemas.ProxyConfig, limits fetchLimi
 		WriteTimeout:             limits.timeout,
 		MaxIdleConnDuration:      30 * time.Second,
 		MaxResponseBodySize:      int(limits.maxBytes) + 1,
+		StreamResponseBody:       limits.stream,
 		NoDefaultUserAgentHeader: true,
 		// The path is sent byte for byte: repeated or escaped slashes in an object key
 		// are covered by a pre-signed URL's signature and select the object.
@@ -340,19 +528,38 @@ func newFetchClientWithLimits(proxyConfig *schemas.ProxyConfig, limits fetchLimi
 	}
 	client.Transport = NewContextTransport()
 
-	return &http.Client{
-		Timeout:   limits.timeout,
-		Transport: &fasthttpRoundTripper{client: client, schemes: schemes},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
-				return fmt.Errorf("blocked redirect to unsupported scheme %q", req.URL.Scheme)
-			}
-			if len(via) >= 10 {
-				return fmt.Errorf("stopped after 10 redirects")
-			}
-			return nil
-		},
+	// http.Client.Timeout covers the body too, so a streamed class leaves it unset: its
+	// hops are bounded by the fasthttp client's timeouts above, its body by the caller.
+	clientTimeout := limits.timeout
+	if limits.stream {
+		clientTimeout = 0
 	}
+	return &http.Client{
+		Timeout:       clientTimeout,
+		Transport:     &fasthttpRoundTripper{client: client, schemes: schemes, stream: limits.stream},
+		CheckRedirect: fetchCheckRedirect,
+	}
+}
+
+// fetchCheckRedirect is the redirect policy of every fetch client: http and https only, ten
+// hops at most, and the headers the caller supplied (a vendor credential) dropped from a hop
+// that leaves the first host. net/http drops Authorization and Cookie itself on such a hop;
+// a credential under another name, such as x-goog-api-key, is only known to the caller.
+func fetchCheckRedirect(req *http.Request, via []*http.Request) error {
+	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+		return fmt.Errorf("blocked redirect to unsupported scheme %q", req.URL.Scheme)
+	}
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+	if names, _ := req.Context().Value(fetchCredentialHeadersKey{}).([]string); len(names) > 0 && len(via) > 0 {
+		if first := via[0].URL; req.URL.Scheme != first.Scheme || req.URL.Host != first.Host {
+			for _, name := range names {
+				req.Header.Del(name)
+			}
+		}
+	}
+	return nil
 }
 
 // fetchClientKey is the set of resolved values that change which client a fetch needs.
