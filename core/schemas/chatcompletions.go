@@ -55,6 +55,15 @@ type BifrostChatResponse struct {
 	SearchResults []SearchResult `json:"search_results,omitempty"`
 	Videos        []VideoResult  `json:"videos,omitempty"`
 	Citations     []string       `json:"citations,omitempty"`
+
+	// Fork (TXE-6595): MiniMax content-safety flags, carried under MiniMax's own top-level names
+	// (platform.minimax.io/docs/api-reference/text-post: input_sensitive_type 1 severe violation,
+	// 2 pornography, 3 advertising, 4 prohibited, 5 abusive, 6 terrorism/violence, 7 other; 0 is
+	// sent when nothing fired). Absent for providers that do not report them.
+	InputSensitive      *bool `json:"input_sensitive,omitempty"`
+	OutputSensitive     *bool `json:"output_sensitive,omitempty"`
+	InputSensitiveType  *int  `json:"input_sensitive_type,omitempty"`
+	OutputSensitiveType *int  `json:"output_sensitive_type,omitempty"`
 }
 
 // BackfillParams populates response fields from the request that are needed

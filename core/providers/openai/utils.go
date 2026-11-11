@@ -22,6 +22,16 @@ func defaultSupportsReasoningContentBlocks(model string) bool {
 	return strings.Contains(strings.ToLower(model), "gpt-oss")
 }
 
+// providerUsesReasoningContentBlocks names providers whose native Responses API returns reasoning
+// as reasoning_text content blocks with an empty summary, whatever the model, so replayed history
+// must keep those blocks. MiniMax: platform.minimax.io/docs/api-reference/responses-create
+// (TXE-6595). Callers pass the base provider (schemas.ResolveBaseProvider), so a custom provider
+// built on minimax gets the same default. A catalog row's supports_reasoning_content_blocks still
+// overrides this.
+func providerUsesReasoningContentBlocks(provider schemas.ModelProvider) bool {
+	return provider == schemas.MiniMax
+}
+
 // IsOpenAIReasoningModel matches OpenAI-family models that accept
 // reasoning.effort: the o1/o3/o4 series, GPT-5.x, GPT-6.x, and gpt-oss. Broader
 // than isOSeriesModel, which covers the o-series alone.

@@ -1990,8 +1990,9 @@ func TestMiniMaxContentFilterCodesOnEveryOperation(t *testing.T) {
 			assertMiniMaxError(t, bifrostErr, http.StatusBadRequest, schemas.ErrorTypeCallerContentFiltered, code)
 		})
 		t.Run("responses/"+code, func(t *testing.T) {
+			// Responses goes to MiniMax's native /v1/responses (TXE-6595), which reports base_resp the same way.
 			provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
-				"POST /v1/chat/completions": jsonResponse(http.StatusOK, `{"id":"","choices":null,`+baseResp+`}`),
+				"POST /v1/responses": jsonResponse(http.StatusOK, `{"id":"","output":null,`+baseResp+`}`),
 			})
 			_, bifrostErr := provider.Responses(testContext(t), testKey(), &schemas.BifrostResponsesRequest{
 				Provider: schemas.MiniMax,
@@ -2095,5 +2096,321 @@ func TestMiniMaxVideoDeliversTheUnifiedAspectRatio(t *testing.T) {
 	}
 	if sdk.Ratio == nil || *sdk.Ratio != "9:16" {
 		t.Fatalf("without extra params: ratio = %v, want the unified aspect_ratio 9:16", sdk.Ratio)
+	}
+}
+
+// TXE-6595 B1: MiniMax reports its content-safety verdict in top-level input_sensitive,
+// output_sensitive, input_sensitive_type and output_sensitive_type
+// (platform.minimax.io/docs/api-reference/text-chat-openai); the unified response carries them
+// under the same names, on both transports.
+func TestMiniMaxChatCarriesSensitivityFlags(t *testing.T) {
+	// The shape of MiniMax's documented sample response, with the filter fired on the output.
+	const body = `{"id":"0623ab","choices":[{"finish_reason":"stop","index":0,"message":{"content":"","role":"assistant","name":"MiniMax AI"}}],"created":1762240000,"model":"MiniMax-M3","object":"chat.completion","usage":{"total_tokens":20,"total_characters":0,"prompt_tokens":12,"completion_tokens":8},"input_sensitive":false,"output_sensitive":true,"input_sensitive_type":0,"output_sensitive_type":2,"output_sensitive_int":0,"base_resp":{"status_code":0,"status_msg":""}}`
+	provider, _ := newMockMiniMax(t, map[string]func(w http.ResponseWriter){
+		"POST /v1/chat/completions": jsonResponse(http.StatusOK, body),
+	})
+	resp, bifrostErr := provider.ChatCompletion(testContext(t), testKey(), userChatRequest(nil))
+	if bifrostErr != nil {
+		t.Fatalf("ChatCompletion: %+v", bifrostErr)
+	}
+	if resp.InputSensitive == nil || *resp.InputSensitive {
+		t.Errorf("input_sensitive = %v, want false", resp.InputSensitive)
+	}
+	if resp.OutputSensitive == nil || !*resp.OutputSensitive {
+		t.Errorf("output_sensitive = %v, want true", resp.OutputSensitive)
+	}
+	if resp.InputSensitiveType == nil || *resp.InputSensitiveType != 0 {
+		t.Errorf("input_sensitive_type = %v, want 0", resp.InputSensitiveType)
+	}
+	if resp.OutputSensitiveType == nil || *resp.OutputSensitiveType != 2 {
+		t.Errorf("output_sensitive_type = %v, want 2", resp.OutputSensitiveType)
+	}
+	out, err := providerUtils.MarshalSorted(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for path, want := range map[string]string{"input_sensitive": "false", "output_sensitive": "true", "input_sensitive_type": "0", "output_sensitive_type": "2"} {
+		if got := gjson.GetBytes(out, path).Raw; got != want {
+			t.Errorf("wire %s = %q, want %s", path, got, want)
+		}
+	}
+}
+
+func TestMiniMaxChatStreamCarriesSensitivityFlags(t *testing.T) {
+	provider, _ := newMockMiniMax(t, map[string]func(w http.ResponseWriter){
+		"POST /v1/chat/completions": sseResponse(
+			`{"id":"s1","object":"chat.completion.chunk","created":1,"model":"MiniMax-M3","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}],"output_sensitive":false,"input_sensitive_type":0,"output_sensitive_type":0}`,
+			`{"id":"s1","object":"chat.completion","created":1,"model":"MiniMax-M3","choices":[{"index":0,"finish_reason":"stop","delta":{}}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4},"input_sensitive":true,"output_sensitive":false,"input_sensitive_type":5,"output_sensitive_type":0,"base_resp":{"status_code":0,"status_msg":""}}`,
+		),
+	})
+	stream, bifrostErr := provider.ChatCompletionStream(testContext(t), passthroughPostHook, nil, testKey(), userChatRequest(nil))
+	if bifrostErr != nil {
+		t.Fatalf("ChatCompletionStream: %+v", bifrostErr)
+	}
+	var last *schemas.BifrostChatResponse
+	for chunk := range stream {
+		if chunk.BifrostError != nil {
+			t.Fatalf("stream error: %+v", chunk.BifrostError)
+		}
+		if chunk.BifrostChatResponse != nil {
+			last = chunk.BifrostChatResponse
+		}
+	}
+	// The terminal chunk is synthesized by the shared handler; it must carry the flags from
+	// MiniMax's finish-only frame.
+	if last == nil || last.InputSensitive == nil || !*last.InputSensitive || last.InputSensitiveType == nil || *last.InputSensitiveType != 5 {
+		t.Fatalf("terminal chunk flags = %+v, want input_sensitive true, type 5", last)
+	}
+	if last.OutputSensitive == nil || *last.OutputSensitive || last.OutputSensitiveType == nil || *last.OutputSensitiveType != 0 {
+		t.Errorf("terminal chunk output flags = %v/%v, want false/0", last.OutputSensitive, last.OutputSensitiveType)
+	}
+	if last.Usage == nil || last.Usage.TotalTokens != 4 {
+		t.Errorf("terminal chunk usage = %+v", last.Usage)
+	}
+}
+
+// A provider that does not report the flags leaves them off the wire.
+func TestChatResponseOmitsAbsentSensitivityFlags(t *testing.T) {
+	provider, _ := newMockMiniMax(t, map[string]func(w http.ResponseWriter){
+		"POST /v1/chat/completions": jsonResponse(http.StatusOK, chatSuccessBody),
+	})
+	resp, bifrostErr := provider.ChatCompletion(testContext(t), testKey(), userChatRequest(nil))
+	if bifrostErr != nil {
+		t.Fatalf("ChatCompletion: %+v", bifrostErr)
+	}
+	out, err := providerUtils.MarshalSorted(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, path := range []string{"input_sensitive", "output_sensitive", "input_sensitive_type", "output_sensitive_type"} {
+		if gjson.GetBytes(out, path).Exists() {
+			t.Errorf("%s present on a response that did not carry it: %s", path, out)
+		}
+	}
+}
+
+// TXE-6595 B3: Responses reach MiniMax's own POST /v1/responses
+// (platform.minimax.io/docs/api-reference/responses-create), not chat completions.
+func TestMiniMaxResponsesUsesNativeEndpoint(t *testing.T) {
+	// Abridged from the documented "Deep Thinking" sample response.
+	const body = `{"id":"resp_1","object":"response","created_at":1762240000,"model":"MiniMax-M3","status":"completed","output":[{"id":"rs_1","type":"reasoning","summary":[],"content":[{"type":"reasoning_text","text":"compare 9.90 and 9.11"}]},{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"9.9 is bigger than 9.11.","annotations":[]}]}],"usage":{"input_tokens":218,"output_tokens":68,"total_tokens":286,"input_tokens_details":{"cached_tokens":189},"output_tokens_details":{"reasoning_tokens":36}}}`
+	provider, captured := newMockMiniMax(t, map[string]func(w http.ResponseWriter){
+		"POST /v1/responses": jsonResponse(http.StatusOK, body),
+	})
+	resp, bifrostErr := provider.Responses(testContext(t), testKey(), &schemas.BifrostResponsesRequest{
+		Provider: schemas.MiniMax, Model: "MiniMax-M3",
+		Input:  []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Which is bigger, 9.11 or 9.9?")}}},
+		Params: &schemas.ResponsesParameters{Reasoning: &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("high")}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("Responses: %+v", bifrostErr)
+	}
+	reqs := captured()
+	if len(reqs) != 1 || reqs[0].path != "/v1/responses" {
+		t.Fatalf("upstream requests = %+v, want one POST /v1/responses", reqs)
+	}
+	if reqs[0].auth != "Bearer test-key" {
+		t.Errorf("Authorization = %q", reqs[0].auth)
+	}
+	if got := gjson.GetBytes(reqs[0].body, "model").Str; got != "MiniMax-M3" {
+		t.Errorf("model sent = %q", got)
+	}
+	if got := gjson.GetBytes(reqs[0].body, "reasoning.effort").Str; got != "high" {
+		t.Errorf("reasoning.effort sent = %q; body %s", got, reqs[0].body)
+	}
+	if gjson.GetBytes(reqs[0].body, "messages").Exists() {
+		t.Errorf("chat-shaped body sent to /v1/responses: %s", reqs[0].body)
+	}
+	if resp.Usage == nil || resp.Usage.InputTokens != 218 || resp.Usage.OutputTokens != 68 || resp.Usage.TotalTokens != 286 {
+		t.Fatalf("usage = %+v, want 218/68/286", resp.Usage)
+	}
+	if resp.Usage.InputTokensDetails == nil || resp.Usage.InputTokensDetails.CachedReadTokens != 189 {
+		t.Errorf("cached tokens = %+v, want 189", resp.Usage.InputTokensDetails)
+	}
+	if len(resp.Output) != 2 {
+		t.Errorf("output items = %d, want 2", len(resp.Output))
+	}
+}
+
+func TestMiniMaxResponsesBaseRespIsError(t *testing.T) {
+	provider, _ := newMockMiniMax(t, map[string]func(w http.ResponseWriter){
+		"POST /v1/responses": jsonResponse(http.StatusOK, `{"base_resp":{"status_code":1008,"status_msg":"insufficient balance"}}`),
+	})
+	_, bifrostErr := provider.Responses(testContext(t), testKey(), &schemas.BifrostResponsesRequest{
+		Provider: schemas.MiniMax, Model: "MiniMax-M3",
+		Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+	})
+	if bifrostErr == nil {
+		t.Fatal("expected an error for non-zero base_resp on /v1/responses")
+	}
+}
+
+func TestMiniMaxResponsesStreamUsesNativeEndpoint(t *testing.T) {
+	provider, captured := newMockMiniMax(t, map[string]func(w http.ResponseWriter){
+		"POST /v1/responses": sseResponse(
+			`{"type":"response.created","sequence_number":0,"response":{"id":"resp_1","object":"response","status":"in_progress","model":"MiniMax-M3","output":[]}}`,
+			`{"type":"response.output_text.delta","sequence_number":1,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"hi"}`,
+			`{"type":"response.completed","sequence_number":2,"response":{"id":"resp_1","object":"response","status":"completed","model":"MiniMax-M3","output":[],"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}}`,
+		),
+	})
+	stream, bifrostErr := provider.ResponsesStream(testContext(t), passthroughPostHook, nil, testKey(), &schemas.BifrostResponsesRequest{
+		Provider: schemas.MiniMax, Model: "MiniMax-M3",
+		Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("ResponsesStream: %+v", bifrostErr)
+	}
+	var completed bool
+	for chunk := range stream {
+		if chunk.BifrostError != nil {
+			t.Fatalf("stream error: %+v", chunk.BifrostError)
+		}
+		if r := chunk.BifrostResponsesStreamResponse; r != nil && r.Type == schemas.ResponsesStreamResponseTypeCompleted {
+			completed = true
+		}
+	}
+	if !completed {
+		t.Error("no response.completed event relayed")
+	}
+	reqs := captured()
+	if len(reqs) != 1 || reqs[0].path != "/v1/responses" || !gjson.GetBytes(reqs[0].body, "stream").Bool() {
+		t.Fatalf("upstream requests = %+v, want one streaming POST /v1/responses", reqs)
+	}
+}
+
+// TXE-6595 B4: MiniMax advertises its Anthropic-compatible endpoint
+// (platform.minimax.io/docs/api-reference/text-anthropic-api: POST /anthropic/v1/messages, Bearer
+// auth) and forwards a native Messages body to it unchanged on both transports.
+func TestMiniMaxMessagesPassthroughForwardsUnchanged(t *testing.T) {
+	body := `{"model":"MiniMax-M3","max_tokens":64,"output_config":{"effort":"max"},"system":"be brief","messages":[{"role":"user","content":"hi"}]}`
+	streamBody := strings.Replace(body, `"max_tokens":64,`, `"max_tokens":64,"stream":true,`, 1)
+	provider, captured := newMockMiniMax(t, map[string]func(w http.ResponseWriter){
+		"POST /anthropic/v1/messages": func(w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"MiniMax-M3","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":1}}`))
+		},
+	})
+
+	capable, ok := interface{}(provider).(schemas.AnthropicMessagesCapable)
+	if !ok {
+		t.Fatal("MiniMax provider does not advertise Anthropic Messages capability")
+	}
+	endpoint, enabled := capable.AnthropicMessagesEndpoint()
+	if !enabled || !strings.HasSuffix(endpoint, "/anthropic") {
+		t.Fatalf("endpoint = %q, enabled = %v", endpoint, enabled)
+	}
+
+	ctx := testContext(t)
+	resp, bifrostErr := provider.Passthrough(ctx, testKey(), &schemas.BifrostPassthroughRequest{
+		Method: http.MethodPost, Path: "/v1/messages", Body: []byte(body),
+		SafeHeaders: map[string]string{"anthropic-version": "2023-06-01"},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("Passthrough: %+v", bifrostErr)
+	}
+	if resp.StatusCode != http.StatusOK || gjson.GetBytes(resp.Body, "id").Str != "msg_1" {
+		t.Fatalf("passthrough response = %d %s", resp.StatusCode, resp.Body)
+	}
+	if resp.PassthroughUsage == nil {
+		t.Error("passthrough usage not extracted from the Messages response")
+	}
+
+	stream, bifrostErr := provider.PassthroughStream(ctx, passthroughPostHook, nil, testKey(), &schemas.BifrostPassthroughRequest{
+		Method: http.MethodPost, Path: "/v1/messages", Body: []byte(streamBody),
+	})
+	if bifrostErr != nil {
+		t.Fatalf("PassthroughStream: %+v", bifrostErr)
+	}
+	for range stream {
+	}
+
+	reqs := captured()
+	if len(reqs) != 2 {
+		t.Fatalf("upstream requests = %d, want 2", len(reqs))
+	}
+	for i, want := range []string{body, streamBody} {
+		if reqs[i].path != "/anthropic/v1/messages" {
+			t.Errorf("request %d path = %q, want /anthropic/v1/messages", i, reqs[i].path)
+		}
+		if reqs[i].auth != "Bearer test-key" {
+			t.Errorf("request %d Authorization = %q", i, reqs[i].auth)
+		}
+		if string(reqs[i].body) != want {
+			t.Errorf("request %d body changed:\n got: %s\nwant: %s", i, reqs[i].body, want)
+		}
+	}
+}
+
+func TestMiniMaxPassthroughRefusesOtherPaths(t *testing.T) {
+	provider, captured := newMockMiniMax(t, nil)
+	_, bifrostErr := provider.Passthrough(testContext(t), testKey(), &schemas.BifrostPassthroughRequest{
+		Method: http.MethodPost, Path: "/v1/chat/completions", Body: []byte(`{}`),
+	})
+	if bifrostErr == nil {
+		t.Fatal("expected unsupported operation for a non-Messages passthrough path")
+	}
+	if n := len(captured()); n != 0 {
+		t.Fatalf("upstream requests = %d, want 0", n)
+	}
+}
+
+// TXE-6595: MiniMax returns reasoning as reasoning_text content with an empty summary. Replaying
+// that output as the next turn's input must keep the reasoning item, on both transports, or
+// multi-turn and tool-call continuations lose the provider's reasoning.
+func TestMiniMaxResponsesReplaysReasoningContent(t *testing.T) {
+	t.Run("minimax", func(t *testing.T) { testMiniMaxResponsesReplaysReasoningContent(t, schemas.MiniMax, nil) })
+	// A custom provider built on minimax reports its own key; Bifrost records the base type
+	// on the context (core/bifrost.go), and the replay default must follow it.
+	t.Run("custom provider on minimax", func(t *testing.T) {
+		testMiniMaxResponsesReplaysReasoningContent(t, schemas.ModelProvider("my-minimax"), func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.MiniMax)
+		})
+	})
+}
+
+func testMiniMaxResponsesReplaysReasoningContent(t *testing.T, providerKey schemas.ModelProvider, setCtx func(*schemas.BifrostContext)) {
+	const first = `{"id":"resp_1","object":"response","created_at":1,"model":"MiniMax-M3","status":"completed","output":[{"id":"rs_1","type":"reasoning","summary":[],"content":[{"type":"reasoning_text","text":"compare 9.90 and 9.11"}]},{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"9.9","annotations":[]}]}],"usage":{"input_tokens":5,"output_tokens":3,"total_tokens":8}}`
+	provider, captured := newMockMiniMax(t, map[string]func(w http.ResponseWriter){
+		"POST /v1/responses": jsonResponse(http.StatusOK, first),
+	})
+	ctx := testContext(t)
+	if setCtx != nil {
+		setCtx(ctx)
+	}
+	user := schemas.ResponsesMessage{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Which is bigger, 9.11 or 9.9?")}}
+	resp, bifrostErr := provider.Responses(ctx, testKey(), &schemas.BifrostResponsesRequest{Provider: providerKey, Model: "MiniMax-M3", Input: []schemas.ResponsesMessage{user}})
+	if bifrostErr != nil {
+		t.Fatalf("Responses: %+v", bifrostErr)
+	}
+
+	followUp := schemas.ResponsesMessage{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Why?")}}
+	history := append(append([]schemas.ResponsesMessage{user}, resp.Output...), followUp)
+	if _, bifrostErr := provider.Responses(ctx, testKey(), &schemas.BifrostResponsesRequest{Provider: providerKey, Model: "MiniMax-M3", Input: history}); bifrostErr != nil {
+		t.Fatalf("Responses (replay): %+v", bifrostErr)
+	}
+	stream, bifrostErr := provider.ResponsesStream(ctx, passthroughPostHook, nil, testKey(), &schemas.BifrostResponsesRequest{Provider: providerKey, Model: "MiniMax-M3", Input: history})
+	if bifrostErr != nil {
+		t.Fatalf("ResponsesStream (replay): %+v", bifrostErr)
+	}
+	for range stream {
+	}
+
+	reqs := captured()
+	if len(reqs) != 3 {
+		t.Fatalf("upstream requests = %d, want 3", len(reqs))
+	}
+	for i, r := range reqs[1:] {
+		var reasoning gjson.Result
+		for _, item := range gjson.GetBytes(r.body, "input").Array() {
+			if item.Get("type").Str == "reasoning" {
+				reasoning = item
+			}
+		}
+		if !reasoning.Exists() {
+			t.Fatalf("replay %d dropped the reasoning item: %s", i, r.body)
+		}
+		if got := reasoning.Get("content.0.text").Str; got != "compare 9.90 and 9.11" {
+			t.Errorf("replay %d reasoning content = %q; item %s", i, got, reasoning.Raw)
+		}
 	}
 }

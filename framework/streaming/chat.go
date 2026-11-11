@@ -475,13 +475,21 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 	// service_tier can arrive before a trailing usage-only or synthetic terminal
 	// chunk, so retain the newest non-nil value rather than reading only the
 	// highest-index chunk.
+	// Content-safety flags ride the same pass: MiniMax sends some on content chunks and the full
+	// set on its finish frame, so each field keeps its newest value by chunk index. A stream
+	// with no flags pays one nil check per chunk and allocates nothing.
 	tierChunkIndex := -1
+	var safety chatContentSafetyAccumulator
 	for _, streamChunk := range accumulator.ChatStreamChunks {
 		if streamChunk.ServiceTier != nil && streamChunk.ChunkIndex > tierChunkIndex {
 			data.ServiceTier = streamChunk.ServiceTier
 			tierChunkIndex = streamChunk.ChunkIndex
 		}
+		if streamChunk.ContentSafety != nil {
+			safety.add(streamChunk.ContentSafety, streamChunk.ChunkIndex)
+		}
 	}
+	data.ContentSafety = safety.merged
 	// The highest-index chunk can carry a nil finish_reason (a usage-only chunk,
 	// or the synthetic terminal chunk the OpenAI-compatible handler appends after
 	// forwarding finish_reason on a content chunk). Fall back to the newest chunk
@@ -600,6 +608,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		if result.ChatResponse.ServiceTier != nil {
 			chunk.ServiceTier = new(schemas.BifrostServiceTier(*result.ChatResponse.ServiceTier))
 		}
+		chunk.ContentSafety = chatContentSafetyFrom(result.ChatResponse)
 		chunk.ChunkIndex = result.ChatResponse.ExtraFields.ChunkIndex
 		if result.ChatResponse.ExtraFields.RawResponse != nil {
 			chunk.RawResponse = bifrost.Ptr(fmt.Sprintf("%v", result.ChatResponse.ExtraFields.RawResponse))

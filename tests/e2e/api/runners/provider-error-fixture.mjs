@@ -526,6 +526,7 @@ const geminiAudioAnswer = (path) => {
 
 const miniMaxBaseRespRoutes = new Set([
 	"/pp/minimax/v1/chat/completions",
+	"/pp/minimax/v1/responses",
 	"/pp/minimax/v1/t2a_v2",
 	"/pp/minimax/v1/image_generation",
 	"/pp/minimax/v2/video_generation",
@@ -637,6 +638,41 @@ const miniMaxSpeechAnswer = (body) => {
 	return { status: 200, body: JSON.stringify({ data: { audio: "4944330000", status: 2 }, extra_info: miniMaxSpeechExtraInfo, trace_id: "t_pp", base_resp: miniMaxOk }) };
 };
 
+// MiniMax content-safety flags, native Responses and Messages, TXE-6595 (vendor sheet B1, B3, B4; contract C6).
+// Chat for the model "sensitive-flags" answers with MiniMax's four top-level flags; input_sensitive_type 5 is
+// "abusive" (platform.minimax.io/docs/api-reference/text-chat-openai). Streamed, the flags ride the content chunk and
+// the finish chunk. /v1/responses answers MiniMax's native Responses object, whose reasoning item has an empty summary
+// and carries the thinking as reasoning_text (api-reference/responses-create). /anthropic/v1/messages is MiniMax's
+// Anthropic-compatible endpoint at the API origin (api-reference/text-anthropic-api), outside the /pp/minimax base.
+const miniMaxSensitivity = { input_sensitive: true, input_sensitive_type: 5, output_sensitive: false, output_sensitive_type: 0 };
+const miniMaxSensitiveChatAnswer = (body) => {
+	const usage = { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 };
+	if (body.stream === true) {
+		const base = { id: "chatcmpl_mm_flags", object: "chat.completion.chunk", created: 1, model: body.model };
+		const frames = [
+			{ ...base, choices: [{ index: 0, delta: { role: "assistant", content: "hello" } }], ...miniMaxSensitivity },
+			{ ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage, ...miniMaxSensitivity, base_resp: miniMaxOk },
+		];
+		return { status: 200, stream: frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join("") + "data: [DONE]\n\n" };
+	}
+	return { status: 200, body: JSON.stringify({ id: "chatcmpl_mm_flags", object: "chat.completion", created: 1, model: body.model, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage, ...miniMaxSensitivity, base_resp: miniMaxOk }) };
+};
+const miniMaxResponsesAnswer = (body) => ({
+	status: 200,
+	body: JSON.stringify({
+		id: "resp_mm_1",
+		object: "response",
+		created_at: 1,
+		status: "completed",
+		model: body.model,
+		output: [
+			{ id: "rs_mm_1", type: "reasoning", summary: [], content: [{ type: "reasoning_text", text: "Compare the tenths: 9 is more than 1." }] },
+			{ id: "msg_mm_1", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "9.9", annotations: [] }] },
+		],
+		usage: { input_tokens: 12, output_tokens: 4, total_tokens: 16 },
+	}),
+});
+
 // BFL image tasks, TXE-6431 (folder 421). The config points bfl at /pp/bfl, so a submit (POST /pp/bfl/v1/{model})
 // arrives through the wire capture and answers BFL's AsyncResponse, and GET /pp/bfl/v1/get_result answers BFL's
 // ResultResponse for the task id it names: bfl-ready is Ready with a sample link and its settled cost, bfl-moderated
@@ -711,8 +747,9 @@ const wireAnswer = (path, body, bytes) => {
 	}
 	if (path === "/pp/cp/v1/chat/completions") return cpChatAnswerFor(body);
 	// MiniMax answers its failures inside a 200 as base_resp, with no result (TXE-6588, contract C6). The model
-	// "base-resp-<code>" selects the code, so a case asks for exactly the MiniMax error it pins. Chat (which also
-	// serves Responses), speech, image generation and video create each read base_resp from their own route.
+	// "base-resp-<code>" selects the code, so a case asks for exactly the MiniMax error it pins. Chat, Responses
+	// (MiniMax's native /v1/responses, TXE-6595), speech, image generation and video create each read base_resp from
+	// their own route.
 	if (miniMaxBaseRespRoutes.has(path)) {
 		const answer = miniMaxBaseRespAnswer(body.model);
 		if (answer) return answer;
@@ -723,6 +760,9 @@ const wireAnswer = (path, body, bytes) => {
 	if (path === "/pp/minimax/v2/video_generation") return { status: 200, body: JSON.stringify({ task_id: "fixture-video-task", base_resp: { status_code: 0, status_msg: "success" } }) };
 	if (path === "/pp/byteplus/api/v3/contents/generations/tasks") return { status: 200, body: JSON.stringify({ id: "cgt-fixture-video-task" }) };
 	if (path.startsWith("/pp/gemini/models/") && path.endsWith(":predictLongRunning")) return { status: 200, body: JSON.stringify({ name: `${path.slice("/pp/gemini/".length, -":predictLongRunning".length)}/operations/fixture-video-op` }) };
+	if (path === "/pp/minimax/v1/chat/completions" && body.model === "sensitive-flags") return miniMaxSensitiveChatAnswer(body);
+	if (path === "/pp/minimax/v1/responses") return miniMaxResponsesAnswer(body);
+	if (path === "/anthropic/v1/messages") return { status: 200, body: JSON.stringify(anthropicMessage(body.model)) };
 	if (path === "/pp/vercel/v1/images/generations") return { status: 200, body: JSON.stringify(vercelImageAnswer(body)) };
 	if (path === "/pp/google-cloud-tts/v1/text:synthesize") return cloudTTSAnswer(body);
 	if (path === "/pp/cp/v1/responses") return cpResponsesAnswerFor(body);
@@ -1000,7 +1040,7 @@ const server = http.createServer((req, res) => {
 		if (answer) return send(answer.status, {}, answer.body);
 		return send(404, {}, JSON.stringify({ error: "unknown fixture task" }));
 	}
-	if (req.method === "POST" && (path.startsWith("/pp/") || path === "/v1/embeddings" || isOpenAIImagePath(path))) {
+	if (req.method === "POST" && (path.startsWith("/pp/") || path === "/v1/embeddings" || path === "/anthropic/v1/messages" || isOpenAIImagePath(path))) {
 		const body = [];
 		req.on("data", (c) => body.push(c));
 		req.on("end", () => {

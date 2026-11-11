@@ -1110,3 +1110,137 @@ func TestBuildChatMessageFromChunksWithoutAccumulator(t *testing.T) {
 		t.Fatalf("exported builder diverged from Accumulator method:\n got %+v\nwant %+v", message, viaAccumulator)
 	}
 }
+
+// TXE-6595: MiniMax's content-safety flags survive accumulation. Content chunks carry some of
+// them and the synthetic terminal chunk the full set; the accumulated response keeps the newest
+// value of each, and a stream that never carried any leaves them off.
+func TestAccumulatedChatStreamPreservesContentSafetyFlags(t *testing.T) {
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	t.Cleanup(accumulator.Cleanup)
+	requireNoError := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	ptrBool := func(v bool) *bool { return &v }
+	ptrInt := func(v int) *int { return &v }
+
+	requestID := "chat-content-safety"
+	requireNoError(accumulator.addChatStreamChunk(requestID, StreamTypeChat, &ChatStreamChunk{
+		ChunkIndex: 1, Timestamp: time.Now(),
+		ContentSafety: &ChatContentSafety{OutputSensitive: ptrBool(false), InputSensitiveType: ptrInt(0), OutputSensitiveType: ptrInt(0)},
+	}, false))
+	requireNoError(accumulator.addChatStreamChunk(requestID, StreamTypeChat, &ChatStreamChunk{
+		ChunkIndex: 3, Timestamp: time.Now(), TokenUsage: &schemas.BifrostLLMUsage{TotalTokens: 4},
+		ContentSafety: &ChatContentSafety{InputSensitive: ptrBool(true), OutputSensitive: ptrBool(true), InputSensitiveType: ptrInt(5), OutputSensitiveType: ptrInt(2)},
+	}, false))
+	requireNoError(accumulator.addChatStreamChunk(requestID, StreamTypeChat, &ChatStreamChunk{
+		ChunkIndex: 2, Timestamp: time.Now(),
+		ContentSafety: &ChatContentSafety{OutputSensitive: ptrBool(false)},
+	}, true))
+
+	data, err := accumulator.processAccumulatedChatStreamingChunks(requestID, nil, true)
+	requireNoError(err)
+	cs := data.ContentSafety
+	if cs == nil || cs.InputSensitive == nil || !*cs.InputSensitive || cs.OutputSensitive == nil || !*cs.OutputSensitive ||
+		cs.InputSensitiveType == nil || *cs.InputSensitiveType != 5 || cs.OutputSensitiveType == nil || *cs.OutputSensitiveType != 2 {
+		t.Fatalf("accumulated content safety = %+v, want the newest-index values true/true/5/2", cs)
+	}
+
+	resp := (&ProcessedStreamResponse{RequestID: requestID, StreamType: StreamTypeChat, Data: data}).ToBifrostResponse()
+	if resp == nil || resp.ChatResponse == nil {
+		t.Fatal("no chat response rebuilt")
+	}
+	r := resp.ChatResponse
+	if r.InputSensitive == nil || !*r.InputSensitive || r.InputSensitiveType == nil || *r.InputSensitiveType != 5 ||
+		r.OutputSensitive == nil || !*r.OutputSensitive || r.OutputSensitiveType == nil || *r.OutputSensitiveType != 2 {
+		t.Fatalf("rebuilt response flags = %v/%v/%v/%v", r.InputSensitive, r.OutputSensitive, r.InputSensitiveType, r.OutputSensitiveType)
+	}
+
+	plain := "chat-no-content-safety"
+	requireNoError(accumulator.addChatStreamChunk(plain, StreamTypeChat, &ChatStreamChunk{
+		ChunkIndex: 1, Timestamp: time.Now(), TokenUsage: &schemas.BifrostLLMUsage{TotalTokens: 1},
+	}, true))
+	plainData, err := accumulator.processAccumulatedChatStreamingChunks(plain, nil, true)
+	requireNoError(err)
+	if plainData.ContentSafety != nil {
+		t.Fatalf("content safety invented for a stream that carried none: %+v", plainData.ContentSafety)
+	}
+}
+
+func TestChatContentSafetyFromCopiesFlags(t *testing.T) {
+	if chatContentSafetyFrom(&schemas.BifrostChatResponse{}) != nil {
+		t.Fatal("a response without flags must yield nil")
+	}
+	in, typ := true, 6
+	r := &schemas.BifrostChatResponse{InputSensitive: &in, InputSensitiveType: &typ}
+	cs := chatContentSafetyFrom(r)
+	in, typ = false, 0 // the chunk's copy must not alias the pooled response
+	if cs == nil || cs.InputSensitive == nil || !*cs.InputSensitive || cs.InputSensitiveType == nil || *cs.InputSensitiveType != 6 || cs.OutputSensitive != nil {
+		t.Fatalf("copied flags = %+v", cs)
+	}
+}
+
+// chatStreamBenchChunks is the chunk count of the benchmarked stream: a short chat answer.
+const chatStreamBenchChunks = 64
+
+// benchmarkAccumulateChatStream adds a chatStreamBenchChunks-chunk stream and processes its final
+// chunk. When flagged, every content chunk carries MiniMax's partial content-safety set and the
+// terminal chunk the full set, which is the shape MiniMax streams.
+func benchmarkAccumulateChatStream(b *testing.B, flagged bool) {
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	b.Cleanup(accumulator.Cleanup)
+	falseV, trueV, zero, five := false, true, 0, 5
+	partial := &ChatContentSafety{OutputSensitive: &falseV, InputSensitiveType: &zero, OutputSensitiveType: &zero}
+	full := &ChatContentSafety{InputSensitive: &trueV, OutputSensitive: &falseV, InputSensitiveType: &five, OutputSensitiveType: &zero}
+	text := "tok"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		requestID := fmt.Sprintf("bench-%d", i)
+		for c := 0; c < chatStreamBenchChunks; c++ {
+			final := c == chatStreamBenchChunks-1
+			chunk := &ChatStreamChunk{ChunkIndex: c, Timestamp: time.Now(), Delta: &schemas.ChatStreamResponseChoiceDelta{Content: &text}}
+			if final {
+				chunk.TokenUsage = &schemas.BifrostLLMUsage{PromptTokens: 3, CompletionTokens: chatStreamBenchChunks, TotalTokens: chatStreamBenchChunks + 3}
+			}
+			if flagged {
+				chunk.ContentSafety = partial
+				if final {
+					chunk.ContentSafety = full
+				}
+			}
+			if err := accumulator.addChatStreamChunk(requestID, StreamTypeChat, chunk, final); err != nil {
+				b.Fatal(err)
+			}
+		}
+		if _, err := accumulator.processAccumulatedChatStreamingChunks(requestID, nil, true); err != nil {
+			b.Fatal(err)
+		}
+		_ = accumulator.CleanupStreamAccumulator(requestID)
+	}
+}
+
+// TXE-6595 cost: a stream without content-safety flags (every provider but MiniMax) must cost the
+// same as before; a flagged MiniMax stream adds one merged struct.
+func BenchmarkAccumulateChatStreamUnflagged(b *testing.B) { benchmarkAccumulateChatStream(b, false) }
+func BenchmarkAccumulateChatStreamFlagged(b *testing.B)   { benchmarkAccumulateChatStream(b, true) }
+
+func BenchmarkChatContentSafetyFrom(b *testing.B) {
+	in, typ := true, 2
+	flagged := &schemas.BifrostChatResponse{InputSensitive: &in, OutputSensitive: &in, InputSensitiveType: &typ, OutputSensitiveType: &typ}
+	plain := &schemas.BifrostChatResponse{}
+	b.Run("unflagged", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = chatContentSafetyFrom(plain)
+		}
+	})
+	b.Run("flagged", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = chatContentSafetyFrom(flagged)
+		}
+	})
+}

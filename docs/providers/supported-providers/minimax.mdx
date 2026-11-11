@@ -12,7 +12,8 @@ MiniMax is an OpenAI-compatible provider with its own Bifrost implementation. Ch
 - **Reasoning.** Bifrost asks MiniMax to split thinking into `reasoning_content`, so it never shows up as `<think>` tags inside the answer.
 - **Tool calling.** Function tools use the OpenAI-compatible schema.
 - **Vision.** `MiniMax-M3` and `MiniMax-M3.1-Flash-Preview` accept `image_url` parts. The M2.x models are text only.
-- **Responses API.** Converted to Chat Completions internally.
+- **Responses API.** Sent to MiniMax's native `/v1/responses`.
+- **Anthropic Messages.** `/anthropic/v1/messages` requests for a MiniMax model are forwarded unchanged to MiniMax's Anthropic-compatible `/anthropic/v1/messages`.
 - **Image generation.** `image-01` through `/v1/image_generation`.
 - **Video generation.** `MiniMax-H3` and `MiniMax-H3-Max` as async tasks through `/v2/video_generation`.
 - **Text-to-speech.** `speech-2.8-hd`, `speech-2.8-turbo` and older speech models through `/v1/t2a_v2`, streamed or not.
@@ -24,7 +25,8 @@ MiniMax is an OpenAI-compatible provider with its own Bifrost implementation. Ch
 | Operation | Non-Streaming | Streaming | Endpoint |
 |-----------|---------------|-----------|----------|
 | Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
-| Responses API | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/responses` |
+| Anthropic Messages (`/anthropic/v1/messages`) | ✅ | ✅ | `/anthropic/v1/messages` (forwarded unchanged) |
 | List Models | ✅ | - | `/v1/models` |
 | Image Generation | ✅ | ❌ | `/v1/image_generation` |
 | Video Generation | ✅ | - | `/v2/video_generation` |
@@ -141,6 +143,19 @@ The M2.x models ignore `thinking.type: disabled`, so they keep thinking either w
 
 Extra parameters pass through, so MiniMax-only fields like `thinking`, `service_tier` or `reasoning_split` reach the API unchanged.
 
+### Content-safety flags
+
+MiniMax reports whether its content filter fired on every chat response, and Bifrost returns those fields unchanged at the top level of the chat response, streamed or not (on a stream, the final chunk carries the complete set):
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `input_sensitive` | boolean | The input contained sensitive content |
+| `output_sensitive` | boolean | The output contained sensitive content |
+| `input_sensitive_type` | integer | `1` severe violation, `2` pornography, `3` advertising, `4` prohibited, `5` abusive, `6` terrorism/violence, `7` other; `0` when nothing fired |
+| `output_sensitive_type` | integer | The same codes for the output |
+
+Providers that do not report these fields leave them out.
+
 ### Errors
 
 MiniMax sometimes returns HTTP 200 with a non-zero `base_resp.status_code`. Bifrost turns those into errors with a matching HTTP status. For example, `1002` becomes 429, `1004` becomes 401, `1008` (insufficient balance) becomes 402, and `1026`/`1027` (sensitive content) become 400.
@@ -149,14 +164,11 @@ MiniMax sometimes returns HTTP 200 with a non-zero `base_resp.status_code`. Bifr
 
 # 2. Responses API
 
-Bifrost converts Responses API requests to Chat Completions and converts the result back. Streaming Responses requests go through Chat Completions streaming the same way.
+Responses API requests go to MiniMax's OpenAI Responses-compatible `POST /v1/responses`, streamed or not, with the same Bearer key as chat. MiniMax returns the Responses shape itself (`output` items of type `reasoning`, `message` and `function_call`; `usage.input_tokens`, `output_tokens`, `input_tokens_details.cached_tokens`, `output_tokens_details.reasoning_tokens`), and streams `response.*` SSE events. A non-zero `base_resp.status_code` on a 200 is an error, as on chat.
 
-```
-BifrostResponsesRequest
-  → ToChatRequest()
-  → ChatCompletion
-  → ToBifrostResponsesResponse()
-```
+# 2a. Anthropic Messages
+
+MiniMax serves an Anthropic-compatible API at `https://api.minimax.io/anthropic`. A `/anthropic/v1/messages` request whose model is a MiniMax model (`minimax/MiniMax-M3`) is forwarded to `/anthropic/v1/messages` on the base URL's origin byte for byte, apart from the `minimax/` prefix taken off `model`, with `Authorization: Bearer <key>`. MiniMax's response, streamed or not, is returned unchanged. MiniMax documents which Anthropic parameters it honours and which it ignores.
 
 ---
 
