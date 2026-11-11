@@ -911,3 +911,68 @@ func TestWrapConvertedStreamPostHookRunnerMarksConvertedChunks(t *testing.T) {
 		})
 	}
 }
+
+// customProviderKeyPending lists the bases whose custom providers still report the base's
+// name, each with the ticket that fixes it. The test below fails on a stale entry, so the
+// map empties as those fixes land and is meant to stay empty.
+var customProviderKeyPending = map[schemas.ModelProvider]string{
+	schemas.Replicate:  "TXE-7085",
+	schemas.ModelArk:   "TXE-7085",
+	schemas.Volcengine: "TXE-7085",
+}
+
+// A custom provider reports its own name from GetProviderKey, on every base a custom
+// provider can be built on. Core finds a provider by that name (getProviderByKey) and picks
+// the keys of a request by it, so a custom provider that reported its base's name was never
+// found under its own name and was served with the base provider's keys, which it then sent
+// to its own base_url (deepseek, glm, moonshot and qwen did before TXE-7097). A base added to
+// schemas.SupportedBaseProviders is covered without being listed here.
+func TestCustomProviderReportsItsOwnKeyOnEveryBase(t *testing.T) {
+	client := &Bifrost{logger: NewNoOpLogger()}
+	for _, base := range schemas.SupportedBaseProviders {
+		t.Run(string(base), func(t *testing.T) {
+			name := schemas.ModelProvider("custom-" + string(base))
+			provider, err := client.createBaseProvider(name, &schemas.ProviderConfig{
+				NetworkConfig:        schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1", DefaultRequestTimeoutInSeconds: 1},
+				CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: string(name), BaseProviderType: base},
+			})
+			require.NoError(t, err)
+			got := provider.GetProviderKey()
+			ticket, pending := customProviderKeyPending[base]
+			switch {
+			case pending && got == name:
+				t.Errorf("%s now reports its custom name: remove it from customProviderKeyPending (%s)", base, ticket)
+			case !pending && got != name:
+				t.Errorf("a custom provider on the %s base reports the provider key %q, want its own name %q", base, got, name)
+			}
+		})
+	}
+	for base := range customProviderKeyPending {
+		assert.Contains(t, schemas.SupportedBaseProviders, base, "customProviderKeyPending names a base that is not supported")
+	}
+}
+
+// GetProviderKey runs several times per request (key selection, routing info, extra fields).
+func BenchmarkCustomProviderGetProviderKey(b *testing.B) {
+	client := &Bifrost{logger: NewNoOpLogger()}
+	for _, bench := range []struct {
+		name   string
+		key    schemas.ModelProvider
+		custom *schemas.CustomProviderConfig
+	}{
+		{"standard", schemas.DeepSeek, nil},
+		{"custom", "custom-deepseek", &schemas.CustomProviderConfig{CustomProviderKey: "custom-deepseek", BaseProviderType: schemas.DeepSeek}},
+	} {
+		provider, err := client.createBaseProvider(bench.key, &schemas.ProviderConfig{
+			NetworkConfig:        schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1", DefaultRequestTimeoutInSeconds: 1},
+			CustomProviderConfig: bench.custom,
+		})
+		require.NoError(b, err)
+		b.Run(bench.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = provider.GetProviderKey()
+			}
+		})
+	}
+}

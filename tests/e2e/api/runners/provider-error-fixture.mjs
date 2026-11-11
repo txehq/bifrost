@@ -785,6 +785,12 @@ const wireAnswer = (path, body, bytes) => {
 		return { status: 200, body: JSON.stringify({ id: "chatcmpl_oc", object: "chat.completion", created: 1, model: body.model, service_tier: body.service_tier, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) };
 	}
 	if (path === "/pp/cp/v1/chat/completions") return cpChatAnswerFor(body);
+	// A custom provider is served with its own keys (folder 487, TXE-7097): one custom provider on each of the deepseek,
+	// glm, moonshot and qwen bases points at /pp/ownkey, where each base posts chat to its own path. The call is kept in
+	// /__wire with the bearer that arrived, which is what the row reads.
+	if (path.startsWith("/pp/ownkey/") && path.endsWith("/chat/completions")) {
+		return { status: 200, body: JSON.stringify({ id: "chatcmpl_ownkey", object: "chat.completion", created: 1, model: body.model, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) };
+	}
 	// MiniMax answers its failures inside a 200 as base_resp, with no result (TXE-6588, contract C6). The model
 	// "base-resp-<code>" selects the code, so a case asks for exactly the MiniMax error it pins. Chat, Responses
 	// (MiniMax's native /v1/responses, TXE-6595), speech, image generation and video create each read base_resp from
@@ -1390,6 +1396,8 @@ const handleRequest = (req, res) => {
 			const call = { path, query: new URL(req.url, "http://localhost").search, body: bytes };
 			// An image edit is a form or a JSON body (TXE-6528), so its row also says which one arrived.
 			if (isOpenAIImagePath(path)) call.contentType = req.headers["content-type"] || "";
+			// Folder 487 reads which key the gateway sent (TXE-7097).
+			if (path.startsWith("/pp/ownkey/")) call.bearer = bearerOf(req);
 			wireCalls.push(call);
 			let parsed = {};
 			try { parsed = JSON.parse(bytes) || {}; } catch {}

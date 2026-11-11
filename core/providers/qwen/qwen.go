@@ -20,6 +20,8 @@ type QwenProvider struct {
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	// customProviderConfig is set for a custom provider on this base; GetProviderKey reads its name from it.
+	customProviderConfig *schemas.CustomProviderConfig
 }
 
 // NewQwenProvider creates a new Qwen provider instance.
@@ -46,17 +48,18 @@ func NewQwenProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*Qw
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &QwenProvider{
-		logger:              logger,
-		client:              client,
-		networkConfig:       config.NetworkConfig,
-		sendBackRawRequest:  config.SendBackRawRequest,
-		sendBackRawResponse: config.SendBackRawResponse,
+		logger:               logger,
+		client:               client,
+		networkConfig:        config.NetworkConfig,
+		sendBackRawRequest:   config.SendBackRawRequest,
+		sendBackRawResponse:  config.SendBackRawResponse,
+		customProviderConfig: config.CustomProviderConfig,
 	}, nil
 }
 
 // GetProviderKey returns the provider identifier for Qwen.
 func (provider *QwenProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.Qwen
+	return providerUtils.GetProviderName(schemas.Qwen, provider.customProviderConfig)
 }
 
 // ListModels performs a list models request to Qwen's API.

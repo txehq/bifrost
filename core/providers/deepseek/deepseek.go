@@ -23,6 +23,8 @@ type DeepSeekProvider struct {
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	// customProviderConfig is set for a custom provider on this base; GetProviderKey reads its name from it.
+	customProviderConfig *schemas.CustomProviderConfig
 }
 
 // NewDeepSeekProvider creates a new DeepSeek provider instance.
@@ -54,12 +56,13 @@ func NewDeepSeekProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &DeepSeekProvider{
-		logger:              logger,
-		client:              client,
-		streamingClient:     streamingClient,
-		networkConfig:       config.NetworkConfig,
-		sendBackRawRequest:  config.SendBackRawRequest,
-		sendBackRawResponse: config.SendBackRawResponse,
+		logger:               logger,
+		client:               client,
+		streamingClient:      streamingClient,
+		networkConfig:        config.NetworkConfig,
+		sendBackRawRequest:   config.SendBackRawRequest,
+		sendBackRawResponse:  config.SendBackRawResponse,
+		customProviderConfig: config.CustomProviderConfig,
 	}, nil
 }
 
@@ -217,7 +220,7 @@ func servedModelPostHookRunner(requested string, next schemas.PostHookRunner) sc
 
 // GetProviderKey returns the provider identifier for DeepSeek.
 func (provider *DeepSeekProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.DeepSeek
+	return providerUtils.GetProviderName(schemas.DeepSeek, provider.customProviderConfig)
 }
 
 // anthropicMessagesPath is where DeepSeek serves its Anthropic-compatible Messages API,

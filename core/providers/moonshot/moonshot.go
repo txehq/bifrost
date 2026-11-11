@@ -22,6 +22,8 @@ type MoonshotProvider struct {
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	// customProviderConfig is set for a custom provider on this base; GetProviderKey reads its name from it.
+	customProviderConfig *schemas.CustomProviderConfig
 }
 
 // NewMoonshotProvider creates a new Moonshot provider instance.
@@ -48,18 +50,19 @@ func NewMoonshotProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &MoonshotProvider{
-		logger:              logger,
-		client:              client,
-		streamingClient:     providerUtils.BuildStreamingClient(client),
-		networkConfig:       config.NetworkConfig,
-		sendBackRawRequest:  config.SendBackRawRequest,
-		sendBackRawResponse: config.SendBackRawResponse,
+		logger:               logger,
+		client:               client,
+		streamingClient:      providerUtils.BuildStreamingClient(client),
+		networkConfig:        config.NetworkConfig,
+		sendBackRawRequest:   config.SendBackRawRequest,
+		sendBackRawResponse:  config.SendBackRawResponse,
+		customProviderConfig: config.CustomProviderConfig,
 	}, nil
 }
 
 // GetProviderKey returns the provider identifier for Moonshot.
 func (provider *MoonshotProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.Moonshot
+	return providerUtils.GetProviderName(schemas.Moonshot, provider.customProviderConfig)
 }
 
 // anthropicMessagesPathPrefix is where Kimi serves its Anthropic-compatible Messages

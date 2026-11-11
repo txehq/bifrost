@@ -315,6 +315,12 @@ newman run tests/e2e/api/collections/provider-harness.json \
   --env-var providerErrorFixture=1
 ```
 
+Folder 487 (a custom provider is served with its own keys, TXE-7097) runs on the same gateway. The config has
+one custom provider on each of the deepseek, glm, moonshot and qwen bases (`own_deepseek`, `own_glm`,
+`own_moonshot`, `own_qwen`), each with its own key and `base_url` on the fixture's `/pp/ownkey`. That route
+keeps the bearer of each call in `GET /__wire`, so a row asserts that the key that reached the custom
+provider's `base_url` is the custom provider's own, not the `deepseek` or `moonshot` provider's.
+
 Its `moonshot` and `deepseek` providers point at the fixture's `/pp/oc`, which records each request body
 (`GET /__wire`), so a row reads back the `max_completion_tokens`, prompt-cache fields and `service_tier` the
 vendor received. `oc-tiered` has a capability record listing `default` and `priority`, so `flex` is refused
