@@ -3,9 +3,15 @@ package huggingface
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,6 +21,110 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
+
+// TestModelHubFollowsTheConfiguredBaseURL (fork, TXE-7117): with the default base URL the hub
+// API is asked at huggingface.co, as before. With a base URL the operator set, the model
+// lookup and the model list go there too, so a provider pointed at a gateway or a fixture
+// reaches no HuggingFace host by a route nobody configured.
+func TestModelHubFollowsTheConfiguredBaseURL(t *testing.T) {
+	newProvider := func(baseURL string) *HuggingFaceProvider {
+		return NewHuggingFaceProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: baseURL, DefaultRequestTimeoutInSeconds: 5}}, nil)
+	}
+	for _, baseURL := range []string{"", defaultInferenceBaseURL, defaultInferenceBaseURL + "/"} {
+		provider := newProvider(baseURL)
+		assert.Equal(t, "https://huggingface.co/api/models/org/model?expand%5B%5D=inferenceProviderMapping", provider.buildModelInferenceProviderURL("org/model"), "base %q", baseURL)
+		assert.Contains(t, provider.buildModelHubURL(&schemas.BifrostListModelsRequest{}, falAI), "https://huggingface.co/api/models?", "base %q", baseURL)
+	}
+	// A provider built without the constructor keeps the old host.
+	assert.Contains(t, (&HuggingFaceProvider{}).buildModelInferenceProviderURL("org/model"), "https://huggingface.co/api/models/org/model?")
+
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"_id":"1","id":"org/model","pipeline_tag":"text-to-speech","inferenceProviderMapping":{"fal-ai":{"status":"live","providerId":"fal-ai/org-model","task":"text-to-speech"}}}`))
+	}))
+	defer server.Close()
+	provider := newProvider(server.URL + "/pp/huggingface/")
+	assert.Equal(t, server.URL+"/pp/huggingface/api/models/org/model?expand%5B%5D=inferenceProviderMapping", provider.buildModelInferenceProviderURL("org/model"))
+	assert.Contains(t, provider.buildModelHubURL(&schemas.BifrostListModelsRequest{}, falAI), server.URL+"/pp/huggingface/api/models?")
+
+	modelID, bifrostErr := provider.getValidatedProviderModelID(context.Background(), falAI, "org/model", "text-to-speech", schemas.SpeechRequest)
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "fal-ai/org-model", modelID)
+	assert.Equal(t, []string{"/pp/huggingface/api/models/org/model"}, paths, "the lookup must go to the configured base URL")
+}
+
+// BenchmarkModelHubURL is the cost of building the two hub URLs (TXE-7117): the model lookup
+// before an uncached inference request and the model list. "constant" is the expression the
+// builder used before, with the hub host as a constant; "provider" is the builder now, which
+// reads the host the constructor chose.
+func BenchmarkModelHubURL(b *testing.B) {
+	provider := NewHuggingFaceProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 5}}, nil)
+	request := &schemas.BifrostListModelsRequest{}
+	modelName := strings.Repeat("org/model", 1) // a variable, as a request's model name is
+	b.Run("lookup/constant", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			values := url.Values{}
+			values.Set("expand[]", "pipeline_tag")
+			values.Set("expand[]", "inferenceProviderMapping")
+			_ = fmt.Sprintf("%s/api/models/%s?%s", modelHubBaseURL, modelName, values.Encode())
+		}
+	})
+	b.Run("lookup/provider", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = provider.buildModelInferenceProviderURL(modelName)
+		}
+	})
+	b.Run("list/provider", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = provider.buildModelHubURL(request, falAI)
+		}
+	})
+}
+
+// TestNoHuggingFaceRequestGoesToAFixedHost keeps TXE-7117 true of the whole package: the
+// base_url table (core/providers/base_url_support.json) says HuggingFace honours base_url, and
+// that holds only while no request is built from a host constant. The hub constant may be
+// read where the provider chooses its hub base and nowhere else; a new https:// host constant
+// in the package fails here until it is routed through configuration or recorded in the table.
+func TestNoHuggingFaceRequestGoesToAFixedHost(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	require.NoError(t, err)
+	hostConstant := regexp.MustCompile(`"https?://[^"\s]+"`)
+	allowedHosts := map[string]bool{`"https://router.huggingface.co"`: true, `"https://huggingface.co"`: true}
+	hubUses := map[string]int{}
+	hostLiterals := 0
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		source, err := os.ReadFile(file)
+		require.NoError(t, err)
+		for _, line := range strings.Split(string(source), "\n") {
+			// A comment is a whole line or follows the code after a space; "//" inside a
+			// URL literal is neither.
+			code := line
+			if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "//") {
+				continue
+			} else if at := strings.Index(line, " // "); at >= 0 {
+				code = line[:at]
+			}
+			for _, literal := range hostConstant.FindAllString(code, -1) {
+				hostLiterals++
+				assert.True(t, allowedHosts[literal], "%s builds a request from the fixed host %s; take it from configuration (as hubBaseURL does) or record it in base_url_support.json", file, literal)
+			}
+			if strings.Contains(code, "modelHubBaseURL") && !strings.Contains(code, "modelHubBaseURL         =") {
+				hubUses[file]++
+			}
+		}
+	}
+	assert.Equal(t, 2, hostLiterals, "the scan must see the router and hub constants and nothing else; it is not reading the sources if it sees fewer")
+	assert.Equal(t, map[string]int{"huggingface.go": 1, "utils.go": 1}, hubUses, "modelHubBaseURL is read once by the constructor and once by hubBase; every request asks provider.hubBase()")
+}
 
 // Regression tests for https://github.com/capsohq/bifrost/issues/4215.
 //

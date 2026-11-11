@@ -329857,6 +329857,208 @@
           ]
         }
       ]
+    },
+    {
+      "name": "492. HuggingFace on a configured base URL asks the model hub there, fetches a speech audio URL on its origin and refuses one on a loopback host (huggingface hub host)",
+      "description": "Local fixture regression for TXE-7117 (and the HuggingFace rows TXE-7090 could not have), no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs and an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, whose huggingface provider has the fixture as base URL, and run with providerErrorFixture=1; every case is skipped otherwise. Before an inference call HuggingFace looks its model up at the model hub (/api/models/<model>). That lookup went to https://huggingface.co whatever the base URL was, so an offline gateway was refused there and no HuggingFace request could reach a fixture. It now goes to <base_url>/api/models when the base URL is not the default router. The fixture answers the lookup (fal-ai serves the model as text-to-speech), fal-ai's speech call, and the audio file the answer names. 492.2 asks for speech with the model fixture/speech-origin, whose audio URL is on the fixture's own origin: the audio comes back. 492.3 asks with fixture/speech-loopback, whose audio URL names the same fixture by the host name localhost, another origin on loopback: the gateway refuses it. 492.4 reads the counters: the audio was asked for once at 127.0.0.1 and never at localhost. The lookups are counted too, at most once per model, because the gateway caches them; that they reach the fixture is shown by 492.2 and 492.3 getting past the lookup on an offline gateway at all.",
+      "item": [
+        {
+          "name": "492.1 fixture hit counters reset before the huggingface speech rows (huggingface hub host)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('counters cleared', function () { pm.expect(j.data[0].reset, pm.response.text()).to.equal(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{providerErrorFixtureUrl}}/__reset",
+              "host": [
+                "{{providerErrorFixtureUrl}}"
+              ],
+              "path": [
+                "__reset"
+              ]
+            }
+          }
+        },
+        {
+          "name": "492.2 huggingface/fal-ai/fixture/speech-origin POST /v1/audio/speech: the model hub is asked at the base URL and the audio on the provider's origin is returned (huggingface hub host)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the speech request completed against the fixture and returned the audio file', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('Content-Type'), pm.response.text().slice(0, 200)).to.match(/^audio\\//);",
+                  "  pm.expect(pm.response.text()).to.equal('ID3 fixture audio');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"huggingface/fal-ai/fixture/speech-origin\",\n  \"input\": \"hello\",\n  \"voice\": \"alloy\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "492.3 [EXPECT-500] huggingface/fal-ai/fixture/speech-loopback POST /v1/audio/speech: an audio URL on another loopback host is refused (huggingface hub host)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the audio URL on another loopback host is refused, and no audio is returned', function () {",
+                  "  pm.expect(pm.response.code, 'the off-origin loopback audio was fetched: ' + pm.response.text().slice(0, 300)).to.eql(500);",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body, body).to.include('failed to download audio');",
+                  "  pm.expect(body, body).to.include('non-public address');",
+                  "  pm.expect(body, body).to.not.include('ID3 fixture audio');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"huggingface/fal-ai/fixture/speech-loopback\",\n  \"input\": \"hello\",\n  \"voice\": \"alloy\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "492.4 fixture counters for the huggingface speech rows: the audio asked once on the origin and never on the other loopback host (huggingface hub host)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var hits = pm.response.json().data[0].hits;",
+                  "var text = JSON.stringify(hits);",
+                  "// The gateway caches a model's lookup, so a second run against the same gateway asks the hub nothing.",
+                  "// That the lookups reach the fixture is shown by 492.2 and 492.3 getting past them on an offline gateway.",
+                  "pm.test('each model was looked up at the fixture at most once', function () {",
+                  "  pm.expect(hits['huggingface.hub@fixture/speech-origin'] || 0, text).to.be.at.most(1);",
+                  "  pm.expect(hits['huggingface.hub@fixture/speech-loopback'] || 0, text).to.be.at.most(1);",
+                  "});",
+                  "pm.test('the audio was asked for on the provider\\'s origin only', function () {",
+                  "  pm.expect(hits['huggingface.audio@127.0.0.1'], text).to.equal(1);",
+                  "  pm.expect(hits['huggingface.audio@localhost'], text).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{providerErrorFixtureUrl}}/__hits",
+              "host": [
+                "{{providerErrorFixtureUrl}}"
+              ],
+              "path": [
+                "__hits"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

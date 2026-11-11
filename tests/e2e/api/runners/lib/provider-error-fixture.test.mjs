@@ -187,6 +187,27 @@ test("replicate answers name poll, stream, next-page and image addresses on the 
   assert.deepEqual(Object.keys(hits).filter((k) => k.endsWith("@localhost")), []);
 });
 
+// Folder 492 (TXE-7117): the fixture stands in for HuggingFace's model hub as well as its inference router, so
+// a provider whose base URL is the fixture needs no other host. A speech answer names its audio file on the
+// fixture's own origin or on another loopback origin.
+test("the HuggingFace hub, fal-ai speech and audio routes answer under /pp/huggingface", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}/pp/huggingface`;
+  const lookup = await (await fetch(`${base}/api/models/fixture/speech-origin?expand[]=inferenceProviderMapping`)).json();
+  assert.deepEqual(lookup.inferenceProviderMapping["fal-ai"], { status: "live", providerId: "fal-ai/fixture/speech-origin", task: "text-to-speech" });
+  assert.deepEqual(await (await fetch(`${base}/api/models?inference_provider=fal-ai`)).json(), []);
+  const speech = async (model) => (await (await post({ text: "hello" }, `/pp/huggingface/fal-ai/fixture/${model}`)).json()).audio.url;
+  assert.equal(await speech("speech-origin"), `${base}/audio/origin.mp3`);
+  assert.equal(await speech("speech-loopback"), `http://localhost:${post.port}/pp/huggingface/audio/loopback.mp3`);
+  const audio = await fetch(`${base}/audio/origin.mp3`);
+  assert.equal(audio.headers.get("content-type"), "audio/mpeg");
+  assert.equal(await audio.text(), "ID3 fixture audio");
+  const hits = (await (await fetch(`http://127.0.0.1:${post.port}/__hits`)).json()).data[0].hits;
+  assert.equal(hits["huggingface.hub@fixture/speech-origin"], 1);
+  assert.equal(hits["huggingface.audio@127.0.0.1"], 1);
+  assert.equal(hits["huggingface.audio@localhost"], undefined);
+});
+
 test("a turns model calls the tool, then answers once the result comes back", async (t) => {
   const post = await startFixture(t);
   const first = await (await post({ model: "turns-priced", messages: [{ role: "user", content: "weather?" }] })).json();

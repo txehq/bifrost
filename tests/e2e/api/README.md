@@ -180,8 +180,12 @@ refusal naming a non-public address for the second, and the last row reads `GET 
 at `localhost` or for the loopback picture. Run it as the content-length truncation folder above is run, with
 `FEATURE="vendor named address"`.
 
-HuggingFace speech has no row. Its model lookup goes to a fixed `https://huggingface.co`, not to the
-provider's base URL, so an offline gateway cannot get as far as the audio URL.
+HuggingFace speech has its rows in folder 492 (TXE-7117). HuggingFace looks its model up at the model hub
+before the inference call, and that lookup now follows a configured base URL: the fixture's `huggingface`
+provider has the fixture as base URL, and the fixture answers `GET /pp/huggingface/api/models/<model>`, the
+fal-ai speech call and the audio file. The model `fixture/speech-origin` names its audio on the fixture's own
+origin and `fixture/speech-loopback` on `localhost`; the rows expect the audio for the first and a refusal
+naming a non-public address for the second. Run it with `FEATURE="huggingface hub host"`.
 
 ## Streamed frames timing
 
