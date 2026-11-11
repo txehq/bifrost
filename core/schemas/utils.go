@@ -602,6 +602,35 @@ func SafeExtractStringSlice(value interface{}) ([]string, bool) {
 	}
 }
 
+// SingleExtraParamString reads the provider-specific parameter name, which the vendor takes
+// once, from the ExtraParams of a request the HTTP transport fills from the query string
+// (GET /v1/models, GET /v1/files). There a name sent once is a string and a name sent
+// more than once is a []string holding every value in the order sent (fork, TXE-7086).
+//
+// A string, or a list with one value, is returned as it is. A list with several values is
+// refused with 400 caller_unsupported_parameter naming the parameter: the vendor cannot take
+// them all, and picking one would drop the others without telling the caller. A missing
+// name, and a value of any other type, read as "".
+//
+// Read these parameters with this function and never with a string type assertion, which
+// reads a repeated parameter as absent. TestListExtraParamsAreNotReadWithAStringAssertion
+// fails on such a read.
+func SingleExtraParamString(extra map[string]interface{}, name string) (string, *BifrostError) {
+	switch v := extra[name].(type) {
+	case string:
+		return v, nil
+	case []string:
+		switch len(v) {
+		case 0:
+			return "", nil
+		case 1:
+			return v[0], nil
+		}
+		return "", NewUnsupportedParameterError(name, fmt.Sprintf("parameter %q was sent %d times; this provider takes it once", name, len(v)))
+	}
+	return "", nil
+}
+
 // SafeExtractStringPointer safely extracts a *string value from an interface{} with type checking
 func SafeExtractStringPointer(value interface{}) (*string, bool) {
 	if value == nil {
