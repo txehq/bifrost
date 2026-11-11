@@ -925,6 +925,86 @@
         "default_request_timeout_in_seconds": 10
       }
     },
+    "own_deepseek": {
+      "keys": [
+        {
+          "name": "own-deepseek-key",
+          "value": "own-deepseek-secret",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "deepseek"
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/ownkey",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "own_glm": {
+      "keys": [
+        {
+          "name": "own-glm-key",
+          "value": "own-glm-secret",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "glm"
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/ownkey",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "own_moonshot": {
+      "keys": [
+        {
+          "name": "own-moonshot-key",
+          "value": "own-moonshot-secret",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "moonshot"
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/ownkey",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "own_qwen": {
+      "keys": [
+        {
+          "name": "own-qwen-key",
+          "value": "own-qwen-secret",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "qwen"
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/ownkey",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
     "egress_probe": {
       "keys": [
         {
