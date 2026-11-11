@@ -1,6 +1,7 @@
 package governance
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -470,6 +471,70 @@ func TestRecordedFileID(t *testing.T) {
 	}
 }
 
+// Three ways a reference could slip past the walk of untyped data: kept as raw JSON bytes, padded
+// past a length shortcut, or nested below the depth the walk reads to.
+func TestFileReferencesCannotHideInOpenFields(t *testing.T) {
+	chatWith := func(extra map[string]interface{}) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.Vertex, Model: "m",
+			Params: &schemas.ChatParameters{ExtraParams: extra}}}
+	}
+	uri := "gs://vk-guard-bucket/uploads/a.pdf"
+
+	t.Run("raw JSON bytes are decoded", func(t *testing.T) {
+		for name, value := range map[string]any{
+			"json.RawMessage":      json.RawMessage(`{"image":{"gcsUri":"` + uri + `"}}`),
+			"bytes":                []byte(`[{"fileData":{"fileUri":"` + uri + `"}}]`),
+			"escaped slashes":      json.RawMessage(`{"image":{"gcsUri":"gs:\/\/vk-guard-bucket\/uploads\/a.pdf"}}`),
+			"bytes that are a uri": []byte(uri),
+		} {
+			if req := chatWith(map[string]interface{}{"vendor_field": value}); !namesFile(req, uri) {
+				t.Errorf("%s: the file named in raw bytes is not checked; references: %+v", name, providerObjectReferences(req))
+			}
+		}
+		if refs := requestFileRefs(chatWith(map[string]interface{}{"audio": []byte{0x00, 0x01, 0x02, 0xff}})); len(refs) != 0 {
+			t.Errorf("media bytes were read as %+v", refs)
+		}
+	})
+
+	t.Run("a long url is still read", func(t *testing.T) {
+		padded := "https://generativelanguage.googleapis.com/v1beta/files/vk-guard?pad=" + strings.Repeat("x", 8192)
+		if id, ok := recordedFileID(padded); !ok || id != "files/vk-guard" {
+			t.Errorf("a padded Gemini file URI resolved to %q, %v", id, ok)
+		}
+		if req := chatWith(map[string]interface{}{"video": padded}); !namesFile(req, "files/vk-guard") {
+			t.Errorf("a padded Gemini file URI is not checked")
+		}
+	})
+
+	t.Run("data nested past the bound refuses the request", func(t *testing.T) {
+		nest := func(levels int) any {
+			var value any = uri
+			for i := 0; i < levels; i++ {
+				value = map[string]any{"k": value}
+			}
+			return value
+		}
+		shallow := chatWith(map[string]interface{}{"vendor_field": nest(8)})
+		if !namesFile(shallow, uri) {
+			t.Errorf("a reference eight levels down is not checked")
+		}
+		if _, unreadable := requestFileIDs(shallow); unreadable {
+			t.Errorf("eight levels were reported unreadable")
+		}
+		deep := chatWith(map[string]interface{}{"vendor_field": nest(openValueDepth + 8)})
+		if _, unreadable := requestFileIDs(deep); !unreadable {
+			t.Fatalf("a reference below the bound was neither read nor reported")
+		}
+		found := false
+		for _, ref := range providerObjectReferences(deep) {
+			found = found || ref.unreadable
+		}
+		if !found {
+			t.Errorf("the unreadable request carries no reference that refuses it")
+		}
+	})
+}
+
 // A raw body is parsed only when it could name an object; a storage URI or a Gemini file host,
 // in any case and with JSON-escaped slashes, must not slip past that shortcut.
 func TestMayNameProviderObjectsSeesRecordedFileForms(t *testing.T) {
@@ -511,10 +576,10 @@ func BenchmarkRequestFileIDs(b *testing.B) {
 		}}})
 	}
 	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.Vertex, Model: "m", Input: messages}}
-	requestFileIDs(req)
+	_, _ = requestFileIDs(req)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		requestFileIDs(req)
+		_, _ = requestFileIDs(req)
 	}
 }

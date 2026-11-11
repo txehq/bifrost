@@ -43,6 +43,10 @@ type providerObjectRef struct {
 	indirect  bool // named inside a request that creates or runs something else, not addressed by id
 	// passthroughList is a list through a passthrough route: its raw page cannot be narrowed.
 	passthroughList bool
+	// unreadable marks a request part of which could not be read for the files it names (see
+	// requestFileIDs). It names no object; the request is refused, since letting it through
+	// would let through whatever the unread part names.
+	unreadable bool
 }
 
 // governanceAutoContainerContextKey marks a request whose code_interpreter tool asked the provider
@@ -1121,6 +1125,14 @@ func (p *GovernancePlugin) enforceProviderObjectOwnership(ctx *schemas.BifrostCo
 	for _, ref := range refs {
 		if ref.isList {
 			continue
+		}
+		if ref.unreadable {
+			ctx.SetValue(governanceRejectedContextKey, true)
+			return &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
+				Type:       bifrost.Ptr(string(DecisionAccessBlocked)),
+				StatusCode: bifrost.Ptr(400),
+				Error:      &schemas.ErrorField{Message: fmt.Sprintf("the request's provider-specific fields are nested more than %d levels deep, so the files it names cannot be verified for this virtual key", openValueDepth)},
+			}}
 		}
 		if shortCircuit := p.refuseForeignProviderObject(ctx, req, ref, vkID); shortCircuit != nil {
 			return shortCircuit

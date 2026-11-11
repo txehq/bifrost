@@ -133,8 +133,12 @@ func recordedFileID(rawURL string) (string, bool) {
 		}
 	}
 	// A data: URL can be megabytes long and is never a file URI; neither is anything that does
-	// not mention the Gemini host.
-	if len(raw) > 2048 || !containsFold(raw, geminiFileHost) {
+	// not mention the Gemini host. Length alone excuses nothing: a file URI padded with a long
+	// query is still that file.
+	if len(raw) >= len("data:") && strings.EqualFold(raw[:len("data:")], "data:") {
+		return "", false
+	}
+	if !containsFold(raw, geminiFileHost) {
 		return "", false
 	}
 	parsed, err := url.Parse(raw)
@@ -151,9 +155,12 @@ func recordedFileID(rawURL string) (string, bool) {
 }
 
 // containsFold reports whether s contains substr, ignoring ASCII case, without allocating.
+// substr is lower-case ASCII. Only positions that hold its first letter are compared, so a long
+// string costs one pass.
 func containsFold(s, substr string) bool {
+	first := substr[0]
 	for i := 0; i+len(substr) <= len(s); i++ {
-		if strings.EqualFold(s[i:i+len(substr)], substr) {
+		if s[i]|0x20 == first && strings.EqualFold(s[i:i+len(substr)], substr) {
 			return true
 		}
 	}
@@ -303,6 +310,9 @@ func buildFileRefPlans(root reflect.Type) *fileRefPlan {
 type fileIDCollector struct {
 	ids  []string
 	seen map[string]struct{}
+	// unreadable is set when part of the request could not be read: untyped data nested past
+	// openValueDepth. What lies below may name a file, so the request cannot be verified.
+	unreadable bool
 }
 
 func (c *fileIDCollector) add(id string) {
@@ -334,14 +344,15 @@ func (c *fileIDCollector) addReference(kind fileRefKind, value string) {
 // requestFileIDs returns the uploaded files a request names anywhere in it, under the id each
 // is recorded under: every field of fileReferenceFields on whatever request type is set, and
 // every reference inside its extra params. It is the one extraction every inference request
-// goes through.
-func requestFileIDs(req *schemas.BifrostRequest) []string {
+// goes through. unreadable is true when part of the request could not be read, in which case
+// the list is not the whole answer and the request must not be let through on it.
+func requestFileIDs(req *schemas.BifrostRequest) (ids []string, unreadable bool) {
 	if req == nil {
-		return nil
+		return nil, false
 	}
 	var collector fileIDCollector
 	walkFileRefs(reflect.ValueOf(req).Elem(), requestFileRefPlan(), &collector)
-	return collector.ids
+	return collector.ids, collector.unreadable
 }
 
 // walkFileRefs visits the planned fields of a struct value.
@@ -399,7 +410,10 @@ func walkStrings(value reflect.Value, kind fileRefKind, collector *fileIDCollect
 	}
 }
 
-// openValueDepth bounds the walk of untyped data; provider bodies are a few levels deep.
+// openValueDepth bounds the walk of untyped data; provider bodies are a few levels deep. Data
+// nested deeper (or a typed value that points back at itself) is not read further and marks
+// the request unreadable, which refuses it: stopping quietly would let a reference placed below
+// the bound through.
 const openValueDepth = 32
 
 // fileIDKeys are the keys untyped data names a file id under, as jsonObjectRefs reads them.
@@ -418,6 +432,10 @@ func isFileIDKey(key string) bool {
 // string under a file-id key names a file whatever its form.
 func scanOpenValue(value reflect.Value, collector *fileIDCollector, depth int) {
 	if depth > openValueDepth {
+		switch value.Kind() {
+		case reflect.Interface, reflect.Pointer, reflect.Slice, reflect.Array, reflect.Map, reflect.Struct, reflect.String:
+			collector.unreadable = true
+		}
 		return
 	}
 	switch value.Kind() {
@@ -431,6 +449,7 @@ func scanOpenValue(value reflect.Value, collector *fileIDCollector, depth int) {
 		}
 	case reflect.Slice, reflect.Array:
 		if value.Type().Elem().Kind() == reflect.Uint8 {
+			scanOpenBytes(value, collector, depth)
 			return
 		}
 		for i := 0; i < value.Len(); i++ {
@@ -455,9 +474,30 @@ func scanOpenValue(value reflect.Value, collector *fileIDCollector, depth int) {
 	}
 }
 
+// scanOpenBytes reads a byte slice stored in untyped data. A route can keep a vendor member as
+// raw JSON (json.RawMessage), which the provider forwards as written, so bytes that could name
+// an object are decoded and read like any other value; bytes that are not JSON are read as one
+// string. Media bytes carry none of the markers and are not touched.
+func scanOpenBytes(value reflect.Value, collector *fileIDCollector, depth int) {
+	if value.Kind() != reflect.Slice || value.Len() == 0 {
+		return
+	}
+	raw := value.Bytes()
+	if !mayNameProviderObjects(raw) {
+		return
+	}
+	var decoded any
+	if err := schemas.Unmarshal(raw, &decoded); err != nil {
+		collector.addReference(fileRefURL, string(raw))
+		return
+	}
+	scanOpenValue(reflect.ValueOf(decoded), collector, depth+1)
+}
+
 // scanFileIDs adds the strings under a file-id key as ids.
 func scanFileIDs(value reflect.Value, collector *fileIDCollector, depth int) {
 	if depth > openValueDepth {
+		collector.unreadable = true
 		return
 	}
 	switch value.Kind() {
@@ -475,13 +515,18 @@ func scanFileIDs(value reflect.Value, collector *fileIDCollector, depth int) {
 }
 
 // requestFileRefs returns requestFileIDs as indirect file references on the request's provider.
+// A request part of which could not be read yields one more reference, marked unreadable, which
+// enforceProviderObjectOwnership refuses.
 func requestFileRefs(req *schemas.BifrostRequest) []providerObjectRef {
-	ids := requestFileIDs(req)
-	if len(ids) == 0 {
+	ids, unreadable := requestFileIDs(req)
+	if len(ids) == 0 && !unreadable {
 		return nil
 	}
 	provider, _, _ := req.GetRequestFields()
-	refs := make([]providerObjectRef, 0, len(ids))
+	refs := make([]providerObjectRef, 0, len(ids)+1)
+	if unreadable {
+		refs = append(refs, providerObjectRef{kind: configstoreTables.ProviderObjectKindFile, provider: string(provider), indirect: true, unreadable: true})
+	}
 	for _, id := range ids {
 		if ref, ok := objectRef(configstoreTables.ProviderObjectKindFile, provider, id); ok {
 			ref.indirect = true
