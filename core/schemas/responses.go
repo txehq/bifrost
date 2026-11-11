@@ -1391,6 +1391,27 @@ type ResponsesServerSideToolUsageDetails struct {
 	DocumentSearchCalls  int `json:"document_search_calls"`
 }
 
+// Add returns the per-tool sum of d and other, for a request billed over several calls
+// (fork, TXE-7043). Nil when neither call reported counts; d and other are not changed.
+func (d *ResponsesServerSideToolUsageDetails) Add(other *ResponsesServerSideToolUsageDetails) *ResponsesServerSideToolUsageDetails {
+	if d == nil && other == nil {
+		return nil
+	}
+	var sum ResponsesServerSideToolUsageDetails
+	for _, part := range [2]*ResponsesServerSideToolUsageDetails{d, other} {
+		if part == nil {
+			continue
+		}
+		sum.WebSearchCalls += part.WebSearchCalls
+		sum.XSearchCalls += part.XSearchCalls
+		sum.CodeInterpreterCalls += part.CodeInterpreterCalls
+		sum.FileSearchCalls += part.FileSearchCalls
+		sum.MCPCalls += part.MCPCalls
+		sum.DocumentSearchCalls += part.DocumentSearchCalls
+	}
+	return &sum
+}
+
 // ResponsesContextDetails holds the per-context token breakdown returned by xAI.
 type ResponsesContextDetails struct {
 	InputTokens  int `json:"input_tokens"`

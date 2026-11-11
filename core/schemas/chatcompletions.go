@@ -2409,6 +2409,7 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 	}
 	merged.CostInUsdTicks = sumReportedInt64(base.CostInUsdTicks, add.CostInUsdTicks)
 	merged.VendorCost = SumVendorCosts(base.VendorCost, add.VendorCost)
+	merged.ServerSideToolUsageDetails = base.ServerSideToolUsageDetails.Add(add.ServerSideToolUsageDetails)
 
 	return merged
 }

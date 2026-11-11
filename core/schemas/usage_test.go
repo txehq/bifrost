@@ -1160,3 +1160,37 @@ func TestUsageCarriesVideoDocumentAndToolUsePromptTokens(t *testing.T) {
 		t.Fatal("DeepCopy shares the token details with the original")
 	}
 }
+
+// A request billed over several calls (a gateway-run tool loop, an MCP agent loop) reports
+// the tools xAI ran in every call: the per-tool counts are summed, one side reporting is
+// kept, and neither input is changed (TXE-7043, contract C5).
+func TestMergeBifrostLLMUsageSumsServerSideToolUsage(t *testing.T) {
+	first := &BifrostLLMUsage{PromptTokens: 1, ServerSideToolUsageDetails: &ResponsesServerSideToolUsageDetails{WebSearchCalls: 2, XSearchCalls: 1, MCPCalls: 4}}
+	second := &BifrostLLMUsage{PromptTokens: 2, ServerSideToolUsageDetails: &ResponsesServerSideToolUsageDetails{WebSearchCalls: 3, CodeInterpreterCalls: 1, FileSearchCalls: 2, DocumentSearchCalls: 5}}
+	want := ResponsesServerSideToolUsageDetails{WebSearchCalls: 5, XSearchCalls: 1, CodeInterpreterCalls: 1, FileSearchCalls: 2, MCPCalls: 4, DocumentSearchCalls: 5}
+	if got := MergeBifrostLLMUsage(first, second).ServerSideToolUsageDetails; got == nil || *got != want {
+		t.Fatalf("merged counts = %+v, want %+v", got, want)
+	}
+	if first.ServerSideToolUsageDetails.WebSearchCalls != 2 || second.ServerSideToolUsageDetails.WebSearchCalls != 3 {
+		t.Fatal("the merge changed one of its inputs")
+	}
+	none := &BifrostLLMUsage{PromptTokens: 3}
+	if got := MergeBifrostLLMUsage(none, first).ServerSideToolUsageDetails; got == nil || *got != *first.ServerSideToolUsageDetails {
+		t.Fatalf("one side reporting: merged counts = %+v, want %+v", got, first.ServerSideToolUsageDetails)
+	}
+	if got := MergeBifrostLLMUsage(none, &BifrostLLMUsage{PromptTokens: 4}).ServerSideToolUsageDetails; got != nil {
+		t.Fatalf("neither side reporting: merged counts = %+v, want nil", got)
+	}
+	// Every counter of the type is summed: a counter added later fails here until Add has it.
+	var all ResponsesServerSideToolUsageDetails
+	v := reflect.ValueOf(&all).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		v.Field(i).SetInt(1)
+	}
+	sum := reflect.ValueOf(*all.Add(&all))
+	for i := 0; i < sum.NumField(); i++ {
+		if sum.Field(i).Int() != 2 {
+			t.Errorf("Add does not sum %s", sum.Type().Field(i).Name)
+		}
+	}
+}
