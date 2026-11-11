@@ -1,9 +1,17 @@
 package governance
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/framework/modelcatalog"
+	"github.com/capsohq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Every Decision that refuses a request. Hand-kept: Go cannot enumerate constants.
@@ -87,4 +95,41 @@ func TestRefusalStillCarriesRawDecisionInType(t *testing.T) {
 			t.Errorf("decision %q surfaced as Type %q", decision, *bifrostErr.Type)
 		}
 	}
+}
+
+// A vendor that bills embeddings by character (Vertex text models report only
+// usage.billed_characters) advances a virtual key's dollar budget through the per-character
+// price (TXE-7081): before, such a response cost nothing, so an authorised caller could
+// repeat paid embeddings without using budget. Token limits count tokens only, so a
+// character-only response leaves them where they were; the dollar budget and the request
+// limit are what bound it. Bifrost never converts characters into tokens (contract C5).
+func TestPostHookWorkerChargesCharacterPricedEmbeddingsToTheDollarBudget(t *testing.T) {
+	pricing := filepath.Join(t.TempDir(), "pricing.json")
+	require.NoError(t, os.WriteFile(pricing, []byte(`{"text-embedding-005":{"mode":"embedding","provider":"vertex","base_model":"text-embedding-005","input_cost_per_token":0,"input_cost_per_character":2.5e-8,"output_cost_per_token":0}}`), 0o600))
+	ds := datasheet.New(nil, NewMockLogger(), datasheet.Config{URL: "file://" + pricing})
+	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
+
+	fixture := newAccountingFixture(t)
+	plugin := &GovernancePlugin{
+		ctx:          context.Background(),
+		tracker:      fixture.tracker,
+		modelCatalog: modelcatalog.NewTestCatalogWithDatasheet(ds),
+	}
+	chars := 12000
+	result := &schemas.BifrostResponse{EmbeddingResponse: &schemas.BifrostEmbeddingResponse{
+		Usage: &schemas.BifrostLLMUsage{BilledCharacters: &chars},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.EmbeddingRequest,
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.Vertex, Model: "text-embedding-005"},
+		},
+	}}
+
+	settled := settleLimits(fixture.store, "sk-bf-acct", schemas.Vertex, "text-embedding-005", &UsageUpdate{})
+	plugin.postHookWorker(result, nil, schemas.Vertex, "text-embedding-005", schemas.EmbeddingRequest, "chars-1", "", false, 0, 0, false, nil, settled.Budgets, settled.RateLimits, nil)
+
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.InDelta(c, 12000*2.5e-8, fixture.cost(), 1e-15)
+		assert.Equal(c, int64(1), fixture.requests())
+	}, time.Second, 10*time.Millisecond)
+	assert.Equal(t, int64(0), fixture.tokens(), "characters are not tokens; the token limit does not move")
 }

@@ -1536,6 +1536,40 @@ func TestComputeEmbeddingCost_NilUsage(t *testing.T) {
 	assert.Equal(t, 0.0, computeEmbeddingCostTotal(&p, nil, serviceTier{}))
 }
 
+// A vendor that bills embeddings by character (Vertex text models: usage.billed_characters)
+// is priced by character when the model has a per-character rate, and the token rate is
+// not added on top. Before TXE-7081 a character-only usage cost nothing, so it advanced no
+// dollar budget.
+func TestComputeEmbeddingCost_BilledCharactersUsePerCharacterRate(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:     bifrost.Ptr(0.0000001),
+		InputCostPerCharacter: bifrost.Ptr(0.000000025),
+	}
+	chars := 4000
+
+	onlyCharacters := &schemas.BifrostLLMUsage{BilledCharacters: &chars}
+	assert.InDelta(t, 4000*0.000000025, computeEmbeddingCostTotal(&p, onlyCharacters, serviceTier{}), 1e-15)
+
+	both := &schemas.BifrostLLMUsage{PromptTokens: 900, TotalTokens: 900, BilledCharacters: &chars}
+	assert.InDelta(t, 4000*0.000000025, computeEmbeddingCostTotal(&p, both, serviceTier{}), 1e-15,
+		"the vendor bills characters, so the token rate is not added on top")
+}
+
+// Without a per-character rate, or without a reported character count, embeddings cost
+// what their token count costs, as before; Bifrost never turns characters into tokens.
+func TestComputeEmbeddingCost_TokenPathUnchangedWithoutCharacterPricing(t *testing.T) {
+	tokenOnly := configstoreTables.TableModelPricing{InputCostPerToken: bifrost.Ptr(0.0000001)}
+	chars := 4000
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 900, TotalTokens: 900, BilledCharacters: &chars}
+	assert.InDelta(t, 900*0.0000001, computeEmbeddingCostTotal(&tokenOnly, usage, serviceTier{}), 1e-15)
+	assert.Equal(t, 0.0, computeEmbeddingCostTotal(&tokenOnly, &schemas.BifrostLLMUsage{BilledCharacters: &chars}, serviceTier{}),
+		"characters are not priced at a token rate")
+
+	charPriced := configstoreTables.TableModelPricing{InputCostPerToken: bifrost.Ptr(0.0000001), InputCostPerCharacter: bifrost.Ptr(0.000000025)}
+	assert.InDelta(t, 900*0.0000001, computeEmbeddingCostTotal(&charPriced, &schemas.BifrostLLMUsage{PromptTokens: 900, TotalTokens: 900}, serviceTier{}), 1e-15,
+		"no reported character count keeps the token path")
+}
+
 // =========================================================================
 // 3. computeRerankCost — unit tests
 // =========================================================================
@@ -3412,6 +3446,22 @@ func TestCalculateCost_Embedding(t *testing.T) {
 	cost := s.CalculateCost(resp, nil)
 	// 10000 * 0.0000001 = 0.001
 	assert.InDelta(t, 0.001, cost, 1e-12)
+}
+
+// CalculateCost is what governance charges a virtual key's dollar budget with: a Vertex
+// text embedding that reports only billed characters now costs characters times the
+// per-character rate instead of nothing (TXE-7081).
+func TestCalculateCost_EmbeddingBilledCharacters(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("text-embedding-005", "vertex", "embedding"): {
+			Model: "text-embedding-005", Provider: "vertex", Mode: "embedding",
+			InputCostPerToken:     bifrost.Ptr(0.0),
+			InputCostPerCharacter: bifrost.Ptr(0.000000025),
+		},
+	})
+	chars := 12000
+	resp := makeEmbeddingResponse(schemas.Vertex, "text-embedding-005", &schemas.BifrostLLMUsage{BilledCharacters: &chars})
+	assert.InDelta(t, 12000*0.000000025, s.CalculateCost(resp, nil), 1e-15)
 }
 
 func TestCalculateCost_Rerank(t *testing.T) {
@@ -8343,4 +8393,26 @@ func TestCalculateCost_ImageTaskBilledOnceAtCreate(t *testing.T) {
 	assert.Zero(t, s.CalculateCost(task(schemas.ImageTaskRetrieveRequest, schemas.VideoStatusCompleted, link), nil),
 		"the query of the finished task is not billed again")
 	assert.Zero(t, s.CalculateCost(task(schemas.ImageTaskCancelRequest, schemas.VideoStatusQueued, nil), nil))
+}
+
+// Cost path for embeddings (TXE-7081): the common token-priced case, and a
+// character-priced Vertex text embedding.
+func BenchmarkComputeEmbeddingCost(b *testing.B) {
+	tokenPriced := configstoreTables.TableModelPricing{InputCostPerToken: bifrost.Ptr(0.0000001)}
+	charPriced := configstoreTables.TableModelPricing{InputCostPerToken: bifrost.Ptr(0.0), InputCostPerCharacter: bifrost.Ptr(0.000000025)}
+	chars := 4000
+	tokens := &schemas.BifrostLLMUsage{PromptTokens: 900, TotalTokens: 900}
+	characters := &schemas.BifrostLLMUsage{BilledCharacters: &chars}
+	b.Run("tokens", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = computeEmbeddingCost(&tokenPriced, tokens, serviceTier{})
+		}
+	})
+	b.Run("characters", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = computeEmbeddingCost(&charPriced, characters, serviceTier{})
+		}
+	})
 }
