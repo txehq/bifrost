@@ -14,6 +14,7 @@ import (
 	"github.com/capsohq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -307,9 +308,8 @@ func parseResponsesResponse(responseBody []byte, response *schemas.BifrostRespon
 	if bifrostErr != nil {
 		return rawRequest, rawResponse, bifrostErr
 	}
-	var body PerplexityResponsesBody
-	if response.Usage != nil && sonic.Unmarshal(responseBody, &body) == nil {
-		body.Usage.applyTo(response.Usage)
+	if response.Usage != nil {
+		applyPerplexityResponsesUsage(responseBody, "usage", response.Usage)
 	}
 	return rawRequest, rawResponse, nil
 }
@@ -329,11 +329,23 @@ func (provider *PerplexityProvider) parseResponsesStreamEvent(eventBody []byte, 
 			return nil, nil, nil
 		}
 	}
-	var event PerplexityResponsesEvent
-	if response.Response != nil && response.Response.Usage != nil && sonic.Unmarshal(eventBody, &event) == nil && event.Response != nil {
-		event.Response.Usage.applyTo(response.Response.Usage)
+	if response.Response != nil && response.Response.Usage != nil {
+		applyPerplexityResponsesUsage(eventBody, "response.usage", response.Response.Usage)
 	}
 	return nil, nil, nil
+}
+
+// applyPerplexityResponsesUsage reads the usage object at path in body in Perplexity's own shape and adds
+// it to usage. Only that object is decoded a second time, not the reply around it.
+func applyPerplexityResponsesUsage(body []byte, path string, usage *schemas.ResponsesResponseUsage) {
+	raw := gjson.GetBytes(body, path)
+	if !raw.IsObject() {
+		return
+	}
+	var reported PerplexityResponsesUsage
+	if err := sonic.UnmarshalString(raw.Raw, &reported); err == nil {
+		reported.applyTo(usage)
+	}
 }
 
 // ResponsesStream performs a streaming responses request to the Perplexity API.

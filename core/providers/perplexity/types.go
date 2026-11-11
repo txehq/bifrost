@@ -216,16 +216,6 @@ func (c *perplexityCost) toBifrostCost() *schemas.BifrostCost {
 	return bc
 }
 
-// PerplexityResponsesBody reads the usage of a reply from Perplexity's native /v1/responses (the Agent API).
-type PerplexityResponsesBody struct {
-	Usage *PerplexityResponsesUsage `json:"usage,omitempty"`
-}
-
-// PerplexityResponsesEvent reads the usage of one streamed /v1/responses event; only the terminal events carry it.
-type PerplexityResponsesEvent struct {
-	Response *PerplexityResponsesBody `json:"response,omitempty"`
-}
-
 // PerplexityResponsesUsage holds the parts of the Agent API's ResponsesUsage the shared Responses decode has no field for.
 type PerplexityResponsesUsage struct {
 	ToolCallsDetails map[string]PerplexityToolCallDetails `json:"tool_calls_details,omitempty"` // Per-tool call report, keyed by Perplexity's tool name
