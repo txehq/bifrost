@@ -136,7 +136,7 @@ expect_refused() {
     bad "$label: succeeded"
   elif ! grep -qF "$text" "$ROOT/out"; then
     bad "$label: wrong refusal: $(tail -1 "$ROOT/out")"
-  elif git -C "$ROOT/origin.git" tag | grep -q .; then
+  elif git -C "$ROOT/origin.git" tag | grep . >/dev/null; then
     bad "$label: left a tag"
   else
     ok "$label"

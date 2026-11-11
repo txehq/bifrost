@@ -5002,12 +5002,12 @@ validate_faker_column_coverage_postgres() {
     local missing_cols=""
     for col in $db_cols; do
       # Skip auto-increment columns
-      if echo "$auto_cols" | grep -q "^${col}$"; then
+      if echo "$auto_cols" | grep "^${col}$" >/dev/null; then
         continue
       fi
 
       # Check if faker covers this column
-      if ! echo "$faker_cols" | grep -q "^${col}$"; then
+      if ! echo "$faker_cols" | grep "^${col}$" >/dev/null; then
         if [ -z "$missing_cols" ]; then
           missing_cols="$col"
         else
@@ -6142,12 +6142,12 @@ validate_faker_column_coverage_sqlite() {
       local missing_cols=""
       for col in $db_cols; do
         # Skip auto-increment columns
-        if echo "$auto_cols" | grep -q "^${col}$"; then
+        if echo "$auto_cols" | grep "^${col}$" >/dev/null; then
           continue
         fi
 
         # Check if faker covers this column
-        if ! echo "$faker_cols" | grep -q "^${col}$"; then
+        if ! echo "$faker_cols" | grep "^${col}$" >/dev/null; then
           if [ -z "$missing_cols" ]; then
             missing_cols="$col"
           else

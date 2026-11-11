@@ -21,6 +21,9 @@ set -euo pipefail
 #   tests/test_offline_test.sh                 scripts/test-offline.sh, the runner every local
 #       test run goes through so no credential reaches it (TXE-7053): fails when any
 #       *_API_KEY, secret, token or cloud credential variable reaches the child. Bash only.
+#   check-pipefail-grep-quiet.py              no tracked shell script that sets pipefail pipes
+#       into grep -q (TXE-7109): the writer dies of SIGPIPE when grep exits at its first match,
+#       so a line grep found reads as missing, at random. The check above failed that way.
 #   every other tests/e2e/api/**/*.test.mjs     found, not listed (TXE-7067): the runners/lib
 #       script tests and any test added later. A test under tests/e2e/api runs here by
 #       existing; none was run by any job before, so a renamed harness row the smoke manifest
@@ -52,6 +55,11 @@ node "$SUITES_DIR/runners/newman-exit-when-done.test.mjs"
 echo ""
 echo "🧪 test_offline_test.sh (no credential reaches a test run, TXE-7053)"
 bash "$REPO_ROOT/tests/test_offline_test.sh"
+
+echo ""
+echo "🧪 check-pipefail-grep-quiet.py (no pipe into grep -q under pipefail, TXE-7109)"
+python3 "$SCRIPT_DIR/check-pipefail-grep-quiet.py" --self-test
+python3 "$SCRIPT_DIR/check-pipefail-grep-quiet.py"
 
 # Every other *.test.mjs under tests/e2e/api, found rather than listed, one at a time (some
 # start a loopback server on a fixed port). Each runs with plain node, which also runs a

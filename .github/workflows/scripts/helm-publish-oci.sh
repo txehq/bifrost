@@ -86,7 +86,7 @@ done
 source "$(dirname "${BASH_SOURCE[0]}")/ghcr-tags.sh"
 
 OWNER_LC="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
-if ! printf '%s' "$OWNER_LC" | grep -qE '^[a-z0-9][a-z0-9-]*$'; then
+if ! printf '%s' "$OWNER_LC" | grep -E '^[a-z0-9][a-z0-9-]*$' >/dev/null; then
   die "--owner '$OWNER' is not a registry namespace"
 fi
 CHART_REPO="$OWNER_LC/$REPOSITORY_PATH/$CHART_NAME"

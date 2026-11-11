@@ -37,7 +37,7 @@ check_child() {
 	child=$("$@" | tr '\0' '\n' | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p')
 	local leaked=()
 	for name in "${credentials[@]}" MULTILINE_API_KEY; do
-		if printf '%s\n' "$child" | grep -qx "$name"; then leaked+=("$name"); fi
+		if printf '%s\n' "$child" | grep -x "$name" >/dev/null; then leaked+=("$name"); fi
 	done
 	if [ "${#leaked[@]}" -gt 0 ]; then
 		fail "$label: credentials reached the child: ${leaked[*]}"
@@ -46,7 +46,7 @@ check_child() {
 	fi
 	local lost=()
 	for name in "${keep[@]}" PATH HOME; do
-		if ! printf '%s\n' "$child" | grep -qx "$name"; then lost+=("$name"); fi
+		if ! printf '%s\n' "$child" | grep -x "$name" >/dev/null; then lost+=("$name"); fi
 	done
 	if [ "${#lost[@]}" -gt 0 ]; then
 		fail "$label: non-credential variables were removed: ${lost[*]}"
@@ -70,7 +70,7 @@ fi
 
 # The idiom the script replaces really does leak in zsh, so this check can tell the two apart.
 if command -v zsh >/dev/null 2>&1; then
-	if zsh -c 'U=$(env | grep -o "^[A-Z_]*_API_KEY" | sed "s/^/-u /"); env $U env' 2>/dev/null | grep -q '^OPENAI_API_KEY='; then
+	if zsh -c 'U=$(env | grep -o "^[A-Z_]*_API_KEY" | sed "s/^/-u /"); env $U env' 2>/dev/null | grep '^OPENAI_API_KEY=' >/dev/null; then
 		pass "the hand-built zsh idiom leaks (what the script replaces)"
 	else
 		pass "the hand-built zsh idiom did not leak here"
@@ -86,7 +86,7 @@ if [ -z "$other" ]; then
 else
 	missed=()
 	for name in $other; do
-		if ! env "$name=x" "$RUN" --list | grep -qx "$name"; then missed+=("$name"); fi
+		if ! env "$name=x" "$RUN" --list | grep -x "$name" >/dev/null; then missed+=("$name"); fi
 	done
 	if [ "${#missed[@]}" -gt 0 ]; then
 		fail "credentials in OTHER_PROVIDER_CREDENTIALS the runner keeps: ${missed[*]}"
@@ -142,9 +142,9 @@ fi
 
 # --list prints names only, never a value.
 listed=$("$RUN" --list)
-if printf '%s\n' "$listed" | grep -q 'value-of-'; then
+if printf '%s\n' "$listed" | grep 'value-of-' >/dev/null; then
 	fail "--list printed a value"
-elif ! printf '%s\n' "$listed" | grep -qx 'DEEPSEEK_API_KEY'; then
+elif ! printf '%s\n' "$listed" | grep -x 'DEEPSEEK_API_KEY' >/dev/null; then
 	fail "--list did not name DEEPSEEK_API_KEY: $listed"
 else
 	pass "--list names the credentials and prints no value"
@@ -170,12 +170,12 @@ if [ "$status" -eq 2 ]; then pass "no command is a usage error"; else fail "no c
 # Proxy variables are removed, so no client can hand a request to a proxy that carries it out.
 child=$(HTTP_PROXY=http://proxy.invalid:3128 https_proxy=http://proxy.invalid:3128 ALL_PROXY=socks5://proxy.invalid:1080 NO_PROXY=example.com \
 	"$RUN" env -0 | tr '\0' '\n')
-if printf '%s\n' "$child" | grep -qiE '^(http|https|all|no)_proxy='; then
+if printf '%s\n' "$child" | grep -iE '^(http|https|all|no)_proxy=' >/dev/null; then
 	fail "proxy variables reached the child: $(printf '%s\n' "$child" | grep -iE '^(http|https|all|no)_proxy=' | cut -d= -f1 | tr '\n' ' ')"
 else
 	pass "proxy variables are removed"
 fi
-if printf '%s\n' "$child" | grep -qx 'BIFROST_TEST_OFFLINE=1'; then
+if printf '%s\n' "$child" | grep -x 'BIFROST_TEST_OFFLINE=1' >/dev/null; then
 	pass "the child runs with BIFROST_TEST_OFFLINE=1"
 else
 	fail "BIFROST_TEST_OFFLINE=1 is missing in the child"
@@ -188,10 +188,10 @@ if command -v go >/dev/null 2>&1; then
 	guard_test='^TestOfflineRunTurnsOnTheGuard$'
 	guarded=$(cd "$ROOT/core" && "$RUN" go test ./network/ -run "$guard_test" -count=1 -v 2>&1 || true)
 	unguarded=$(cd "$ROOT/core" && env -u BIFROST_TEST_OFFLINE go test ./network/ -run "$guard_test" -count=1 -v 2>&1 || true)
-	if ! printf '%s\n' "$unguarded" | grep -q -- '--- SKIP: TestOfflineRunTurnsOnTheGuard'; then
+	if ! printf '%s\n' "$unguarded" | grep -- '--- SKIP: TestOfflineRunTurnsOnTheGuard' >/dev/null; then
 		fail "control: without the runner the guard test did not skip: $(printf '%s\n' "$unguarded" | tail -3)"
-	elif printf '%s\n' "$guarded" | grep -q -- '--- PASS: TestOfflineRunTurnsOnTheGuard' &&
-		printf '%s\n' "$guarded" | grep -q 'egress to 203.0.113.10:443 refused'; then
+	elif printf '%s\n' "$guarded" | grep -- '--- PASS: TestOfflineRunTurnsOnTheGuard' >/dev/null &&
+		printf '%s\n' "$guarded" | grep 'egress to 203.0.113.10:443 refused' >/dev/null; then
 		pass "under the runner Bifrost refuses a non-loopback address before connecting, naming it (the control run skips)"
 	else
 		fail "under the runner the Go dial guard did not refuse loudly: $(printf '%s\n' "$guarded" | tail -5)"

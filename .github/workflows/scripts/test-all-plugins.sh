@@ -137,7 +137,7 @@ for plugin in "${PLUGINS[@]}"; do
   fi
   
   # Run tests with coverage if any exist
-  if go list ./... | grep -q .; then
+  if go list ./... | grep . >/dev/null; then
     # Run E2E tests for governance plugin (currently disabled)
     if [ "$plugin" = "governance" ]; then
       echo "🧪 Running governance plugin tests..."

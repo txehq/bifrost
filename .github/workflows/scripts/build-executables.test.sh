@@ -72,19 +72,19 @@ if [ "$RC" -eq 0 ]; then pass "build succeeds with go.work present"; else fail "
 builds=$(grep -c ' ARGS=build ' "$CALLS")
 if [ "$builds" -eq 5 ]; then pass "one go build per platform"; else fail "expected 5 go build calls, got $builds"; fi
 
-if grep ' ARGS=build ' "$CALLS" | grep -qv "^GOWORK=$REPO/go.work "; then
+if grep ' ARGS=build ' "$CALLS" | grep -v "^GOWORK=$REPO/go.work " >/dev/null; then
   fail "a go build ran without GOWORK=$REPO/go.work: $(grep -v "^GOWORK=$REPO/go.work " "$CALLS")"
 else
   pass "every go build uses the repository go.work"
 fi
 
-if grep ' ARGS=build ' "$CALLS" | grep -qv " PWD=$REPO/transports/bifrost-http "; then
+if grep ' ARGS=build ' "$CALLS" | grep -v " PWD=$REPO/transports/bifrost-http " >/dev/null; then
   fail "a go build ran outside transports/bifrost-http"
 else
   pass "every go build runs in transports/bifrost-http"
 fi
 
-if grep ' ARGS=build ' "$CALLS" | grep -qv -- '-X main.Version=v9.9.9'; then
+if grep ' ARGS=build ' "$CALLS" | grep -v -- '-X main.Version=v9.9.9' >/dev/null; then
   fail "a go build is missing the version ldflag"
 else
   pass "every go build stamps the version"

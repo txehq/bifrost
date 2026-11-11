@@ -32,7 +32,7 @@ check() {
     fail "$label: helm template failed: $(printf '%s' "$out" | head -n 3)"
     return
   fi
-  printf '%s\n' "$out" | grep -q "^kind: $kind\$" || fail "$label: renders no $kind"
+  printf '%s\n' "$out" | grep "^kind: $kind\$" >/dev/null || fail "$label: renders no $kind"
   images="$(printf '%s\n' "$out" | sed -n 's/^ *image: "\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' | sort -u)"
   [ "$images" = "$want" ] || fail "$label: images are '$images', not '$want'"
 }
@@ -50,7 +50,7 @@ check "repository override" StatefulSet "registry.example.com/team/bifrost:v$APP
 check "both overrides" Deployment "registry.example.com/team/bifrost:custom" "${POSTGRES[@]}" --set image.repository=registry.example.com/team/bifrost --set image.tag=custom
 
 secrets="$(helm template bifrost "$CHART" "${SQLITE[@]}" --set 'imagePullSecrets[0].name=ghcr-pull')"
-printf '%s\n' "$secrets" | grep -q 'name: ghcr-pull' || fail "imagePullSecrets do not reach the workload"
+printf '%s\n' "$secrets" | grep 'name: ghcr-pull' >/dev/null || fail "imagePullSecrets do not reach the workload"
 
 if [ "$FAILURES" -ne 0 ]; then
   echo "$FAILURES chart image check(s) failed" >&2
