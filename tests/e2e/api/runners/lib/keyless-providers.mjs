@@ -84,7 +84,7 @@ export function bodyModelProvider(item) {
 }
 
 // Marker on the injected pre-request script, so re-running augment replaces it.
-const GUARD_MARKER = "// [keyless-provider-skip]";
+export const GUARD_MARKER = "// [keyless-provider-skip]";
 
 export function skipLabel(itemName, refs) {
   return `${itemName}: skipped: no key (${refs.join(", ")} unset)`;
