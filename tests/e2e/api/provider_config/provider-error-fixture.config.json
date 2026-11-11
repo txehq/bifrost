@@ -611,6 +611,30 @@
         "url": "http://127.0.0.1:8788"
       }
     },
+    "xai_media_proxy": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "xai"
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/xai",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      },
+      "proxy_config": {
+        "type": "http",
+        "url": "http://127.0.0.1:8791"
+      }
+    },
     "anthropic": {
       "keys": [
         {

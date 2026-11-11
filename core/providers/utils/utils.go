@@ -2420,6 +2420,66 @@ func BuildStreamingClient(base *fasthttp.Client) *fasthttp.Client {
 	return c
 }
 
+// BuildSingleAttemptClient returns a fasthttp.Client that writes a request to the upstream at
+// most once. It is for a request that must never be repeated because the caller cannot tell
+// whether the first copy arrived: the create of an async task on a vendor with no way to find a
+// task again (contract C7, recovery method 5). A second copy there is a second, billed task.
+//
+// Every other Bifrost client retries on a stale pooled connection (ConfigureDialer sets
+// network.StaleConnectionRetryIfErr): when a reused socket fails before the first response
+// byte, the request is written again on another socket, up to three times. That is right for a
+// request the upstream has not processed, but a socket that was reset after the upstream read
+// the request looks exactly the same. The clone disables the retry (RetryIfErr always answers
+// no, which also turns off fasthttp's own retry of idempotent methods).
+//
+// Without the retry a stale pooled socket would fail the request, so the caller must also keep
+// this client's pool empty by sending every request with SetConnectionClose: each request then
+// dials a new connection, whose failures the transport already reports without a retry.
+// SendSingleAttempt does that, and also stops core from calling the provider a second time.
+func BuildSingleAttemptClient(base *fasthttp.Client) *fasthttp.Client {
+	c := CloneFastHTTPClientConfig(base)
+	c.RetryIfErr = neverRetry
+	if c.Transport == nil {
+		c.Transport = NewContextTransport()
+	}
+	return c
+}
+
+// neverRetry is the RetryIfErr of a single-attempt client.
+func neverRetry(_ *fasthttp.Request, _ int, _ error) (resetTimeout bool, retry bool) {
+	return false, false
+}
+
+// SendSingleAttempt sends req once through a client built by BuildSingleAttemptClient, on a
+// connection of its own that is closed after the response. It returns what
+// MakeRequestWithContext returns.
+//
+// When the send fails with no response (connection failure, timeout, cancellation), whether
+// the upstream has the request is unknown. It then marks ctx with
+// BifrostContextKeyUpstreamWriteUnknown, which makes the failure terminal for core: the
+// retry loop does not call the provider again whatever max_retries says, and no fallback
+// runs. An upstream that answered, with any status, did answer, so its error is retried or
+// not by the ordinary rules.
+func SendSingleAttempt(ctx *schemas.BifrostContext, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError, func()) {
+	req.SetConnectionClose()
+	latency, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
+	if bifrostErr != nil {
+		MarkUpstreamWriteUnknown(ctx)
+	}
+	return latency, bifrostErr, wait
+}
+
+// MarkUpstreamWriteUnknown marks ctx so core neither retries the request nor sends it to a
+// fallback (BifrostContextKeyUpstreamWriteUnknown). SendSingleAttempt calls it when a send got
+// no response. A provider calls it itself when the upstream accepted a write-once request with
+// a 2xx but the answer cannot be used (it does not decode, or carries no task id): the task
+// may exist, and its id is lost just the same.
+func MarkUpstreamWriteUnknown(ctx *schemas.BifrostContext) {
+	if ctx != nil {
+		ctx.SetValue(schemas.BifrostContextKeyUpstreamWriteUnknown, true)
+	}
+}
+
 // BuildStreamingHTTPClient returns an *http.Client for long-lived streaming
 // responses over net/http (e.g. Bedrock EventStream). It reuses the base's
 // Transport (safe for concurrent use by multiple clients) and sets Timeout=0

@@ -5878,6 +5878,12 @@ func (bifrost *Bifrost) shouldTryFallbacks(ctx *schemas.BifrostContext, req *sch
 		return false
 	}
 
+	if upstreamWriteUnknown(ctx) {
+		bifrost.logger.Debug("primary sent a request the vendor may have received, not trying %d fallbacks", len(fallbacks))
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Primary sent a write-once request and got no response (%s); skipping %d fallback(s) so it is not submitted twice", routingErrorSummary(primaryErr), len(fallbacks)))
+		return false
+	}
+
 	if fallbacks[0].Inferred && !isNoKeySupportsModel(primaryErr) && ClassifyFailure(primaryErr) == schemas.FailureClassCallerFault {
 		bifrost.logger.Debug("primary refused the request itself, not trying %d inferred fallbacks", len(fallbacks))
 		if ctx != nil {
@@ -5931,6 +5937,18 @@ func markWriteOnce(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
 	if marked, _ := ctx.Value(schemas.BifrostContextKeyWriteOnce).(bool); marked {
 		ctx.SetValue(schemas.BifrostContextKeyWriteOnce, false)
 	}
+}
+
+// upstreamWriteUnknown reports whether the attempt that just ended sent a request that must
+// reach the vendor at most once and got no response (providerUtils.SendSingleAttempt). The
+// vendor may have it: a retry, or a fallback, could create a second billed task while the
+// first one's id is lost (contract C3, C7 recovery method 5).
+func upstreamWriteUnknown(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	unknown, _ := ctx.Value(schemas.BifrostContextKeyUpstreamWriteUnknown).(bool)
+	return unknown
 }
 
 // isNoKeySupportsModel reports whether the error is the key pool's refusal for a model none of
@@ -6291,6 +6309,10 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s ran a provider-injected tool before failing (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
 			return nil, fallbackErr
 		}
+		if upstreamWriteUnknown(ctx) {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s sent a write-once request and got no response (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
+			return nil, fallbackErr
+		}
 
 		lastErr = fallbackErr
 	}
@@ -6526,6 +6548,10 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		}
 		if injectedToolsRan(ctx) {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s ran a provider-injected tool before failing (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
+			return nil, fallbackErr
+		}
+		if upstreamWriteUnknown(ctx) {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s sent a write-once request and got no response (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
 			return nil, fallbackErr
 		}
 
@@ -7878,6 +7904,12 @@ func executeRequestWithRetries[T any](
 		// restart the loop from the original request, repeat the tool's side effects and
 		// re-send the finished turns. The error already bills those turns.
 		if executed, _ := ctx.Value(schemas.BifrostContextKeyInjectedToolsExecuted).(bool); executed {
+			break
+		}
+		// A write-once request (a task create the vendor cannot find again) that got no
+		// response is not retried, whatever max_retries says: the vendor may have it, and a
+		// second copy is a second billed task (contract C3, C7).
+		if upstreamWriteUnknown(ctx) {
 			break
 		}
 
