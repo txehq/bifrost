@@ -573,6 +573,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_agent_push_delivery_registration_hash_column"}, run: migrationAddAgentPushDeliveryRegistrationHashColumn},
 	{IDs: []string{"add_client_config_fork_deployment_switch_columns"}, run: migrationAddClientConfigForkDeploymentSwitchColumns},
 	{IDs: []string{"add_client_config_disable_encrypted_reasoning_retry_column"}, run: migrationAddClientConfigDisableEncryptedReasoningRetryColumn},
+	{IDs: []string{"add_virtual_key_allowed_cloud_resource_columns"}, run: migrationAddVirtualKeyAllowedCloudResourceColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16386,6 +16387,38 @@ func migrationAddA2ARawCaptureSetting(ctx context.Context, db *gorm.DB, logger s
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "A2AStoreRawRequestResponse")
 		},
 	})
+}
+
+// migrationAddVirtualKeyAllowedCloudResourceColumns adds the nullable allowed_storage_prefixes
+// and allowed_pubsub_topics columns to governance_virtual_keys (fork, TXE-7088). Existing keys
+// keep NULL (no restriction), and GenerateVirtualKeyHash only hashes a list when the key has
+// one, so no config_hash backfill is needed.
+func migrationAddVirtualKeyAllowedCloudResourceColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_key_allowed_cloud_resource_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, column := range []string{"allowed_storage_prefixes", "allowed_pubsub_topics"} {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, column); err != nil {
+					return fmt.Errorf("failed to add %s column: %w", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("add_virtual_key_allowed_cloud_resource_columns is non-rollbackable: dropping the columns would permanently remove every virtual key's storage and topic restriction, leaving the keys unrestricted; the columns are additive and older binaries safely ignore them")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
 }
 
 // migrationAddVirtualKeyMetadataColumn adds the nullable metadata column to

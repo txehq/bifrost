@@ -1335,6 +1335,7 @@ func StampVirtualKeyScope(ctx *schemas.BifrostContext, virtualKey *configstoreTa
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, virtualKey.Name)
 	stampVirtualKeyContentLogging(ctx, virtualKey)
 	stampVirtualKeyMetadata(ctx, virtualKey)
+	stampVirtualKeyCloudResources(ctx, virtualKey)
 	if virtualKey.Team != nil {
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, virtualKey.Team.ID)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, virtualKey.Team.Name)

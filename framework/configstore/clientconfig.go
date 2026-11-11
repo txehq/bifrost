@@ -1489,6 +1489,22 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 		hash.Write([]byte("metadata:"))
 		hash.Write(data)
 	}
+	// Hash the allowlists only when the key has some, so every key that predates the columns
+	// keeps its hash. JSON-encoded in the stored order, so no entry boundary is ambiguous.
+	for _, list := range []struct {
+		name    string
+		entries []string
+	}{{"allowedStoragePrefixes:", vk.AllowedStoragePrefixes}, {"allowedPubSubTopics:", vk.AllowedPubSubTopics}} {
+		if len(list.entries) == 0 {
+			continue
+		}
+		data, err := sonic.Marshal(list.entries)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte(list.name))
+		hash.Write(data)
+	}
 	// Hash ExpiresAt only when set, so rows created before expiry existed keep their hash
 	if vk.ExpiresAt != nil {
 		hash.Write([]byte("expiresAt:" + vk.ExpiresAt.UTC().Format(time.RFC3339Nano)))
