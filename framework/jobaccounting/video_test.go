@@ -757,6 +757,9 @@ func (a *videoCoverageAccount) GetConfigForProvider(_ schemas.ModelProvider) (*s
 // virtual key (found on dashscope, TXE-6432, and azure, TXE-7054). A provider implements video
 // when neither its VideoGeneration nor its VideoRetrieve answers unsupported_operation. Such a
 // provider must be in videoProviders or in videoSettlementExemptions with a reason.
+//
+// It runs on every pull request in the Go unit tests (offline) job (TXE-7078), which finds
+// every framework package with tests; it needs no CI entry of its own.
 func TestVideoSettlerCoversEveryProviderThatImplementsVideo(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"error":{"message":"video coverage fixture"}}`, http.StatusInternalServerError)
