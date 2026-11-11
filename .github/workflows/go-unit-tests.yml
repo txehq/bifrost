@@ -22,6 +22,10 @@ name: Go unit tests (offline)
 #   every shard starts the stack in the background while Go compiles.
 # - Load-sensitive tests are named in LOAD_SENSITIVE_TESTS below with their tickets. Each is
 #   skipped in its package's main run and run alone at the end of its shard.
+# - Timings: tests write every timeout, deadline, lease TTL and expiry under 2 s as
+#   testtime.Scale(d) (<module>/internal/testtime, TXE-7128), and BIFROST_TEST_TIMEOUT_SCALE
+#   below multiplies them, so a test does not fail on time alone on a loaded shared
+#   runner. core/internal/testtime's tests fail on a literal one.
 # - The required check is the `Go unit tests (offline)` job, which fails unless every shard
 #   passed. No paths filter: a path-filtered required check never reports on a PR outside its
 #   paths, which blocks that PR's merge. No concurrency group either: a cancelled run of a
@@ -38,6 +42,8 @@ permissions:
   contents: read
 
 env:
+  # The factor testtime.Scale applies (TXE-7128). 1 on a developer machine.
+  BIFROST_TEST_TIMEOUT_SCALE: "4"
   # <ticket> <import path> <test name>, one per line. Run alone at the end of its shard.
   LOAD_SENSITIVE_TESTS: |
     TXE-7066 github.com/capsohq/bifrost/core TestOverheadResetBetweenRequests
