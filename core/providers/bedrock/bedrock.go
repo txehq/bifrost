@@ -770,11 +770,13 @@ func signAWSRequest(
 	if accessKey.GetValue() == "" && secretKey.GetValue() == "" {
 		cfg, err = config.LoadDefaultConfig(ctx,
 			config.WithRegion(region),
+			config.WithHTTPClient(providerUtils.GuardedAWSHTTPClient),
 		)
 	} else {
 		// Use explicit credentials when provided
 		cfg, err = config.LoadDefaultConfig(ctx,
 			config.WithRegion(region),
+			config.WithHTTPClient(providerUtils.GuardedAWSHTTPClient),
 			config.WithCredentialsProvider(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
 				creds := aws.Credentials{
 					AccessKeyID:     accessKey.GetValue(),

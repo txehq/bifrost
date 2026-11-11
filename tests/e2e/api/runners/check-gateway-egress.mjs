@@ -5,7 +5,9 @@
 //   2. the gateway must refuse egress: a chat request to the egress_probe provider (base_url on
 //      TEST-NET-3, in provider-error-fixture.config.json) must come back with the dial guard's
 //      refusal, which only a gateway started under scripts/test-offline.sh gives.
-// A gateway with no egress_probe provider cannot be checked; that is printed, not failed.
+// Anything else fails the run: a gateway with no egress_probe provider (a stale config), an
+// authentication failure, or an answer from another provider cannot show the gateway is guarded.
+// BIFROST_E2E_AUTH_HEADER, when set, is sent as Authorization so a protected gateway can be checked.
 //
 //   node check-gateway-egress.mjs <base-url> [env-file]
 // Exit 0: live run, or a verified fixture run. Exit 1: refuse to run, with the reason.
@@ -23,18 +25,23 @@ export function isFixtureRun(envFileText) {
   }
 }
 
-// classifyProbe reads the gateway's answer to the egress probe. Only an answer that the
-// egress_probe provider itself produced (extra_fields.routing_info.provider) says anything about
-// the guard: a gateway without that provider routes the model elsewhere, or refuses it.
+// classifyProbe reads the gateway's answer to the egress probe. It is "guarded" only when the
+// egress_probe provider itself (extra_fields.routing_info.provider) came back with the dial
+// guard's refusal; every other answer fails closed, with a reason.
 export function classifyProbe(status, body) {
-  if (body.includes(MARKER)) return { verdict: "guarded" };
   let provider;
   try {
     provider = JSON.parse(body)?.extra_fields?.routing_info?.provider;
   } catch {
     provider = undefined;
   }
-  if (provider !== "egress_probe") return { verdict: "unknown", detail: `HTTP ${status}, served by ${provider || "no provider"}` };
+  if (provider === "egress_probe" && body.includes(MARKER)) return { verdict: "guarded" };
+  if (status === 401 || status === 403) {
+    return { verdict: "unverified", detail: `HTTP ${status}: the gateway wants authentication; set BIFROST_E2E_AUTH_HEADER` };
+  }
+  if (provider !== "egress_probe") {
+    return { verdict: "unverified", detail: `HTTP ${status}, answered by ${provider || "no provider"}: the gateway has no egress_probe provider; start it on a fixture config that has one (provider-error-fixture.config.json)` };
+  }
   return { verdict: "unguarded", detail: `HTTP ${status}: ${body.slice(0, 300)}` };
 }
 
@@ -52,7 +59,10 @@ async function main() {
   try {
     const res = await fetch(`${baseURL.replace(/\/$/, "")}/v1/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(process.env.BIFROST_E2E_AUTH_HEADER ? { Authorization: process.env.BIFROST_E2E_AUTH_HEADER } : {}),
+      },
       body: JSON.stringify({ model: "egress_probe/egress-probe", messages: [{ role: "user", content: "egress probe" }] }),
       signal: AbortSignal.timeout(20000),
     });
@@ -66,11 +76,11 @@ async function main() {
     console.log("[egress] the gateway refuses non-loopback egress (started under scripts/test-offline.sh)");
     return 0;
   }
-  if (verdict === "unknown" && status !== 0) {
-    console.log(`[egress] the gateway has no egress_probe provider (${detail}), so its egress guard cannot be checked; start it under scripts/test-offline.sh`);
-    return 0;
+  if (verdict === "unverified" && status !== 0) {
+    console.error(`[egress] refusing the run: the gateway at ${baseURL} could not be shown to refuse egress (${detail}) (TXE-7083).`);
+    return 1;
   }
-  console.error(`[egress] the gateway at ${baseURL} is not guarded or did not answer: the egress probe did not get the dial guard's refusal (${detail || body.slice(0, 300)}). Start the gateway under scripts/test-offline.sh (TXE-7083).`);
+  console.error(`[egress] refusing the run: the gateway at ${baseURL} is not guarded or did not answer; the egress probe did not get the dial guard's refusal (${detail || body.slice(0, 300)}). Start the gateway under scripts/test-offline.sh (TXE-7083).`);
   return 1;
 }
 

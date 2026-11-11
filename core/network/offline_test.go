@@ -84,10 +84,16 @@ func TestGuardDialerRefusesBeforeConnecting(t *testing.T) {
 		t.Fatalf("ControlContext dialer: want the refusal first: ctxRan=%v err=%v", ctxRan, err)
 	}
 
-	socket := t.TempDir() + "/s.sock"
+	// A short directory: t.TempDir() can exceed the 104-byte unix socket path limit on macOS.
+	dir, err := os.MkdirTemp("/tmp", "og")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	socket := dir + "/s.sock"
 	unixListener, err := net.Listen("unix", socket)
 	if err != nil {
-		t.Skipf("unix sockets unavailable: %v", err)
+		t.Fatalf("unix listener: %v", err)
 	}
 	defer unixListener.Close()
 	if conn, err := GuardDialer(nil).Dial("unix", socket); err != nil {
@@ -112,12 +118,15 @@ func TestNameOfflineEgressSaysWhichHost(t *testing.T) {
 }
 
 // TestOfflineGuardCoversTheSharedClients checks the dial paths other packages build on: the
-// client factory's net/http transport, the SSRF dialer (whose stub resolver maps a name to a
+// client factory's net/http transport, http.DefaultTransport, the SSRF dialer (whose stub resolver maps a name to a
 // non-loopback address, so the error names the host) and a proxy that is not loopback.
 func TestOfflineGuardCoversTheSharedClients(t *testing.T) {
 	defer SetOfflineEgressGuard(true)()
 	checks := map[string]error{}
 	_, checks["factory net/http"] = NewHTTPClientFactory(nil, nil).GetHTTPClient(ClientPurposeInference).Get("https://" + testNetAddr + "/v1/models")
+	// http.DefaultClient and a bare &http.Client{} dial through http.DefaultTransport.
+	_, checks["http.DefaultClient"] = http.DefaultClient.Get("https://" + testNetAddr + "/")
+	_, checks["bare http.Client"] = (&http.Client{}).Get("http://" + testNetAddr + "/")
 
 	resolver := offlineStubResolver{"api.vendor.example": {net.ParseIP("8.8.8.8")}}
 	_, checks["ssrf dialer"] = ssrfSafeDialContext(resolver, GuardDialer(&net.Dialer{}).DialContext, nil)(context.Background(), "tcp", "api.vendor.example:443")

@@ -4,7 +4,7 @@
 //
 // Run directly: `node check-gateway-egress.test.mjs`.
 import assert from "node:assert";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -23,15 +23,20 @@ test("a fixture run is one whose environment enables providerErrorFixture", () =
   assert.strictEqual(isFixtureRun(""), false);
 });
 
-test("only the dial guard's refusal counts as a guarded gateway", () => {
+test("only the egress_probe provider's guard refusal counts as a guarded gateway", () => {
   const servedBy = (provider) => `"extra_fields":{"routing_info":{"provider":"${provider}"}}`;
   const refused = `{"error":{"error":"dial tcp 203.0.113.10:443: ${MARKER} 203.0.113.10:443 refused"},${servedBy("egress_probe")}}`;
   assert.strictEqual(classifyProbe(502, refused).verdict, "guarded");
   assert.strictEqual(classifyProbe(502, `{"error":{"error":"dial tcp 203.0.113.10:443: i/o timeout"},${servedBy("egress_probe")}}`).verdict, "unguarded");
   assert.strictEqual(classifyProbe(200, `{"choices":[],${servedBy("egress_probe")}}`).verdict, "unguarded");
   // A gateway without the provider routes the model to another one (a real fixture gateway did).
-  assert.strictEqual(classifyProbe(200, `{"choices":[],${servedBy("anthropic")}}`).verdict, "unknown");
-  assert.strictEqual(classifyProbe(400, '{"error":{"message":"unknown provider"}}').verdict, "unknown");
+  assert.strictEqual(classifyProbe(200, `{"choices":[],${servedBy("anthropic")}}`).verdict, "unverified");
+  assert.strictEqual(classifyProbe(400, '{"error":{"message":"unknown provider"}}').verdict, "unverified");
+  // The marker quoted by something else is not the guard.
+  assert.strictEqual(classifyProbe(200, `{"echo":"${MARKER}",${servedBy("anthropic")}}`).verdict, "unverified");
+  const auth = classifyProbe(401, '{"error":{"message":"unauthorized"}}');
+  assert.strictEqual(auth.verdict, "unverified");
+  assert.match(auth.detail, /BIFROST_E2E_AUTH_HEADER/);
 });
 
 function run(env, envFile) {
@@ -61,4 +66,50 @@ test("an offline run against a gateway that does not answer is refused as unguar
   const result = run({ BIFROST_TEST_OFFLINE: "1" }, fixtureEnv);
   assert.strictEqual(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stderr, /is not guarded/);
+});
+
+test("a gateway that asks for authentication, or has no egress_probe provider, fails the run", async () => {
+  const { createServer } = await import("node:http");
+  for (const [status, body] of [[401, '{"error":{"message":"unauthorized"}}'], [200, '{"choices":[],"extra_fields":{"routing_info":{"provider":"anthropic"}}}']]) {
+    const server = createServer((req, res) => {
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(body);
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const dir = mkdtempSync(join(tmpdir(), "egress-preflight-"));
+    writeFileSync(join(dir, "env.json"), fixtureEnv);
+    const result = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [script, `http://127.0.0.1:${server.address().port}`, join(dir, "env.json")], {
+        env: { ...process.env, BIFROST_TEST_OFFLINE: "1" },
+      });
+      let stderr = "";
+      child.stderr.on("data", (c) => (stderr += c));
+      child.on("close", (code) => resolve({ code, stderr }));
+    });
+    server.close();
+    assert.strictEqual(result.code, 1, `HTTP ${status}: ${result.stderr}`);
+    assert.match(result.stderr, /could not be shown to refuse egress/);
+  }
+});
+
+test("the configured auth header reaches the gateway", async () => {
+  const { createServer } = await import("node:http");
+  let seen;
+  const server = createServer((req, res) => {
+    seen = req.headers.authorization;
+    res.writeHead(502, { "Content-Type": "application/json" });
+    res.end(`{"error":{"error":"${MARKER} 203.0.113.10:443 refused"},"extra_fields":{"routing_info":{"provider":"egress_probe"}}}`);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const dir = mkdtempSync(join(tmpdir(), "egress-preflight-"));
+  writeFileSync(join(dir, "env.json"), fixtureEnv);
+  const code = await new Promise((resolve) => {
+    spawn(process.execPath, [script, `http://127.0.0.1:${server.address().port}`, join(dir, "env.json")], {
+      env: { ...process.env, BIFROST_TEST_OFFLINE: "1", BIFROST_E2E_AUTH_HEADER: "Bearer probe-token" },
+      stdio: "ignore",
+    }).on("close", resolve);
+  });
+  server.close();
+  assert.strictEqual(code, 0);
+  assert.strictEqual(seen, "Bearer probe-token");
 });

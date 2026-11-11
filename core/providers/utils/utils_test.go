@@ -8,9 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -19,6 +22,7 @@ import (
 	"github.com/tidwall/gjson"
 
 	"github.com/bytedance/sonic"
+	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/cespare/xxhash/v2"
 	"github.com/valyala/fasthttp"
@@ -4731,4 +4735,117 @@ func TestCheckContextAndGetRequestBodyReturnsConverterBifrostError(t *testing.T)
 	if msg := ConverterBifrostError(want).Error(); msg != "field x is not supported" {
 		t.Fatalf("Error() = %q", msg)
 	}
+}
+
+// --- Offline egress (TXE-7083) ---
+
+// TestConfigureDialerRefusesNonLoopbackInAnOfflineRun covers the dialer every fasthttp provider
+// client goes through: in an offline run a provider whose address is not loopback fails before
+// connecting, and the error names it; a loopback fixture is still reached.
+func TestConfigureDialerRefusesNonLoopbackInAnOfflineRun(t *testing.T) {
+	defer network.SetOfflineEgressGuard(true)()
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("fixture"))
+	}))
+	defer fixture.Close()
+	client := ConfigureDialer(&fasthttp.Client{ReadTimeout: 5 * time.Second}, false)
+
+	status, body, err := client.Get(nil, fixture.URL)
+	if err != nil || status != http.StatusOK || string(body) != "fixture" {
+		t.Fatalf("loopback fixture: status=%d body=%q err=%v", status, body, err)
+	}
+	// TEST-NET-3 (RFC 5737): never routed, and no DNS involved.
+	for _, target := range []string{"http://203.0.113.10/v1/models", "https://203.0.113.11/v1/models"} {
+		_, _, err := client.Get(nil, target)
+		if err == nil {
+			t.Fatalf("%s reached in an offline run", target)
+		}
+		host := strings.Split(strings.SplitN(target, "://", 2)[1], "/")[0]
+		if !strings.Contains(err.Error(), network.OfflineEgressMarker) || !strings.Contains(err.Error(), host) {
+			t.Errorf("%s: want the offline refusal naming %s, got %v", target, host, err)
+		}
+	}
+}
+
+// TestGuardedAWSHTTPClientRefusesNonLoopback: the AWS SDK's own client, used for credential
+// loading (STS, IMDS, SSO), carries the guard.
+func TestGuardedAWSHTTPClientRefusesNonLoopback(t *testing.T) {
+	defer network.SetOfflineEgressGuard(true)()
+	req, err := http.NewRequest(http.MethodPost, "https://203.0.113.10/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = GuardedAWSHTTPClient.Do(req)
+	if err == nil || !strings.Contains(err.Error(), network.OfflineEgressMarker) {
+		t.Fatalf("want the offline refusal, got %v", err)
+	}
+}
+
+// TestEveryAWSConfigLoadUsesTheGuardedClient fails when a config.LoadDefaultConfig call in core
+// does not pass GuardedAWSHTTPClient: the SDK would build its own client, and credential loading
+// would dial AWS in an offline run (TXE-7083). A call's own argument list must name it, or, when
+// the call spreads an options slice, that slice must have it appended in the same function.
+func TestEveryAWSConfigLoadUsesTheGuardedClient(t *testing.T) {
+	const call = "config.LoadDefaultConfig("
+	found := 0
+	err := filepath.WalkDir(filepath.Join("..", ".."), func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return err
+		}
+		source, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		text := string(source)
+		for offset := 0; ; {
+			i := strings.Index(text[offset:], call)
+			if i < 0 {
+				break
+			}
+			i += offset
+			offset = i + len(call)
+			found++
+			args, ok := callArguments(text, i+len(call)-1)
+			line := strings.Count(text[:i], "\n") + 1
+			if !ok {
+				t.Errorf("%s:%d: could not read the arguments of config.LoadDefaultConfig", path, line)
+				continue
+			}
+			if strings.Contains(args, "GuardedAWSHTTPClient") {
+				continue
+			}
+			if spread := regexp.MustCompile(`(\w+)\.\.\.\s*$`).FindStringSubmatch(args); spread != nil {
+				funcStart := strings.LastIndex(text[:i], "\nfunc ")
+				body := text[max(funcStart, 0):i]
+				if regexp.MustCompile(spread[1] + `\s*=\s*append\(` + spread[1] + `,[^\n]*GuardedAWSHTTPClient`).MatchString(body) {
+					continue
+				}
+			}
+			t.Errorf("%s:%d: config.LoadDefaultConfig without config.WithHTTPClient(providerUtils.GuardedAWSHTTPClient)", path, line)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found < 5 {
+		t.Fatalf("found %d config.LoadDefaultConfig calls; the scan no longer sees core's sources", found)
+	}
+}
+
+// callArguments returns the text between the parenthesis at open and its match.
+func callArguments(text string, open int) (string, bool) {
+	depth := 0
+	for j := open; j < len(text); j++ {
+		switch text[j] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return text[open+1 : j], true
+			}
+		}
+	}
+	return "", false
 }

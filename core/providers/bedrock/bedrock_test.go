@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +17,7 @@ import (
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/providers/anthropic"
 	"github.com/capsohq/bifrost/core/providers/bedrock"
 	"github.com/capsohq/bifrost/core/providers/openai"
@@ -9028,4 +9031,124 @@ func TestGuardTagSuffixValidation_ConversePath(t *testing.T) {
 			assert.Contains(t, err.Error(), "tagSuffix")
 		})
 	}
+}
+
+// --- Offline egress (TXE-7083) ---
+
+const offlineEgressModel = "amazon.nova-lite-v1:0"
+
+func offlineEgressChatRequest() *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    offlineEgressModel,
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+	}
+}
+
+func offlineEgressKey(endpoints *schemas.BedrockEndpoints, roleARN string) schemas.Key {
+	cfg := &schemas.BedrockKeyConfig{
+		AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
+		SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+		Region:    schemas.NewSecretVar("us-east-1"),
+		Endpoints: endpoints,
+	}
+	if roleARN != "" {
+		cfg.RoleARN = schemas.NewSecretVar(roleARN)
+	}
+	return schemas.Key{BedrockKeyConfig: cfg}
+}
+
+func offlineEgressProvider(t *testing.T, networkConfig schemas.NetworkConfig) *bedrock.BedrockProvider {
+	t.Helper()
+	networkConfig.DefaultRequestTimeoutInSeconds = 5
+	config := &schemas.ProviderConfig{NetworkConfig: networkConfig}
+	config.CheckAndSetDefaults()
+	provider, err := bedrock.NewBedrockProvider(config, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+	return provider
+}
+
+func bifrostErrorText(err *schemas.BifrostError) string {
+	if err == nil || err.Error == nil {
+		return fmt.Sprint(err)
+	}
+	text := err.Error.Message
+	if err.Error.Error != nil {
+		text += " | " + err.Error.Error.Error()
+	}
+	return text
+}
+
+// requireDNS skips when host does not resolve here: the guard judges the resolved address, so a
+// test that names a real AWS host needs DNS (never a connection).
+func requireDNS(t *testing.T, host string) {
+	t.Helper()
+	if _, err := net.DefaultResolver.LookupHost(context.Background(), host); err != nil {
+		t.Skipf("no DNS for %s here: %v", host, err)
+	}
+}
+
+// TestBedrockOfflineRunRefusesTheRegionHost reproduces TXE-7083: a Bedrock provider pointed at
+// a fixture with network_config.base_url still dials bedrock-runtime.<region>.amazonaws.com,
+// because Bedrock builds its host from the region. In an offline run the guard refuses the
+// connection before it is attempted and the error names the host, so nothing reaches AWS.
+func TestBedrockOfflineRunRefusesTheRegionHost(t *testing.T) {
+	requireDNS(t, "bedrock-runtime.us-east-1.amazonaws.com")
+	defer network.SetOfflineEgressGuard(true)()
+	provider := offlineEgressProvider(t, schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1"}) // ignored by Bedrock: the incident
+
+	_, bifrostErr := provider.ChatCompletion(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), offlineEgressKey(nil, ""), offlineEgressChatRequest())
+	require.NotNil(t, bifrostErr, "an offline run must not reach AWS")
+	text := bifrostErrorText(bifrostErr)
+	assert.Contains(t, text, network.OfflineEgressMarker)
+	assert.Contains(t, text, "bedrock-runtime.us-east-1.amazonaws.com")
+}
+
+// TestBedrockOfflineRunRefusesSTSForARoleKey: with role_arn the request first assumes the role
+// through STS, on the AWS SDK's client rather than the provider's transport. That client carries
+// the guard too, so even with the runtime endpoint on a loopback fixture the STS call is refused,
+// naming STS, and nothing reaches AWS.
+func TestBedrockOfflineRunRefusesSTSForARoleKey(t *testing.T) {
+	requireDNS(t, "sts.us-east-1.amazonaws.com")
+	defer network.SetOfflineEgressGuard(true)()
+	fixtureHit := false
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fixtureHit = true }))
+	defer server.Close()
+	provider := offlineEgressProvider(t, schemas.NetworkConfig{InsecureSkipVerify: true})
+	key := offlineEgressKey(&schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar(strings.TrimPrefix(server.URL, "https://"))},
+		"arn:aws:iam::123456789012:role/txe-7083-offline-probe")
+
+	_, bifrostErr := provider.ChatCompletion(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, offlineEgressChatRequest())
+	require.NotNil(t, bifrostErr, "an offline run must not reach STS")
+	text := bifrostErrorText(bifrostErr)
+	assert.Contains(t, text, network.OfflineEgressMarker)
+	assert.Contains(t, text, "sts.")
+	assert.False(t, fixtureHit, "the request must stop at the role assumption")
+}
+
+// TestBedrockOfflineRunReachesAFixtureThroughTheEndpointOverride is the documented way for a
+// fixture to cover Bedrock: bedrock_key_config.endpoints names a loopback TLS listener, and
+// network_config.insecure_skip_verify accepts its self-signed certificate. The guard allows it.
+func TestBedrockOfflineRunReachesAFixtureThroughTheEndpointOverride(t *testing.T) {
+	defer network.SetOfflineEgressGuard(true)()
+	var path string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		path = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"output":{"message":{"role":"assistant","content":[{"text":"hello from the fixture"}]}},"stopReason":"end_turn","usage":{"inputTokens":3,"outputTokens":4,"totalTokens":7}}`)
+	}))
+	defer server.Close()
+	provider := offlineEgressProvider(t, schemas.NetworkConfig{InsecureSkipVerify: true})
+
+	response, bifrostErr := provider.ChatCompletion(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		offlineEgressKey(&schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar(strings.TrimPrefix(server.URL, "https://"))}, ""),
+		offlineEgressChatRequest())
+	require.Nil(t, bifrostErr, bifrostErrorText(bifrostErr))
+	require.NotEmpty(t, response.Choices)
+	assert.Equal(t, "hello from the fixture", *response.Choices[0].Message.Content.ContentStr)
+	assert.Equal(t, "/model/"+offlineEgressModel+"/converse", path)
 }

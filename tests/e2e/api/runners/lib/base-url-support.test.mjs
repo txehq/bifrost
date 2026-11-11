@@ -80,3 +80,20 @@ test("no fixture config points a provider that ignores base_url at a fixture thr
   );
   assert.deepStrictEqual(problems, []);
 });
+
+// make run-provider-harness-test refuses a fixture run unless the gateway's egress_probe provider
+// comes back with the dial guard's refusal (runners/check-gateway-egress.mjs), so every fixture
+// config that defines providers carries one, aimed at TEST-NET-3 (never routed).
+test("every fixture config with providers carries the egress_probe provider on TEST-NET-3", () => {
+  const dir = join(root, "tests/e2e/api/provider_config");
+  const missing = [];
+  for (const file of fixtureConfigFiles(dir)) {
+    const config = JSON.parse(readFileSync(file, "utf8"));
+    if (Object.keys(config.providers).length === 0) continue;
+    const probe = config.providers.egress_probe;
+    if (!probe || probe.network_config?.base_url !== "https://203.0.113.10" || probe.custom_provider_config?.base_provider_type !== "openai") {
+      missing.push(relativeTo(root, file));
+    }
+  }
+  assert.deepStrictEqual(missing, [], "add the egress_probe provider from provider-error-fixture.config.json");
+});

@@ -168,6 +168,9 @@ func newAWSSubjectTokenSupplier(ctx context.Context, cfg *schemas.VertexAWSWorkl
 			}
 		}))
 	}
+	// Metadata, container-credential and default-chain calls use the SDK's client; it carries
+	// the offline egress guard (TXE-7083).
+	loadOpts = append(loadOpts, config.WithHTTPClient(providerUtils.GuardedAWSHTTPClient))
 	awsCfg, err := config.LoadDefaultConfig(ctx, loadOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("vertex aws federation: aws credentials: %w", err)

@@ -242,8 +242,12 @@ starts all three processes (the fixture, the gateway and the harness) under `scr
 - The runner removes the proxy variables, and on macOS it runs the command under `sandbox-exec` with a
   loopback-only profile, so any process it starts (node, newman, curl) is held to loopback too.
 - `make run-provider-harness-test` refuses a fixture run (`providerErrorFixture=1`) outside the runner. It
-  also refuses a gateway that answers the `egress_probe` provider without the guard's refusal, which
-  means a gateway not started under the runner.
+  also fails closed unless the gateway's `egress_probe` provider (base_url on TEST-NET-3) comes back with
+  the guard's refusal. So a gateway not started under the runner is refused, and so is one whose config
+  lacks the probe or that asks for authentication (set `BIFROST_E2E_AUTH_HEADER`). Every fixture config
+  with providers carries `egress_probe`, and `runners/lib/base-url-support.test.mjs` checks it.
+- The AWS SDK's own HTTP client (Bedrock and Vertex credential loading: STS, IMDS, SSO) carries the
+  guard too. `core/providers/utils` fails on a `config.LoadDefaultConfig` call without it.
 
 `core/providers/base_url_support.json` says how to point each provider at a fixture. Most honour
 `network_config.base_url`. Azure takes `azure_key_config.endpoint`, and Databricks takes

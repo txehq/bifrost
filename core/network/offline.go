@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 	"sync/atomic"
 	"syscall"
+	"time"
 )
 
 // OfflineEnv is the variable scripts/test-offline.sh sets on the command it runs (TXE-7053).
@@ -31,6 +33,12 @@ var offlineEgress atomic.Bool
 
 func init() {
 	offlineEgress.Store(os.Getenv(OfflineEnv) == "1")
+	// http.DefaultTransport (http.DefaultClient, a bare &http.Client{}, and every clone made
+	// after this) dials through the guard too. Its dialer is the one net/http installs, so with
+	// the guard off nothing changes; installing it unconditionally lets tests turn the guard on.
+	if transport, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport.DialContext = GuardDialer(&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	}
 }
 
 // OfflineEgressGuarded reports whether non-loopback egress is being refused.
@@ -132,6 +140,12 @@ func GuardDialer(d *net.Dialer) *net.Dialer {
 		return nil
 	}
 	return guarded
+}
+
+// GuardDialerInPlace puts the guard on d itself, for libraries that hand out a *net.Dialer to
+// configure (the AWS SDK's BuildableClient.WithDialerOptions).
+func GuardDialerInPlace(d *net.Dialer) {
+	*d = *GuardDialer(d)
 }
 
 // NameOfflineEgress fills in the host name on a guard refusal inside err, so the error says

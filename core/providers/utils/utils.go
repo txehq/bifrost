@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"io"
 	"net"
 	"net/http"
@@ -1070,6 +1071,13 @@ func dialWebSocketUpstream(ctx context.Context, proxy func(*http.Request) (*url.
 	}
 	return network.DialViaProxyTLS(ctx, proxyURL, addr, proxyTLS)
 }
+
+// GuardedAWSHTTPClient is the HTTP client every AWS SDK config Bifrost loads passes through
+// config.WithHTTPClient: the SDK's default BuildableClient with the offline egress guard on its
+// dialer (TXE-7083). Without it the SDK builds its own client, so credential loading (STS
+// AssumeRole, IMDS, SSO) would dial AWS in an offline run although the inference transport is
+// guarded. utils_test.go fails on a config.LoadDefaultConfig call that does not pass it.
+var GuardedAWSHTTPClient = awshttp.NewBuildableClient().WithDialerOptions(network.GuardDialerInPlace)
 
 // NewProviderHTTPClient builds the *http.Client a provider hands to libraries that
 // only accept one, for calls that do not go to its inference endpoint: OAuth token

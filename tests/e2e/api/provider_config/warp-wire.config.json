@@ -33,6 +33,26 @@
       "keys": [{ "name": "wire-chatonly-key", "value": "test-key", "models": ["*"], "weight": 1 }],
       "network_config": { "base_url": "http://127.0.0.1:8792", "max_retries": 0, "default_request_timeout_in_seconds": 30 },
       "custom_provider_config": { "base_provider_type": "openai", "allowed_requests": { "chat_completion": true, "responses": true } }
+    },
+    "egress_probe": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai"
+      },
+      "network_config": {
+        "base_url": "https://203.0.113.10",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
     }
   }
 }
