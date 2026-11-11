@@ -297,8 +297,11 @@ var nestedPriceFields = func() []NestedPriceField {
 			NestedPriceField{provider, "response_format.resolution", "resolution", video},
 		)
 	}
+	// Gemini and Vertex run the same converter for Gemini text-to-speech.
+	for _, provider := range []ModelProvider{Gemini, Vertex} {
+		fields = append(fields, NestedPriceField{provider, "generationConfig.speechConfig.voice_config.prebuiltVoiceConfig.voiceName", "voice", speech})
+	}
 	fields = append(fields,
-		NestedPriceField{Gemini, "generationConfig.speechConfig.voice_config.prebuiltVoiceConfig.voiceName", "voice", speech},
 		NestedPriceField{Vertex, "parameters.outputDimensionality", "dimensions", embedding},
 	)
 	return fields

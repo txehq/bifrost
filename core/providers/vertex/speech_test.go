@@ -410,7 +410,7 @@ func BenchmarkVertexGeminiSpeechRequest(b *testing.B) {
 		b.Run(name, func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
-				if _, bErr := provider.geminiSpeechTarget(ctx, key, req.Model, method, stream); bErr != nil {
+				if _, _, bErr := provider.geminiSpeechTarget(ctx, key, req.Model, method, stream); bErr != nil {
 					b.Fatal(bErr.Error.Message)
 				}
 			}

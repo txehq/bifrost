@@ -54,39 +54,34 @@ func vertexGeminiSpeechRequestBody(request *schemas.BifrostSpeechRequest) (*Vert
 	return &VertexRawRequestBody{RawBody: rawBody, ExtraParams: extraParams}, nil
 }
 
-// vertexGeminiSpeechTarget is where one speech request goes and how it authenticates.
-type vertexGeminiSpeechTarget struct {
-	url     string            // complete URL, with the API key as a query parameter when the key has one
-	headers map[string]string // Authorization, when the key authenticates with OAuth2 credentials
-}
-
 // geminiSpeechTarget resolves the URL and credentials for method (":generateContent" or
 // ":streamGenerateContent") on the request's model. It makes no upstream call for an API key;
-// OAuth2 credentials use the provider's cached token source.
-func (provider *VertexProvider) geminiSpeechTarget(ctx *schemas.BifrostContext, key schemas.Key, model string, method string, stream bool) (*vertexGeminiSpeechTarget, *schemas.BifrostError) {
+// OAuth2 credentials use the provider's cached token source. It returns the complete URL (with
+// the API key as a query parameter when the key has one) and the request headers
+// (Authorization, when the key authenticates with OAuth2 credentials). The URL is built here
+// from the key's project and region and the request's model; no vendor response names it.
+func (provider *VertexProvider) geminiSpeechTarget(ctx *schemas.BifrostContext, key schemas.Key, model string, method string, stream bool) (string, map[string]string, *schemas.BifrostError) {
 	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
-		return nil, providerUtils.NewConfigurationError("project ID is not set")
+		return "", nil, providerUtils.NewConfigurationError("project ID is not set")
 	}
 	region := resolveVertexRegion(ctx, key)
 	if region == "" {
-		return nil, providerUtils.NewConfigurationError("region is not set in key config")
+		return "", nil, providerUtils.NewConfigurationError("region is not set in key config")
 	}
 	projectNumber := resolveVertexProjectNumber(ctx, key)
 	if schemas.IsAllDigitsASCII(model) && projectNumber == "" {
-		return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models")
+		return "", nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models")
 	}
 
-	target := &vertexGeminiSpeechTarget{
-		url:     getCompleteURLForGeminiEndpoint(model, region, projectID, projectNumber, method),
-		headers: map[string]string{},
-	}
+	requestURL := getCompleteURLForGeminiEndpoint(model, region, projectID, projectNumber, method)
+	headers := map[string]string{}
 	// query is "alt=sse", "key=<key>", both joined, or empty.
 	query := ""
 	if stream {
 		query = "alt=sse"
-		target.headers["Accept"] = "text/event-stream"
-		target.headers["Cache-Control"] = "no-cache"
+		headers["Accept"] = "text/event-stream"
+		headers["Cache-Control"] = "no-cache"
 	}
 	if apiKey := key.Value.GetValue(); apiKey != "" {
 		if query != "" {
@@ -96,18 +91,18 @@ func (provider *VertexProvider) geminiSpeechTarget(ctx *schemas.BifrostContext, 
 	} else {
 		tokenSource, err := provider.getAuthTokenSource(key)
 		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
+			return "", nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
 		}
 		token, err := tokenSource.Token()
 		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError("error getting token", err)
+			return "", nil, providerUtils.NewBifrostOperationError("error getting token", err)
 		}
-		target.headers["Authorization"] = "Bearer " + token.AccessToken
+		headers["Authorization"] = "Bearer " + token.AccessToken
 	}
 	if query != "" {
-		target.url += "?" + query
+		requestURL += "?" + query
 	}
-	return target, nil
+	return requestURL, headers, nil
 }
 
 // Speech performs a Gemini speech synthesis request through Vertex generateContent.
@@ -126,7 +121,7 @@ func (provider *VertexProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	target, bifrostErr := provider.geminiSpeechTarget(ctx, key, request.Model, ":generateContent", false)
+	requestURL, headers, bifrostErr := provider.geminiSpeechTarget(ctx, key, request.Model, ":generateContent", false)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -139,10 +134,10 @@ func (provider *VertexProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	for name, value := range target.headers {
+	for name, value := range headers {
 		req.Header.Set(name, value)
 	}
-	req.SetRequestURI(target.url)
+	req.SetRequestURI(requestURL)
 	usedLargePayloadBody := providerUtils.ApplyLargePayloadRequestBody(ctx, req)
 	if !usedLargePayloadBody {
 		req.SetBody(jsonBody)
@@ -214,7 +209,7 @@ func (provider *VertexProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	target, bifrostErr := provider.geminiSpeechTarget(ctx, key, request.Model, ":streamGenerateContent", true)
+	requestURL, headers, bifrostErr := provider.geminiSpeechTarget(ctx, key, request.Model, ":streamGenerateContent", true)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -222,9 +217,9 @@ func (provider *VertexProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	return gemini.HandleGeminiSpeechStream(
 		ctx,
 		provider.streamingClient,
-		target.url,
+		requestURL,
 		jsonBody,
-		target.headers,
+		headers,
 		provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
