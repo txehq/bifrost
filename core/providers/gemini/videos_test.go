@@ -374,19 +374,18 @@ func TestToGeminiVideoGenerationRequest_Size(t *testing.T) {
 	body := veoBody(t, true, request("1280x720", schemas.VideoGenerationParameters{AspectRatio: "16:9", Resolution: "720p"}))
 	assert.Equal(t, "720p", providerUtils.GetJSONField(body, "parameters.resolution").String(), "%s", body)
 
-	// An explicit aspect_ratio or resolution wins over the one the size names (TXE-7065); the
-	// size still gives the other.
+	// An explicit aspect_ratio wins over the one the size names (TXE-7065); the size still
+	// gives the resolution tier.
 	body = veoBody(t, true, request("1920x1080", schemas.VideoGenerationParameters{AspectRatio: "9:16"}))
 	assert.Equal(t, "9:16", providerUtils.GetJSONField(body, "parameters.aspectRatio").String(), "%s", body)
-	assert.Equal(t, "1080p", providerUtils.GetJSONField(body, "parameters.resolution").String(), "%s", body)
-	body = veoBody(t, true, request("1280x720", schemas.VideoGenerationParameters{Resolution: "1080p"}))
-	assert.Equal(t, "16:9", providerUtils.GetJSONField(body, "parameters.aspectRatio").String(), "%s", body)
 	assert.Equal(t, "1080p", providerUtils.GetJSONField(body, "parameters.resolution").String(), "%s", body)
 
 	refused := map[string]schemas.VideoGenerationParameters{
 		"1024x1024": {},
 		"1792x1024": {}, // an OpenAI size: 7:4, not 16:9
 		"720p":      {},
+		// A resolution of another tier than the size: the job is priced by its size.
+		"1280x720": {Resolution: "4k"},
 	}
 	for size, params := range refused {
 		for _, convert := range []func(*schemas.BifrostVideoGenerationRequest) (*gemini.GeminiVideoGenerationRequest, error){
