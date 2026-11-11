@@ -3,6 +3,7 @@ package gemini
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,9 +11,11 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/network/proxytest"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -686,38 +689,98 @@ func TestGeminiOmniVideoDownload(t *testing.T) {
 	})
 
 	// Gemini Files may answer a download with a redirect to a storage host: the bytes are
-	// fetched there, without the key.
-	t.Run("uri redirected off the provider host", func(t *testing.T) {
-		var storageKeys []string
-		var storageMu sync.Mutex
-		storage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			storageMu.Lock()
-			storageKeys = append(storageKeys, r.Header.Get("x-goog-api-key")+"|"+r.Header.Get("Authorization"))
-			storageMu.Unlock()
-			w.Header().Set("Content-Type", "video/mp4")
-			_, _ = w.Write(video)
-		}))
-		defer storage.Close()
-		provider, recorder := newOmniTestProvider(t, func(w http.ResponseWriter, r *http.Request, serverURL string) {
+	// fetched there without the key, through the hardened media fetcher, which admits a public
+	// address only (here through the provider's proxy, as in production with one configured).
+	redirecting := func(storageURL string) func(w http.ResponseWriter, r *http.Request, serverURL string) {
+		return func(w http.ResponseWriter, r *http.Request, serverURL string) {
 			switch {
 			case r.URL.Path == "/v1beta/files/abc123:download":
 				http.Redirect(w, r, "/v1beta/files/abc123:hop", http.StatusFound)
 			case r.URL.Path == "/v1beta/files/abc123:hop":
-				http.Redirect(w, r, storage.URL+"/signed/abc123.mp4?sig=1", http.StatusFound)
+				http.Redirect(w, r, storageURL+"/signed/abc123.mp4?sig=1", http.StatusFound)
 			default:
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(strings.Replace(omniInteractionCompletedURITemplate, "FILE_URI", serverURL+"/v1beta/files/abc123:download?alt=media", 1)))
 			}
+		}
+	}
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("uri redirected off the provider host, stream=%v", stream), func(t *testing.T) {
+			var storageKeys []string
+			var storageMu sync.Mutex
+			tunnel := proxytest.NewOriginTunnel(t, func(w http.ResponseWriter, r *http.Request) {
+				storageMu.Lock()
+				storageKeys = append(storageKeys, r.Host+r.URL.RequestURI()+"|"+r.Header.Get("x-goog-api-key")+"|"+r.Header.Get("Authorization"))
+				storageMu.Unlock()
+				w.Header().Set("Content-Type", "video/mp4")
+				_, _ = w.Write(video)
+			})
+			provider, recorder := newOmniTestProvider(t, redirecting("http://203.0.113.10"))
+			ctx := omniTestContext()
+			ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(tunnel.URL)})
+			resp, bifrostErr := provider.VideoDownload(ctx, omniTestKey, &schemas.BifrostVideoDownloadRequest{Provider: schemas.Gemini, ID: omniTaskID, Stream: stream})
+			require.Nil(t, bifrostErr)
+			if stream {
+				require.NotNil(t, resp.Body)
+				got, err := io.ReadAll(resp.Body)
+				require.NoError(t, err)
+				require.NoError(t, resp.Body.Close())
+				assert.Equal(t, video, got)
+				assert.Nil(t, resp.Content)
+			} else {
+				assert.Equal(t, video, resp.Content)
+			}
+			assert.Equal(t, "video/mp4", resp.ContentType)
+			// The two hops on the provider's own host carry the key; the storage host gets none.
+			assert.Equal(t, []string{"gemini-test", "gemini-test", "gemini-test"}, recorder.keys)
+			storageMu.Lock()
+			defer storageMu.Unlock()
+			assert.Equal(t, []string{"203.0.113.10/signed/abc123.mp4?sig=1||"}, storageKeys)
 		})
-		resp, bifrostErr := provider.VideoDownload(omniTestContext(), omniTestKey, &schemas.BifrostVideoDownloadRequest{Provider: schemas.Gemini, ID: omniTaskID})
-		require.Nil(t, bifrostErr)
-		assert.Equal(t, video, resp.Content)
-		assert.Equal(t, "video/mp4", resp.ContentType)
-		// The two hops on the provider's own host carry the key; the storage host gets none.
-		assert.Equal(t, []string{"gemini-test", "gemini-test", "gemini-test"}, recorder.keys)
-		storageMu.Lock()
-		defer storageMu.Unlock()
-		assert.Equal(t, []string{"|"}, storageKeys)
+	}
+
+	// A redirect to an address that is not public is refused without being dialed.
+	t.Run("a redirect to a loopback storage host is not fetched", func(t *testing.T) {
+		var hits atomic.Int32
+		storage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			_, _ = w.Write(video)
+		}))
+		defer storage.Close()
+		provider, _ := newOmniTestProvider(t, redirecting(strings.Replace(storage.URL, "127.0.0.1", "localhost", 1)))
+		_, bifrostErr := provider.VideoDownload(omniTestContext(), omniTestKey, &schemas.BifrostVideoDownloadRequest{Provider: schemas.Gemini, ID: omniTaskID})
+		require.NotNil(t, bifrostErr)
+		assert.Zero(t, hits.Load(), "the loopback storage host was dialed")
+	})
+
+	// A request that asked for a stream gets the file as Body, from Gemini Files and from an
+	// interaction that carries the bytes inline.
+	t.Run("streamed", func(t *testing.T) {
+		for _, inline := range []bool{false, true} {
+			provider, _ := newOmniTestProvider(t, func(w http.ResponseWriter, r *http.Request, serverURL string) {
+				if strings.HasPrefix(r.URL.Path, "/v1beta/files/") {
+					w.Header().Set("Content-Type", "video/mp4")
+					_, _ = w.Write(video)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if inline {
+					_, _ = w.Write([]byte(`{"id":"` + omniInteractionID + `","status":"completed","steps":[{"type":"model_output","content":[{"type":"video","mime_type":"video/mp4","data":"` + base64.StdEncoding.EncodeToString(video) + `"}]}]}`))
+					return
+				}
+				_, _ = w.Write([]byte(strings.Replace(omniInteractionCompletedURITemplate, "FILE_URI", serverURL+"/v1beta/files/abc123:download?alt=media", 1)))
+			})
+			resp, bifrostErr := provider.VideoDownload(omniTestContext(), omniTestKey, &schemas.BifrostVideoDownloadRequest{Provider: schemas.Gemini, ID: omniTaskID, Stream: true})
+			require.Nil(t, bifrostErr, "inline=%v", inline)
+			require.NotNil(t, resp.Body, "inline=%v", inline)
+			got, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.NoError(t, resp.Body.Close())
+			assert.Equal(t, video, got, "inline=%v", inline)
+			assert.Nil(t, resp.Content, "inline=%v", inline)
+			assert.Equal(t, "video/mp4", resp.ContentType)
+			assert.Equal(t, omniTaskID, resp.VideoID)
+		}
 	})
 
 	t.Run("a redirect loop ends in an error", func(t *testing.T) {

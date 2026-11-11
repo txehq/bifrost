@@ -236,12 +236,8 @@ func (provider *VertexProvider) interactionVideoDownload(ctx *schemas.BifrostCon
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	bifrostResp := &schemas.BifrostVideoDownloadResponse{
-		VideoID:     request.ID,
-		Content:     content,
-		ContentType: contentType,
-	}
-	bifrostResp.ExtraFields.Latency = videoResp.ExtraFields.Latency
+	// Fork: built by the shared helper, so a request that asked for a stream gets one (BF20).
+	bifrostResp := providerUtils.NewVideoContentResponse(request, request.ID, content, contentType, time.Duration(videoResp.ExtraFields.Latency)*time.Millisecond)
 	bifrostResp.ExtraFields.ProviderResponseHeaders = videoResp.ExtraFields.ProviderResponseHeaders
 	return bifrostResp, nil
 }

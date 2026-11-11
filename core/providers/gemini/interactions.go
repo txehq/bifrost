@@ -700,87 +700,83 @@ func (provider *GeminiProvider) interactionVideoDownload(ctx *schemas.BifrostCon
 		return nil, providerUtils.NewBifrostOperationError("the interaction holds no video", nil)
 	}
 
-	bifrostResp := &schemas.BifrostVideoDownloadResponse{VideoID: request.ID}
 	if artifact.Data != "" {
 		content, contentType, bifrostErr := DecodeInteractionVideoData(artifact)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
-		bifrostResp.Content = content
-		bifrostResp.ContentType = contentType
-		bifrostResp.ExtraFields.Latency = videoResp.ExtraFields.Latency
-		return bifrostResp, nil
+		return providerUtils.NewVideoContentResponse(request, request.ID, content, contentType, time.Duration(videoResp.ExtraFields.Latency)*time.Millisecond), nil
 	}
 
 	downloadURL, bifrostErr := geminiFileDownloadURL(provider.networkConfig.BaseURL, artifact.URI)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	content, contentType, latency, bifrostErr := provider.fetchGeminiFile(ctx, key, downloadURL)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	if contentType == "" {
-		contentType = videoResp.Videos[0].ContentType
-	}
-	bifrostResp.Content = content
-	bifrostResp.ContentType = contentType
-	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
-	return bifrostResp, nil
+	return provider.fetchGeminiFile(ctx, key, request, downloadURL, videoResp.Videos[0].ContentType)
 }
 
-// geminiFileMaxRedirects bounds the redirects a Gemini Files download follows.
+// geminiFileMaxRedirects bounds the redirects a Gemini Files download follows on the
+// provider's own origin.
 const geminiFileMaxRedirects = 5
 
-// fetchGeminiFile downloads a Gemini Files file. Redirects are followed by hand, so the key and
-// the provider's extra headers go only to the provider's own origin: a redirect that leaves it
-// (a storage host serving the bytes) is fetched without them.
-func (provider *GeminiProvider) fetchGeminiFile(ctx *schemas.BifrostContext, key schemas.Key, downloadURL string) ([]byte, string, time.Duration, *schemas.BifrostError) {
+// fetchGeminiFile downloads a Gemini Files file through providerUtils.FetchVideoContent, so a
+// request that asked for a stream is streamed (contract C9 / BF20). Redirects on the provider's
+// own origin are followed here, one hop per fetch, so the key and the provider's extra headers
+// go only to that origin: a redirect that leaves it (a storage host serving the bytes) is
+// handed to the shared fetch with no credentials, which sends an address off the provider's
+// origin through the SSRF-hardened media fetcher (TXE-7036). contentType is the one returned
+// when the file host names none.
+func (provider *GeminiProvider) fetchGeminiFile(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest, downloadURL, contentType string) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
 
 	target := downloadURL
-	var total time.Duration
 	for hop := 0; ; hop++ {
 		req.Reset()
-		resp.Reset()
 		req.SetRequestURI(target)
 		req.Header.SetMethod(http.MethodGet)
 		if sameOrigin(provider.networkConfig.BaseURL, target) {
 			providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 			setGeminiAuthHeader(req, key.Value.GetValue())
 		}
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
-		total += latency
-		if bifrostErr != nil {
-			wait()
-			return nil, "", total, bifrostErr
+		redirected, location := false, ""
+		bifrostResp, bifrostErr := providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
+			Request:                  req,
+			VendorURL:                target,
+			BaseURL:                  provider.networkConfig.BaseURL,
+			Client:                   provider.client,
+			StreamingClient:          provider.streamingClient,
+			Stream:                   request.Stream,
+			VideoID:                  request.ID,
+			StreamIdleTimeoutSeconds: provider.networkConfig.StreamIdleTimeoutInSeconds,
+			ParseError: func(resp *fasthttp.Response) *schemas.BifrostError {
+				if fasthttp.StatusCodeIsRedirect(resp.StatusCode()) {
+					redirected, location = true, string(resp.Header.Peek("Location"))
+					return providerUtils.NewBifrostOperationError("failed to download video: the file download redirected", nil)
+				}
+				respBody := append([]byte(nil), resp.Body()...)
+				return providerUtils.EnrichError(ctx, parseGeminiError(resp), nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse, 0)
+			},
+			ContentType: func(upstream string) string {
+				if upstream == "" {
+					return contentType
+				}
+				return upstream
+			},
+		})
+		if bifrostErr == nil {
+			return bifrostResp, nil
 		}
-		if !fasthttp.StatusCodeIsRedirect(resp.StatusCode()) {
-			defer wait()
-			break
+		if !redirected {
+			return nil, bifrostErr
 		}
-		location := string(resp.Header.Peek("Location"))
-		wait()
 		next, err := resolveRedirect(target, location)
 		if err != nil || hop >= geminiFileMaxRedirects {
-			return nil, "", total, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
-				"failed to download video: the file download redirected too often or to an invalid location", err), total)
+			return nil, providerUtils.NewBifrostOperationError(
+				"failed to download video: the file download redirected too often or to an invalid location", err)
 		}
 		target = next
 	}
-
-	if resp.StatusCode() != fasthttp.StatusOK {
-		respBody := append([]byte(nil), resp.Body()...)
-		return nil, "", total, providerUtils.EnrichError(ctx, parseGeminiError(resp), nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse, total)
-	}
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, "", total, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
-	}
-	return append([]byte(nil), body...), string(resp.Header.ContentType()), total, nil
 }
 
 // sameOrigin reports whether target has the scheme and host of base.

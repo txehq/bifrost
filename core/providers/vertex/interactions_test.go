@@ -234,6 +234,17 @@ func TestVertexVideoRetrieve_TaskIDKindReachesItsOwnAPI(t *testing.T) {
 	if string(download.Content) != string(video) || download.ContentType != "video/mp4" {
 		t.Errorf("download %q %q", download.Content, download.ContentType)
 	}
+	// A request that asked for a stream gets the inline bytes as Body.
+	streamed, bifrostErr := provider.VideoDownload(vertexOmniContext(), key, &schemas.BifrostVideoDownloadRequest{Provider: schemas.Vertex, ID: omniID, Stream: true})
+	if bifrostErr != nil {
+		t.Fatalf("VideoDownload(stream): %s", bifrostErr.GetErrorString())
+	}
+	if streamed.Body == nil || streamed.Content != nil || streamed.ContentLength != int64(len(video)) {
+		t.Fatalf("streamed download %+v", streamed)
+	}
+	if got, _ := io.ReadAll(streamed.Body); string(got) != string(video) {
+		t.Errorf("streamed body %q", got)
+	}
 
 	veoID := providerUtils.AddVideoIDProviderSuffix("projects/proj/locations/us-central1/publishers/google/models/veo-3/operations/op-1", schemas.Vertex)
 	if _, bifrostErr := provider.VideoRetrieve(vertexOmniContext(), key, &schemas.BifrostVideoRetrieveRequest{Provider: schemas.Vertex, ID: veoID}); bifrostErr != nil {
@@ -242,6 +253,7 @@ func TestVertexVideoRetrieve_TaskIDKindReachesItsOwnAPI(t *testing.T) {
 
 	interaction := "GET aiplatform.eu.rep.googleapis.com/v1/projects/proj/locations/eu/interactions/" + vertexOmniInteractionID
 	want := []string{
+		interaction,
 		interaction,
 		interaction,
 		"POST us-central1-aiplatform.googleapis.com/v1/projects/proj/locations/us-central1/publishers/google/models/veo-3:fetchPredictOperation",
