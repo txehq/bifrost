@@ -878,7 +878,7 @@ Requests use **JSON body (`application/json`)**.
 | `video_uri` | string | ❌ | GCS video URI for video extension |
 | `output_storage_uri` | string | ❌ | Vertex only: the Cloud Storage location Veo writes the video to → `parameters.storageUri` |
 
-A field that cannot be sent as given returns `400` with `extra_fields.error_type` `caller_unsupported_parameter` and the field in `error.param`; nothing is dropped or replaced by a default. An explicit `aspect_ratio` or `resolution` wins over the one `size` names. On Vertex, `output_format`, `callback_url`, `client_reference_id` and `expires_after_seconds` are refused: Veo has no parameter for them.
+A field that cannot be sent as given returns `400` with `extra_fields.error_type` `caller_unsupported_parameter` and the field in `error.param`; nothing is dropped or replaced by a default. An explicit `aspect_ratio` wins over the one `size` names. A `resolution` of another tier than `size` is refused naming `size`. On Vertex, `output_format`, `callback_url`, `client_reference_id` and `expires_after_seconds` are refused: Veo has no parameter for them.
 
 **Extra Params** (any unrecognized JSON field is forwarded as `extra_params`)
 
