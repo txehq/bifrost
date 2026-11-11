@@ -11674,6 +11674,9 @@ func guardModel(provider schemas.ModelProvider) string {
 		return "hy-image-v3"
 	case schemas.Kling:
 		return "kling-3.0"
+	case schemas.DashScope:
+		// The Wan family is read from the model's name; a name of no known family is refused.
+		return "wan3.0-" + guardAllowedModel
 	}
 	return guardAllowedModel
 }

@@ -395,12 +395,13 @@ func isEmptyUnifiedValue(value any) bool {
 	return false
 }
 
-// wanLegacySize turns a unified size ("1280x720", or DashScope's own "1280*720") into
-// DashScope's form, and reports whether it is one of the documented sizes.
+// wanLegacySize turns a unified size ("1280x720") into DashScope's form ("1280*720"), and
+// reports whether it is one of the documented sizes. Only the unified spelling is taken:
+// accounting prices the size as the request wrote it and reads "WxH" alone, so "1280*720" or
+// "1280X720" would reach DashScope and be priced without its resolution band.
 func wanLegacySize(size string) (string, bool) {
-	normalized := strings.NewReplacer("x", "*", "X", "*", " ", "").Replace(size)
 	for _, known := range wanLegacySizes {
-		if normalized == known {
+		if size == strings.Replace(known, "*", "x", 1) {
 			return known, true
 		}
 	}

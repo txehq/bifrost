@@ -265,6 +265,8 @@ func TestDashScopeVideoCreateRefusesUndeliverableFields(t *testing.T) {
 		wantParam string
 	}{
 		{"wan2.6 size outside its tiers", "wan2.6-t2v", schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{Size: "1024x1024"}, schemas.ErrorTypeCallerUnsupportedParameter, "size"},
+		{"wan2.6 size in DashScope's own spelling", "wan2.6-t2v", schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{Size: "1280*720"}, schemas.ErrorTypeCallerUnsupportedParameter, "size"},
+		{"wan2.6 size with a capital X", "wan2.6-t2v", schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{Size: "1280X720"}, schemas.ErrorTypeCallerUnsupportedParameter, "size"},
 		{"wan2.6 size that is not a size", "wan2.6-t2v", schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{Size: "720p"}, schemas.ErrorTypeCallerUnsupportedParameter, "size"},
 		{"wan2.6 text-to-video resolution", "wan2.6-t2v", schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{Resolution: "720P"}, schemas.ErrorTypeCallerUnsupportedParameter, "resolution"},
 		{"wan2.6 image-to-video size", "wan2.6-i2v", schemas.VideoGenerationInput{Prompt: "p", InputReference: schemas.Ptr(frame)}, &schemas.VideoGenerationParameters{Size: "1280x720"}, schemas.ErrorTypeCallerUnsupportedParameter, "size"},
