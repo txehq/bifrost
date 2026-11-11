@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	ws "github.com/fasthttp/websocket"
 	"github.com/tidwall/gjson"
 
 	"github.com/bytedance/sonic"
@@ -4886,5 +4887,68 @@ func TestEveryFasthttpClientDialsThroughTheGuard(t *testing.T) {
 	}
 	if found < 30 {
 		t.Fatalf("found %d fasthttp clients; the scan no longer sees core's sources", found)
+	}
+}
+
+// TestConfigureWebSocketProxyGuardsAnUnproxiedDialer: with no proxy, the WebSocket library would
+// dial with its own net.Dialer; ConfigureWebSocketProxy gives it the guarded one, so an offline
+// run refuses a non-loopback upstream before connecting, naming it (TXE-7083).
+func TestConfigureWebSocketProxyGuardsAnUnproxiedDialer(t *testing.T) {
+	defer network.SetOfflineEgressGuard(true)()
+	for _, proxyConfig := range []*schemas.ProxyConfig{nil, {Type: schemas.NoProxy}} {
+		dialer, err := ConfigureWebSocketProxy(&ws.Dialer{HandshakeTimeout: 5 * time.Second}, proxyConfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, target := range []string{"ws://203.0.113.10/v1/responses", "wss://203.0.113.10/v1/responses"} {
+			_, _, err := dialer.Dial(target, nil)
+			if err == nil || !strings.Contains(err.Error(), network.OfflineEgressMarker) || !strings.Contains(err.Error(), "203.0.113.10") {
+				t.Errorf("proxy %v, %s: want the offline refusal, got %v", proxyConfig, target, err)
+			}
+		}
+	}
+}
+
+// TestEveryWebSocketDialerGoesThroughConfigureWebSocketProxy fails when core or the HTTP transport
+// builds a ws.Dialer in a function that does not pass it to ConfigureWebSocketProxy, where the
+// offline egress guard is applied (TXE-7083).
+func TestEveryWebSocketDialerGoesThroughConfigureWebSocketProxy(t *testing.T) {
+	literal := regexp.MustCompile(`ws\.Dialer\{`)
+	found := 0
+	for _, root := range []string{filepath.Join("..", ".."), filepath.Join("..", "..", "..", "transports")} {
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if d.Name() == "internal" && filepath.Clean(filepath.Dir(path)) == filepath.Clean(filepath.Join("..", "..")) {
+					return filepath.SkipDir // test-only harness packages (llmtests, mcptests)
+				}
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			source, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			text := string(source)
+			for _, loc := range literal.FindAllStringIndex(text, -1) {
+				found++
+				start := strings.LastIndex(text[:loc[0]], "\nfunc ")
+				end := strings.Index(text[loc[0]:], "\n}\n")
+				if start < 0 || end < 0 || !strings.Contains(text[start:loc[0]+end], "ConfigureWebSocketProxy(") {
+					t.Errorf("%s:%d: a ws.Dialer that never goes through ConfigureWebSocketProxy", path, strings.Count(text[:loc[0]], "\n")+1)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if found < 1 {
+		t.Fatalf("found no ws.Dialer; the scan no longer sees the sources")
 	}
 }

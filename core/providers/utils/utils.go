@@ -1024,6 +1024,12 @@ func ConfigureWebSocketProxy(dialer *ws.Dialer, proxyConfig *schemas.ProxyConfig
 		dialer.TLSClientConfig = tlsConfig
 	}
 	if proxy == nil {
+		// Without a proxy the library would dial with its own net.Dialer, which the offline
+		// egress guard never sees (TXE-7083). Give it the guarded dialer; for wss:// it still
+		// runs its own TLS over the connection.
+		if dialer.NetDial == nil && dialer.NetDialContext == nil && dialer.NetDialTLSContext == nil {
+			dialer.NetDialContext = network.GuardDialer(&net.Dialer{}).DialContext
+		}
 		return dialer, nil
 	}
 	// The websocket library's own proxy support knows http and socks5 but not https

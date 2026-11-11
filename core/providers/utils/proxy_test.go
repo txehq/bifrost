@@ -216,7 +216,7 @@ func TestConfigureWebSocketProxy_HTTPProxy_WithEmptyEnvValue_FailsFast(t *testin
 	}
 }
 
-func TestConfigureWebSocketProxy_HTTPProxy_WithUnsetLiteralURL_KeepsDefaultBehavior(t *testing.T) {
+func TestConfigureWebSocketProxy_HTTPProxy_WithUnsetLiteralURL_DialsDirectlyThroughTheGuard(t *testing.T) {
 	dialer := &ws.Dialer{}
 	cfg := &schemas.ProxyConfig{
 		Type: schemas.HTTPProxy,
@@ -227,8 +227,8 @@ func TestConfigureWebSocketProxy_HTTPProxy_WithUnsetLiteralURL_KeepsDefaultBehav
 	if err != nil {
 		t.Fatalf("expected no error when proxy URL is unset, got: %v", err)
 	}
-	if dialer.Proxy != nil || dialer.NetDialContext != nil || dialer.NetDialTLSContext != nil {
-		t.Fatal("expected the dialer to stay on its defaults when literal proxy URL is not provided")
+	if dialer.Proxy != nil || dialer.NetDialTLSContext != nil || dialer.NetDialContext == nil {
+		t.Fatal("expected no proxy and the guarded direct dial when literal proxy URL is not provided (TXE-7083)")
 	}
 }
 
@@ -246,7 +246,7 @@ func TestConfigureWebSocketProxy_Socks5Proxy_ConfiguresDialer(t *testing.T) {
 	assertWebSocketDialsProxy(t, dialer, "127.0.0.1:1")
 }
 
-func TestConfigureWebSocketProxy_NoProxy_LeavesDialerUnset(t *testing.T) {
+func TestConfigureWebSocketProxy_NoProxy_DialsDirectlyThroughTheGuard(t *testing.T) {
 	dialer := &ws.Dialer{}
 	cfg := &schemas.ProxyConfig{Type: schemas.NoProxy}
 
@@ -254,20 +254,20 @@ func TestConfigureWebSocketProxy_NoProxy_LeavesDialerUnset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error for NoProxy type, got: %v", err)
 	}
-	if dialer.Proxy != nil || dialer.NetDialContext != nil || dialer.NetDialTLSContext != nil {
-		t.Fatal("expected the dialer to stay on its defaults for NoProxy type")
+	if dialer.Proxy != nil || dialer.NetDialTLSContext != nil || dialer.NetDialContext == nil {
+		t.Fatal("expected no proxy and the guarded direct dial for NoProxy type (TXE-7083)")
 	}
 }
 
-func TestConfigureWebSocketProxy_NilConfig_LeavesDialerUnset(t *testing.T) {
+func TestConfigureWebSocketProxy_NilConfig_DialsDirectlyThroughTheGuard(t *testing.T) {
 	dialer := &ws.Dialer{}
 
 	_, err := ConfigureWebSocketProxy(dialer, nil)
 	if err != nil {
 		t.Fatalf("expected no error for nil proxy config, got: %v", err)
 	}
-	if dialer.Proxy != nil || dialer.NetDialContext != nil || dialer.NetDialTLSContext != nil {
-		t.Fatal("expected the dialer to stay on its defaults for nil proxy config")
+	if dialer.Proxy != nil || dialer.NetDialTLSContext != nil || dialer.NetDialContext == nil {
+		t.Fatal("expected no proxy and the guarded direct dial for nil proxy config (TXE-7083)")
 	}
 }
 
