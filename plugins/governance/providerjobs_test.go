@@ -838,12 +838,17 @@ func TestPostLLMHookHidesAnotherKeysVideoRetrievedByClientReference(t *testing.T
 	assert.Equal(t, schemas.ErrorTypePolicyAccessDenied, bifrostErr.ExtraFields.ErrorType)
 	assert.NotContains(t, bifrostErr.Error.Message, "vendor-other", "the refusal must not name the other key's task")
 
-	for name, vendorID := range map[string]string{"the key's own task": "vendor-own", "a task nobody recorded": "vendor-unknown"} {
-		result, bifrostErr = retrieve(presentCtx(mcpTestVKValue), byReference(), vendorID)
-		require.Nil(t, bifrostErr, name)
-		require.NotNil(t, result, name)
-		assert.Equal(t, vendorID+":openai", result.VideoGenerationResponse.ID, name)
-	}
+	result, bifrostErr = retrieve(presentCtx(mcpTestVKValue), byReference(), "vendor-own")
+	require.Nil(t, bifrostErr, "the key's own task")
+	require.NotNil(t, result)
+	assert.Equal(t, "vendor-own:openai", result.VideoGenerationResponse.ID)
+
+	// A task with no owner on record is not found for a virtual key, as on a retrieve by its
+	// task id (TXE-7119).
+	result, bifrostErr = retrieve(presentCtx(mcpTestVKValue), byReference(), "vendor-unknown")
+	require.NotNil(t, bifrostErr, "a task nobody recorded must not be returned")
+	assert.Nil(t, result)
+	assert.Equal(t, 404, *bifrostErr.StatusCode)
 
 	result, bifrostErr = retrieve(emptyCtx(), byReference(), "vendor-other")
 	require.Nil(t, bifrostErr, "a request that presented no key is unrestricted")
