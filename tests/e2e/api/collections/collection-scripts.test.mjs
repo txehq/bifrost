@@ -1397,5 +1397,86 @@ test("the harness declares the fixture variables' defaults once, and the check s
   assert.deepStrictEqual(where, ["(collection) [test]", "folder [test]", "folder / url [request url]", "folder / url object [request url]", "folder / body [request body]", "folder / header [request header]"]);
 });
 
+// A row that runs only on the provider error fixture (its prerequest script, or a folder's above it,
+// skips it unless providerErrorFixture is '1') is served by the gateway on
+// provider_config/provider-error-fixture.config.json. So the provider and model it names must be ones
+// that config can serve: the provider is configured, and one of its keys lists the model, an alias for
+// it, or "*". A row that names anything else answers 400 no_key_supports_model on the only gateway it
+// ever runs on. Folder 430's control row named a real OpenAI model, was not fixture-only, and so had
+// never passed offline (TXE-7137).
+//
+// A row tagged [EXPECT-4xx] or [EXPECT-5xx] is not checked: a refusal the gateway answers before it
+// chooses a key names whatever model the rule under test needs.
+const FIXTURE_ONLY = /providerErrorFixture['"]\)\s*!==\s*['"]1['"]/;
+const fixtureConfig = JSON.parse(readFileSync(join(here, "../provider_config/provider-error-fixture.config.json"), "utf8"));
+
+function fixtureCannotServe(config, provider, model) {
+  const entry = (config.providers || {})[provider];
+  if (!entry) return `the fixture config has no provider "${provider}"`;
+  for (const key of entry.keys || []) {
+    const models = key.models || [];
+    if (models.includes("*") || models.includes(model) || (key.aliases && key.aliases[model])) return "";
+  }
+  return `no key of "${provider}" in the fixture config lists the model "${model}"`;
+}
+
+function unservedFixtureRows(coll, config) {
+  const found = [];
+  const gates = (events) => (events || []).some((e) => e.listen === "prerequest" && FIXTURE_ONLY.test((e.script?.exec || []).join("\n")));
+  (function walk(items, trail, gated) {
+    for (const item of items || []) {
+      const fixtureOnly = gated || gates(item.event);
+      if (item.item) { walk(item.item, [...trail, item.name], fixtureOnly); continue; }
+      if (!fixtureOnly || /\[EXPECT-[45]\d\d\]/.test(item.name)) continue;
+      const raw = item.request?.body?.raw;
+      const named = typeof raw === "string" && /"model"\s*:\s*"([^"/{]+)\/([^"]+)"/.exec(raw);
+      if (!named) continue;
+      const why = fixtureCannotServe(config, named[1], named[2]);
+      if (why) found.push(`${[...trail, item.name].join(" / ").slice(0, 160)}: ${why}`);
+    }
+  })(coll.item, [], gates(coll.event));
+  return found;
+}
+
+test("provider-harness: a fixture-only row names a provider and model the fixture config serves", () => {
+  let checked = 0;
+  (function count(items) {
+    for (const item of items || []) {
+      if (item.item) count(item.item);
+      else if (FIXTURE_ONLY.test(JSON.stringify(item.event || []))) checked++;
+    }
+  })(providerHarness.item);
+  assert.ok(checked >= 400, `found ${checked} fixture-only rows, want the whole set (400 or more): the gate's wording changed and the check no longer sees it`);
+  assert.deepStrictEqual(unservedFixtureRows(providerHarness, fixtureConfig), [],
+    "name a model the fixture config's key lists (or add it there), or tag a gateway-answered refusal [EXPECT-<code>]");
+});
+
+test("the fixture-only check sees a row gated by itself or by its folder, and leaves live rows and tagged refusals alone", () => {
+  const config = { providers: {
+    openai: { keys: [{ models: ["pp-embedding"], aliases: { "pp-alias": { model_id: "pp-embedding" } } }] },
+    cp_any: { keys: [{ models: ["*"] }] },
+  } };
+  const gate = [{ listen: "prerequest", script: { exec: ["if (pm.variables.get('providerErrorFixture') !== '1') {", "  pm.execution.skipRequest();", "}"] } }];
+  const row = (name, model, event) => ({ name, event, request: { body: { mode: "raw", raw: `{\n  "model": "${model}",\n  "input": "ok"\n}` } } });
+  const planted = { item: [
+    { name: "folder", item: [
+      row("served", "openai/pp-embedding", gate),
+      row("served by an alias", "openai/pp-alias", gate),
+      row("served by a wildcard key", "cp_any/anything", gate),
+      row("unserved model", "openai/text-embedding-3-small", gate),
+      row("unconfigured provider", "mistral/mistral-embed", gate),
+      row("[EXPECT-400] a refusal before a key is chosen", "openai/text-embedding-3-small", gate),
+      row("a live row is not the fixture's to serve", "openai/text-embedding-3-small", []),
+      row("a model with no provider prefix is not checked", "pp-embedding", gate),
+    ] },
+    { name: "gated folder", event: gate, item: [row("unserved under a gated folder", "openai/gpt-image-1", [])] },
+  ] };
+  assert.deepStrictEqual(unservedFixtureRows(planted, config), [
+    'folder / unserved model: no key of "openai" in the fixture config lists the model "text-embedding-3-small"',
+    'folder / unconfigured provider: the fixture config has no provider "mistral"',
+    'gated folder / unserved under a gated folder: no key of "openai" in the fixture config lists the model "gpt-image-1"',
+  ]);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
