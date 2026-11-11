@@ -119,14 +119,14 @@ func (provider *HuggingFaceProvider) buildModelHubURL(request *schemas.BifrostLi
 		}
 	}
 
-	return fmt.Sprintf("%s/api/models?%s", provider.hubBase(), values.Encode())
+	return provider.hubBase() + "/api/models?" + values.Encode()
 }
 
 func (provider *HuggingFaceProvider) buildModelInferenceProviderURL(modelName string) string {
 	values := url.Values{}
 	values.Set("expand[]", "pipeline_tag")
 	values.Set("expand[]", "inferenceProviderMapping")
-	return fmt.Sprintf("%s/api/models/%s?%s", provider.hubBase(), modelName, values.Encode())
+	return provider.hubBase() + "/api/models/" + modelName + "?" + values.Encode()
 }
 
 // hubBase is the base URL of the model hub API for this provider: the one the constructor

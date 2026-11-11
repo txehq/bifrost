@@ -3,9 +3,11 @@ package huggingface
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -51,6 +53,37 @@ func TestModelHubFollowsTheConfiguredBaseURL(t *testing.T) {
 	require.Nil(t, bifrostErr)
 	assert.Equal(t, "fal-ai/org-model", modelID)
 	assert.Equal(t, []string{"/pp/huggingface/api/models/org/model"}, paths, "the lookup must go to the configured base URL")
+}
+
+// BenchmarkModelHubURL is the cost of building the two hub URLs (TXE-7117): the model lookup
+// before an uncached inference request and the model list. "constant" is the expression the
+// builder used before, with the hub host as a constant; "provider" is the builder now, which
+// reads the host the constructor chose.
+func BenchmarkModelHubURL(b *testing.B) {
+	provider := NewHuggingFaceProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 5}}, nil)
+	request := &schemas.BifrostListModelsRequest{}
+	modelName := strings.Repeat("org/model", 1) // a variable, as a request's model name is
+	b.Run("lookup/constant", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			values := url.Values{}
+			values.Set("expand[]", "pipeline_tag")
+			values.Set("expand[]", "inferenceProviderMapping")
+			_ = fmt.Sprintf("%s/api/models/%s?%s", modelHubBaseURL, modelName, values.Encode())
+		}
+	})
+	b.Run("lookup/provider", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = provider.buildModelInferenceProviderURL(modelName)
+		}
+	})
+	b.Run("list/provider", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = provider.buildModelHubURL(request, falAI)
+		}
+	})
 }
 
 // TestNoHuggingFaceRequestGoesToAFixedHost keeps TXE-7117 true of the whole package: the
