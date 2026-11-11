@@ -24,6 +24,11 @@ set -euo pipefail
 #   check-pipefail-grep-quiet.py              no tracked shell script that sets pipefail pipes
 #       into grep -q (TXE-7109): the writer dies of SIGPIPE when grep exits at its first match,
 #       so a line grep found reads as missing, at random. The check above failed that way.
+#   check-check-scripts-are-run.py            every check or test script in this directory is
+#       run by a workflow, an action, the Makefile or a script they run (TXE-7111): a check
+#       nothing runs rots unseen, as validate-go-config-fields.sh did.
+#   test-migration-fixtures.py                 the v2.0.0 migration seed SQL; needs no service.
+#       It ran in no job until the check above found it.
 #   every other tests/e2e/api/**/*.test.mjs     found, not listed (TXE-7067): the runners/lib
 #       script tests and any test added later. A test under tests/e2e/api runs here by
 #       existing; none was run by any job before, so a renamed harness row the smoke manifest
@@ -60,6 +65,15 @@ echo ""
 echo "🧪 check-pipefail-grep-quiet.py (no pipe into grep -q under pipefail, TXE-7109)"
 python3 "$SCRIPT_DIR/check-pipefail-grep-quiet.py" --self-test
 python3 "$SCRIPT_DIR/check-pipefail-grep-quiet.py"
+
+echo ""
+echo "🧪 check-check-scripts-are-run.py (every check script is run by something, TXE-7111)"
+python3 "$SCRIPT_DIR/check-check-scripts-are-run.py" --self-test
+python3 "$SCRIPT_DIR/check-check-scripts-are-run.py"
+
+echo ""
+echo "🧪 test-migration-fixtures.py (migration seed SQL; ran in no job before TXE-7111)"
+python3 "$SCRIPT_DIR/test-migration-fixtures.py"
 
 # Every other *.test.mjs under tests/e2e/api, found rather than listed, one at a time (some
 # start a loopback server on a fixed port). Each runs with plain node, which also runs a
