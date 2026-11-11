@@ -531,6 +531,7 @@ Rows 403.10 and 403.11 are the async route: 403.10 submits a url-only job to
 `GET /v1/async/audio/transcriptions/{job_id}` three seconds later and expects the job completed, with the
 transcript, the duration usage and exactly one call in `/__wire`. Run them together and in order, as the
 folder does.
+
 ## Gemini embedding batches on the fixture
 
 Folder 406 (TXE-6637) runs its rows 406.5 to 406.8 on the same fixture and the same isolated gateway as folder
@@ -538,7 +539,7 @@ Folder 406 (TXE-6637) runs its rows 406.5 to 406.8 on the same fixture and the s
 when `providerErrorFixture=1`. Start the fixture and the isolated gateway as in the section above, then:
 
 ```bash
-newman run tests/e2e/api/collections/provider-harness.json \
+newman run tmp/provider-harness.json \
   --folder "406. Gemini embedding batches run through asyncBatchEmbedContent (gemini embedding-batch)" \
   --env-var baseUrl=http://127.0.0.1:8790 \
   --env-var providerErrorFixture=1 \
