@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -67,9 +70,10 @@ func batchRequest(requestType schemas.RequestType, batchID string) *schemas.Bifr
 	return req
 }
 
-// A batch addressed by id is reachable through the virtual key that created it. A row naming another
-// key is refused as not found; a row naming no key, no row at all, and a request that presented no
-// key are all unrestricted, as they were.
+// A batch addressed by id is reachable through the virtual key that created it, and through no
+// other. A row naming another key is refused as not found, and so is a batch with no owner on
+// record, whether its row names no key or it has no row at all (TXE-7119): a task fails closed.
+// A request that presented no key is unrestricted.
 func TestPreLLMHookBindsBatchesToTheCreatingVirtualKey(t *testing.T) {
 	plugin, store := newProviderJobTestPlugin(t)
 	own := "vk-mcp-stamp"
@@ -91,13 +95,17 @@ func TestPreLLMHookBindsBatchesToTheCreatingVirtualKey(t *testing.T) {
 			assert.Equal(t, 404, *shortCircuit.Error.StatusCode, "refused as not found, not as forbidden")
 			assert.Contains(t, shortCircuit.Error.Error.Message, "batch-other")
 
-			_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), batchRequest(requestType, "batch-unowned"))
-			require.NoError(t, err)
-			assert.Nil(t, shortCircuit, "a row with no recorded key binds to nobody")
+			for id, why := range map[string]string{"batch-unowned": "a row with no recorded key is nobody's, so not this key's", "batch-unknown": "a batch with no row is not found for a virtual key"} {
+				_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), batchRequest(requestType, id))
+				require.NoError(t, err)
+				require.NotNil(t, shortCircuit, why)
+				assert.Equal(t, 404, *shortCircuit.Error.StatusCode, why)
+				assert.Contains(t, shortCircuit.Error.Error.Message, id)
 
-			_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), batchRequest(requestType, "batch-unknown"))
-			require.NoError(t, err)
-			assert.Nil(t, shortCircuit, "a batch with no row cannot be bound and stays reachable")
+				_, shortCircuit, err = plugin.PreLLMHook(emptyCtx(), batchRequest(requestType, id))
+				require.NoError(t, err)
+				assert.Nil(t, shortCircuit, "a request that presented no key reaches an unrecorded batch")
+			}
 
 			_, shortCircuit, err = plugin.PreLLMHook(emptyCtx(), batchRequest(requestType, "batch-other"))
 			require.NoError(t, err)
@@ -142,7 +150,7 @@ func TestPostLLMHookFiltersBatchListToTheVirtualKey(t *testing.T) {
 	require.Nil(t, shortCircuit)
 	result, _, err := plugin.PostLLMHook(ctx, newList(), nil)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"batch-own", "batch-unowned", "batch-unknown"}, ids(result.BatchListResponse))
+	assert.Equal(t, []string{"batch-own"}, ids(result.BatchListResponse), "another key's batch and the batches with no owner on record are left out")
 	assert.True(t, result.BatchListResponse.HasMore, "pagination is the provider's and is left alone")
 	assert.Equal(t, "batch-unknown", *result.BatchListResponse.LastID)
 
@@ -197,9 +205,8 @@ func TestPostLLMHookFailsBatchListWhenOwnershipLookupFails(t *testing.T) {
 
 // Without a config store no batch owner is recorded anywhere, so ownership cannot be verified.
 // A virtual-key batch request that would need that check is refused up front, before the provider
-// is called; a request that presented no key stays unrestricted, as everywhere else. A list
-// addresses no batch and is narrowed only to what is recorded, so with nothing recorded it goes
-// through as it always did.
+// is called; a request that presented no key stays unrestricted, as everywhere else. A list of
+// batches is refused too: a batch is shown only when it is recorded for the key, and nothing is.
 func TestPreLLMHookRefusesVirtualKeyBatchRequestsWithoutConfigStore(t *testing.T) {
 	plugin := newAccessTestPlugin(t, buildVKForMCPStamping(nil), nil)
 	plugin.configStore = nil
@@ -207,7 +214,11 @@ func TestPreLLMHookRefusesVirtualKeyBatchRequestsWithoutConfigStore(t *testing.T
 	list := &schemas.BifrostRequest{RequestType: schemas.BatchListRequest, BatchListRequest: &schemas.BifrostBatchListRequest{Provider: schemas.OpenAI}}
 	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), list)
 	require.NoError(t, err)
-	assert.Nil(t, shortCircuit, "a batch list has nothing to check against and goes through")
+	require.NotNil(t, shortCircuit, "a batch list cannot be narrowed to the key's batches without a config store")
+	assert.Equal(t, 403, *shortCircuit.Error.StatusCode)
+	_, shortCircuit, err = plugin.PreLLMHook(emptyCtx(), list)
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "a request that presented no key lists batches as before")
 
 	requests := map[string]*schemas.BifrostRequest{
 		"retrieve": batchRequest(schemas.BatchRetrieveRequest, "batch-any"),
@@ -326,8 +337,9 @@ func providerObjectKindFor(requestType schemas.RequestType) string {
 }
 
 // Every provider object addressed by id is reachable through the virtual key that created it. A
-// row naming another key is refused as not found; no row, and a request that presented no key,
-// stay unrestricted. Container files are bound through their container.
+// row naming another key is refused as not found. An object with no row stays reachable, except
+// a task (a video here), which is not found for a virtual key (TXE-7119). A request that
+// presented no key is unrestricted. Container files are bound through their container.
 func TestPreLLMHookBindsProviderObjectsToTheCreatingVirtualKey(t *testing.T) {
 	plugin, store := newProviderJobTestPlugin(t)
 	own := "vk-mcp-stamp"
@@ -354,7 +366,16 @@ func TestPreLLMHookBindsProviderObjectsToTheCreatingVirtualKey(t *testing.T) {
 
 			_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), providerObjectRequests(kind + "-unknown")[requestType])
 			require.NoError(t, err)
-			assert.Nil(t, shortCircuit, "an object with no row cannot be bound and stays reachable")
+			if ownedOnlyByRecord(kind) {
+				require.NotNil(t, shortCircuit, "a task with no row is not found for a virtual key")
+				assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+				assert.Contains(t, shortCircuit.Error.Error.Message, kind+"-unknown")
+				_, shortCircuit, err = plugin.PreLLMHook(emptyCtx(), providerObjectRequests(kind + "-unknown")[requestType])
+				require.NoError(t, err)
+				assert.Nil(t, shortCircuit, "a request that presented no key reaches an unrecorded task")
+			} else {
+				assert.Nil(t, shortCircuit, "an object with no row cannot be bound and stays reachable")
+			}
 
 			_, shortCircuit, err = plugin.PreLLMHook(emptyCtx(), providerObjectRequests(kind + "-other")[requestType])
 			require.NoError(t, err)
@@ -749,7 +770,7 @@ func TestPostLLMHookFiltersProviderObjectListsToTheVirtualKey(t *testing.T) {
 	}
 	expected := map[string][]string{
 		"files":           {"file-own", "file-unknown"},
-		"videos":          {"video-own:openai", "video-unknown:openai"},
+		"videos":          {"video-own:openai"}, // a video with no owner on record is left out: a task fails closed
 		"containers":      {"container-own", "container-unknown"},
 		"cached contents": {"cached_content-own", "cached_content-unknown"},
 	}
@@ -794,7 +815,6 @@ func TestPreLLMHookRefusesVirtualKeyProviderObjectRequestsWithoutConfigStore(t *
 	delete(requests, schemas.BatchCreateRequest)
 	for requestType, list := range map[schemas.RequestType]*schemas.BifrostRequest{
 		schemas.FileListRequest:          {RequestType: schemas.FileListRequest, FileListRequest: &schemas.BifrostFileListRequest{Provider: schemas.OpenAI}},
-		schemas.VideoListRequest:         {RequestType: schemas.VideoListRequest, VideoListRequest: &schemas.BifrostVideoListRequest{Provider: schemas.OpenAI}},
 		schemas.ContainerListRequest:     {RequestType: schemas.ContainerListRequest, ContainerListRequest: &schemas.BifrostContainerListRequest{Provider: schemas.OpenAI}},
 		schemas.CachedContentListRequest: {RequestType: schemas.CachedContentListRequest, CachedContentListRequest: &schemas.BifrostCachedContentListRequest{Provider: schemas.OpenAI}},
 	} {
@@ -802,6 +822,15 @@ func TestPreLLMHookRefusesVirtualKeyProviderObjectRequestsWithoutConfigStore(t *
 		require.NoError(t, err)
 		assert.Nil(t, shortCircuit, "a %s has nothing to check against and goes through", requestType)
 	}
+	// A list of tasks is shown only as far as it is recorded for the key, and nothing is.
+	videoList := &schemas.BifrostRequest{RequestType: schemas.VideoListRequest, VideoListRequest: &schemas.BifrostVideoListRequest{Provider: schemas.OpenAI}}
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), videoList)
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "a video list cannot be narrowed to the key's videos without a config store")
+	assert.Equal(t, 403, *shortCircuit.Error.StatusCode)
+	_, shortCircuit, err = plugin.PreLLMHook(emptyCtx(), videoList)
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "a request that presented no key lists videos as before")
 	for requestType, req := range requests {
 		t.Run(string(requestType), func(t *testing.T) {
 			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), req)
@@ -846,7 +875,7 @@ func (s *recordingObjectStore) UpsertProviderObject(ctx context.Context, object 
 func TestPreLLMHookBindsObjectsReferencedInsideRequests(t *testing.T) {
 	store := newProviderObjectConfigStore(t)
 	vk := buildVKForMCPStamping(nil)
-	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("gemini", []string{"*"}), buildProviderConfig("vertex", []string{"*"}), buildProviderConfig("bedrock", []string{"*"}))
+	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("gemini", []string{"*"}), buildProviderConfig("vertex", []string{"*"}), buildProviderConfig("bedrock", []string{"*"}), buildProviderConfig("runware", []string{"*"}))
 	plugin := newAccessTestPlugin(t, vk, nil)
 	plugin.configStore = store
 	own := "vk-mcp-stamp"
@@ -932,6 +961,7 @@ func TestPreLLMHookBindsObjectsReferencedInsideRequests(t *testing.T) {
 
 	str := func(v string) *string { return &v }
 	seedProviderObject(t, store, configstoreTables.ProviderObjectKindVideo, "openai", "video_other", other)
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindVideo, "openai", "video_own", own)
 	seedProviderObject(t, store, configstoreTables.ProviderObjectKindContainerFile, "openai", "cfile-other", other)
 	t.Run("container file create file_id", func(t *testing.T) {
 		copyInto := func(fileID string) *schemas.BifrostRequest {
@@ -946,7 +976,9 @@ func TestPreLLMHookBindsObjectsReferencedInsideRequests(t *testing.T) {
 			return &schemas.BifrostRequest{RequestType: schemas.VideoEditRequest, VideoEditRequest: &schemas.BifrostVideoEditRequest{Provider: schemas.OpenAI, Model: "sora-2", Input: &schemas.VideoEditInput{Video: schemas.VideoInput{ID: id}, Prompt: "p"}}}
 		}
 		refused(t, edit("video_other"), "video_other")
-		allowed(t, presentCtx(mcpTestVKValue), edit("video_unknown"), "an unrecorded video may be edited")
+		refused(t, edit("video_unknown"), "video_unknown")
+		allowed(t, presentCtx(mcpTestVKValue), edit("video_own"), "the creating key edits its own video")
+		allowed(t, emptyCtx(), edit("video_unknown"), "a request that presented no key edits an unrecorded video")
 		allowed(t, emptyCtx(), edit("video_other"), "a request that presented no key is unrestricted")
 	})
 	// A video can be generated from a draft task named in the request's extra params (BytePlus
@@ -958,7 +990,9 @@ func TestPreLLMHookBindsObjectsReferencedInsideRequests(t *testing.T) {
 		draft := func(id string) map[string]interface{} { return map[string]interface{}{"draft_task_id": id} }
 		refused(t, fromDraft(draft("video_other")), "video_other")
 		refused(t, fromDraft(draft("video_other:openai")), "video_other")
-		allowed(t, presentCtx(mcpTestVKValue), fromDraft(draft("video_unknown")), "an unrecorded draft may be used")
+		refused(t, fromDraft(draft("video_unknown")), "video_unknown")
+		allowed(t, presentCtx(mcpTestVKValue), fromDraft(draft("video_own")), "the creating key uses its own draft")
+		allowed(t, presentCtx(mcpTestVKValue), fromDraft(draft("video_own:openai")), "the creating key uses its own draft, suffixed")
 		allowed(t, presentCtx(mcpTestVKValue), fromDraft(map[string]interface{}{"draft": true}), "a create with no draft task names nothing")
 		allowed(t, presentCtx(mcpTestVKValue), fromDraft(nil), "a create with no extra params names nothing")
 		allowed(t, emptyCtx(), fromDraft(draft("video_other")), "a request that presented no key is unrestricted")
@@ -1251,11 +1285,55 @@ func TestPreLLMHookBindsObjectsReferencedInsideRequests(t *testing.T) {
 		refused(t, pass(schemas.OpenAI, "GET", "/v1/containers/container-other/files", ""), "container-other")
 		refused(t, pass(schemas.Gemini, "POST", "/v1beta/models/gemini-2.5-flash:generateContent", geminiBody(geminiFiles+"g-other")), "files/g-other")
 		refused(t, pass(schemas.Gemini, "GET", "/v1beta/files/g-other", ""), "files/g-other")
-		// A batch created through passthrough runs on the input file its body names, as the native
-		// batch create runs on InputFileID. (Fine-tuning is refused outright for virtual keys below.)
-		refused(t, pass(schemas.OpenAI, "POST", "/v1/batches", `{"input_file_id":"file-other","endpoint":"/v1/chat/completions","completion_window":"24h"}`), "file-other")
-		refused(t, pass(schemas.Gemini, "POST", "/v1beta/models/gemini-2.5-flash:batchGenerateContent", `{"batch":{"displayName":"b","inputConfig":{"fileName":"files/g-other"}}}`), "files/g-other")
-		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.OpenAI, "POST", "/v1/batches", `{"input_file_id":"file-own","endpoint":"/v1/chat/completions","completion_window":"24h"}`), "the creating key batches its own file")
+		// A task created through passthrough would have no creator on record, and a task with
+		// none is not found for a virtual key (TXE-7119), so its own creator could not reach it.
+		// The create is refused and the key is sent to the gateway's own route. (Fine-tuning is
+		// refused outright for virtual keys below, for the same reason.)
+		for name, create := range map[string]*schemas.BifrostRequest{
+			"openai batch":           pass(schemas.OpenAI, "POST", "/v1/batches", `{"input_file_id":"file-own","endpoint":"/v1/chat/completions","completion_window":"24h"}`),
+			"openai batch, dotted":   pass(schemas.OpenAI, "POST", "/v1/x/../batches/", `{"input_file_id":"file-own","endpoint":"/v1/chat/completions","completion_window":"24h"}`),
+			"anthropic-shaped batch": pass(schemas.OpenAI, "POST", "/v1/messages/batches", `{"requests":[]}`),
+			"gemini batch":           pass(schemas.Gemini, "POST", "/v1beta/models/gemini-2.5-flash:batchGenerateContent", `{"batch":{"displayName":"b","inputConfig":{"fileName":"files/g-own"}}}`),
+			"openai video":           pass(schemas.OpenAI, "POST", "/v1/videos", `{"model":"sora-2","prompt":"p"}`),
+			// A remix, an edit and an extension each create a new video from an existing one.
+			"openai video remix":     pass(schemas.OpenAI, "POST", "/v1/videos/video_own/remix", `{"prompt":"p"}`),
+			"openai video edit":      pass(schemas.OpenAI, "POST", "/v1/videos/edits", `{"prompt":"p","video":{"id":"video_own"}}`),
+			"openai video extension": pass(schemas.OpenAI, "POST", "/v1/videos/extensions", `{"prompt":"p","video":{"id":"video_own"}}`),
+			// Google's task creates: a Veo video is a model operation, a Vertex batch a collection.
+			"gemini video": pass(schemas.Gemini, "POST", "/v1beta/models/veo-3.1-generate-preview:predictLongRunning", `{"instances":[{"prompt":"p"}]}`),
+			"vertex batch": pass(schemas.Vertex, "POST", "/v1/projects/p/locations/us-central1/batchPredictionJobs", `{"displayName":"b"}`),
+			// Runware names the operation in the body, not the path.
+			"runware video":            pass(schemas.Runware, "POST", "/v1", `[{"taskType":"videoInference","taskUUID":"u","positivePrompt":"p"}]`),
+			"runware video, escaped":   pass(schemas.Runware, "POST", "/v1", `[{"taskType":"video\u0049nference","taskUUID":"u"}]`),
+			"runware video, nested":    pass(schemas.Runware, "POST", "/v1", `{"tasks":[{"taskType":"imageInference"},{"taskType":"videoInference"}]}`),
+			"runware 3d":               pass(schemas.Runware, "POST", "/v1", `[{"taskType":"3dInference","taskUUID":"u"}]`),
+			"runware async upscale":    pass(schemas.Runware, "POST", "/v1", `[{"taskType":"upscale","taskUUID":"u","deliveryMethod":"async"}]`),
+			"runware async background": pass(schemas.Runware, "POST", "/v1", `[{"taskType":"removeBackground","taskUUID":"u","deliveryMethod":"async"}]`),
+			"runware unreadable body":  pass(schemas.Runware, "POST", "/v1", `[{"taskType":"videoInference",}]`),
+		} {
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), create)
+			require.NoError(t, err)
+			require.NotNil(t, shortCircuit, "%s: a task created through passthrough would be out of its creator's reach", name)
+			assert.Equal(t, 403, *shortCircuit.Error.StatusCode, name)
+			assert.Contains(t, shortCircuit.Error.Error.Message, "gateway's own batch or video route", name)
+			allowed(t, emptyCtx(), create, name+": a request that presented no key is unrestricted")
+		}
+		// A task addressed through passthrough fails closed like the native routes: the key's own
+		// is reached, one with no owner on record is not found, by GET, by cancel and by delete.
+		refused(t, pass(schemas.OpenAI, "GET", "/v1/batches/batch-unknown", ""), "batch-unknown")
+		refused(t, pass(schemas.OpenAI, "POST", "/v1/batches/batch-unknown/cancel", ""), "batch-unknown")
+		refused(t, pass(schemas.OpenAI, "GET", "/v1/videos/video_unknown/content", ""), "video_unknown")
+		refused(t, pass(schemas.OpenAI, "DELETE", "/v1/videos/video_unknown", ""), "video_unknown")
+		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.OpenAI, "GET", "/v1/videos/video_own/content", ""), "the creating key downloads its own video through passthrough")
+		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.OpenAI, "POST", "/v1/chat/completions", `{"model":"m","messages":[]}`), "an inference request through passthrough creates no task")
+		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.OpenAI, "POST", "/v1/images/edits", `{"model":"m","prompt":"p"}`), "an image edit is no video derivation")
+		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.Gemini, "POST", "/v1beta/models/gemini-2.5-flash:generateContent", `{"contents":[]}`), "a Gemini generateContent creates no task")
+		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.Vertex, "POST", "/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-flash:predict", `{"instances":[]}`), "a Vertex predict creates no task")
+		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.Runware, "POST", "/v1", `[{"taskType":"imageInference","taskUUID":"u","positivePrompt":"a videoInference poster, async"}]`), "a Runware image task that only mentions the words creates no polled task")
+		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.Runware, "POST", "/v1", `[{"taskType":"upscale","taskUUID":"u","deliveryMethod":"sync"}]`), "a synchronous Runware upscale creates no polled task")
+		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.Runware, "POST", "/v1", `[{"taskType":"getResponse","taskUUID":"u"}]`), "a Runware poll creates no task")
+		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.OpenAI, "POST", "/v1/chat/completions", `{"model":"m","messages":[{"role":"user","content":"videoInference, deliveryMethod async"}],"taskType":"videoInference"}`), "another provider's body is not read for Runware task types")
+		allowed(t, emptyCtx(), pass(schemas.OpenAI, "GET", "/v1/batches/batch-unknown", ""), "a request that presented no key is unrestricted")
 		// The Go SDK hands a path over as written, and the HTTP client resolves dot segments and
 		// repeated slashes before sending, so the path is checked as it will be sent.
 		refused(t, pass(schemas.OpenAI, "GET", "/v1/files/x/../file-other/content", ""), "file-other")
@@ -1581,7 +1659,16 @@ func TestPostLLMHookRecordsBatchFilesFromRetrieve(t *testing.T) {
 	require.NotNil(t, shortCircuit, "another key cannot download the batch output")
 	assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
 
-	retrieve(t, "batch-unbound", "file-unbound-output", "")
+	// A batch nobody recorded is not found for a virtual key, so its retrieve never reaches the
+	// provider. Should its answer arrive all the same, its files are claimed for nobody.
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.BatchRetrieveRequest, BatchRetrieveRequest: &schemas.BifrostBatchRetrieveRequest{Provider: schemas.OpenAI, BatchID: "batch-unbound"}})
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "a batch nobody recorded is not found for a virtual key")
+	assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+	unboundOutput := "file-unbound-output"
+	_, _, err = plugin.PostLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostResponse{BatchRetrieveResponse: &schemas.BifrostBatchRetrieveResponse{ID: "batch-unbound", Status: schemas.BatchStatusCompleted, OutputFileID: &unboundOutput,
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.BatchRetrieveRequest, Provider: schemas.OpenAI}}}, nil)
+	require.NoError(t, err)
 	assert.Empty(t, owner(t, "file-unbound-output"), "a batch nobody recorded does not hand its files to whoever retrieved it")
 }
 
@@ -1674,7 +1761,9 @@ func BenchmarkPreLLMHookProviderObjectChecks(b *testing.B) {
 		b.Fatal(err)
 	}
 	defer store.Close(context.Background())
-	plugin := newAccessTestPlugin(b, buildVKForMCPStamping(nil), nil)
+	benchKey := buildVKForMCPStamping(nil)
+	benchKey.ProviderConfigs = append(benchKey.ProviderConfigs, buildProviderConfig("runware", []string{"*"}))
+	plugin := newAccessTestPlugin(b, benchKey, nil)
 	plugin.configStore = store
 	enforced := false
 	plugin.objectOwnershipEnforcedFn = func() bool { return enforced }
@@ -1690,6 +1779,16 @@ func BenchmarkPreLLMHookProviderObjectChecks(b *testing.B) {
 		"passthrough_no_references": func() *schemas.BifrostRequest {
 			return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.OpenAI, Model: "gpt-4o", Method: "POST", Path: "/v1/chat/completions",
 				Body: []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`)}}
+		},
+		// A POST through passthrough goes through the task-create predicate: a path check for every
+		// provider, and a parse of the body for a provider built on Runware.
+		"passthrough_chat_escaped_body": func() *schemas.BifrostRequest {
+			return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.OpenAI, Method: "POST", Path: "/v1/chat/completions",
+				Body: []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"caf\u00e9, na\u00efve, \u65e5\u672c\u8a9e"}]}`)}}
+		},
+		"passthrough_runware_image": func() *schemas.BifrostRequest {
+			return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.Runware, Method: "POST", Path: "/v1",
+				Body: []byte(`[{"taskType":"imageInference","taskUUID":"u","positivePrompt":"a caf\u00e9 at dusk","model":"runware:101@1","width":1024,"height":1024}]`)}}
 		},
 		"passthrough_models_get": func() *schemas.BifrostRequest {
 			return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.OpenAI, Method: "GET", Path: "/v1/models/gpt-4o-mini"}}
@@ -1713,7 +1812,7 @@ func BenchmarkPreLLMHookProviderObjectChecks(b *testing.B) {
 	}
 	// "on" is the default and runs every check; "off" is client.enforce_vk_object_ownership: false.
 	for _, mode := range []string{"off", "on"} {
-		for _, name := range []string{"chat_no_references", "file_retrieve", "passthrough_no_references", "passthrough_models_get", "passthrough_tuning_list", "passthrough_responses_body", "video_create_no_draft", "video_create_draft"} {
+		for _, name := range []string{"chat_no_references", "file_retrieve", "passthrough_no_references", "passthrough_chat_escaped_body", "passthrough_runware_image", "passthrough_models_get", "passthrough_tuning_list", "passthrough_responses_body", "video_create_no_draft", "video_create_draft"} {
 			build := cases[name]
 			b.Run(mode+"/"+name, func(b *testing.B) {
 				enforced = mode == "on"
@@ -2021,10 +2120,13 @@ func TestPreLLMHookBindsResourceNamesUnderEveryForm(t *testing.T) {
 		assert.Nil(t, shortCircuit, "the creating key reaches its batch as %q", id)
 	}
 
-	// A job number is matched whole: 5151 is not reached as 151.
+	// A job number is matched whole: 5151 is not reached as 151. Job 151 has no owner on record,
+	// so it is not found, and the refusal names 151, not the other key's job.
 	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), resourceRequest(schemas.BatchRetrieveRequest, schemas.Vertex, "151"))
 	require.NoError(t, err)
-	assert.Nil(t, shortCircuit, "a job number that is only a suffix of another is not that job")
+	require.NotNil(t, shortCircuit, "a job number that is only a suffix of another is not that job, and is nobody's on record")
+	assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+	assert.Contains(t, shortCircuit.Error.Error.Message, "'151'")
 }
 
 // A full resource name is recorded as the provider returned it and nothing else: a Vertex job
@@ -2152,7 +2254,7 @@ func TestPreLLMHookRefusesAmbiguousShortResourceNames(t *testing.T) {
 	for _, item := range list.BatchListResponse.Data {
 		ids = append(ids, item.ID)
 	}
-	assert.Equal(t, []string{own, "unrecorded"}, ids, "an ambiguous short id is hidden from the page; the full name and unbound items stay")
+	assert.Equal(t, []string{own}, ids, "an ambiguous short id and a batch with no owner on record are hidden from the page; the key's full name stays")
 }
 
 // A bare Vertex id can be answered by two sources: the full-name rows that end in it and an exact
@@ -2274,7 +2376,7 @@ func TestProviderObjectOwnersScanSuffixesOnceForUnresolvedShortIDs(t *testing.T)
 		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.BatchListRequest, Provider: schemas.Vertex}}}
 	_, _, err = plugin.PostLLMHook(ctx, list, nil)
 	require.NoError(t, err)
-	assert.Len(t, list.BatchListResponse.Data, 4, "nothing on the page is another key's")
+	assert.Len(t, list.BatchListResponse.Data, 2, "the key's two batches stay; the one with no owner on record, listed twice, is left out")
 	assert.Equal(t, [][]string{{"6161"}}, store.objectSuffixes, "one ownership suffix lookup, for the unresolved id only")
 	assert.Equal(t, [][]string{{"6161"}}, store.jobSuffixes, "one job suffix lookup, for the unresolved id only")
 }
@@ -2369,5 +2471,237 @@ func TestImageTasksAreBoundToTheCreatingVirtualKey(t *testing.T) {
 		_, shortCircuit, err = plugin.PreLLMHook(emptyCtx(), reference(requestType, "never-created"))
 		require.NoError(t, err)
 		assert.Nil(t, shortCircuit, "a request that presented no virtual key is unrestricted")
+	}
+}
+
+// taskRouteName matches the request types of the task routes: batches, videos and image tasks.
+var taskRouteName = regexp.MustCompile(`^(Batch|Video|ImageTask)`)
+
+// How a task route meets a task.
+const (
+	taskRouteAddresses = "addresses" // names an existing task by id: fails closed
+	taskRouteLists     = "lists"     // pages through tasks: an unrecorded one is left out
+	taskRouteCreates   = "creates"   // creates a task and names no existing one
+)
+
+// taskRoutes classifies every task request type of schemas.BifrostRequest. A request type
+// added under one of the task names fails TestEveryTaskRouteFailsClosed until it is listed
+// here, and one listed as addressing or listing a task is then run against an unrecorded id.
+var taskRoutes = map[string]struct {
+	requestType schemas.RequestType
+	how         string
+	kind        string
+}{
+	"BatchCreateRequest":       {schemas.BatchCreateRequest, taskRouteCreates, configstoreTables.ProviderObjectKindBatch},
+	"BatchListRequest":         {schemas.BatchListRequest, taskRouteLists, configstoreTables.ProviderObjectKindBatch},
+	"BatchRetrieveRequest":     {schemas.BatchRetrieveRequest, taskRouteAddresses, configstoreTables.ProviderObjectKindBatch},
+	"BatchCancelRequest":       {schemas.BatchCancelRequest, taskRouteAddresses, configstoreTables.ProviderObjectKindBatch},
+	"BatchResultsRequest":      {schemas.BatchResultsRequest, taskRouteAddresses, configstoreTables.ProviderObjectKindBatch},
+	"BatchDeleteRequest":       {schemas.BatchDeleteRequest, taskRouteAddresses, configstoreTables.ProviderObjectKindBatch},
+	"VideoGenerationRequest":   {schemas.VideoGenerationRequest, taskRouteCreates, configstoreTables.ProviderObjectKindVideo},
+	"VideoListRequest":         {schemas.VideoListRequest, taskRouteLists, configstoreTables.ProviderObjectKindVideo},
+	"VideoRetrieveRequest":     {schemas.VideoRetrieveRequest, taskRouteAddresses, configstoreTables.ProviderObjectKindVideo},
+	"VideoDownloadRequest":     {schemas.VideoDownloadRequest, taskRouteAddresses, configstoreTables.ProviderObjectKindVideo},
+	"VideoDeleteRequest":       {schemas.VideoDeleteRequest, taskRouteAddresses, configstoreTables.ProviderObjectKindVideo},
+	"VideoCancelRequest":       {schemas.VideoCancelRequest, taskRouteAddresses, configstoreTables.ProviderObjectKindVideo},
+	"VideoRemixRequest":        {schemas.VideoRemixRequest, taskRouteAddresses, configstoreTables.ProviderObjectKindVideo},
+	"VideoEditRequest":         {schemas.VideoEditRequest, taskRouteAddresses, configstoreTables.ProviderObjectKindVideo},
+	"ImageTaskRetrieveRequest": {schemas.ImageTaskRetrieveRequest, taskRouteAddresses, configstoreTables.ProviderObjectKindImageTask},
+	"ImageTaskCancelRequest":   {schemas.ImageTaskCancelRequest, taskRouteAddresses, configstoreTables.ProviderObjectKindImageTask},
+}
+
+// taskRequest builds the request of the given BifrostRequest field that names task id on
+// OpenAI. The id goes in the request's own id field (ID, BatchID), or, for a video edit, in the
+// source video it runs on.
+func taskRequest(t *testing.T, field string, requestType schemas.RequestType, id string) *schemas.BifrostRequest {
+	t.Helper()
+	req := &schemas.BifrostRequest{RequestType: requestType}
+	slot := reflect.ValueOf(req).Elem().FieldByName(field)
+	value := reflect.New(slot.Type().Elem())
+	slot.Set(value)
+	if field == "VideoEditRequest" {
+		req.VideoEditRequest.Model = "sora-2"
+		req.VideoEditRequest.Input = &schemas.VideoEditInput{Video: schemas.VideoInput{ID: id}, Prompt: "p"}
+	} else {
+		named := false
+		for _, name := range []string{"ID", "BatchID"} {
+			if f := value.Elem().FieldByName(name); f.IsValid() && f.Kind() == reflect.String {
+				f.SetString(id)
+				named = true
+			}
+		}
+		require.True(t, named, "%s has no ID or BatchID field; teach taskRequest where its task id goes", field)
+	}
+	setTaskProvider(t, req, field)
+	return req
+}
+
+// setTaskProvider names OpenAI as the provider of the request in the given field.
+func setTaskProvider(t *testing.T, req *schemas.BifrostRequest, field string) {
+	t.Helper()
+	provider := reflect.ValueOf(req).Elem().FieldByName(field).Elem().FieldByName("Provider")
+	require.True(t, provider.IsValid(), "%s has no Provider field", field)
+	provider.Set(reflect.ValueOf(schemas.OpenAI))
+}
+
+// Every task route fails closed for a virtual key (TXE-7119): a batch, video or image task with
+// no creator on record is not found when addressed (retrieve, results, download, cancel, delete,
+// remix, edit) and is left out of list pages, while the key's own task is reached and a request
+// with no virtual key is unrestricted. The routes are found by reflection, so a task route added
+// later fails here until it is classified, and then until it is closed.
+func TestEveryTaskRouteFailsClosed(t *testing.T) {
+	plugin, store := newProviderJobTestPlugin(t)
+	const own, other = "vk-mcp-stamp", "vk-someone-else"
+	for _, kind := range []string{configstoreTables.ProviderObjectKindBatch, configstoreTables.ProviderObjectKindVideo, configstoreTables.ProviderObjectKindImageTask} {
+		require.True(t, ownedOnlyByRecord(kind), "%s is a task kind and fails closed", kind)
+		seedProviderObject(t, store, kind, "openai", "task-own", own)
+		seedProviderObject(t, store, kind, "openai", "task-other", other)
+	}
+	for _, kind := range []string{configstoreTables.ProviderObjectKindFile, configstoreTables.ProviderObjectKindContainer, configstoreTables.ProviderObjectKindContainerFile, configstoreTables.ProviderObjectKindCachedContent} {
+		require.False(t, ownedOnlyByRecord(kind), "%s is not a task: with no row it stays reachable", kind)
+	}
+
+	root := reflect.TypeOf(schemas.BifrostRequest{})
+	var fields []string
+	for i := 0; i < root.NumField(); i++ {
+		if name := root.Field(i).Name; taskRouteName.MatchString(name) && root.Field(i).Type.Kind() == reflect.Pointer {
+			fields = append(fields, name)
+			if _, classified := taskRoutes[name]; !classified {
+				t.Errorf("%s is a task request type that is not classified: list it in taskRoutes as addressing, listing or creating a task, so its ownership rule is tested", name)
+			}
+		}
+	}
+	for name := range taskRoutes {
+		if _, ok := root.FieldByName(name); !ok {
+			t.Errorf("taskRoutes lists %s, which is not a request type", name)
+		}
+	}
+	sort.Strings(fields)
+	require.GreaterOrEqual(t, len(fields), 16, "the task request types were not found by reflection")
+
+	listOf := func(kind string, ids ...string) *schemas.BifrostResponse {
+		if kind == configstoreTables.ProviderObjectKindBatch {
+			data := make([]schemas.BifrostBatchRetrieveResponse, 0, len(ids))
+			for _, id := range ids {
+				data = append(data, schemas.BifrostBatchRetrieveResponse{ID: id})
+			}
+			return &schemas.BifrostResponse{BatchListResponse: &schemas.BifrostBatchListResponse{Object: "list", Data: data,
+				ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.BatchListRequest, Provider: schemas.OpenAI}}}
+		}
+		data := make([]schemas.VideoObject, 0, len(ids))
+		for _, id := range ids {
+			data = append(data, schemas.VideoObject{ID: id})
+		}
+		return &schemas.BifrostResponse{VideoListResponse: &schemas.BifrostVideoListResponse{Object: "list", Data: data,
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.VideoListRequest, Provider: schemas.OpenAI}}}
+	}
+	listed := func(resp *schemas.BifrostResponse) []string {
+		var ids []string
+		if resp.BatchListResponse != nil {
+			for _, item := range resp.BatchListResponse.Data {
+				ids = append(ids, item.ID)
+			}
+		}
+		if resp.VideoListResponse != nil {
+			for _, item := range resp.VideoListResponse.Data {
+				ids = append(ids, item.ID)
+			}
+		}
+		return ids
+	}
+
+	for _, field := range fields {
+		route, classified := taskRoutes[field]
+		if !classified {
+			continue
+		}
+		t.Run(field, func(t *testing.T) {
+			switch route.how {
+			case taskRouteAddresses:
+				for _, id := range []string{"task-unrecorded", "task-other"} {
+					_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), taskRequest(t, field, route.requestType, id))
+					require.NoError(t, err)
+					require.NotNil(t, shortCircuit, "%s reaches the provider for a virtual key", id)
+					assert.Equal(t, 404, *shortCircuit.Error.StatusCode, id)
+					assert.Contains(t, shortCircuit.Error.Error.Message, id)
+				}
+				_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), taskRequest(t, field, route.requestType, "task-own"))
+				require.NoError(t, err)
+				assert.Nil(t, shortCircuit, "the creating key reaches its own task")
+				_, shortCircuit, err = plugin.PreLLMHook(emptyCtx(), taskRequest(t, field, route.requestType, "task-unrecorded"))
+				require.NoError(t, err)
+				assert.Nil(t, shortCircuit, "a request that presented no virtual key is unrestricted")
+			case taskRouteLists:
+				req := &schemas.BifrostRequest{RequestType: route.requestType}
+				slot := reflect.ValueOf(req).Elem().FieldByName(field)
+				slot.Set(reflect.New(slot.Type().Elem()))
+				setTaskProvider(t, req, field)
+				ctx := presentCtx(mcpTestVKValue)
+				_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+				require.NoError(t, err)
+				require.Nil(t, shortCircuit)
+				result, bifrostErr, err := plugin.PostLLMHook(ctx, listOf(route.kind, "task-own", "task-other", "task-unrecorded"), nil)
+				require.NoError(t, err)
+				require.Nil(t, bifrostErr)
+				assert.Equal(t, []string{"task-own"}, listed(result), "the page keeps the key's own task only")
+
+				anonymous := emptyCtx()
+				_, shortCircuit, err = plugin.PreLLMHook(anonymous, req)
+				require.NoError(t, err)
+				require.Nil(t, shortCircuit)
+				result, _, err = plugin.PostLLMHook(anonymous, listOf(route.kind, "task-own", "task-other", "task-unrecorded"), nil)
+				require.NoError(t, err)
+				assert.Equal(t, []string{"task-own", "task-other", "task-unrecorded"}, listed(result), "a request that presented no virtual key sees the provider's page")
+			case taskRouteCreates:
+				// A create names no existing task; the task it creates is recorded for the key
+				// (recordProviderObjectLifecycle), which is what lets the key reach it afterwards.
+			default:
+				t.Fatalf("%s is classified as %q, which is none of addresses, lists, creates", field, route.how)
+			}
+		})
+	}
+}
+
+// A task a virtual key creates through the gateway is recorded for it, so failing closed never
+// locks a key out of what it created: the create answer is followed by a retrieve of the same id.
+func TestCreatedTasksAreReachableByTheirCreator(t *testing.T) {
+	plugin, _ := newProviderJobTestPlugin(t)
+	extra := func(requestType schemas.RequestType) schemas.BifrostResponseExtraFields {
+		return schemas.BifrostResponseExtraFields{RequestType: requestType, Provider: schemas.OpenAI}
+	}
+	for name, tc := range map[string]struct {
+		create   *schemas.BifrostRequest
+		created  *schemas.BifrostResponse
+		field    string
+		retrieve schemas.RequestType
+		id       string
+	}{
+		"batch": {
+			&schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.OpenAI, InputFileID: "file-new"}},
+			&schemas.BifrostResponse{BatchCreateResponse: &schemas.BifrostBatchCreateResponse{ID: "batch-new", ExtraFields: extra(schemas.BatchCreateRequest)}},
+			"BatchRetrieveRequest", schemas.BatchRetrieveRequest, "batch-new",
+		},
+		"video": {
+			&schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{Provider: schemas.OpenAI, Model: "sora-2", Input: &schemas.VideoGenerationInput{Prompt: "p"}}},
+			&schemas.BifrostResponse{VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "video-new:openai", ExtraFields: extra(schemas.VideoGenerationRequest)}},
+			"VideoRetrieveRequest", schemas.VideoRetrieveRequest, "video-new",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), taskRequest(t, tc.field, tc.retrieve, tc.id))
+			require.NoError(t, err)
+			require.NotNil(t, shortCircuit, "before the create the id is nobody's")
+
+			ctx := presentCtx(mcpTestVKValue)
+			_, shortCircuit, err = plugin.PreLLMHook(ctx, tc.create)
+			require.NoError(t, err)
+			require.Nil(t, shortCircuit)
+			_, _, err = plugin.PostLLMHook(ctx, tc.created, nil)
+			require.NoError(t, err)
+
+			_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), taskRequest(t, tc.field, tc.retrieve, tc.id))
+			require.NoError(t, err)
+			assert.Nil(t, shortCircuit, "the creating key reaches the task it just created")
+		})
 	}
 }

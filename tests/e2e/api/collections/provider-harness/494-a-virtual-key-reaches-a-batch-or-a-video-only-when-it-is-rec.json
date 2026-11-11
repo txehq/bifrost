@@ -1,0 +1,779 @@
+{
+  "name": "494. A virtual key reaches a batch or a video only when it is recorded as created by that key (task ownership) [SERIAL]",
+  "description": "TXE-7119. Local fixture regression, no live provider call: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. A batch, a video or an image task is created with the operator's provider key, which every virtual key on the provider shares, and is then addressed by its id alone. Before TXE-7119 a virtual key reached any task that had no creator on record: one created outside the gateway, or whose record was lost. Now a virtual key reaches a task only under an id recorded as created by that key. The provider is the OpenAI-shaped stand-in storage_uri_files (the fixture's /pp/storage), which serves a batch create, retrieve and list; its list always holds one batch no gateway request created (batch_storage_made_elsewhere). 494.1 to 494.4 create two virtual keys and a batch under the first, which then retrieves it. 494.5 is the second key: 404. 494.6 to 494.9 are the first key addressing a batch and a video with no creator on record, by retrieve, cancel and download: each is the gateway's own 404 naming the id. 494.10 and 494.11 list batches: the first key sees its batch and not the one made elsewhere, the second key sees none. 494.12 is a batch create through the OpenAI passthrough route: 403, since a task created there would not be recorded. 494.13 is the same unrecorded batch with no virtual key: forwarded, and answered by the provider (the fixture serves that id in its list only, so its own 404 is the proof the request arrived). The batch is the fixture's and is not deleted.",
+  "item": [
+    {
+      "name": "494.1 [setup] virtual key A (creator) on the fixture's task provider",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('taskVkOwner'); pm.collectionVariables.unset('taskVkOwnerId');",
+              "pm.collectionVariables.unset('taskBatchId');"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the virtual key was created', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var created = (pm.response.json() || {}).virtual_key || {};",
+              "pm.test('it has an id and a value', function () { pm.expect(created.id, pm.response.text()).to.be.a('string').and.not.equal(''); pm.expect(created.value, pm.response.text()).to.be.a('string').and.not.equal(''); });",
+              "pm.collectionVariables.set('taskVkOwner', created.value || ''); pm.collectionVariables.set('taskVkOwnerId', created.id || '');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"name\": \"harness-494-a-{{$guid}}\", \"provider_configs\": [{\"provider\": \"storage_uri_files\", \"weight\": 1, \"allowed_models\": [\"*\"], \"key_ids\": [\"*\"]}, {\"provider\": \"openai\", \"weight\": 1, \"allowed_models\": [\"*\"], \"key_ids\": [\"*\"]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "494.2 [setup] virtual key B (other) on the fixture's task provider",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('taskVkOther'); pm.collectionVariables.unset('taskVkOtherId');"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the virtual key was created', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var created = (pm.response.json() || {}).virtual_key || {};",
+              "pm.test('it has an id and a value', function () { pm.expect(created.id, pm.response.text()).to.be.a('string').and.not.equal(''); pm.expect(created.value, pm.response.text()).to.be.a('string').and.not.equal(''); });",
+              "pm.collectionVariables.set('taskVkOther', created.value || ''); pm.collectionVariables.set('taskVkOtherId', created.id || '');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"name\": \"harness-494-b-{{$guid}}\", \"provider_configs\": [{\"provider\": \"storage_uri_files\", \"weight\": 1, \"allowed_models\": [\"*\"], \"key_ids\": [\"*\"]}, {\"provider\": \"openai\", \"weight\": 1, \"allowed_models\": [\"*\"], \"key_ids\": [\"*\"]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "494.3 the creating key creates a batch",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('taskVkOwner') || !pm.collectionVariables.get('taskVkOther')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('the batch create is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200); });",
+              "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+              "pm.test('it has an id', function () { pm.expect(j.id, txt.slice(0, 400)).to.be.a('string').and.not.equal(''); });",
+              "pm.collectionVariables.set('taskBatchId', j.id || '');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{taskVkOwner}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"storage_uri_files/fixture-model\", \"input_file_id\": \"gs://bifrost-fixture-bucket/uploads/task-ownership-input.jsonl\", \"endpoint\": \"/v1/chat/completions\", \"completion_window\": \"24h\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "494.4 the creating key retrieves its batch",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('taskVkOwner') || !pm.collectionVariables.get('taskVkOther')) { pm.execution.skipRequest(); return; }",
+              "if (!pm.collectionVariables.get('taskBatchId')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('the creating key reaches the batch it created', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200); });",
+              "pm.test('it is that batch', function () { pm.expect((pm.response.json() || {}).id, txt.slice(0, 400)).to.eql(pm.collectionVariables.get('taskBatchId')); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{taskVkOwner}}"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/batches/{{taskBatchId}}?provider=storage_uri_files"
+      }
+    },
+    {
+      "name": "494.5 [EXPECT-404] another key cannot retrieve the batch",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('taskVkOwner') || !pm.collectionVariables.get('taskVkOther')) { pm.execution.skipRequest(); return; }",
+              "if (!pm.collectionVariables.get('taskBatchId')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "// Refused by the gateway before the provider is called: its own 404 (access_blocked), naming the id, never the",
+              "// provider's answer and never a 401/403/500 that would mean the request was refused for another reason.",
+              "pm.test('a batch created by another key is 404', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404); });",
+              "pm.test('the 404 is the gateway\\u2019s and names the batch as not found', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.type, 'unexpected 404 body: ' + txt.slice(0, 400)).to.eql('access_blocked');",
+              "  pm.expect(body.error && body.error.message, txt.slice(0, 400)).to.be.a('string');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include(pm.collectionVariables.get('taskBatchId')).and.to.include('not found');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{taskVkOther}}"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/batches/{{taskBatchId}}?provider=storage_uri_files"
+      }
+    },
+    {
+      "name": "494.6 [EXPECT-404] a batch the gateway never recorded is not found for a virtual key, though the provider has it",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('taskVkOwner') || !pm.collectionVariables.get('taskVkOther')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "// Refused by the gateway before the provider is called: its own 404 (access_blocked), naming the id, never the",
+              "// provider's answer and never a 401/403/500 that would mean the request was refused for another reason.",
+              "pm.test('a batch with no creator on record is 404', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404); });",
+              "pm.test('the 404 is the gateway\\u2019s and names the batch as not found', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.type, 'unexpected 404 body: ' + txt.slice(0, 400)).to.eql('access_blocked');",
+              "  pm.expect(body.error && body.error.message, txt.slice(0, 400)).to.be.a('string');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include('batch_storage_made_elsewhere').and.to.include('not found');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{taskVkOwner}}"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/batches/batch_storage_made_elsewhere?provider=storage_uri_files"
+      }
+    },
+    {
+      "name": "494.7 [EXPECT-404] nor can a virtual key cancel it",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('taskVkOwner') || !pm.collectionVariables.get('taskVkOther')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "// Refused by the gateway before the provider is called: its own 404 (access_blocked), naming the id, never the",
+              "// provider's answer and never a 401/403/500 that would mean the request was refused for another reason.",
+              "pm.test('cancelling a batch with no creator on record is 404', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404); });",
+              "pm.test('the 404 is the gateway\\u2019s and names the batch as not found', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.type, 'unexpected 404 body: ' + txt.slice(0, 400)).to.eql('access_blocked');",
+              "  pm.expect(body.error && body.error.message, txt.slice(0, 400)).to.be.a('string');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include('batch_storage_made_elsewhere').and.to.include('not found');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{taskVkOwner}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{baseUrl}}/v1/batches/batch_storage_made_elsewhere/cancel?provider=storage_uri_files"
+      }
+    },
+    {
+      "name": "494.8 [EXPECT-404] a video the gateway never recorded is not found for a virtual key",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('taskVkOwner') || !pm.collectionVariables.get('taskVkOther')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "// Refused by the gateway before the provider is called: its own 404 (access_blocked), naming the id, never the",
+              "// provider's answer and never a 401/403/500 that would mean the request was refused for another reason.",
+              "pm.test('a video with no creator on record is 404', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404); });",
+              "pm.test('the 404 is the gateway\\u2019s and names the video as not found', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.type, 'unexpected 404 body: ' + txt.slice(0, 400)).to.eql('access_blocked');",
+              "  pm.expect(body.error && body.error.message, txt.slice(0, 400)).to.be.a('string');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include('video_made_elsewhere').and.to.include('not found');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{taskVkOwner}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/video_made_elsewhere:storage_uri_files",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "video_made_elsewhere:storage_uri_files"
+          ]
+        }
+      }
+    },
+    {
+      "name": "494.9 [EXPECT-404] nor can a virtual key download it",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('taskVkOwner') || !pm.collectionVariables.get('taskVkOther')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "// Refused by the gateway before the provider is called: its own 404 (access_blocked), naming the id, never the",
+              "// provider's answer and never a 401/403/500 that would mean the request was refused for another reason.",
+              "pm.test('downloading a video with no creator on record is 404', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404); });",
+              "pm.test('the 404 is the gateway\\u2019s and names the video as not found', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.type, 'unexpected 404 body: ' + txt.slice(0, 400)).to.eql('access_blocked');",
+              "  pm.expect(body.error && body.error.message, txt.slice(0, 400)).to.be.a('string');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include('video_made_elsewhere').and.to.include('not found');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{taskVkOwner}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/video_made_elsewhere:storage_uri_files/content",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "video_made_elsewhere:storage_uri_files",
+            "content"
+          ]
+        }
+      }
+    },
+    {
+      "name": "494.10 the batch list under the creating key shows its batch and not the one made elsewhere",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('taskVkOwner') || !pm.collectionVariables.get('taskVkOther')) { pm.execution.skipRequest(); return; }",
+              "if (!pm.collectionVariables.get('taskBatchId')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('the batch list under the creating key is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200); });",
+              "var ids = ((pm.response.json() || {}).data || []).map(function (b) { return b.id; });",
+              "pm.test('only the batch recorded for the key is listed', function () { pm.expect(ids, JSON.stringify(ids)).to.eql([pm.collectionVariables.get('taskBatchId')]); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{taskVkOwner}}"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/batches?provider=storage_uri_files"
+      }
+    },
+    {
+      "name": "494.11 the batch list under the other key is empty",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('taskVkOwner') || !pm.collectionVariables.get('taskVkOther')) { pm.execution.skipRequest(); return; }",
+              "if (!pm.collectionVariables.get('taskBatchId')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('the batch list under the other key is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200); });",
+              "var ids = ((pm.response.json() || {}).data || []).map(function (b) { return b.id; });",
+              "pm.test('no batch is recorded for the other key', function () { pm.expect(ids, JSON.stringify(ids)).to.eql([]); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{taskVkOther}}"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/batches?provider=storage_uri_files"
+      }
+    },
+    {
+      "name": "494.12 [EXPECT-403] a virtual key cannot create a batch through a passthrough route, where it would not be recorded",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('taskVkOwner') || !pm.collectionVariables.get('taskVkOther')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('a passthrough batch create under a virtual key is 403', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(403); });",
+              "pm.test('the 403 sends the key to the gateway route', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.error && body.error.message, txt.slice(0, 400)).to.be.a('string');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include('passthrough').and.to.include('batch or video route');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{taskVkOwner}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"input_file_id\": \"file-any\", \"endpoint\": \"/v1/chat/completions\", \"completion_window\": \"24h\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai_passthrough/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai_passthrough",
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "494.13 [EXPECT-404] a request with no virtual key is forwarded for the same batch, and the 404 is the provider's own",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('taskVkOwner') || !pm.collectionVariables.get('taskVkOther')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "// With no virtual key the request is forwarded: the answer is the provider's own (the fixture knows no such batch",
+              "// by id and says so), not the gateway's access_blocked refusal.",
+              "pm.test('the provider answers 404 for an id it does not serve', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404); });",
+              "pm.test('the answer is the provider\\u2019s, not a gateway refusal', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.type, txt.slice(0, 400)).to.not.eql('access_blocked');",
+              "  pm.expect(txt, txt.slice(0, 400)).to.include('no storage fixture batch');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/v1/batches/batch_storage_made_elsewhere?provider=storage_uri_files"
+      }
+    },
+    {
+      "name": "494.14 [cleanup] virtual key A is deleted",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('taskVkOwnerId')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the virtual key was deleted', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.collectionVariables.unset('taskVkOwner'); pm.collectionVariables.unset('taskVkOwnerId');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys/{{taskVkOwnerId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{taskVkOwnerId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "494.15 [cleanup] virtual key B is deleted",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('taskVkOtherId')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the virtual key was deleted', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.collectionVariables.unset('taskVkOther'); pm.collectionVariables.unset('taskVkOtherId');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys/{{taskVkOtherId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{taskVkOtherId}}"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -26,11 +26,16 @@ import (
 // A batch row also names the batch's input, output and error files, so those files are bound to
 // the batch's key even when they were never recorded on their own.
 //
-// The rule is deliberately narrow. A request that presented no virtual key is unrestricted, as it
-// is everywhere else in governance. An object with no row (created outside the gateway, or before
-// its kind was recorded) cannot be bound to anyone and stays reachable. Only a row that names a
-// different virtual key is refused, and it is refused as not found, so the other tenant's object
-// is not confirmed to exist.
+// A request that presented no virtual key is unrestricted, as it is everywhere else in
+// governance. A row that names a different virtual key is refused, and it is refused as not
+// found, so the other tenant's object is not confirmed to exist.
+//
+// An object with no row (created outside the gateway, before its kind was recorded, or whose row
+// was lost) depends on its kind. A task (a batch, a video, an image task; see
+// ownedOnlyByRecord) fails closed: a virtual key reaches a task only under an id recorded for
+// it, so an unrecorded task is not found on retrieve, results, download, cancel, delete, edit and
+// remix, and is left out of list pages (TXE-7119). Files, containers and cached contents with no
+// row cannot be bound to anyone and stay reachable.
 //
 // A file in object storage is recorded under its gs:// or s3:// URI and may be named by any https
 // or ARN form of it; every form is resolved to that URI before the lookup (TXE-7105; see
@@ -95,6 +100,19 @@ func requestVirtualKeyID(ctx *schemas.BifrostContext) string {
 		return ""
 	}
 	return virtualKey.ID
+}
+
+// ownedOnlyByRecord reports whether a kind fails closed for virtual keys: an object of that kind
+// with no creator on record is not found, instead of staying reachable. It is the one list of
+// those kinds, read by the refusal of a single object and by the narrowing of a list page alike,
+// so a kind added here is closed on every route that addresses it. These are the tasks a
+// provider runs for whoever holds its id: a batch, a video, an image task.
+func ownedOnlyByRecord(kind string) bool {
+	switch kind {
+	case configstoreTables.ProviderObjectKindBatch, configstoreTables.ProviderObjectKindVideo, configstoreTables.ProviderObjectKindImageTask:
+		return true
+	}
+	return false
 }
 
 // videoIDForms returns the forms a video id may be recorded under: as written, bare, and scoped
@@ -468,6 +486,94 @@ var passthroughCollections = map[string]string{
 	"containers":     configstoreTables.ProviderObjectKindContainer,
 	"videos":         configstoreTables.ProviderObjectKindVideo,
 	"cachedContents": configstoreTables.ProviderObjectKindCachedContent,
+}
+
+// passthroughTaskCollections are the collections a POST creates a task in (Vertex's batch
+// create posts to "batchPredictionJobs"), passthroughTaskOperations the model operations that
+// create one (Gemini's batch create is "models/<m>:batchGenerateContent", its and Vertex's
+// video create "models/<m>:predictLongRunning"), and passthroughVideoDerivations the routes under videos
+// that create a new video from an existing one or from an upload ("videos/<id>/remix",
+// "videos/edits", "videos/extensions"). The task such a request creates is addressed afterwards
+// through the gateway's batch or video routes, which fail closed (ownedOnlyByRecord), and a passthrough
+// answer is the provider's raw body, from which no creator is recorded. So a virtual key that
+// created a task this way could never reach it again; the create is refused and the key is sent
+// to the gateway's own route, which records it.
+var passthroughTaskCollections = [...]string{"batches", "videos", "batchPredictionJobs"}
+
+var passthroughTaskOperations = [...]string{"batchGenerateContent", "asyncBatchEmbedContent", "predictLongRunning"}
+
+var passthroughVideoDerivations = [...]string{"remix", "edits", "extensions"}
+
+// passthroughCreatesTask reports whether a passthrough request creates a batch or a video: a
+// POST whose path, as it will be sent, ends on a task collection, on a task-creating model
+// operation, or on a route under videos that derives a new video. Runware, which names the
+// operation in the body, is read by runwareBodyCreatesTask.
+func passthroughCreatesTask(r *schemas.BifrostPassthroughRequest) bool {
+	if !strings.EqualFold(r.Method, "POST") {
+		return false
+	}
+	segments := strings.Split(strings.Trim(path.Clean("/"+r.Path), "/"), "/")
+	last := segments[len(segments)-1]
+	name, operation, _ := strings.Cut(last, ":")
+	if operation == "" && slices.Contains(passthroughTaskCollections[:], name) {
+		return true
+	}
+	if slices.Contains(passthroughTaskOperations[:], operation) {
+		return true
+	}
+	return slices.Contains(passthroughVideoDerivations[:], last) && slices.Contains(segments[:len(segments)-1], "videos")
+}
+
+// runwareTaskTypes are the Runware task types that always run as a task polled afterwards, and
+// runwareAsyncDelivery the delivery method that makes any other type one (the typed video
+// routes send upscale and removeBackground that way). Runware has one endpoint and names the
+// operation in the body: a POST of [{"taskType": "videoInference", ...}] creates a task
+// whatever the path, and the typed video routes then retrieve it by its task UUID.
+var runwareTaskTypes = [...]string{"videoInference", "3dInference"}
+
+const runwareAsyncDelivery = "async"
+
+// runwareBodyCreatesTask reports whether a POST body sent to Runware holds an entry that
+// creates a polled task: one of runwareTaskTypes, or any entry delivered asynchronously. It is
+// asked only for providers built on Runware, so no other provider's passthrough pays for the
+// parse. A body that does not parse is treated as creating one, since the provider may read
+// what this decoder cannot.
+func runwareBodyCreatesTask(method string, body []byte) bool {
+	if !strings.EqualFold(method, "POST") || len(body) == 0 {
+		return false
+	}
+	var decoded any
+	if err := schemas.Unmarshal(body, &decoded); err != nil {
+		return true
+	}
+	var creates func(value any, depth int) bool
+	creates = func(value any, depth int) bool {
+		if depth > openValueDepth {
+			return true
+		}
+		switch v := value.(type) {
+		case map[string]any:
+			if taskType, _ := v["taskType"].(string); slices.Contains(runwareTaskTypes[:], taskType) {
+				return true
+			}
+			if delivery, _ := v["deliveryMethod"].(string); delivery == runwareAsyncDelivery {
+				return true
+			}
+			for _, item := range v {
+				if creates(item, depth+1) {
+					return true
+				}
+			}
+		case []any:
+			for _, item := range v {
+				if creates(item, depth+1) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return creates(decoded, 0)
 }
 
 // passthroughTuningCollections are the path segments, folded, that name a tuning or
@@ -1147,8 +1253,9 @@ func (p *GovernancePlugin) builtOnVertex(provider string) bool {
 // unverified read through, and so does running without a config store: no creator is recorded
 // anywhere then, so a virtual-key request that addresses a bound object cannot be checked and is
 // refused. A list addresses nothing: its page is narrowed in the post-hook to what is recorded,
-// and with nothing recorded there is nothing to hide, so it goes through unfiltered, as it did
-// before objects were bound. Every object a request names is checked (see
+// and with no config store there is nothing to hide, so it goes through unfiltered, as it did
+// before objects were bound; a list of tasks is the exception, refused there because a task is
+// shown only when recorded for the key. Every object a request names is checked (see
 // providerObjectReferences); the first one another key created refuses the request. None of
 // this applies while client.enforce_vk_object_ownership is turned off; creators are still
 // recorded then, so turning it back on also binds objects created meanwhile.
@@ -1186,6 +1293,16 @@ func (p *GovernancePlugin) enforceProviderObjectOwnership(ctx *schemas.BifrostCo
 			Error:      &schemas.ErrorField{Message: "fine-tuning through a passthrough route is not available to virtual keys: tuning jobs and tuned models carry no per-key ownership, so a request could reach another key's job or model"},
 		}}
 	}
+	// A task created through a passthrough route would have no creator on record and be out of
+	// its own creator's reach (see passthroughCreatesTask).
+	if r := req.PassthroughRequest; r != nil && (passthroughCreatesTask(r) || (configuredBaseProvider(p.inMemoryStore, r.Provider) == schemas.Runware && runwareBodyCreatesTask(r.Method, r.Body))) {
+		ctx.SetValue(governanceRejectedContextKey, true)
+		return &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
+			Type:       bifrost.Ptr(string(DecisionAccessBlocked)),
+			StatusCode: bifrost.Ptr(403),
+			Error:      &schemas.ErrorField{Message: "creating a batch or a video through a passthrough route is not available to virtual keys: the task would not be recorded for the key, and a virtual key reaches a task only under an id recorded for it; use the gateway's own batch or video route"},
+		}}
+	}
 	// Settled before any lookup: a request that could not be read in full, or that names more
 	// objects than the bound, is refused without a query.
 	refs, verifiable := distinctObjectRefs(refs)
@@ -1208,7 +1325,19 @@ func (p *GovernancePlugin) enforceProviderObjectOwnership(ctx *schemas.BifrostCo
 	// A native list is narrowed in the post-hook. A passthrough list is the provider's raw page,
 	// which cannot be, so a virtual key is sent to the gateway's own list route; the objects the
 	// path names (a container whose files are listed) were checked above first. With no config
-	// store nothing is recorded and there is nothing to hide.
+	// store nothing is recorded: for most kinds there is then nothing to hide, but a task is
+	// shown only when it is recorded for the key (ownedOnlyByRecord), so a list of tasks cannot
+	// be answered and is refused like a task addressed by id.
+	for _, ref := range refs {
+		if ref.isList && p.configStore == nil && ownedOnlyByRecord(ref.kind) {
+			ctx.SetValue(governanceRejectedContextKey, true)
+			return &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
+				Type:       bifrost.Ptr(string(DecisionAccessBlocked)),
+				StatusCode: bifrost.Ptr(403),
+				Error:      &schemas.ErrorField{Message: fmt.Sprintf("%s access cannot be verified for virtual keys without a config store", providerObjectLabel(ref.kind))},
+			}}
+		}
+	}
 	for _, ref := range refs {
 		if ref.passthroughList && p.configStore != nil {
 			ctx.SetValue(governanceRejectedContextKey, true)
@@ -1295,14 +1424,6 @@ func (p *GovernancePlugin) refuseForeignProviderObject(ctx *schemas.BifrostConte
 			return notFound()
 		}
 	}
-	// An image task fails closed (TXE-6431). Its id carries more than the vendor's task id (BFL's
-	// carries the model and the polling host), so one vendor task can be named by ids that were
-	// never recorded, and "no row stays reachable" would let another key reach it by rewriting the
-	// rest of the id. Image tasks are new, so every one a virtual key created through the gateway
-	// has its row: a key reaches an image task only under the id its own create recorded.
-	if ref.kind == configstoreTables.ProviderObjectKindImageTask && len(owners) == 0 {
-		return notFound()
-	}
 	if len(ambiguous) > 0 {
 		// A short Vertex id that several keys' full names end in names one job per project, which
 		// cannot be told apart before a key is chosen. The caller is told how to name it exactly.
@@ -1313,12 +1434,22 @@ func (p *GovernancePlugin) refuseForeignProviderObject(ctx *schemas.BifrostConte
 			Error:      &schemas.ErrorField{Message: fmt.Sprintf("%s '%s' matches objects in more than one project; address it by its full resource name", label, ref.requestID)},
 		}}
 	}
+	// A task fails closed (TXE-6431 for image tasks, TXE-7119 for batches and videos): a key
+	// reaches one only under an id recorded for it. A task created outside the gateway, before
+	// ownership was recorded, or whose row was lost has no owner to check the caller against, and
+	// an id can carry more than the vendor's task id (BFL's carries the model and the polling
+	// host), so "no row stays reachable" would let any key reach it by rewriting the rest.
+	if ownedOnlyByRecord(ref.kind) && len(owners) == 0 {
+		return notFound()
+	}
 	return nil
 }
 
-// hiddenProviderObjects returns, from a page of ids, the ones another virtual key created, as a
+// hiddenProviderObjects returns, from a page of ids, the ones the virtual key may not see, as a
 // predicate on the listed id. Every form of each id is looked up, and an id is hidden when any
-// of its forms is another key's. The predicate is nil when nothing on the page is hidden.
+// of its forms is another key's. A task (ownedOnlyByRecord) is also hidden when none of its
+// forms has an owner on record, as it is not found when addressed. The predicate is nil when
+// nothing on the page is hidden.
 func (p *GovernancePlugin) hiddenProviderObjects(ctx *schemas.BifrostContext, kind, provider, vkID string, ids []string) (func(id string) bool, error) {
 	forms := make([]string, 0, len(ids)*2)
 	unverifiable := false
@@ -1341,13 +1472,25 @@ func (p *GovernancePlugin) hiddenProviderObjects(ctx *schemas.BifrostContext, ki
 	for id := range ambiguous {
 		hidden[id] = struct{}{}
 	}
-	if len(hidden) == 0 && !unverifiable {
+	closed := ownedOnlyByRecord(kind)
+	if len(hidden) == 0 && !unverifiable && !closed {
 		return nil, nil
 	}
 	return func(id string) bool {
 		lookup, unclear := providerObjectLookupForms(kind, schemas.ModelProvider(provider), id)
 		if unclear {
 			return true
+		}
+		if closed {
+			// Shown only when a form is recorded for this key and none for another.
+			own := false
+			for _, form := range lookup {
+				if _, other := hidden[form]; other {
+					return true
+				}
+				own = own || owners[form] == vkID
+			}
+			return !own
 		}
 		for _, form := range lookup {
 			if _, ok := hidden[form]; ok {
@@ -1362,7 +1505,7 @@ func (p *GovernancePlugin) hiddenProviderObjects(ctx *schemas.BifrostContext, ki
 // key may see. Pagination cursors are the provider's and are left alone; only the page's items
 // are narrowed. A provider can attach the whole unfiltered page as the raw response (OpenAI does
 // so on every batch item), so once anything is removed the raw page is dropped from the list and
-// from the kept items. If the ownership lookup fails it returns an error and leaves the list
+// from the kept items; a page nothing was removed from is left as the provider sent it. If the ownership lookup fails it returns an error and leaves the list
 // untouched; the caller fails the request rather than send a page it could not check.
 func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext, provider string, result *schemas.BifrostResponse) error {
 	if p.configStore == nil || result == nil || !p.objectOwnershipEnforced() {
@@ -1398,6 +1541,9 @@ func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext,
 				kept = append(kept, item)
 			}
 		}
+		if len(kept) == len(list.Data) {
+			return nil
+		}
 		list.Data = kept
 		list.ExtraFields.RawResponse = nil
 	case result.FileListResponse != nil && len(result.FileListResponse.Data) > 0:
@@ -1418,6 +1564,9 @@ func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext,
 			if !hidden(item.ID) {
 				kept = append(kept, item)
 			}
+		}
+		if len(kept) == len(list.Data) {
+			return nil
 		}
 		list.Data = kept
 		list.ExtraFields.RawResponse = nil
@@ -1440,6 +1589,9 @@ func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext,
 				kept = append(kept, item)
 			}
 		}
+		if len(kept) == len(list.Data) {
+			return nil
+		}
 		list.Data = kept
 		list.ExtraFields.RawResponse = nil
 	case result.ContainerListResponse != nil && len(result.ContainerListResponse.Data) > 0:
@@ -1460,6 +1612,9 @@ func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext,
 			if !hidden(item.ID) {
 				kept = append(kept, item)
 			}
+		}
+		if len(kept) == len(list.Data) {
+			return nil
 		}
 		list.Data = kept
 		list.ExtraFields.RawResponse = nil
@@ -1482,6 +1637,9 @@ func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext,
 				kept = append(kept, item)
 			}
 		}
+		if len(kept) == len(list.Data) {
+			return nil
+		}
 		list.Data = kept
 		list.ExtraFields.RawResponse = nil
 	case result.CachedContentListResponse != nil && len(result.CachedContentListResponse.CachedContents) > 0:
@@ -1502,6 +1660,9 @@ func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext,
 			if !hidden(item.Name) {
 				kept = append(kept, item)
 			}
+		}
+		if len(kept) == len(list.CachedContents) {
+			return nil
 		}
 		list.CachedContents = kept
 		list.ExtraFields.RawResponse = nil
