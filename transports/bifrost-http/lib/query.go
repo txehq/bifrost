@@ -52,6 +52,10 @@ func CopyQueryFirstValues(args *fasthttp.Args, dst map[string]string, lowerKeys 
 // value: the plugin's value replaces every value the caller sent, so a handler and a
 // vendor never see the plugin's value next to a stale one. A name a plugin deleted from
 // the map stays on the request, as before.
+//
+// A map cannot say whether a plugin assigned a name the value it already held, so that
+// case is "not changed" and a repeated name keeps its other values. A plugin that must
+// pin a value reads HTTPRequest.RepeatedQuery and refuses the request.
 func ApplyQueryChanges(args *fasthttp.Args, query map[string]string) {
 	for key, value := range query {
 		if args.Has(key) && string(args.Peek(key)) == value {

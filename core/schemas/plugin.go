@@ -53,8 +53,11 @@ type HTTPRequest struct {
 	//
 	// The gateway reads the first value of a name, but a parameter it does not interpret
 	// is forwarded to the vendor with every value. A plugin that allows or refuses a
-	// request by a query value must therefore check RepeatedQuery as well as Query, or
-	// set the name in Query, which replaces every value the caller sent.
+	// request by a query value must therefore check RepeatedQuery as well as Query.
+	// Setting the name in Query to a different value replaces every value the caller
+	// sent; setting it to the value it already holds changes nothing, because the
+	// transport cannot tell that from a name the plugin left alone, so a plugin that
+	// must pin a value refuses a request whose RepeatedQuery carries the name.
 	RepeatedQuery map[string][]string `json:"repeated_query,omitempty"`
 	Body          []byte              `json:"body"`
 	PathParams    map[string]string   `json:"path_params"` // Path variables extracted from the URL pattern (e.g., {model})
