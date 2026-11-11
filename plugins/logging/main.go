@@ -859,6 +859,14 @@ func (p *LoggerPlugin) recordVideoJobLifecycle(entry *logstore.Log, result *sche
 	if dims.Model == "" {
 		dims.Model = entry.Model
 	}
+	// A create that named no duration renders the vendor's default, and the vendor reports
+	// none back. Settlement needs a duration to price the job, so it gets that default here,
+	// on the accounting row only: without it the job is unpriceable and never charged.
+	if dims.Seconds == nil && requestType == schemas.VideoGenerationRequest {
+		if seconds, ok := schemas.DefaultVideoSeconds(schemas.ModelProvider(entry.Provider)); ok {
+			dims.Seconds = &seconds
+		}
+	}
 
 	job := &tables.TableProviderJob{
 		Kind:             tables.ProviderJobKindVideo,

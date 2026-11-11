@@ -260,8 +260,21 @@ func CheckTaskControlFields(provider any, req *BifrostRequest) *BifrostError {
 }
 
 // DefaultVideoDuration is the duration Veo renders when the request names none. It is used only
-// to estimate passthrough usage for Bifrost's own logs; a task object never carries it.
+// for Bifrost's own accounting (passthrough usage estimates and job settlement); a task object
+// never carries it.
 const DefaultVideoDuration = "8"
+
+// DefaultVideoSeconds is the duration a provider renders when a video create names none, for
+// the providers whose default Bifrost knows (Veo on Gemini and Vertex: 8 seconds). Job
+// settlement prices a create that sent no seconds by it, so such a job is still charged to the
+// caller's budget. It is never written to a response (contract C5).
+func DefaultVideoSeconds(provider ModelProvider) (int, bool) {
+	switch provider {
+	case Gemini, Vertex:
+		return 8, true
+	}
+	return 0, false
+}
 
 // BifrostVideoGenerationResponse represents the video generation job response in bifrost format.
 type BifrostVideoGenerationResponse struct {
