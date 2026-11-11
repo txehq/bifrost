@@ -43,10 +43,8 @@ func restrictedPlugin(t *testing.T, storagePrefixes, pubSubTopics []string) *Gov
 	t.Helper()
 	vk := buildVKForMCPStamping(nil)
 	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("vertex", []string{"*"}), buildProviderConfig("bedrock", []string{"*"}))
-	// The store normalizes the lists when a key is saved; a key built in memory gets the same.
-	if prefixes, topics, err := configstoreTables.NormalizeVirtualKeyAllowlists(storagePrefixes, pubSubTopics); err == nil {
-		storagePrefixes, pubSubTopics = prefixes, topics
-	}
+	// The lists are given as an operator writes them; the store normalizes them once when it
+	// loads the key, with or without a config store.
 	vk.AllowedStoragePrefixes = storagePrefixes
 	vk.AllowedPubSubTopics = pubSubTopics
 	plugin := newAccessTestPlugin(t, vk, nil)
@@ -420,6 +418,21 @@ func BenchmarkPreLLMHookCloudResourceAllowlists(b *testing.B) {
 			})
 		}
 	}
+}
+
+// A key loaded from memory, with no config store, has its lists normalized once at load: an
+// entry written with a trailing slash, an upper-case scheme or space around it covers what it
+// says.
+func TestMemoryOnlyVirtualKeyAllowlistsAreNormalizedAtLoad(t *testing.T) {
+	plugin := restrictedPlugin(t, []string{" GS://shared-bucket/tenant-a/ "}, []string{" projects/p/topics/tenant-a "})
+	plugin.configStore = nil
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), storageRequests(schemas.Vertex, "gs://shared-bucket/tenant-a/in/a.jsonl")["chat file"])
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "a prefix written with a trailing slash covers its folder")
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), storageRequests(schemas.Vertex, "gs://shared-bucket/tenant-b/in/a.jsonl")["chat file"])
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "and nothing outside it")
+	assert.Equal(t, 403, *shortCircuit.Error.StatusCode)
 }
 
 // A list whose entries do not normalize leaves the key restricted to nothing, never open.
