@@ -323566,8 +323566,7 @@
                 "exec": [
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
-                  "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');"
+                  "}"
                 ]
               }
             },
@@ -323756,7 +323755,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "// The probe calls the gateway itself, so it carries the gateway credential the harness would have sent.",
                   "var auth = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header');",
                   "var headers = { 'x-bf-api-key': 'fixture-video-key-a' };",
@@ -323823,7 +323821,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "// The probe calls the gateway itself, so it carries the gateway credential the harness would have sent.",
                   "var auth = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header');",
                   "var headers = { 'x-bf-api-key': 'fixture-video-key-b' };",
@@ -323889,8 +323886,7 @@
                 "exec": [
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
-                  "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');"
+                  "}"
                 ]
               }
             },
