@@ -3523,6 +3523,53 @@ func TestQueryExtraParams(t *testing.T) {
 	}
 }
 
+// queryExtraParamsSink keeps the benchmarked map reachable, as the request that carries it
+// to the provider does, so neither side is measured with a map that never leaves the stack.
+var queryExtraParamsSink map[string]interface{}
+
+// BenchmarkQueryExtraParams is the per-request cost of collecting the query parameters
+// GET /v1/models and GET /v1/files forward to the provider (TXE-7086), next to the loop
+// each handler ran before ("before": one string per name, the map made up front): no
+// query, only parameters the handler reads, one vendor parameter, and a repeated one.
+func BenchmarkQueryExtraParams(b *testing.B) {
+	skip := func(name []byte) bool {
+		switch string(name) {
+		case "provider", "page_size", "page_token":
+			return true
+		}
+		return false
+	}
+	before := func(args *fasthttp.Args) map[string]interface{} {
+		extra := map[string]interface{}{}
+		for k, v := range args.All() {
+			if s := string(k); s != "provider" && s != "page_size" && s != "page_token" {
+				extra[s] = string(v)
+			}
+		}
+		return extra
+	}
+	for _, tc := range []struct{ name, uri string }{
+		{"none", "/v1/models"},
+		{"read_only", "/v1/models?provider=bedrock&page_size=50"},
+		{"single", "/v1/models?provider=bedrock&byProvider=amazon"},
+		{"repeated", "/v1/models?provider=huggingface&filter=text-generation&filter=conversational"},
+	} {
+		args := queryTestCtx(tc.uri).Request.URI().QueryArgs()
+		b.Run(tc.name+"/before", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				queryExtraParamsSink = before(args)
+			}
+		})
+		b.Run(tc.name+"/after", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				queryExtraParamsSink = QueryExtraParams(args, skip)
+			}
+		})
+	}
+}
+
 // TestUnreadQueryParametersBecomeExtraParamsInOnePlace fails when a transport source file
 // outside the allow list calls CopyQueryFirstValues. That function is for the maps a plugin
 // and a routing rule read, one value per name; a handler that used it to fill a request's

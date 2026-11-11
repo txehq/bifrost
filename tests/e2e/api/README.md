@@ -568,7 +568,7 @@ need no upstream.
 Start the fixture and the isolated gateway as in the provider error fixture section above, then run:
 
 ```bash
-newman run tests/e2e/api/collections/provider-harness.json \
+newman run tmp/provider-harness.json \
   --folder "488. A vendor query parameter sent more than once on GET /v1/models and GET /v1/files is refused, never reduced to one value (repeated vendor query) [SERIAL]" \
   --working-dir . \
   --env-var baseUrl=http://127.0.0.1:8790 \
