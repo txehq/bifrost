@@ -735,7 +735,8 @@ func TestMiniMaxVideoV1DefaultSeconds(t *testing.T) {
 	}
 }
 
-// A v1 create answered with a 200 carrying base_resp 1026 is an error: 400 with the vendor's code.
+// A v1 create answered with a 200 carrying base_resp 1026 is a content block: 400
+// caller_content_filtered with the vendor's code.
 func TestMiniMaxVideoV1CreateContentBlock(t *testing.T) {
 	provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
 		"POST /v1/video_generation": jsonResponse(http.StatusOK, `{"task_id":"","base_resp":{"status_code":1026,"status_msg":"input new_sensitive"}}`),
@@ -746,6 +747,9 @@ func TestMiniMaxVideoV1CreateContentBlock(t *testing.T) {
 	}
 	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "1026" {
 		t.Errorf("status = %v code = %v, want 400 and 1026", bifrostErr.StatusCode, bifrostErr.Error.Code)
+	}
+	if bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerContentFiltered {
+		t.Errorf("error_type = %q, want %q", bifrostErr.ExtraFields.ErrorType, schemas.ErrorTypeCallerContentFiltered)
 	}
 }
 
@@ -2566,20 +2570,21 @@ func assertMiniMaxError(t *testing.T, bifrostErr *schemas.BifrostError, wantStat
 	}
 }
 
-// TXE-7065: the unified aspect_ratio is delivered as MiniMax's ratio, overrides the ratio
-// derived from size, and its copy among the extra params is not sent as a second field.
+// TXE-7065: the unified aspect_ratio is delivered as MiniMax's ratio, and its copy among the
+// extra params is not sent as a second field. A size that disagrees with it is refused, not
+// overridden (TXE-6428, contract C4).
 func TestMiniMaxVideoDeliversTheUnifiedAspectRatio(t *testing.T) {
 	extra := map[string]interface{}{"aspect_ratio": "9:16", "prompt_optimizer": true}
 	req, err := minimax.ToMiniMaxVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
 		Provider: schemas.MiniMax, Model: "MiniMax-H3",
 		Input:  &schemas.VideoGenerationInput{Prompt: "a dog"},
-		Params: &schemas.VideoGenerationParameters{Size: "1280x720", AspectRatio: "9:16", ExtraParams: extra},
+		Params: &schemas.VideoGenerationParameters{AspectRatio: "9:16", ExtraParams: extra},
 	})
 	if err != nil {
 		t.Fatalf("ToMiniMaxVideoGenerationRequest: %v", err)
 	}
 	if req.Ratio == nil || *req.Ratio != "9:16" {
-		t.Fatalf("ratio = %v, want the unified aspect_ratio 9:16, not the 16:9 derived from size", req.Ratio)
+		t.Fatalf("ratio = %v, want the unified aspect_ratio 9:16", req.Ratio)
 	}
 	if _, sent := req.GetExtraParams()["aspect_ratio"]; sent {
 		t.Errorf("the copy of aspect_ratio would be sent to MiniMax as an unknown field: %v", req.GetExtraParams())
@@ -2589,13 +2594,23 @@ func TestMiniMaxVideoDeliversTheUnifiedAspectRatio(t *testing.T) {
 	sdk, err := minimax.ToMiniMaxVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
 		Provider: schemas.MiniMax, Model: "MiniMax-H3",
 		Input:  &schemas.VideoGenerationInput{Prompt: "a dog"},
-		Params: &schemas.VideoGenerationParameters{Size: "1280x720", AspectRatio: "9:16"},
+		Params: &schemas.VideoGenerationParameters{AspectRatio: "9:16"},
 	})
 	if err != nil {
 		t.Fatalf("without extra params: %v", err)
 	}
 	if sdk.Ratio == nil || *sdk.Ratio != "9:16" {
 		t.Fatalf("without extra params: ratio = %v, want the unified aspect_ratio 9:16", sdk.Ratio)
+	}
+
+	// A 16:9 size with aspect_ratio 9:16 is a conflict the caller must resolve.
+	_, conflict := minimax.ToMiniMaxVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Provider: schemas.MiniMax, Model: "MiniMax-H3",
+		Input:  &schemas.VideoGenerationInput{Prompt: "a dog"},
+		Params: &schemas.VideoGenerationParameters{Size: "2560x1440", AspectRatio: "9:16"},
+	})
+	if conflict == nil || !strings.Contains(conflict.Error(), "ratio 16:9 but aspect_ratio is 9:16") {
+		t.Errorf("size 2560x1440 with aspect_ratio 9:16: err = %v, want the size refused", conflict)
 	}
 }
 

@@ -153,9 +153,17 @@ func miniMaxVideoExtraParams(params *schemas.VideoGenerationParameters, builtFie
 			delete(extra, name)
 		}
 	}
-	for _, name := range builtFields {
-		if _, ok := extra[name]; ok {
-			return nil, providerUtils.InvalidRequestErrorf("extra param %q would overwrite the %s Bifrost builds from the request; use the unified field", name, name)
+	// ratio is MiniMax's own name for aspect_ratio. Core lets it through only beside an
+	// aspect_ratio of the same value (schemas.VendorPriceFieldNames, TXE-7065), which the
+	// typed Ratio already carries, so it is not sent twice.
+	if _, ok := extra["ratio"]; ok && params.AspectRatio != "" {
+		delete(extra, "ratio")
+	}
+	for key := range extra {
+		for _, name := range builtFields {
+			if providerUtils.ExtraParamNamesField(key, name) {
+				return nil, providerUtils.ExtraParamConflictError(key, name)
+			}
 		}
 	}
 	return extra, nil
