@@ -716,7 +716,8 @@ Folder 406 (TXE-6637) runs its rows 406.5 to 406.8 on the same fixture and the s
 when `providerErrorFixture=1`. Start the fixture and the isolated gateway as in the section above, then:
 
 ```bash
-newman run tests/e2e/api/collections/provider-harness.json \
+node tests/e2e/api/runners/provider-harness-folders.mjs build
+newman run tmp/provider-harness.json \
   --folder "406. Gemini embedding batches run through asyncBatchEmbedContent (gemini embedding-batch)" \
   --env-var baseUrl=http://127.0.0.1:8790 \
   --env-var providerErrorFixture=1 \
