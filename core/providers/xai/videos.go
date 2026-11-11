@@ -530,24 +530,28 @@ func (provider *XAIProvider) VideoDownload(ctx *schemas.BifrostContext, key sche
 		return nil, schemas.NewProviderEmptyResultError("xAI reported the task done but gave no video link")
 	}
 
-	// The link comes from xAI's response, so it is fetched through the SSRF-hardened media
-	// fetcher (public addresses only, checked at dial time and on every redirect) and without
-	// credentials: it is a public link, and the key belongs to api.x.ai alone.
-	start := time.Now()
-	contentType, body, err := providerUtils.FetchMediaURL(ctx, *task.Videos[0].URL)
-	latency := time.Since(start)
-	if err != nil {
-		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("failed to download video", err), latency)
-	}
-	bifrostResp := &schemas.BifrostVideoDownloadResponse{
-		VideoID: request.ID,
-		Content: body,
+	// The link comes from xAI's response, so the shared helper fetches it through the
+	// SSRF-hardened media fetcher (public addresses only, checked at dial time and on every
+	// redirect), streamed when the caller asked for a stream. The request carries no
+	// credentials and no BaseURL is given: it is a public link, and the key belongs to
+	// api.x.ai alone.
+	req := fasthttp.AcquireRequest()
+	defer fasthttp.ReleaseRequest(req)
+	req.SetRequestURI(*task.Videos[0].URL)
+	req.Header.SetMethod(http.MethodGet)
+	return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
+		Request:                  req,
+		VendorURL:                *task.Videos[0].URL,
+		Stream:                   request.Stream,
+		VideoID:                  request.ID,
+		StreamIdleTimeoutSeconds: provider.networkConfig.StreamIdleTimeoutInSeconds,
+		ParseError: func(resp *fasthttp.Response) *schemas.BifrostError {
+			return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()), nil)
+		},
 		// /v1/videos/{id}/content serves these bytes on the gateway's own origin, so only a
 		// video/* type is passed on.
-		ContentType: providerUtils.VideoContentTypeOr(contentType, "video/mp4"),
-	}
-	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
-	return bifrostResp, nil
+		ContentType: func(upstream string) string { return providerUtils.VideoContentTypeOr(upstream, "video/mp4") },
+	})
 }
 
 // VideoDelete is not supported: xAI has no API to delete a video task.
