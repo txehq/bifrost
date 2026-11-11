@@ -749,6 +749,23 @@ const bedrockConverseAnswer = (path) => ({
 });
 const isBedrockConversePath = (path) => /^\/model\/[^/]+\/converse$/.test(path);
 
+// BytePlus Seedance video tasks, TXE-6426 (contract C7), served on /pp/byteplus/api/v3/contents/generations/tasks.
+// A create is answered by the route above wireAnswer already has (task id cgt-fixture-video-task) and is kept in /__wire. A query answers the task whose
+// state its id names (cgt-fixture-queued, -running, -succeeded, -failed, -cancelled, -expired), in the shape
+// core/providers/byteplus/videos_test.go pins, and DELETE answers 200 with no body, as Ark does. Every query and
+// DELETE is counted as "seedance.retrieve <id>" or "seedance.delete <id>", so a cancel row can prove that a
+// queued task was queried once and deleted once, and that a finished one was never deleted.
+const SEEDANCE_TASKS = "/pp/byteplus/api/v3/contents/generations/tasks";
+const seedanceTask = (id) => {
+	const status = id.replace(/^cgt-fixture-/, "");
+	const task = { id, model: "dreamina-seedance-2-0-fast-260128", status, created_at: 1762700000, updated_at: 1762700090 };
+	if (status === "succeeded") {
+		Object.assign(task, { content: { video_url: "https://fixture.invalid/seedance/video.mp4" }, usage: { completion_tokens: 108900, total_tokens: 108900 }, resolution: "720p", ratio: "16:9", duration: 5 });
+	}
+	if (status === "failed") task.error = { code: "OutputVideoSensitiveContentDetected", message: "The request failed because the output video may contain sensitive information." };
+	return task;
+};
+
 const wireAnswer = (path, body, bytes) => {
 	if (isBedrockConversePath(path)) return bedrockConverseAnswer(path);
 	if (path.startsWith("/pp/bfl/v1/")) return { status: 200, body: JSON.stringify(bflSubmitAnswer()) };
@@ -1354,6 +1371,16 @@ const handleRequest = (req, res) => {
 		const answer = miniMaxBaseRespAnswer(decodeURIComponent(path.slice("/pp/minimax/v2/query/video_generation/".length)));
 		if (answer) return send(answer.status, {}, answer.body);
 		return send(404, {}, JSON.stringify({ error: "unknown fixture task" }));
+	}
+	if ((req.method === "GET" || req.method === "DELETE") && path.startsWith(SEEDANCE_TASKS + "/")) {
+		const id = decodeURIComponent(path.slice(SEEDANCE_TASKS.length + 1));
+		req.resume();
+		if (req.method === "DELETE") {
+			countHit(`seedance.delete ${id}`);
+			return send(200, {}, "");
+		}
+		countHit(`seedance.retrieve ${id}`);
+		return send(200, {}, JSON.stringify(seedanceTask(id)));
 	}
 	if (req.method === "POST" && (path.startsWith("/pp/") || path === "/v1/embeddings" || path === "/anthropic/v1/messages" || isOpenAIImagePath(path) || isBedrockConversePath(path))) {
 		const body = [];

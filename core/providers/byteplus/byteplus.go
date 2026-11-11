@@ -337,7 +337,7 @@ func (provider *BytePlusProvider) VideoGeneration(ctx *schemas.BifrostContext, k
 
 	body, latency, bifrostErr := provider.doBytePlusRequest(ctx, key, http.MethodPost, "/api/v3/contents/generations/tasks", "", jsonData, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, markSeedanceContentFilterError(bifrostErr)
 	}
 
 	var taskResp BytePlusVideoTaskCreationResponse
