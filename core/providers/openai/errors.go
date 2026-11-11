@@ -130,6 +130,29 @@ func matchesStreamErrorSignal(code, errType string, want ...string) bool {
 	return false
 }
 
+// azureResponsibleAIPolicyViolation is the only inner_error.code in Azure's v1-preview error
+// schema: the vendor's content filter blocked the caller's content (contract C6).
+const azureResponsibleAIPolicyViolation = "ResponsibleAIPolicyViolation"
+
+// openAIInnerErrorCode reads error.inner_error.code from the decoded error body, empty when the
+// body has none.
+func openAIInnerErrorCode(rawResponse interface{}) string {
+	body, ok := rawResponse.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	errorObject, ok := body["error"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	innerError, ok := errorObject["inner_error"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	code, _ := innerError["code"].(string)
+	return code
+}
+
 // ParseOpenAIError parses OpenAI error responses.
 func ParseOpenAIError(resp *fasthttp.Response) *schemas.BifrostError {
 	var errorResp schemas.BifrostError
@@ -173,6 +196,14 @@ func ParseOpenAIError(resp *fasthttp.Response) *schemas.BifrostError {
 	// layer infers (contract C6).
 	if schemas.IsContentFilterError(bifrostErr) {
 		bifrostErr.ExtraFields.ErrorType = schemas.ErrorTypeCallerContentFiltered
+	}
+	// Azure's video API names the filter only in error.inner_error.code
+	// (ResponsibleAIPolicyViolation). The inner code is kept on the error either way.
+	if innerCode := openAIInnerErrorCode(bifrostErr.ExtraFields.RawResponse); innerCode != "" {
+		bifrostErr.Error.InnerCode = schemas.Ptr(innerCode)
+		if innerCode == azureResponsibleAIPolicyViolation {
+			bifrostErr.ExtraFields.ErrorType = schemas.ErrorTypeCallerContentFiltered
+		}
 	}
 
 	// Set ExtraFields unconditionally so provider/model/request metadata is always attached

@@ -1001,3 +1001,277 @@ func TestAzureVideoDownloadStreamsOnRequest(t *testing.T) {
 		t.Fatalf("upstream calls = %q, want %q", calls, want)
 	}
 }
+
+// azureVideoCall is one request the fake Azure resource received.
+type azureVideoCall struct {
+	method, path, apiKey string
+	form                 map[string][]string
+}
+
+// newAzureVideoServer is a fake Azure resource that records each request (multipart form fields
+// included) and answers with respond.
+func newAzureVideoServer(t *testing.T, respond func(w http.ResponseWriter, r *http.Request)) (*httptest.Server, func() []azureVideoCall) {
+	t.Helper()
+	var mu sync.Mutex
+	var calls []azureVideoCall
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call := azureVideoCall{method: r.Method, path: r.URL.Path, apiKey: r.Header.Get("api-key")}
+		if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Errorf("parse multipart form: %v", err)
+			} else {
+				call.form = r.MultipartForm.Value
+			}
+		}
+		mu.Lock()
+		calls = append(calls, call)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		respond(w, r)
+	}))
+	t.Cleanup(server.Close)
+	return server, func() []azureVideoCall {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]azureVideoCall(nil), calls...)
+	}
+}
+
+func azureVideoQueued(w http.ResponseWriter, _ *http.Request) {
+	_, _ = io.WriteString(w, `{"id":"video_1","object":"video","status":"queued","created_at":1,"model":"sora-2","seconds":"4","size":"720x1280"}`)
+}
+
+func newAzureVideoRequest(input *schemas.VideoGenerationInput, params *schemas.VideoGenerationParameters) *schemas.BifrostVideoGenerationRequest {
+	return &schemas.BifrostVideoGenerationRequest{Provider: schemas.Azure, Model: "sora-2", Input: input, Params: params}
+}
+
+func newAzureVideoContext() *schemas.BifrostContext {
+	return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+}
+
+func checkAzureVideoFieldRefused(t *testing.T, bifrostErr *schemas.BifrostError, param string) {
+	t.Helper()
+	if bifrostErr == nil {
+		t.Fatalf("want a 400 naming %s", param)
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %v, want 400: %+v", bifrostErr.StatusCode, bifrostErr.Error)
+	}
+	if got := bifrostErr.ResolveErrorType(); got != schemas.ErrorTypeCallerUnsupportedParameter {
+		t.Fatalf("error_type = %q, want %q", got, schemas.ErrorTypeCallerUnsupportedParameter)
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Param != param {
+		t.Fatalf("error.param = %+v, want %q", bifrostErr.Error, param)
+	}
+}
+
+// TestAzureVideoGenerationSizes pins contract C4 rule three: a size Azure does not have is refused
+// with no upstream call instead of being rewritten to 720x1280, and each of the four it has
+// reaches the vendor unchanged.
+func TestAzureVideoGenerationSizes(t *testing.T) {
+	server, calls := newAzureVideoServer(t, azureVideoQueued)
+	provider := newAzureDecisionProvider(t)
+	key := newAzureDecisionKey(server.URL)
+	input := &schemas.VideoGenerationInput{Prompt: "a fox"}
+
+	_, bifrostErr := provider.VideoGeneration(newAzureVideoContext(), key, newAzureVideoRequest(input, &schemas.VideoGenerationParameters{Size: "1920x1080"}))
+	checkAzureVideoFieldRefused(t, bifrostErr, "size")
+	if got := calls(); len(got) != 0 {
+		t.Fatalf("a refused size reached the vendor: %+v", got)
+	}
+
+	sizes := []string{"720x1280", "1280x720", "1024x1792", "1792x1024"}
+	for _, size := range sizes {
+		if _, bifrostErr := provider.VideoGeneration(newAzureVideoContext(), key, newAzureVideoRequest(input, &schemas.VideoGenerationParameters{Size: size})); bifrostErr != nil {
+			t.Fatalf("size %s: %+v", size, bifrostErr.Error)
+		}
+	}
+	got := calls()
+	if len(got) != len(sizes) {
+		t.Fatalf("calls = %d, want %d", len(got), len(sizes))
+	}
+	for i, size := range sizes {
+		if got[i].path != "/openai/v1/videos" {
+			t.Errorf("path = %q", got[i].path)
+		}
+		if values := got[i].form["size"]; len(values) != 1 || values[0] != size {
+			t.Errorf("form size = %v, want [%s]", values, size)
+		}
+	}
+}
+
+// TestAzureVideoGenerationRefusesURLInputReference pins C4: Azure takes input_reference only as
+// bytes and Bifrost does not download, so a link is refused with no upstream call.
+func TestAzureVideoGenerationRefusesURLInputReference(t *testing.T) {
+	server, calls := newAzureVideoServer(t, azureVideoQueued)
+	provider := newAzureDecisionProvider(t)
+	key := newAzureDecisionKey(server.URL)
+	for _, link := range []string{"http://example.com/a.png", "https://example.com/a.png"} {
+		input := &schemas.VideoGenerationInput{Prompt: "a fox", InputReference: schemas.Ptr(link)}
+		_, bifrostErr := provider.VideoGeneration(newAzureVideoContext(), key, newAzureVideoRequest(input, nil))
+		checkAzureVideoFieldRefused(t, bifrostErr, "input_reference")
+	}
+	if got := calls(); len(got) != 0 {
+		t.Fatalf("a refused input_reference reached the vendor: %+v", got)
+	}
+}
+
+// TestAzureVideoGenerationWritesExtraParamsAsFormFields pins C4 agreement two on the multipart
+// body: with x-bf-passthrough-extra-params each extra field is one form field, and a typed field
+// is never written twice.
+func TestAzureVideoGenerationWritesExtraParamsAsFormFields(t *testing.T) {
+	server, calls := newAzureVideoServer(t, azureVideoQueued)
+	provider := newAzureDecisionProvider(t)
+	key := newAzureDecisionKey(server.URL)
+	input := &schemas.VideoGenerationInput{Prompt: "a fox"}
+	params := func() *schemas.VideoGenerationParameters {
+		return &schemas.VideoGenerationParameters{
+			Size:        "1280x720",
+			ExtraParams: map[string]any{"vendor_hint": "high", "vendor_count": 2, "prompt": "not this", "size": "1x1"},
+		}
+	}
+
+	ctx := newAzureVideoContext()
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	if _, bifrostErr := provider.VideoGeneration(ctx, key, newAzureVideoRequest(input, params())); bifrostErr != nil {
+		t.Fatalf("create: %+v", bifrostErr.Error)
+	}
+	form := calls()[0].form
+	for field, want := range map[string]string{"vendor_hint": "high", "vendor_count": "2", "prompt": "a fox", "size": "1280x720"} {
+		if values := form[field]; len(values) != 1 || values[0] != want {
+			t.Errorf("form %s = %v, want [%s]", field, values, want)
+		}
+	}
+
+	if _, bifrostErr := provider.VideoGeneration(newAzureVideoContext(), key, newAzureVideoRequest(input, params())); bifrostErr != nil {
+		t.Fatalf("create without passthrough: %+v", bifrostErr.Error)
+	}
+	if values, ok := calls()[1].form["vendor_hint"]; ok {
+		t.Errorf("extra field sent without x-bf-passthrough-extra-params: %v", values)
+	}
+}
+
+// TestAzureVideoRetrieveFillsTheTaskObject pins C5, C7 and C9 on a query: the vendor's raw status,
+// its seconds as usage at a completed task only, and an artifact marked as fetched through Bifrost.
+func TestAzureVideoRetrieveFillsTheTaskObject(t *testing.T) {
+	var body string
+	server, _ := newAzureVideoServer(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, body) })
+	provider := newAzureDecisionProvider(t)
+	key := newAzureDecisionKey(server.URL)
+	retrieve := func(t *testing.T, vendorBody string) *schemas.BifrostVideoGenerationResponse {
+		t.Helper()
+		body = vendorBody
+		resp, bifrostErr := provider.VideoRetrieve(newAzureVideoContext(), key, &schemas.BifrostVideoRetrieveRequest{Provider: schemas.Azure, ID: "video_1:azure"})
+		if bifrostErr != nil {
+			t.Fatalf("retrieve: %+v", bifrostErr.Error)
+		}
+		return resp
+	}
+
+	t.Run("completed", func(t *testing.T) {
+		resp := retrieve(t, `{"id":"video_1","object":"video","status":"completed","created_at":1,"completed_at":2,"expires_at":90000,"model":"sora-2","seconds":"8","size":"1280x720"}`)
+		if resp.Status != schemas.VideoStatusCompleted || resp.ProviderStatus != "completed" {
+			t.Fatalf("status/provider_status = %q/%q", resp.Status, resp.ProviderStatus)
+		}
+		if resp.Usage == nil || resp.Usage.OutputSeconds == nil || *resp.Usage.OutputSeconds != 8 {
+			t.Fatalf("usage = %+v, want output_seconds 8", resp.Usage)
+		}
+		if len(resp.Videos) != 1 || resp.Videos[0].Type != schemas.VideoOutputTypeContent || resp.Videos[0].URL != nil || resp.Videos[0].ContentType != "video/mp4" {
+			t.Fatalf("videos = %+v, want one content entry without url", resp.Videos)
+		}
+		if resp.ExpiresAt == nil || *resp.ExpiresAt != 90000 {
+			t.Fatalf("expires_at = %v, want the vendor's value", resp.ExpiresAt)
+		}
+	})
+
+	t.Run("not finished", func(t *testing.T) {
+		resp := retrieve(t, `{"id":"video_1","object":"video","status":"in_progress","created_at":1,"model":"sora-2","seconds":"8","size":"1280x720"}`)
+		if resp.ProviderStatus != "in_progress" || resp.Usage != nil || len(resp.Videos) != 0 {
+			t.Fatalf("provider_status/usage/videos = %q/%+v/%+v", resp.ProviderStatus, resp.Usage, resp.Videos)
+		}
+	})
+
+	t.Run("failed reports no output", func(t *testing.T) {
+		resp := retrieve(t, `{"id":"video_1","object":"video","status":"failed","created_at":1,"model":"sora-2","seconds":"8","size":"1280x720","error":{"code":"internal_error","message":"boom"}}`)
+		if resp.Status != schemas.VideoStatusFailed || resp.ProviderStatus != "failed" || resp.Usage != nil || len(resp.Videos) != 0 {
+			t.Fatalf("status/provider_status/usage/videos = %q/%q/%+v/%+v", resp.Status, resp.ProviderStatus, resp.Usage, resp.Videos)
+		}
+		if resp.Error == nil || resp.Error.Code != "internal_error" {
+			t.Fatalf("error = %+v, want the vendor's code", resp.Error)
+		}
+	})
+
+	t.Run("a status the vendor adds later is not terminal", func(t *testing.T) {
+		resp := retrieve(t, `{"id":"video_1","object":"video","status":"preprocessing","created_at":1,"model":"sora-2"}`)
+		if resp.Status != schemas.VideoStatusInProgress || resp.ProviderStatus != "preprocessing" {
+			t.Fatalf("status/provider_status = %q/%q", resp.Status, resp.ProviderStatus)
+		}
+	})
+}
+
+// TestAzureVideoCreateReportsProviderStatus: create and query return the same task object (C7).
+func TestAzureVideoCreateReportsProviderStatus(t *testing.T) {
+	server, _ := newAzureVideoServer(t, azureVideoQueued)
+	provider := newAzureDecisionProvider(t)
+	resp, bifrostErr := provider.VideoGeneration(newAzureVideoContext(), newAzureDecisionKey(server.URL), newAzureVideoRequest(&schemas.VideoGenerationInput{Prompt: "a fox"}, nil))
+	if bifrostErr != nil {
+		t.Fatalf("create: %+v", bifrostErr.Error)
+	}
+	if resp.ID != "video_1:azure" || resp.Status != schemas.VideoStatusQueued || resp.ProviderStatus != "queued" {
+		t.Fatalf("id/status/provider_status = %q/%q/%q", resp.ID, resp.Status, resp.ProviderStatus)
+	}
+}
+
+// TestAzureVideoDeclaresOnlyWhatItDelivers pins C4 rule three and C7: Sora 2 on Azure has seconds
+// and size and nothing else from the unified set, so every other priced field and every task
+// control field is refused before a key is chosen, while seed and negative_prompt stay exempt.
+func TestAzureVideoDeclaresOnlyWhatItDelivers(t *testing.T) {
+	provider := newAzureDecisionProvider(t)
+	check := func(params schemas.VideoGenerationParameters) *schemas.BifrostError {
+		request := &schemas.BifrostRequest{
+			RequestType:            schemas.VideoGenerationRequest,
+			VideoGenerationRequest: newAzureVideoRequest(&schemas.VideoGenerationInput{Prompt: "a fox"}, &params),
+		}
+		if bifrostErr := schemas.CheckDeclaredUnifiedFields(provider, request); bifrostErr != nil {
+			return bifrostErr
+		}
+		return schemas.CheckTaskControlFields(provider, request)
+	}
+	for _, tc := range []struct {
+		param  string
+		params schemas.VideoGenerationParameters
+	}{
+		{"aspect_ratio", schemas.VideoGenerationParameters{AspectRatio: "16:9"}},
+		{"audio", schemas.VideoGenerationParameters{Audio: schemas.Ptr(true)}},
+		{"last_frame", schemas.VideoGenerationParameters{LastFrame: "data:image/png;base64,aGk="}},
+		{"output_format", schemas.VideoGenerationParameters{OutputFormat: schemas.Ptr("webm")}},
+		{"reference_images", schemas.VideoGenerationParameters{ReferenceImages: schemas.VideoReferenceImages{"https://example.com/a.png"}}},
+		{"resolution", schemas.VideoGenerationParameters{Resolution: "1080p"}},
+		{"callback_url", schemas.VideoGenerationParameters{TaskControlParameters: schemas.TaskControlParameters{CallbackURL: schemas.Ptr("https://example.com/hook")}}},
+		{"expires_after_seconds", schemas.VideoGenerationParameters{TaskControlParameters: schemas.TaskControlParameters{ExpiresAfterSeconds: schemas.Ptr(600)}}},
+	} {
+		checkAzureVideoFieldRefused(t, check(tc.params), tc.param)
+	}
+	if bifrostErr := check(schemas.VideoGenerationParameters{
+		Seconds:        schemas.Ptr("8"),
+		Size:           "1280x720",
+		Seed:           schemas.Ptr(7),
+		NegativePrompt: schemas.Ptr("no text"),
+	}); bifrostErr != nil {
+		t.Fatalf("a field Azure takes or an exempt one was refused: %+v", bifrostErr.Error)
+	}
+}
+
+// TestAzureHasNoVideoCancel pins C7: Azure has no cancel API and its DELETE removes the stored
+// video, so the provider must not implement schemas.VideoCanceller; core then answers 400
+// provider_cancel_unsupported without an upstream call.
+func TestAzureHasNoVideoCancel(t *testing.T) {
+	provider := newAzureDecisionProvider(t)
+	if _, ok := any(provider).(schemas.VideoCanceller); ok {
+		t.Fatal("azure implements VideoCanceller; a cancel must never reach Azure's DELETE")
+	}
+	bifrostErr := schemas.CheckVideoCancelSupported(provider, &schemas.BifrostRequest{RequestType: schemas.VideoCancelRequest})
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeProviderCancelUnsupported {
+		t.Fatalf("cancel = %+v, want 400 provider_cancel_unsupported", bifrostErr)
+	}
+}

@@ -187,24 +187,27 @@ func TestToBifrostVideoEditRequest_ProviderFallback(t *testing.T) {
 // TXE-7018: a video create whose extra params name the model is refused, in any spelling,
 // before the form is written; any other extra param leaves the request as it was.
 func TestParseVideoGenerationFormDataBodyFromRequest_RefusesAModelAmongExtraParams(t *testing.T) {
-	for _, param := range []string{"model", "Model", "MODEL"} {
+	// The refusal holds whether or not extra params are passed through to the form (TXE-6532).
+	for _, passthrough := range []bool{false, true} {
+		for _, param := range []string{"model", "Model", "MODEL"} {
+			var body bytes.Buffer
+			bifrostErr := parseVideoGenerationFormDataBodyFromRequest(multipart.NewWriter(&body), &OpenAIVideoGenerationRequest{
+				Model: "sora-2", Prompt: "a dog", ExtraParams: map[string]interface{}{param: "sora-2-pro"},
+			}, schemas.OpenAI, passthrough)
+			if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 ||
+				bifrostErr.Error.Param != param || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerInvalidRequest {
+				t.Errorf("passthrough=%v extra param %q: want a 400 caller_invalid_request naming it, got %+v", passthrough, param, bifrostErr)
+			}
+			if body.Len() != 0 {
+				t.Errorf("passthrough=%v extra param %q: the form was written before the refusal", passthrough, param)
+			}
+		}
 		var body bytes.Buffer
-		bifrostErr := parseVideoGenerationFormDataBodyFromRequest(multipart.NewWriter(&body), &OpenAIVideoGenerationRequest{
-			Model: "sora-2", Prompt: "a dog", ExtraParams: map[string]interface{}{param: "sora-2-pro"},
-		}, schemas.OpenAI)
-		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 ||
-			bifrostErr.Error.Param != param || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerInvalidRequest {
-			t.Errorf("extra param %q: want a 400 caller_invalid_request naming it, got %+v", param, bifrostErr)
+		if bifrostErr := parseVideoGenerationFormDataBodyFromRequest(multipart.NewWriter(&body), &OpenAIVideoGenerationRequest{
+			Model: "sora-2", Prompt: "a dog", ExtraParams: map[string]interface{}{"watermark": false},
+		}, schemas.OpenAI, passthrough); bifrostErr != nil {
+			t.Fatalf("passthrough=%v: an ordinary extra param was refused: %+v", passthrough, bifrostErr)
 		}
-		if body.Len() != 0 {
-			t.Errorf("extra param %q: the form was written before the refusal", param)
-		}
-	}
-	var body bytes.Buffer
-	if bifrostErr := parseVideoGenerationFormDataBodyFromRequest(multipart.NewWriter(&body), &OpenAIVideoGenerationRequest{
-		Model: "sora-2", Prompt: "a dog", ExtraParams: map[string]interface{}{"watermark": false},
-	}, schemas.OpenAI); bifrostErr != nil {
-		t.Fatalf("an ordinary extra param was refused: %+v", bifrostErr)
 	}
 }
 
@@ -319,4 +322,50 @@ func TestVideoDownloadStreamsOnRequest(t *testing.T) {
 	if len(calls) != 2 || calls[0] != want || calls[1] != "GET /v1/videos/video_a/content Bearer sk-test" {
 		t.Fatalf("upstream calls = %q", calls)
 	}
+}
+
+func benchmarkFillOpenAIVideoTaskObject(b *testing.B, base schemas.BifrostVideoGenerationResponse) {
+	b.ReportAllocs()
+	for b.Loop() {
+		response := base
+		fillOpenAIVideoTaskObject(&response)
+	}
+}
+
+// BenchmarkFillOpenAIVideoTaskObject measures the task object step on create and query: a task
+// still running is the common poll and allocates nothing.
+func BenchmarkFillOpenAIVideoTaskObject(b *testing.B) {
+	seconds := "8"
+	b.Run("in_progress", func(b *testing.B) {
+		benchmarkFillOpenAIVideoTaskObject(b, schemas.BifrostVideoGenerationResponse{Status: schemas.VideoStatusInProgress, Seconds: &seconds})
+	})
+	b.Run("completed", func(b *testing.B) {
+		benchmarkFillOpenAIVideoTaskObject(b, schemas.BifrostVideoGenerationResponse{Status: schemas.VideoStatusCompleted, Seconds: &seconds})
+	})
+}
+
+func benchmarkVideoGenerationForm(b *testing.B, extraParams map[string]any, passthrough bool) {
+	request := &schemas.BifrostVideoGenerationRequest{
+		Model:  "sora-2",
+		Input:  &schemas.VideoGenerationInput{Prompt: "a fox"},
+		Params: &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("8"), Size: "1280x720", ExtraParams: extraParams},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		openaiReq, err := ToOpenAIVideoGenerationRequest(request)
+		if err != nil {
+			b.Fatal(err)
+		}
+		var body bytes.Buffer
+		if bifrostErr := parseVideoGenerationFormDataBodyFromRequest(multipart.NewWriter(&body), openaiReq, schemas.Azure, passthrough); bifrostErr != nil {
+			b.Fatal(bifrostErr.Error.Message)
+		}
+	}
+}
+
+// BenchmarkVideoGenerationForm measures building the multipart create body. A request with no
+// passthrough header skips the extra-param writer behind one bool check.
+func BenchmarkVideoGenerationForm(b *testing.B) {
+	b.Run("no_passthrough", func(b *testing.B) { benchmarkVideoGenerationForm(b, map[string]any{"vendor_hint": "high"}, false) })
+	b.Run("passthrough_one_extra", func(b *testing.B) { benchmarkVideoGenerationForm(b, map[string]any{"vendor_hint": "high"}, true) })
 }

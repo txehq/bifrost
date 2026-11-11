@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
+	"strconv"
 
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -22,21 +23,22 @@ func ToOpenAIVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 	}
 
 	if bifrostReq.Input.InputReference != nil {
-		// convert base64 to bytes
+		// The vendor takes input_reference only as file bytes and Bifrost does not download a
+		// link (contract C4 agreement four), so anything but a decodable data URL is the caller's
+		// 400 naming the field.
 		sanitizedURL, err := schemas.SanitizeImageURL(*bifrostReq.Input.InputReference)
 		if err != nil {
-			return nil, fmt.Errorf("invalid input reference: %w", err)
+			return nil, unsupportedVideoFieldError("input_reference", fmt.Sprintf("invalid input_reference: %v", err))
 		}
 		urlInfo := schemas.ExtractURLTypeInfo(sanitizedURL)
-		if urlInfo.DataURLWithoutPrefix != nil {
-			bytes, err := base64.StdEncoding.DecodeString(*urlInfo.DataURLWithoutPrefix)
-			if err != nil {
-				return nil, fmt.Errorf("failed to decode base64 input reference: %w", err)
-			}
-			req.InputReference = bytes
-		} else {
-			return nil, fmt.Errorf("input_reference must be a base64 data URL (e.g. data:image/png;base64,...)")
+		if urlInfo.DataURLWithoutPrefix == nil {
+			return nil, unsupportedVideoFieldError("input_reference", "input_reference must be a base64 data URL (e.g. data:image/png;base64,...); this provider does not take a link")
 		}
+		decoded, err := base64.StdEncoding.DecodeString(*urlInfo.DataURLWithoutPrefix)
+		if err != nil {
+			return nil, unsupportedVideoFieldError("input_reference", fmt.Sprintf("input_reference is not valid base64: %v", err))
+		}
+		req.InputReference = decoded
 	}
 
 	if bifrostReq.Params != nil {
@@ -44,17 +46,14 @@ func ToOpenAIVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 			req.Seconds = bifrostReq.Params.Seconds
 		}
 
-		// Validate and set size
+		// size sets the price, so one the vendor does not have is refused, never rewritten
+		// (contract C4 agreement three).
 		if bifrostReq.Params.Size != "" {
-			// Check if the provided size is valid
-			if ValidOpenAIVideoSizes[bifrostReq.Params.Size] {
-				req.Size = bifrostReq.Params.Size
-			} else {
-				// Invalid size provided, use default
-				req.Size = string(DefaultOpenAIVideoSize)
+			if !ValidOpenAIVideoSizes[bifrostReq.Params.Size] {
+				return nil, unsupportedVideoFieldError("size", fmt.Sprintf("size %q is not one of 720x1280, 1280x720, 1024x1792, 1792x1024", bifrostReq.Params.Size))
 			}
+			req.Size = bifrostReq.Params.Size
 		} else {
-			// No size provided, use default
 			req.Size = string(DefaultOpenAIVideoSize)
 		}
 
@@ -62,6 +61,12 @@ func ToOpenAIVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 	}
 
 	return req, nil
+}
+
+// unsupportedVideoFieldError is a converter error that reaches the caller as 400
+// caller_unsupported_parameter naming param, before any upstream call.
+func unsupportedVideoFieldError(param, message string) error {
+	return providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError(param, message))
 }
 
 // ToOpenAIVideoEditRequest converts a Bifrost video edit request to OpenAI format. OpenAI takes the
@@ -224,12 +229,19 @@ func (req *OpenAIVideoGenerationRequest) ToBifrostVideoGenerationRequest(ctx *sc
 	}
 }
 
-// parseVideoGenerationFormDataBodyFromRequest parses the video generation request and writes it to the multipart form.
-func parseVideoGenerationFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *OpenAIVideoGenerationRequest, providerName schemas.ModelProvider) *schemas.BifrostError {
-	// This form carries no extra params, so one naming the model could never replace it.
-	// The request is refused all the same, as on every route where extra params do reach
-	// the body (the extra-params rule, providerUtils.MergeExtraParamsIntoJSON): a caller
-	// who nests a model there is told so on videos as well (fork, TXE-7018).
+// videoGenerationFormFieldNames are the form fields parseVideoGenerationFormDataBodyFromRequest
+// writes from the typed request, other than model. An extra param naming one of them, in any
+// spelling, is not written a second time: the typed value is the one sent.
+var videoGenerationFormFieldNames = []string{"prompt", "seconds", "size", "input_reference"}
+
+// parseVideoGenerationFormDataBodyFromRequest parses the video generation request and writes it to
+// the multipart form. Extra params become form fields when passthroughExtraParams is set
+// (x-bf-passthrough-extra-params, contract C4 agreement two).
+func parseVideoGenerationFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *OpenAIVideoGenerationRequest, providerName schemas.ModelProvider, passthroughExtraParams bool) *schemas.BifrostError {
+	// An extra param naming the model is refused whether or not extra params reach the form,
+	// as on every route where they reach the body (the extra-params rule,
+	// providerUtils.MergeExtraParamsIntoJSON): a caller who nests a model there is told so on
+	// videos as well (fork, TXE-7018).
 	if param, field, names := providerUtils.ExtraParamNamingASetField(openaiReq.ExtraParams, []string{"model"}); names {
 		bifrostErr, _ := providerUtils.AsBifrostBadRequestError(providerUtils.ExtraParamConflictError(param, field))
 		return bifrostErr
@@ -307,10 +319,57 @@ func parseVideoGenerationFormDataBodyFromRequest(writer *multipart.Writer, opena
 		}
 	}
 
+	if passthroughExtraParams {
+		if bifrostErr := writeExtraParamFormFields(writer, openaiReq.ExtraParams, videoGenerationFormFieldNames); bifrostErr != nil {
+			return bifrostErr
+		}
+	}
+
 	// Close the multipart writer
 	if err := writer.Close(); err != nil {
 		return providerUtils.NewBifrostOperationError("failed to close multipart writer", err)
 	}
 
 	return nil
+}
+
+// openAIVideoContentType is the type of the artifact behind /videos/{id}/content: the vendor
+// serves only MP4 there.
+const openAIVideoContentType = "video/mp4"
+
+// openAIVideoStatusTable maps the vendor's video statuses (OpenAI's video object and Azure's
+// VideoStatus in v1-preview). Azure's enum is open, so a status it adds later maps to in_progress
+// through VideoStatusTable.Apply and stays readable in provider_status.
+var openAIVideoStatusTable = providerUtils.VideoStatusTable{
+	"queued":      schemas.VideoStatusQueued,
+	"in_progress": schemas.VideoStatusInProgress,
+	"completed":   schemas.VideoStatusCompleted,
+	"failed":      schemas.VideoStatusFailed,
+}
+
+// fillOpenAIVideoTaskObject completes a decoded create or query response into the task object of
+// contract C7. status and provider_status come from the same vendor string. At completed, the
+// vendor's seconds become usage.output_seconds (C5) and the artifact, which needs the vendor's key,
+// is a content entry the caller fetches through GET /v1/videos/{id}/content (C9). Run before any
+// inline download, so a caller that asked for the bytes gets them in place of the content entry.
+func fillOpenAIVideoTaskObject(response *schemas.BifrostVideoGenerationResponse) {
+	if response == nil || response.Status == "" {
+		return
+	}
+	openAIVideoStatusTable.Apply(response, string(response.Status))
+	if response.Status != schemas.VideoStatusCompleted {
+		return
+	}
+	if response.Seconds != nil {
+		if seconds, err := strconv.ParseFloat(*response.Seconds, 64); err == nil {
+			if response.Usage == nil {
+				response.Usage = &schemas.VideoUsage{}
+			}
+			response.Usage.OutputSeconds = &seconds
+		}
+	}
+	response.Videos = append(response.Videos, schemas.VideoOutput{
+		Type:        schemas.VideoOutputTypeContent,
+		ContentType: openAIVideoContentType,
+	})
 }

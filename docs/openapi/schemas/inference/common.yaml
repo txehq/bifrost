@@ -90,6 +90,9 @@ ErrorField:
       type: string
     event_id:
       type: string
+    inner_code:
+      type: string
+      description: The vendor's inner_error.code, when its error body carries one (Azure ResponsibleAIPolicyViolation).
 
 RoutingInfo:
   type: object

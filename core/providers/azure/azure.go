@@ -218,6 +218,21 @@ func (provider *AzureProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Azure
 }
 
+// azureVideoGenerationFields are the unified Params fields Sora 2 on Azure has a form field for.
+// input_reference is on the request's input and is checked by the converter.
+var azureVideoGenerationFields = []string{"seconds", "size"}
+
+// SupportedUnifiedFields declares what video generation delivers, so core refuses every other
+// priced field and every task control field with caller_unsupported_parameter before a key is
+// chosen (contract C4 agreement three, C7): Azure has no aspect_ratio, resolution, audio,
+// output_format, last_frame or reference_images, no callback and no deadline parameter.
+func (provider *AzureProvider) SupportedUnifiedFields(requestType schemas.RequestType) ([]string, bool) {
+	if requestType == schemas.VideoGenerationRequest {
+		return azureVideoGenerationFields, true
+	}
+	return nil, false
+}
+
 // listModelsByKey performs a list models request for a single key.
 // Returns the response and latency, or an error if the request fails.
 func (provider *AzureProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
