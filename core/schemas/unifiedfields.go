@@ -1,11 +1,15 @@
 package schemas
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 )
 
 // A field that cannot be delivered is an error (contract C4, work item BF4). When a
@@ -157,6 +161,267 @@ func VendorPriceFieldNames() []VendorPriceFieldName {
 	return vendorPriceFieldNames
 }
 
+// NestedPriceField is a field one provider's request body holds inside an object, written by
+// its converter from a price-affecting unified field.
+type NestedPriceField struct {
+	Provider ModelProvider // the provider whose converter writes it
+	Path     string        // where it is in the body, dotted: "parameters.durationSeconds"
+	Field    string        // a unified field it is written from, named in the refusal
+	Requests []RequestType // the operations on which the converter writes it
+}
+
+// nestedPriceFields lists, per provider, the body fields below the top level that a
+// converter writes from a C4 price field (TXE-7124). Extra params are merged into the
+// converted body object by object, so an extra param named after the parent object adds the
+// nested field when the request left the unified one out: {"parameters":
+// {"durationSeconds": 8}} on a Veo request with no seconds. The vendor bills for a value
+// the request does not show, and the check on top-level names never sees it. The check
+// below refuses every path listed here.
+//
+// A path is listed when the converter writes it from a unified field, so a caller who is
+// refused can send that field. Paths through a list (Gemini's requests[], Vertex's
+// instances[]) are not listed: the merge never reaches into a list, and an extra param
+// naming one the converter built is refused as a conflict.
+// A path under an object that is itself a unified price field (Google Cloud
+// Text-to-Speech's voice.languageCode) is not listed either: the extra param naming that
+// object is refused by the top-level rule.
+//
+// core's TestNestedPriceFieldsAreDeclaredAndRefused sends every C4 field through every
+// provider's converter and fails when a field lands on a nested path that is not listed
+// here, or when a listed path is one no converter writes.
+var nestedPriceFields = func() []NestedPriceField {
+	image := []RequestType{ImageGenerationRequest, ImageGenerationStreamRequest, ImageEditRequest, ImageEditStreamRequest}
+	imageGeneration := []RequestType{ImageGenerationRequest, ImageGenerationStreamRequest}
+	video := []RequestType{VideoGenerationRequest}
+	speech := []RequestType{SpeechRequest, SpeechStreamRequest}
+	embedding := []RequestType{EmbeddingRequest}
+	fields := []NestedPriceField{
+		{Bedrock, "imageGenerationConfig.numberOfImages", "n", imageGeneration},
+		{Bedrock, "imageGenerationConfig.quality", "quality", imageGeneration},
+		{Bedrock, "imageGenerationConfig.width", "size", imageGeneration},
+		{Bedrock, "imageGenerationConfig.height", "size", imageGeneration},
+		{Bedrock, "embeddingConfig.outputEmbeddingLength", "dimensions", embedding},
+		{Bedrock, "singleEmbeddingParams.embeddingDimension", "dimensions", embedding},
+		{Bedrock, "singleEmbeddingParams.embeddingPurpose", "task_type", embedding},
+		{BytePlus, "sequential_image_generation_options.max_images", "n", image},
+		{Elevenlabs, "voice_settings.speed", "speed", speech},
+		{GoogleCloudTTS, "audioConfig.audioEncoding", "response_format", speech},
+		{GoogleCloudTTS, "audioConfig.speakingRate", "speed", speech},
+		{MiniMax, "audio_setting.format", "response_format", speech},
+		{MiniMax, "voice_setting.speed", "speed", speech},
+		{MiniMax, "voice_setting.voice_id", "voice", speech},
+		{Replicate, "input.aspect_ratio", "aspect_ratio", image},
+		{Replicate, "input.resolution", "size", image},
+		{Replicate, "input.number_of_images", "n", image},
+		{Replicate, "input.quality", "quality", image},
+		{Replicate, "input.output_format", "output_format", image},
+		{Replicate, "input.background", "background", image},
+		{Replicate, "input.duration", "seconds", video},
+	}
+	// Gemini and Vertex run the same converters for Imagen, Gemini image models and Veo.
+	for _, provider := range []ModelProvider{Gemini, Vertex} {
+		fields = append(fields,
+			NestedPriceField{provider, "parameters.sampleCount", "n", image},
+			NestedPriceField{provider, "parameters.aspectRatio", "aspect_ratio", image},
+			NestedPriceField{provider, "parameters.sampleImageSize", "size", image},
+			NestedPriceField{provider, "parameters.outputOptions.mimeType", "output_format", image},
+			NestedPriceField{provider, "generationConfig.imageConfig.aspectRatio", "aspect_ratio", image},
+			NestedPriceField{provider, "generationConfig.imageConfig.imageSize", "resolution", image},
+			NestedPriceField{provider, "parameters.aspectRatio", "aspect_ratio", video},
+			NestedPriceField{provider, "parameters.durationSeconds", "seconds", video},
+			NestedPriceField{provider, "parameters.generateAudio", "audio", video},
+		)
+	}
+	fields = append(fields,
+		NestedPriceField{Gemini, "generationConfig.speechConfig.voice_config.prebuiltVoiceConfig.voiceName", "voice", speech},
+		NestedPriceField{Vertex, "parameters.outputDimensionality", "dimensions", embedding},
+	)
+	return fields
+}()
+
+// NestedPriceFields returns the table of nested body fields that hold a price-affecting
+// value. The slice is shared; do not modify it.
+func NestedPriceFields() []NestedPriceField {
+	return nestedPriceFields
+}
+
+// nestedPriceFieldsByProvider is nestedPriceFields per provider, each path split into its
+// names, so a request for a provider with none reads one map entry.
+var nestedPriceFieldsByProvider = func() map[ModelProvider][]nestedPricePath {
+	byProvider := map[ModelProvider][]nestedPricePath{}
+	for i := range nestedPriceFields {
+		nested := &nestedPriceFields[i]
+		byProvider[nested.Provider] = append(byProvider[nested.Provider], nestedPricePath{field: nested, names: strings.Split(nested.Path, ".")})
+	}
+	return byProvider
+}()
+
+type nestedPricePath struct {
+	field *NestedPriceField
+	names []string
+}
+
+// SameJSONFieldName reports whether a and b name the same field once case and
+// underscores are ignored: "max_tokens", "maxTokens" and "MaxTokens" are one field.
+// Case is folded the way the most permissive decoder folds it, Go's encoding/json,
+// which uses Unicode simple folding: "\u017ftream" (long s) and "tas\u212a" (Kelvin
+// sign) are read there as "stream" and "task", so they are the same field here too.
+// It allocates nothing.
+//
+// It is the one comparison for a caller-supplied field name against a body field: the
+// extra-params merge (core/providers/utils) and the nested price-field check below both use
+// it, so a spelling the merge would apply to a body object is a spelling the check reads.
+func SameJSONFieldName(a, b string) bool {
+	i, j := 0, 0
+	for {
+		for i < len(a) && a[i] == '_' {
+			i++
+		}
+		for j < len(b) && b[j] == '_' {
+			j++
+		}
+		if i == len(a) || j == len(b) {
+			return i == len(a) && j == len(b)
+		}
+		if ca, cb := a[i], b[j]; ca < utf8.RuneSelf && cb < utf8.RuneSelf {
+			// Both ASCII, the usual case: no decoding.
+			if ca != cb && foldJSONFieldRune(rune(ca)) != foldJSONFieldRune(rune(cb)) {
+				return false
+			}
+			i++
+			j++
+			continue
+		}
+		ra, sizeA := utf8.DecodeRuneInString(a[i:])
+		rb, sizeB := utf8.DecodeRuneInString(b[j:])
+		if ra != rb && foldJSONFieldRune(ra) != foldJSONFieldRune(rb) {
+			return false
+		}
+		i += sizeA
+		j += sizeB
+	}
+}
+
+// foldJSONFieldRune returns the smallest rune of r's simple case-folding orbit, so two
+// runes that fold together map to one value ('K', 'k' and the Kelvin sign all give 'K').
+func foldJSONFieldRune(r rune) rune {
+	if r < utf8.RuneSelf {
+		if 'a' <= r && r <= 'z' {
+			return r - ('a' - 'A')
+		}
+		// 'K' and 'S' have non-ASCII members in their orbits, but they are the smallest.
+		return r
+	}
+	smallest := r
+	for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
+		if next < smallest {
+			smallest = next
+		}
+	}
+	return smallest
+}
+
+// extraParamObject returns value as the JSON object the extra-params merge would apply, and
+// whether it is one. The merge serializes each extra param and treats whatever comes out as
+// an object as one, so a Go caller's map[string]int, struct or json.RawMessage is an object
+// there exactly as a map[string]interface{} is, and must be one here. The values a JSON body
+// decodes to are answered without serializing anything.
+func extraParamObject(value interface{}) (map[string]interface{}, bool) {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		return v, true
+	case nil, string, bool, float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64,
+		[]interface{}, []string, json.Number:
+		return nil, false
+	}
+	encoded, err := MarshalSorted(value)
+	if err != nil {
+		return nil, false
+	}
+	trimmed := bytes.TrimSpace(encoded)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, false
+	}
+	var object map[string]interface{}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.UseNumber()
+	if decoder.Decode(&object) != nil {
+		return nil, false
+	}
+	return object, true
+}
+
+// nestedExtraParamSet reports whether extraParams sets a non-empty value at a body path,
+// following objects only and reading each name as SameJSONFieldName does, which is how the
+// merge reads it. Every spelling of
+// a name is followed, not only the first: the merge applies each of them to the same body
+// object, so {"Parameters": {}, "parameters": {"durationSeconds": 8}} sets the field. keys
+// receives the names of the first such path in sorted order, as the caller spelled them.
+func nestedExtraParamSet(current map[string]interface{}, names []string, keys []string) bool {
+	name, last := names[0], len(names) == 1
+	found := false
+	var best [8]string
+	for candidate, value := range current {
+		if !SameJSONFieldName(candidate, name) {
+			continue
+		}
+		// Not better than the path already found at this level: nothing under it is.
+		if found && candidate >= keys[0] {
+			continue
+		}
+		if last {
+			if extraParamIsEmpty(value) {
+				continue
+			}
+		} else {
+			next, isObject := extraParamObject(value)
+			if !isObject || !nestedExtraParamSet(next, names[1:], best[1:len(names)]) {
+				continue
+			}
+			copy(keys[1:], best[1:len(names)])
+		}
+		keys[0], found = candidate, true
+	}
+	return found
+}
+
+// nestedPriceFieldAmong returns the first nested price field of baseProvider and
+// requestType, in the caller's spelling and sorted order, that extraParams sets, and the
+// unified field it stands for. "" when it sets none.
+func nestedPriceFieldAmong(baseProvider ModelProvider, requestType RequestType, extraParams map[string]interface{}) (param, field string) {
+	paths := nestedPriceFieldsByProvider[baseProvider]
+	if len(paths) == 0 {
+		return "", ""
+	}
+	// Only an extra param that holds an object can carry a nested field. The common
+	// request has none, and the table is not read for it.
+	hasObject := false
+	for _, value := range extraParams {
+		if object, isObject := extraParamObject(value); isObject && len(object) > 0 {
+			hasObject = true
+			break
+		}
+	}
+	if !hasObject {
+		return "", ""
+	}
+	var keys [8]string
+	for i := range paths {
+		path := &paths[i]
+		if len(path.names) > len(keys) || !slices.Contains(path.field.Requests, requestType) {
+			continue
+		}
+		if !nestedExtraParamSet(extraParams, path.names, keys[:len(path.names)]) {
+			continue
+		}
+		spelled := strings.Join(keys[:len(path.names)], ".")
+		if param == "" || spelled < param {
+			param, field = spelled, path.field.Field
+		}
+	}
+	return param, field
+}
+
 // priceFieldNamed returns the price-affecting unified field of requestType that an extra
 // param named key stands for on baseProvider: the unified name itself in any letter
 // case, or the provider's own name for it. "" when it stands for none.
@@ -211,7 +476,10 @@ func CheckExtraParamPriceFields(req *BifrostRequest) *BifrostError {
 // baseProvider (the base provider type, for a custom provider). It also refuses that
 // provider's own names for the price-affecting fields (vendorPriceFieldNames), which its
 // converter would read: a value under the vendor's name is no more visible on the request
-// than one under the unified name. The request worker calls this form.
+// than one under the unified name. And it refuses a price field nested inside an extra
+// param that names one of the provider's body objects (nestedPriceFields), whatever the
+// request sent: the unified field is the only way to set it. The request worker calls this
+// form.
 func CheckExtraParamPriceFieldsFor(baseProvider ModelProvider, req *BifrostRequest) *BifrostError {
 	if req == nil {
 		return nil
@@ -275,6 +543,11 @@ func checkExtraParamPriceFields(baseProvider ModelProvider, req *BifrostRequest,
 		}
 	}
 	if refused == "" {
+		if nested, nestedField := nestedPriceFieldAmong(baseProvider, req.RequestType, extraParams); nested != "" {
+			return NewUnsupportedParameterError(nested, fmt.Sprintf(
+				"extra params cannot set %q: it affects the price of this request, so it is set through the request's own %s field, never through an extra param",
+				nested, nestedField))
+		}
 		return nil
 	}
 	return NewUnsupportedParameterError(refused, fmt.Sprintf(

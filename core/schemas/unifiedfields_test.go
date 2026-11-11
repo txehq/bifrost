@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"encoding/json"
 	"reflect"
 	"slices"
 	"strings"
@@ -369,6 +370,25 @@ func BenchmarkCheckExtraParamPriceFields(b *testing.B) {
 		{"image_mirrored_field", imageReq(&ImageGenerationParameters{Resolution: "2K", ExtraParams: map[string]interface{}{"resolution": "2K"}})},
 		{"image_refused", imageReq(&ImageGenerationParameters{ExtraParams: map[string]interface{}{"size": "4096x4096"}})},
 	}
+	// TXE-7124: an extra param that holds an object is walked against the provider's nested
+	// price fields. Gemini has ten for image generation; OpenAI has none.
+	nestedCases := []struct {
+		name     string
+		provider ModelProvider
+		req      *BifrostRequest
+	}{
+		{"image_object_extra_no_nested_fields_for_provider", OpenAI, imageReq(&ImageGenerationParameters{ExtraParams: map[string]interface{}{"metadata": map[string]interface{}{"trace": "a"}}})},
+		{"image_object_extra_not_a_price_field", Gemini, imageReq(&ImageGenerationParameters{ExtraParams: map[string]interface{}{"parameters": map[string]interface{}{"addWatermark": false}}})},
+		{"image_nested_refused", Gemini, imageReq(&ImageGenerationParameters{ExtraParams: map[string]interface{}{"parameters": map[string]interface{}{"sampleCount": 4}}})},
+	}
+	for _, tc := range nestedCases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = CheckExtraParamPriceFieldsFor(tc.provider, tc.req)
+			}
+		})
+	}
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
@@ -477,5 +497,182 @@ func TestCheckExtraParamPriceFieldsForVendorNameBesideTheUnifiedField(t *testing
 				t.Fatalf("want a refusal naming %q, got %+v", tc.wantParam, bifrostErr)
 			}
 		})
+	}
+}
+
+// nestedExtra builds the extra params that set value at a dotted path, each segment spelled
+// by spell: {"parameters": {"durationSeconds": 8}} for "parameters.durationSeconds".
+func nestedExtra(path string, value interface{}, spell func(string) string) (extra map[string]interface{}, spelled string) {
+	segments := strings.Split(path, ".")
+	names := make([]string, len(segments))
+	for i, segment := range segments {
+		names[i] = spell(segment)
+	}
+	var current interface{} = value
+	for i := len(names) - 1; i >= 0; i-- {
+		current = map[string]interface{}{names[i]: current}
+	}
+	return current.(map[string]interface{}), strings.Join(names, ".")
+}
+
+// snakeCase and camelCase respell one body field name the other way.
+func snakeCase(name string) string {
+	var out strings.Builder
+	for i, r := range name {
+		if r >= 'A' && r <= 'Z' {
+			if i > 0 {
+				out.WriteByte('_')
+			}
+			r += 'a' - 'A'
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
+}
+
+func camelCase(name string) string {
+	parts := strings.Split(name, "_")
+	for i := 1; i < len(parts); i++ {
+		if parts[i] != "" {
+			parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
+		}
+	}
+	return strings.Join(parts, "")
+}
+
+// TXE-7124: a price field nested inside an extra param that names one of the provider's
+// body objects is refused, on that provider and those operations, however the caller spells
+// the names, and whether or not the request also sent the unified field. The loop runs over
+// the table, so a path added there is tested without a new case.
+func TestCheckExtraParamPriceFieldsForRefusesEveryNestedPriceField(t *testing.T) {
+	if len(nestedPriceFields) == 0 {
+		t.Fatal("the nested price field table is empty")
+	}
+	spellings := map[string]func(string) string{
+		"as listed":  func(s string) string { return s },
+		"snake_case": snakeCase,
+		"camelCase":  camelCase,
+		"UPPER":      strings.ToUpper,
+	}
+	seen := map[string]bool{}
+	for _, nested := range nestedPriceFields {
+		if !strings.Contains(nested.Path, ".") {
+			t.Errorf("%s %q is not nested; a top-level name belongs in vendorPriceFieldNames", nested.Provider, nested.Path)
+		}
+		for _, requestType := range nested.Requests {
+			id := string(nested.Provider) + "/" + string(requestType) + "/" + nested.Path
+			if seen[id] {
+				t.Errorf("%s is listed twice", id)
+			}
+			seen[id] = true
+			if !slices.Contains(priceAffectingUnifiedFields[requestType], nested.Field) {
+				t.Errorf("%s names %q, which is not a price-affecting field of %s", id, nested.Field, requestType)
+			}
+			for label, spell := range spellings {
+				t.Run(id+"/"+label, func(t *testing.T) {
+					extra, spelled := nestedExtra(nested.Path, "planted", spell)
+					extra["watermark"] = false
+					req := extraOnlyRequest(t, requestType, extra)
+					bifrostErr := CheckExtraParamPriceFieldsFor(nested.Provider, req)
+					if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 ||
+						bifrostErr.ExtraFields.ErrorType != ErrorTypeCallerUnsupportedParameter || bifrostErr.Error.Param != spelled {
+						t.Fatalf("want 400 %s with error.param %q, got %+v", ErrorTypeCallerUnsupportedParameter, spelled, bifrostErr)
+					}
+					if !strings.Contains(bifrostErr.Error.Message, nested.Field) {
+						t.Errorf("message %q does not name the unified field %q to send instead", bifrostErr.Error.Message, nested.Field)
+					}
+					// The path means nothing on a provider whose body has no such object.
+					if other := CheckExtraParamPriceFieldsFor("some-other-provider", req); other != nil {
+						t.Errorf("refused on a provider that has no such body field: %+v", other)
+					}
+					if unscoped := CheckExtraParamPriceFields(req); unscoped != nil {
+						t.Errorf("refused with no provider given: %+v", unscoped)
+					}
+				})
+			}
+		}
+	}
+}
+
+// What the nested check leaves alone, and what it does not let through.
+func TestCheckExtraParamPriceFieldsForNestedBoundaries(t *testing.T) {
+	video := func(params *VideoGenerationParameters) *BifrostRequest {
+		return &BifrostRequest{RequestType: VideoGenerationRequest, VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p"}, Params: params}}
+	}
+	object := func(pairs ...interface{}) map[string]interface{} {
+		out := map[string]interface{}{}
+		for i := 0; i < len(pairs); i += 2 {
+			out[pairs[i].(string)] = pairs[i+1]
+		}
+		return out
+	}
+	accepted := []struct {
+		name     string
+		provider ModelProvider
+		req      *BifrostRequest
+	}{
+		{"a sibling the converter does not write from a price field", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", object("personGeneration", "allow_adult", "negativePrompt", "blur"))})},
+		{"an empty nested value supplies nothing", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", object("durationSeconds", nil, "aspectRatio", ""))})},
+		{"an empty object", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", object())})},
+		{"the parent is not an object", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", "durationSeconds")})},
+		{"the same names under another parent", Gemini, video(&VideoGenerationParameters{ExtraParams: object("metadata", object("durationSeconds", 8))})},
+		{"a path of another operation", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", object("sampleCount", 4))})},
+		{"a typed map with no price field", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", map[string]string{"personGeneration": "allow_adult"})})},
+		{"raw JSON that is not an object", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", json.RawMessage(`["durationSeconds"]`))})},
+		{"a value that cannot be serialized", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", make(chan int))})},
+		{"an operation outside the C4 table", Gemini, &BifrostRequest{RequestType: ChatCompletionRequest, ChatRequest: &BifrostChatRequest{Params: &ChatParameters{ExtraParams: object("generationConfig", object("imageConfig", object("aspectRatio", "16:9")))}}}},
+	}
+	for _, tc := range accepted {
+		t.Run("accepted/"+tc.name, func(t *testing.T) {
+			if bifrostErr := CheckExtraParamPriceFieldsFor(tc.provider, tc.req); bifrostErr != nil {
+				t.Fatalf("refused: %+v", bifrostErr.Error)
+			}
+		})
+	}
+	refused := []struct {
+		name     string
+		provider ModelProvider
+		req      *BifrostRequest
+		param    string
+	}{
+		{"beside the unified field, with the same meaning", Gemini, video(&VideoGenerationParameters{Seconds: Ptr("8"), ExtraParams: object("parameters", object("durationSeconds", 8))}), "parameters.durationSeconds"},
+		{"three levels down", Gemini, extraOnlyRequest(t, ImageGenerationRequest, object("generation_config", object("image_config", object("image_size", "4K")))), "generation_config.image_config.image_size"},
+		{"false is a value", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", object("generateAudio", false))}), "parameters.generateAudio"},
+		{"the first in sorted order is named", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", object("durationSeconds", 8, "aspectRatio", "9:16"))}), "parameters.aspectRatio"},
+		{"a custom provider is checked as its base", Replicate, video(&VideoGenerationParameters{ExtraParams: object("input", object("duration", 10))}), "input.duration"},
+		// The merge applies every spelling of a parent to the same body object, so an empty
+		// one must not hide a populated one, whichever sorts first.
+		{"an empty spelling of the parent before a populated one", Gemini, video(&VideoGenerationParameters{ExtraParams: object("Parameters", object(), "parameters", object("durationSeconds", 8))}), "parameters.durationSeconds"},
+		{"an empty spelling of the parent after a populated one", Gemini, video(&VideoGenerationParameters{ExtraParams: object("PARAMETERS", object("durationSeconds", 8), "parameters", object())}), "PARAMETERS.durationSeconds"},
+		{"an empty spelling of the field beside a set one", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", object("DurationSeconds", nil, "duration_seconds", 8))}), "parameters.duration_seconds"},
+		{"a parent that is not an object beside one that is", Gemini, video(&VideoGenerationParameters{ExtraParams: object("Parameters", "x", "parameters", object("durationSeconds", 8))}), "parameters.durationSeconds"},
+		// The merge serializes an extra param and applies whatever is a JSON object, so a Go
+		// caller's typed map, struct or raw JSON is an object to the check too, at any level.
+		{"a typed map", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", map[string]int{"durationSeconds": 8})}), "parameters.durationSeconds"},
+		{"raw JSON", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", json.RawMessage(`{"durationSeconds": 8}`))}), "parameters.durationSeconds"},
+		{"a struct", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", struct {
+			DurationSeconds int `json:"durationSeconds"`
+		}{8})}), "parameters.durationSeconds"},
+		{"a pointer to a map", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", &map[string]interface{}{"durationSeconds": 8})}), "parameters.durationSeconds"},
+		{"a typed map in the middle, three levels down", Gemini, extraOnlyRequest(t, ImageGenerationRequest, object("generationConfig", map[string]map[string]string{"imageConfig": {"imageSize": "4K"}})), "generationConfig.imageConfig.imageSize"},
+		{"raw JSON in the middle", Gemini, extraOnlyRequest(t, ImageGenerationRequest, object("generationConfig", object("imageConfig", json.RawMessage(`{"imageSize":"4K"}`)))), "generationConfig.imageConfig.imageSize"},
+		// The merge folds names as Go's encoding/json does, so the long s is an s.
+		{"a parent spelled with a letter that folds to the same one", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameter\u017f", object("duration\u017feconds", 8))}), "parameter\u017f.duration\u017feconds"},
+		{"two populated spellings: the first in sorted order is named", Gemini, video(&VideoGenerationParameters{ExtraParams: object("parameters", object("durationSeconds", 8), "Parameters", object("durationSeconds", 4))}), "Parameters.durationSeconds"},
+		{"an empty middle object beside a populated one, three levels down", Gemini, extraOnlyRequest(t, ImageGenerationRequest, object("generationConfig", object("ImageConfig", object(), "imageConfig", object("imageSize", "4K")))), "generationConfig.imageConfig.imageSize"},
+	}
+	for _, tc := range refused {
+		t.Run("refused/"+tc.name, func(t *testing.T) {
+			bifrostErr := CheckExtraParamPriceFieldsFor(tc.provider, tc.req)
+			if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 ||
+				bifrostErr.ExtraFields.ErrorType != ErrorTypeCallerUnsupportedParameter || bifrostErr.Error.Param != tc.param {
+				t.Fatalf("want 400 %s with error.param %q, got %+v", ErrorTypeCallerUnsupportedParameter, tc.param, bifrostErr)
+			}
+		})
+	}
+	// A top-level refusal wins: it is the older rule and names the simpler fix.
+	both := video(&VideoGenerationParameters{ExtraParams: object("seconds", "8", "parameters", object("durationSeconds", 8))})
+	if bifrostErr := CheckExtraParamPriceFieldsFor(Gemini, both); bifrostErr == nil || bifrostErr.Error.Param != "seconds" {
+		t.Fatalf("want the top-level name refused first, got %+v", bifrostErr)
 	}
 }

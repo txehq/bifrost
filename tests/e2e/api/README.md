@@ -380,6 +380,16 @@ and `cp-capped` (the openai-based custom provider `cp_plain`, Responses) have ca
 64-token output limit and no parameter list, so a row reads back that the output cap, `service_tier`,
 `prompt_cache_key` and reasoning reached the vendor as sent while `seed` or `top_p` was dropped.
 
+Folder 493 (a price-affecting field nested inside an extra param is refused, TXE-7124) runs on the same
+fixture and gateway. Extra params are merged into the converted body object by object, so an extra param
+named after a body object could add a price field inside it: `parameters.durationSeconds` on a Veo video,
+`voice_setting.speed` on MiniMax speech. `schemas.NestedPriceFields` lists those paths per provider, and the
+request worker refuses one with 400 `caller_unsupported_parameter` before a key is chosen. Seven rows are
+refusals on Gemini, MiniMax, Replicate and BytePlus, each reading `GET /__wire` to show that nothing reached
+the vendor; the eighth sends a nested field that is not a price field and reads it back from the wire.
+Bedrock, ElevenLabs, Vertex and Google Cloud Text-to-Speech have no row: core's
+`TestNestedPriceFieldsAreDeclaredAndRefused` covers every provider.
+
 The fixture answers by model name: `upstream-500` returns HTTP 500, `upstream-503` returns HTTP 503,
 `upstream-429` returns 429 with `Retry-After: 7`, `upstream-429-ms` returns 429 with
 `retry-after-ms: 2500`, `upstream-ok` returns a chat completion, and `upstream-slow` returns the
