@@ -4279,7 +4279,7 @@ func parseOpenAIVideoGenerationFormFields(ctx *fasthttp.RequestCtx, form *multip
 		n, err := strconv.Atoi(v)
 		if err != nil {
 			return nil, providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError(name,
-				fmt.Sprintf("%s must be a whole number, got %q", name, v)))
+				name+" must be a whole number"))
 		}
 		return &n, nil
 	}
@@ -4305,8 +4305,9 @@ func parseOpenAIVideoGenerationFormFields(ctx *fasthttp.RequestCtx, form *multip
 	if v, ok := value("audio"); ok {
 		audio, err := strconv.ParseBool(v)
 		if err != nil {
+			// The value is not echoed: a refusal stays small whatever the caller sent.
 			return providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError("audio",
-				fmt.Sprintf("audio must be true or false, got %q", v)))
+				"audio must be true or false"))
 		}
 		params.Audio = &audio
 	}

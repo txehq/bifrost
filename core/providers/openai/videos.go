@@ -220,12 +220,43 @@ func (req *OpenAIVideoGenerationRequest) ToBifrostVideoGenerationRequest(ctx *sc
 		input.InputReference = schemas.Ptr(providerUtils.FileBytesToBase64DataURL(req.InputReference))
 	}
 
+	params := &req.VideoGenerationParameters
+	addUnifiedVideoFieldCopies(params)
 	return &schemas.BifrostVideoGenerationRequest{
 		Provider:  provider,
 		Model:     model,
 		Input:     input,
-		Params:    &req.VideoGenerationParameters,
+		Params:    params,
 		Fallbacks: schemas.ParseFallbacks(req.Fallbacks),
+	}
+}
+
+// addUnifiedVideoFieldCopies keeps each unified video field the request set in ExtraParams too,
+// under its own name, as the native /v1/videos handler does (schemas.UnifiedVideoGenerationFields).
+// Several converters still read those fields only from ExtraParams, so without the copy an
+// /openai/v1/videos request, JSON or multipart, reached them without the field (fork, TXE-7126).
+// A copy never replaces an extra param the caller sent under the same name.
+func addUnifiedVideoFieldCopies(params *schemas.VideoGenerationParameters) {
+	copies := [...]struct {
+		name  string
+		value any
+		set   bool
+	}{
+		{"aspect_ratio", string(params.AspectRatio), params.AspectRatio != ""},
+		{"resolution", string(params.Resolution), params.Resolution != ""},
+		{"last_frame", string(params.LastFrame), params.LastFrame != ""},
+		{"reference_images", []string(params.ReferenceImages), len(params.ReferenceImages) > 0},
+	}
+	for _, c := range copies {
+		if !c.set {
+			continue
+		}
+		if params.ExtraParams == nil {
+			params.ExtraParams = make(map[string]any, len(copies))
+		}
+		if _, sent := params.ExtraParams[c.name]; !sent {
+			params.ExtraParams[c.name] = c.value
+		}
 	}
 }
 
