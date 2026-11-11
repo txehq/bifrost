@@ -622,6 +622,8 @@ var nativeMessagesProviders = []struct {
 const (
 	redactionSecret      = "4111-1111-1111-1111"
 	redactionPlaceholder = "[CARD]"
+	// redactionConversionReason is what the guardrail gives RequireBodyConversion.
+	redactionConversionReason = "the redaction guardrail rewrites message text"
 )
 
 // redactionGuardrailPlugin stands in for a runtime-redaction guardrail. That plugin is
@@ -648,6 +650,9 @@ func (p *redactionGuardrailPlugin) miss(what string) {
 }
 
 func (p *redactionGuardrailPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	// A guardrail that rewrites bodies says so: a large body is streamed past every plugin
+	// unparsed, so without this the unredacted bytes would be forwarded (TXE-7082).
+	schemas.RequireBodyConversion(ctx, redactionConversionReason)
 	if req == nil || req.PassthroughRequest == nil {
 		return req, nil, nil
 	}
@@ -889,6 +894,97 @@ func TestAnthropicNativeMessagesRedaction(t *testing.T) {
 					}
 				})
 			}
+		}
+	}
+}
+
+// TXE-7082, the large-payload half of TXE-6965: a native Messages body above the
+// large-payload threshold is streamed to the provider unparsed, so the adapters a guardrail
+// rewrites it with have no bytes to work on. With a guardrail that declared it rewrites
+// bodies, the request is refused before anything is sent, for every provider that serves
+// native Messages; the card number never leaves. With no guardrail the same large body is
+// forwarded byte for byte, as before.
+func TestAnthropicNativeMessagesLargePayloadIsRefusedWhenAGuardrailMustRewriteIt(t *testing.T) {
+	for _, row := range nativeMessagesProviders {
+		for _, guardrail := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/guardrail=%v", row.provider, guardrail), func(t *testing.T) {
+				callerModel := string(row.provider) + "/" + row.model
+				requestBody := []byte(`{"model":"` + callerModel + `","max_tokens":64,"messages":[{"role":"user","content":"charge ` + redactionSecret + ` please"}]}`)
+				responseBody := `{"id":"msg_1","type":"message","role":"assistant","model":"` + row.model + `","content":[{"type":"text","text":"done"}],"stop_reason":"end_turn","usage":{"input_tokens":12,"output_tokens":6}}`
+
+				var mu sync.Mutex
+				var upstreamBodies []string
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, _ := io.ReadAll(r.Body)
+					mu.Lock()
+					upstreamBodies = append(upstreamBodies, string(body))
+					mu.Unlock()
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, responseBody)
+				}))
+				defer upstream.Close()
+
+				var plugins []schemas.LLMPlugin
+				if guardrail {
+					plugins = append(plugins, &redactionGuardrailPlugin{})
+				}
+				client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+					Account: &nativeMessagesTestAccount{
+						configs: map[schemas.ModelProvider]*schemas.ProviderConfig{
+							row.provider: {NetworkConfig: schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true}},
+						},
+						keys: map[schemas.ModelProvider][]schemas.Key{
+							row.provider: {{ID: "key", Value: schemas.SecretVar{Val: "secret"}, Models: schemas.WhiteList{"*"}, Weight: 1}},
+						},
+					},
+					Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1, LLMPlugins: plugins,
+				})
+				if err != nil {
+					t.Fatalf("init Bifrost: %v", err)
+				}
+				defer client.Shutdown()
+
+				router := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+				router.SetLargePayloadHook(func(_ *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, _ RouteConfigType) (bool, error) {
+					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadReader, io.Reader(bytes.NewReader(requestBody)))
+					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, len(requestBody))
+					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadContentType, "application/json")
+					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, &schemas.LargePayloadMetadata{Model: callerModel, StreamRequested: schemas.Ptr(false)})
+					return true, nil
+				})
+				handler := router.createHandler(createAnthropicMessagesRouteConfig("/anthropic", bifrost.NewNoOpLogger())[0])
+				httpCtx := &fasthttp.RequestCtx{}
+				httpCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+				httpCtx.Request.SetRequestURI("/anthropic/v1/messages")
+				httpCtx.Request.Header.SetContentType("application/json")
+				httpCtx.Request.Header.Set("anthropic-version", "2023-06-01")
+				httpCtx.Request.SetBody(requestBody)
+				handler(httpCtx)
+
+				mu.Lock()
+				sent := append([]string(nil), upstreamBodies...)
+				mu.Unlock()
+				if !guardrail {
+					if httpCtx.Response.StatusCode() != fasthttp.StatusOK {
+						t.Fatalf("no guardrail: status = %d, body = %s", httpCtx.Response.StatusCode(), httpCtx.Response.Body())
+					}
+					want := strings.Replace(string(requestBody), `"model":"`+callerModel+`"`, `"model":"`+row.model+`"`, 1)
+					if len(sent) != 1 || sent[0] != want {
+						t.Errorf("no guardrail: upstream bodies = %q, want exactly %q", sent, want)
+					}
+					return
+				}
+				if status := httpCtx.Response.StatusCode(); status != fasthttp.StatusRequestEntityTooLarge {
+					t.Errorf("status = %d, want 413; body = %s", status, httpCtx.Response.Body())
+				}
+				if !bytes.Contains(httpCtx.Response.Body(), []byte(redactionConversionReason)) {
+					t.Errorf("the refusal does not say why: %s", httpCtx.Response.Body())
+				}
+				if len(sent) != 0 {
+					t.Errorf("the provider was called %d times; an unredacted body was forwarded: %q", len(sent), sent)
+				}
+			})
 		}
 	}
 }

@@ -191,6 +191,8 @@ func TestCountTokensSignsTheBodyItSends(t *testing.T) {
 
 	payload := `{"model":"bedrock_mantle/anthropic.claude-opus-4-8","messages":[{"role":"user","content":"how many tokens?"}]}`
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+	// The mechanism under test runs only for an attempt the eligibility rule lets skip conversion.
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadEligibility, schemas.LargePayloadEligibility{RawRequest: true, RawResponse: true})
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, strings.NewReader(payload))
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, len(payload))
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentType, "application/json")

@@ -51,6 +51,8 @@ func TestApplyLargePayloadRequestBodyWithModelNormalization(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	payload := `{"model":"openai/gpt-5","messages":[{"role":"user","content":"hello"}]}`
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+	// The mechanism under test runs only for an attempt the eligibility rule lets skip conversion.
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadEligibility, schemas.LargePayloadEligibility{RawRequest: true, RawResponse: true})
 	ctx.SetValue(
 		schemas.BifrostContextKeyLargePayloadReader,
 		strings.NewReader(payload),

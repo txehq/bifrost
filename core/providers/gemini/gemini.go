@@ -754,7 +754,7 @@ func (provider *GeminiProvider) Responses(ctx *schemas.BifrostContext, key schem
 	bodySize := -1
 	var jsonData []byte
 
-	if isLargePayload, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
+	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
 		if reader, readerOk := ctx.Value(schemas.BifrostContextKeyLargePayloadReader).(io.Reader); readerOk && reader != nil {
 			bodyReader = reader
 			if contentLength, lenOk := ctx.Value(schemas.BifrostContextKeyLargePayloadContentLength).(int); lenOk {
@@ -3510,8 +3510,15 @@ func processGeminiStreamChunk(jsonData []byte) (*GenerateContentResponse, error)
 	return &geminiResponse, nil
 }
 
+// shouldSkipInlineDataForStreamingContext reports whether the stream reader may drop
+// events that carry inlineData to bound memory. Dropping them changes what the caller
+// receives, so it is allowed only for an attempt the large-payload rule lets skip
+// conversion (the native Gemini route); a converted stream keeps every event.
 func shouldSkipInlineDataForStreamingContext(ctx *schemas.BifrostContext) bool {
 	if ctx == nil {
+		return false
+	}
+	if !schemas.LargePayloadEligibilityFromContext(ctx).RawResponse {
 		return false
 	}
 	if isLargePayload, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
@@ -4300,10 +4307,7 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	// Feature-off behavior stays on the normal buffered request construction path.
 	// This avoids early upstream completion before body upload (which can trigger
 	// proxy broken-pipe 502s when a fronting LB is still forwarding a large body).
-	isLargePayload := false
-	if v, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && v {
-		isLargePayload = true
-	}
+	isLargePayload := providerUtils.IsLargePayloadPassthroughEnabled(ctx)
 
 	if strings.TrimSpace(request.Model) == "" {
 		return nil, providerUtils.NewBifrostOperationError("model is required for Gemini count tokens request", fmt.Errorf("missing model"))

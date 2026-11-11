@@ -1,0 +1,237 @@
+{
+  "name": "475. A body above the large-payload threshold is converted like a small one (large payload conversion)",
+  "description": "Fork contract C4/C5 for bodies above the large-payload threshold, TXE-7082. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. Bifrost has two optimizations that skip its converters for a large body: a large request is streamed to the vendor unparsed, and a large response is streamed to the caller unparsed. Both are switched on by a transport hook that this gateway does not install, and where they are on, core now allows them only for a request whose vendor takes the caller's wire format unchanged (schemas.DecideLargePayloadEligibility). These rows pin what a caller of the unified /v1 routes gets from the gateway as shipped. Cohere is the provider because both directions depend on conversion: the unified task_type has to become Cohere's input_type, and Cohere sends no usage object, so usage.prompt_tokens exists only when Bifrost converts meta.billed_units. Row 1 is the small request. Row 2 sends the same request with an 11 MB input, above the 10 MB default threshold: the vendor still receives input_type and the caller still receives usage. Row 3 gets an answer above 10 MB from the vendor: the caller still receives usage and the whole vector. The refusal of a staged large request (413 before any upstream write) and the raw paths that remain need the hook, so they are covered by Go tests: core/largepayload_eligibility_test.go, core/schemas/largepayload_test.go and transports/bifrost-http/integrations/anthropic_native_passthrough_test.go.",
+  "item": [
+    {
+      "name": "475.1 pp_cohere/embed-v4.0 - a small request: task_type reaches Cohere as input_type and usage is Cohere's billed units (large payload conversion)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"pp_cohere/embed-v4.0\",\n  \"input\": \"alpha kestrel harbor\",\n  \"task_type\": \"search_query\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('large payload conversion setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, as their size and both ends (the bodies here are megabytes long).",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire/summary', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire/summary', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "var TEN_MB = 10 * 1024 * 1024; // schemas.DefaultLargePayloadRequestThresholdBytes",
+              "pm.test('200 with unified usage: prompt_tokens is the 7 input tokens Cohere bills under meta.billed_units', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.usage, 'no usage on the response').to.be.an('object');",
+              "  pm.expect(j.usage.prompt_tokens).to.eql(7);",
+              "  pm.expect(j, 'the vendor body was passed through unconverted').to.not.have.property('meta');",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('Cohere was called once, with task_type converted to input_type', function () {",
+              "    pm.expect(calls, JSON.stringify(calls).slice(0, 600)).to.have.length(1);",
+              "    pm.expect(calls[0].path).to.equal('/pp/cohere/v2/embed');",
+              "    var ends = calls[0].head + calls[0].tail;",
+              "    pm.expect(ends, 'no input_type on the vendor request').to.include('\"input_type\":\"search_query\"');",
+              "    pm.expect(ends, 'the unified field reached the vendor').to.not.include('task_type');",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "475.2 pp_cohere/embed-v4.0 - an 11 MB request, above the 10 MB threshold, is converted the same way: input_type on the wire, usage on the response (large payload conversion)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"pp_cohere/embed-v4.0\",\n  \"input\": \"{{largePayloadInput}}\",\n  \"task_type\": \"search_query\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('large payload conversion setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});",
+              "pm.variables.set('largePayloadInput', new Array(11 * 1024 * 1024 + 1).join('x'));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, as their size and both ends (the bodies here are megabytes long).",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire/summary', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire/summary', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "var TEN_MB = 10 * 1024 * 1024; // schemas.DefaultLargePayloadRequestThresholdBytes",
+              "pm.test('200 with unified usage: prompt_tokens is the 7 input tokens Cohere bills under meta.billed_units', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.usage, 'no usage on the response').to.be.an('object');",
+              "  pm.expect(j.usage.prompt_tokens).to.eql(7);",
+              "  pm.expect(j, 'the vendor body was passed through unconverted').to.not.have.property('meta');",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('Cohere was called once, with task_type converted to input_type', function () {",
+              "    pm.expect(calls, JSON.stringify(calls).slice(0, 600)).to.have.length(1);",
+              "    pm.expect(calls[0].path).to.equal('/pp/cohere/v2/embed');",
+              "    var ends = calls[0].head + calls[0].tail;",
+              "    pm.expect(ends, 'no input_type on the vendor request').to.include('\"input_type\":\"search_query\"');",
+              "    pm.expect(ends, 'the unified field reached the vendor').to.not.include('task_type');",
+              "  });",
+              "  pm.test('the request Cohere received is above the 10 MB threshold and carries the whole input', function () {",
+              "    pm.expect(calls[0].bytes).to.be.above(TEN_MB);",
+              "    pm.expect(calls[0].bytes).to.be.above(11 * 1024 * 1024);",
+              "  });",
+              "});",
+              "pm.variables.unset('largePayloadInput');"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "475.3 pp_cohere/embed-large-response - an answer above the 10 MB threshold is converted too: usage on the response and the whole vector (large payload conversion)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"pp_cohere/embed-large-response\",\n  \"input\": \"alpha kestrel harbor\",\n  \"task_type\": \"search_query\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('large payload conversion setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, as their size and both ends (the bodies here are megabytes long).",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire/summary', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire/summary', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "var TEN_MB = 10 * 1024 * 1024; // schemas.DefaultLargePayloadRequestThresholdBytes",
+              "pm.test('200 with unified usage: prompt_tokens is the 7 input tokens Cohere bills under meta.billed_units', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.usage, 'no usage on the response').to.be.an('object');",
+              "  pm.expect(j.usage.prompt_tokens).to.eql(7);",
+              "  pm.expect(j, 'the vendor body was passed through unconverted').to.not.have.property('meta');",
+              "});",
+              "pm.test('the response is above the 10 MB threshold and carries every value of the vector', function () {",
+              "  pm.expect(pm.response.text().length).to.be.above(TEN_MB);",
+              "  var data = pm.response.json().data || [];",
+              "  pm.expect(data).to.have.length(1);",
+              "  pm.expect(data[0].embedding).to.have.length(2200000);",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('Cohere was called once, with task_type converted to input_type', function () {",
+              "    pm.expect(calls, JSON.stringify(calls).slice(0, 600)).to.have.length(1);",
+              "    pm.expect(calls[0].path).to.equal('/pp/cohere/v2/embed');",
+              "    var ends = calls[0].head + calls[0].tail;",
+              "    pm.expect(ends, 'no input_type on the vendor request').to.include('\"input_type\":\"search_query\"');",
+              "    pm.expect(ends, 'the unified field reached the vendor').to.not.include('task_type');",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

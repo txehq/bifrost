@@ -411,6 +411,8 @@ func TestPassthroughLargePayloadAppliesResolvedKeyAlias(t *testing.T) {
 	largeCtx := func(body, model string, alias bool) *schemas.BifrostContext {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+		// The mechanism under test runs only for an attempt the eligibility rule lets skip conversion.
+		ctx.SetValue(schemas.BifrostContextKeyLargePayloadEligibility, schemas.LargePayloadEligibility{RawRequest: true, RawResponse: true})
 		ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, strings.NewReader(body))
 		ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, len(body))
 		ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentType, "application/json")

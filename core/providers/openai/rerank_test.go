@@ -382,6 +382,8 @@ func TestCustomOpenAIRerankLargePayloadStreamsBody(t *testing.T) {
 	// CheckContextAndGetRequestBody then returns nil jsonData and the handler must stream the
 	// staged reader instead of sending an empty body.
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+	// The mechanism under test runs only for an attempt the eligibility rule lets skip conversion.
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadEligibility, schemas.LargePayloadEligibility{RawRequest: true, RawResponse: true})
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, strings.NewReader(streamedBody))
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, len(streamedBody))
 

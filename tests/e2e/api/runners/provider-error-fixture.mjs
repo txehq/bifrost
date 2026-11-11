@@ -416,6 +416,14 @@ const geminiCodeExecution = {
 	modelVersion: "pp-gemini",
 };
 const clefAnswer = { result: { model: "clef-flash", answers: { is_red: { type: "noul", noul: 0.97 } }, usage: { input_tokens: 210, output_tokens: 0 } }, success: true, errors: [], messages: [] };
+// Cohere /v2/embed, folder 475 (TXE-7082). Cohere reports what it bills under meta.billed_units and sends no usage
+// object, so usage.prompt_tokens on the client can only come from Bifrost's conversion. Model embed-large-response
+// answers with a vector long enough to put the body above 10 MB, the default large-payload threshold.
+const COHERE_LARGE_RESPONSE_FLOATS = 2200000;
+const cohereEmbedAnswer = (body) => {
+	const floats = body.model === "embed-large-response" ? COHERE_LARGE_RESPONSE_FLOATS : 2;
+	return `{"id":"emb_fixture","embeddings":{"float":[[${new Array(floats).fill("0.125").join(",")}]]},"texts":[],"meta":{"api_version":{"version":"2"},"billed_units":{"input_tokens":7}}}`;
+};
 const embeddingAnswer = { object: "list", model: "pp-embedding", data: [{ object: "embedding", index: 0, embedding: [0.1, 0.2] }], usage: { prompt_tokens: 1, total_tokens: 1 } };
 // A function_call answer for a custom tool the gateway sent as a function tool, for a model the datasheet marks as
 // rejecting custom tools. x_fixture_raw exists only in these bytes, so a relay of them is recognisable.
@@ -1214,6 +1222,7 @@ const wireAnswer = (path, body, bytes) => {
             [256, 512, 1024, 2048].includes(body.output_dimension) ? Array(body.output_dimension).fill(0.1) : [0.1, 0.2];
         return { status: 200, body: JSON.stringify({ object: "list", data: body.input.map((_, index) => ({ object: "embedding", index, embedding })), usage: body.input.includes("voyage-fixture-no-usage") ? {} : { total_tokens: 7 } }) };
     }
+	if (path === "/pp/cohere/v2/embed") return { status: 200, body: cohereEmbedAnswer(body) };
 	if (path === "/v1/embeddings" || path === "/pp/volcengine/embeddings") return { status: 200, body: JSON.stringify(embeddingAnswer) };
 	if (path === "/pp/volcengine/embeddings/multimodal") return { status: 200, body: JSON.stringify({ id: "emb_pp", object: "list", model: body.model, data: { embedding: [0.1, 0.2] }, usage: { prompt_tokens: 1, total_tokens: 1 } }) };
 	return { status: 500, body: errorBody("the fixture has no answer here", "server_error", "internal_error") };
@@ -1827,6 +1836,11 @@ const handleRequest = (req, res) => {
 			send(answer.status, {}, JSON.stringify(answer.body));
 		});
 		return undefined;
+	}
+	// The same record without the bodies: their size and both ends, for rows whose request is megabytes long (folder 475).
+	if (req.method === "GET" && path === "/__wire/summary") {
+		const calls = wireCalls.map((c) => ({ path: c.path, bytes: Buffer.byteLength(c.body), head: c.body.slice(0, 400), tail: c.body.slice(-400) }));
+		return send(200, {}, JSON.stringify({ data: [{ calls }] }));
 	}
 	if (path.startsWith("/pp/bigmodel/")) {
 		const body = [];

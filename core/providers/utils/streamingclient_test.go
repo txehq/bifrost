@@ -489,6 +489,8 @@ func TestBuildLargeResponseClient_SilentUpstreamTimesOutAtHeaderWait(t *testing.
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(1024))
+	// The mechanism under test runs only for an attempt the eligibility rule lets skip conversion.
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadEligibility, schemas.LargePayloadEligibility{RawRequest: true, RawResponse: true})
 	active := PrepareResponseStreaming(ctx, base, resp)
 	if active == base {
 		t.Fatal("PrepareResponseStreaming did not build a large-response client")
@@ -565,6 +567,8 @@ func TestBuildLargeResponseClient_HeaderDeadlineDoesNotCapBody(t *testing.T) {
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(1024))
+	// The mechanism under test runs only for an attempt the eligibility rule lets skip conversion.
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadEligibility, schemas.LargePayloadEligibility{RawRequest: true, RawResponse: true})
 	active := PrepareResponseStreaming(ctx, base, resp)
 
 	_, bifrostErr, wait := MakeRequestWithContext(ctx, active, req, resp)
@@ -632,6 +636,8 @@ func largeResponseRequest(t *testing.T, srv *httptest.Server, idle time.Duration
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(1024))
+	// The mechanism under test runs only for an attempt the eligibility rule lets skip conversion.
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadEligibility, schemas.LargePayloadEligibility{RawRequest: true, RawResponse: true})
 	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, idle)
 	active := PrepareResponseStreaming(ctx, base, resp)
 

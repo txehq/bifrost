@@ -393,6 +393,30 @@ func (w *ProviderWorker) ExecuteRequest(job *ProcessingJob) *ProviderResponse {
 }
 ```
 
+### **Large payloads and conversion (fork)**
+
+Two optimizations skip Bifrost's converters once a body crosses a size threshold. A large request is not parsed: the caller's bytes are streamed to the vendor as written. A large response is not parsed either: the vendor's bytes are streamed to the caller as written. Both are switched on by transport hooks (`LargePayloadHook`, and the response threshold on the request context). The hook types are defined in this repository, but no implementation is: the gateway this fork ships installs none, so every request is parsed and converted whatever its size. The rule below governs any hook that is installed later.
+
+Skipping conversion is right only when the bytes are already in the shape the other side expects. One rule decides that for every provider attempt, `schemas.DecideLargePayloadEligibility` in `core/schemas/largepayload.go`. Core stamps its answer on the context before the provider is called, and the shared provider entry points (`CheckContextAndGetRequestBody`, `ApplyLargePayloadRequestBody`, `FinalizeResponseWithLargeDetection`, `SetupStreamingPassthrough`) read the stamp. With no stamp nothing is passed through raw.
+
+| Case | Large request | Large response |
+|------|---------------|----------------|
+| Passthrough request (the provider forwards the caller's bytes by definition) | streamed raw | streamed raw |
+| Native route whose wire format the provider takes unchanged: `openai` to OpenAI and Azure (not Claude), `anthropic` to Anthropic, `genai` to Gemini and Vertex (Google model families), `cohere` to Cohere, `typesafe` to Typesafe | streamed raw | streamed raw |
+| Neutral `/v1` routes and Go SDK callers, any provider | refused with 413 before any upstream write | read in full and converted |
+| Native route to any other provider, including every OpenAI-compatible provider and every custom provider | refused with 413 before any upstream write | read in full and converted |
+| A plugin called `schemas.RequireBodyConversion` (a guardrail that rewrites bodies) | refused with 413 before any upstream write | read in full and converted |
+| File content, container file content, video download (opaque content, nothing to convert) | as its row above | streamed raw |
+
+The costs of the converting rows:
+
+- **A large request that must be converted is refused**, with status 413, `error.code` `large_payload_not_convertible` and `error_type` `caller_invalid_request`. The body was never parsed, so there is no input to convert, and buffering it to parse it would hold the whole payload in memory, which is the cost the optimization exists to avoid. The caller sends the request below the threshold or through the provider's native route. A fallback is decided afresh: the staged body has not been read, so a fallback provider that takes it unchanged still receives it.
+- **A large response that must be converted is held in memory once**, as it is with no threshold configured. Peak memory for such a response is the body size plus the converted response, per concurrent request.
+- **A raw response carries no usage inside Bifrost.** The caller receives the vendor's body, usage included, but the response Bifrost's plugins see holds only metadata. Logging, cost and governance for a raw response depend on the response hook (`LargeResponseHook`) extracting usage from the stream.
+- **On a native route a large body is forwarded as written.** Bifrost-only body fields and the adjustments Bifrost makes to a small raw body (stripping unsupported fields, for example) are not applied to it.
+
+A new provider needs an entry in `largePayloadDeclarations` in the same file: the wire format its vendor takes unchanged, or the reason every request is converted. Without an entry it converts everything, and `TestLargePayloadDeclarationsCoverEveryProvider` fails until the entry exists.
+
 ---
 
 ## Stage 8: Tool Execution & Response Processing
