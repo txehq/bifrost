@@ -697,6 +697,12 @@ func extractResponseBodyUsage(fallbackModel string, item schemas.BatchResultItem
 }
 
 func extractAnthropicUsage(fallbackModel string, item schemas.BatchResultItem) (extractedUsage, error) {
+	// The unified batch routes return Anthropic lines in the OpenAI shape (contract C8),
+	// with the unified usage in the chat.completion body; the Anthropic-native route keeps
+	// the Messages result.
+	if item.Response != nil {
+		return extractResponseBodyUsage(fallbackModel, item)
+	}
 	if item.Result == nil || item.Result.Type != "succeeded" || item.Result.Message == nil {
 		return extractedUsage{}, nil
 	}

@@ -1230,6 +1230,15 @@ const bigmodelAnswer = (method, path, body) => {
 	}
 	return notFound;
 };
+
+// The settled Anthropic Message Batch the fixture serves results for (TXE-6597): a succeeded Message with cache
+// read and write tokens, an errored line in Anthropic's nested error envelope, and an expired line.
+const ANTHROPIC_SETTLED_BATCH_ID = "msgbatch_fixture_settled";
+const ANTHROPIC_SETTLED_BATCH_RESULTS = [
+	{ custom_id: "fx-1", result: { type: "succeeded", message: { id: "msg_fx_1", type: "message", role: "assistant", model: "claude-haiku-4-5-20251001", content: [{ type: "text", text: "ok" }], stop_reason: "end_turn", usage: { input_tokens: 10, output_tokens: 4, cache_read_input_tokens: 6, cache_creation_input_tokens: 2 } } } },
+	{ custom_id: "fx-2", result: { type: "errored", error: { type: "error", error: { type: "invalid_request_error", message: "max_tokens: Field required" } } } },
+	{ custom_id: "fx-3", result: { type: "expired" } },
+].map((line) => JSON.stringify(line)).join("\n") + "\n";
 // Reads and discards a request body (JSON or multipart) before answering, so the gateway's upload completes.
 const drain = (req, then) => {
 	req.on("data", () => {});
@@ -1576,6 +1585,12 @@ const handleRequest = (req, res) => {
 	if (req.method === "GET" && path === "/__sent") {
 		const model = new URL(req.url, "http://localhost").searchParams.get("model") || "";
 		return send(200, {}, JSON.stringify({ data: [{ model, body: Object.hasOwn(sentBodies, model) ? sentBodies[model] : null }] }));
+	}
+	// A settled Anthropic Message Batch's results file (TXE-6597, folder 347): JSONL, one line per request, the
+	// way api.anthropic.com serves /v1/messages/batches/{id}/results. Counted under "anthropic batch results".
+	if (req.method === "GET" && path === `/pp/anthropic/v1/messages/batches/${ANTHROPIC_SETTLED_BATCH_ID}/results`) {
+		countHit("anthropic batch results");
+		return send(200, { "Content-Type": "application/binary" }, ANTHROPIC_SETTLED_BATCH_RESULTS);
 	}
 	// BFL's task query (TXE-6431), counted under "bfl get_result <id>".
 	if (req.method === "GET" && path === "/pp/bfl/v1/get_result") {

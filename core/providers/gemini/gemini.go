@@ -2785,15 +2785,15 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 			geminiRequests := make([]GeminiBatchRequestItem, len(request.Requests))
 			var batchOperation schemas.BatchEndpoint
 			for i, bifrostItem := range request.Requests {
-				if err := CheckBatchLineModel(bifrostItem, schemas.Gemini, model, key.Aliases.Resolve); err != nil {
-					return nil, NewBatchLineBadRequestError(i, err)
+				if err := providerUtils.CheckBatchLineModel(bifrostItem, schemas.Gemini, model, key.Aliases.Resolve); err != nil {
+					return nil, providerUtils.NewBatchLineBadRequestError(i, err)
 				}
 				lineBody, lineEndpoint, err := ToGeminiBatchLineRequest(ctx, bifrostItem, schemas.Gemini, model, request.Endpoint)
 				if err != nil {
-					return nil, NewBatchLineBadRequestError(i, err)
+					return nil, providerUtils.NewBatchLineBadRequestError(i, err)
 				}
 				if err := CheckBatchLineOperation(&batchOperation, bifrostItem, lineEndpoint); err != nil {
-					return nil, NewBatchLineBadRequestError(i, err)
+					return nil, providerUtils.NewBatchLineBadRequestError(i, err)
 				}
 
 				geminiRequests[i] = GeminiBatchRequestItem{
