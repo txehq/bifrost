@@ -591,7 +591,7 @@ A fixture run needs no vendor key, so none of its rows may be skipped for one (T
 scripts/test-offline.sh make run-provider-harness-test FOLDER="<folder>" APP_DIR=<fixture app-dir> ENV_FILE=<env.json> BASE_URL=http://127.0.0.1:<port>
 
 # by hand: augment with the fixture's profile, select, check, run, summarise
-scripts/test-offline.sh node tests/e2e/api/runners/augment-provider-harness.mjs --source tests/e2e/api/collections/provider-harness.json --profile <fixture app-dir>/config.json --out tmp/harness-augmented.json
+scripts/test-offline.sh node tests/e2e/api/runners/augment-provider-harness.mjs --source tests/e2e/api/collections/provider-harness --profile <fixture app-dir>/config.json --out tmp/harness-augmented.json
 scripts/test-offline.sh node tests/e2e/api/runners/filter-collection.mjs --source tmp/harness-augmented.json --out tmp/harness-selected.json --folder "<folder>"
 scripts/test-offline.sh node tests/e2e/api/runners/check-harness-skips.mjs --collection tmp/harness-selected.json
 scripts/test-offline.sh newman run tmp/harness-selected.json --env-var baseUrl=http://127.0.0.1:<port> --reporters cli,json --reporter-json-export tmp/newman-report.json
@@ -622,7 +622,7 @@ Do not create a new `_test.go` file for a package that already has one. Put the 
 
 ### Every wire-visible change ships with a provider-harness case
 
-Any change under `core/`, `framework/`, `transports/bifrost-http/`, or `plugins/` that a client can observe on the wire must land together with a case in `tests/e2e/api/collections/provider-harness.json` (see `.claude/skills/harness-test-writer/SKILL.md`). This covers new features and refactors, not only bug fixes - the rule in the previous section is the narrower instance of this one.
+Any change under `core/`, `framework/`, `transports/bifrost-http/`, or `plugins/` that a client can observe on the wire must land together with a case in the provider harness, `tests/e2e/api/collections/provider-harness/` (see `.claude/skills/harness-test-writer/SKILL.md`). This covers new features and refactors, not only bug fixes - the rule in the previous section is the narrower instance of this one.
 
 These layers all sit on the request path, so any of them can change the bytes a client sees - and that end-to-end behaviour is what the harness exists to pin. A Go unit test proves the function does what you meant; only the harness proves the bytes a real client sends still come back correct through the whole stack. The gap between those two is where regressions live: a fail-soft that fires on one request shape and silently skips a sibling shape passes every unit test it has.
 
@@ -631,11 +631,35 @@ These layers all sit on the request path, so any of them can change the bytes a 
 Write the case so it is **red before the change and green after**, and validate it structurally while developing — no live paid run needed:
 
 ```bash
-node tests/e2e/api/runners/augment-provider-harness.mjs --source tests/e2e/api/collections/provider-harness.json --out tmp/harness-augmented.json
+node tests/e2e/api/runners/augment-provider-harness.mjs --source tests/e2e/api/collections/provider-harness --out tmp/harness-augmented.json
 node tests/e2e/api/runners/filter-collection.mjs --source tmp/harness-augmented.json --out tmp/filtered.json --feature "<keyword>"
 ```
 
-Insert into the collection surgically (a script that splices the new object in, never a whole-file reserialize) — the file is ~50k lines and a reformat buries the actual change.
+**The harness is stored one file per top-level folder** (TXE-7136), in `tests/e2e/api/collections/provider-harness/`:
+
+- `<number>-<slug>.json` holds one folder, exactly as it sits in the collection's `item` array. **A new folder is a new file.** Take a number no other folder has, start the file name with it (`491-what-it-covers.json`) and start the folder's `name` with it (`"491. What it covers (keyword)"`). Two pull requests that add different folders touch different files, so they merge in either order.
+- `_collection.json` holds what sits above the folders: `info`, the collection-level scripts, and the collection variables. Add a variable there only when a folder cannot carry the value itself; it is the one file two pull requests can still both edit.
+- `_order.json` freezes the order of the folders that existed when the collection was split. Never add a folder to it: a folder that is not listed is placed after those, by its number. Only `split` (an upstream sync importing a whole collection) rewrites it.
+
+There is no `provider-harness.json` any more, and none may be committed. `augment-provider-harness.mjs --source <the directory>` assembles the collection as it reads it, and so does every script test. For one file to open in Postman or query with `jq`, write a copy that git ignores:
+
+```bash
+node tests/e2e/api/runners/provider-harness-folders.mjs build    # -> tmp/provider-harness.json
+node tests/e2e/api/runners/provider-harness-folders.mjs check    # the same check CI runs
+node tests/e2e/api/runners/provider-harness-folders.mjs format   # rewrite hand-edited files in the canonical format
+```
+
+`check` runs on every pull request, inside `API collection offline suites` (`tests/e2e/api/runners/lib/provider-harness-source.test.mjs`). It fails when two folders claim one number, when a file is not in the canonical format (2-space JSON, one trailing newline; `format` fixes it), when a file's name does not start with its folder's number, and when a `provider-harness.json` is back beside the directory.
+
+A branch cut before the split that changed `provider-harness.json` stops on it at its next rebase (modify/delete). At each commit the rebase stops on:
+
+```bash
+node tests/e2e/api/runners/provider-harness-folders.mjs adopt && git rebase --continue
+```
+
+`adopt` reads the commit being replayed (`REBASE_HEAD`) and its parent, writes each folder the commit added as a new file, merges row by row a folder both the commit and main changed, removes the `provider-harness.json` the stopped rebase left in the tree, and stages the folder files. It exits 1 and names what it could not merge; main's content is left in place for those, so edit the folder file, `git add` it, and continue.
+
+Edit one folder file at a time, and keep the diff to the rows you add: the files are canonical JSON, so `JSON.parse` then `JSON.stringify(folder, null, 2) + "\n"` writes a file back unchanged.
 
 The narrow exemptions: changes with no wire-visible effect (comments, internal renames, log lines) and behaviour no HTTP request can reach. If a change is exempt, say so explicitly in the PR rather than leaving the omission unexplained.
 
@@ -774,7 +798,7 @@ Variants:
 - `/e2e-test audit` — Scan specs for incorrect/weak assertions (P0-P6 severity scale)
 
 ### `/harness-test-writer <PR# | issue# | URL>`
-Add regression test cases to the provider harness (`tests/e2e/api/collections/provider-harness.json`) from a merged PR or GitHub issue. Traces the affected wire path, checks existing coverage, designs cases per harness conventions, inserts them surgically without reformatting the file, and validates via the augment and filter scripts. This is the skill the Testing section's harness-case rule points at.
+Add regression test cases to the provider harness (`tests/e2e/api/collections/provider-harness/`, one file per folder) from a merged PR or GitHub issue. Traces the affected wire path, checks existing coverage, designs cases per harness conventions, inserts them surgically without reformatting the file, and validates via the augment and filter scripts. This is the skill the Testing section's harness-case rule points at.
 
 ### `/investigate-issue <issue-id>`
 Investigate a GitHub issue from `maximhq/bifrost`. Fetches issue details, classifies by type/area, searches codebase, traces dependencies, analyzes side effects, plans the required regression tests (unit/harness/LLM/MCP/E2E), and presents an implementation plan with per-change approval gates.

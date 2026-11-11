@@ -1,0 +1,447 @@
+{
+  "name": "146. Bedrock Converse param pins (bedrock param pins)",
+  "description": "Bedrock backlog rows with a request but no assertion, or no request at all: toolChoice any/auto, an errored json toolResult round trip, additionalModelRequestFields rejection ([EXPECT-4XX] proves the field reaches AWS), Opus 4.7 sampling stripped from the Converse body, drop-in embeddings carrying dimensions, and the eu/apac/jp/au geo inference profiles as [PREVIEW] (region quota). additionalModelResponseFieldPaths is pinned in folder 153 (153.6 returns stop_sequence when a stop sequence ends the turn, 153.7 pins the malformed-pointer 400).",
+  "item": [
+    {
+      "name": "146.1 bedrock converse toolChoice any forces a toolUse block (tool choice)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Hello there.\"\n        }\n      ]\n    }\n  ],\n  \"toolConfig\": {\n    \"tools\": [\n      {\n        \"toolSpec\": {\n          \"name\": \"pick\",\n          \"description\": \"Pick a number\",\n          \"inputSchema\": {\n            \"json\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"n\": {\n                  \"type\": \"number\"\n                }\n              }\n            }\n          }\n        }\n      }\n    ],\n    \"toolChoice\": {\n      \"any\": {}\n    }\n  },\n  \"inferenceConfig\": {\n    \"maxTokens\": 256\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "{{bedrockModel}}",
+            "converse"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var content = (j.output && j.output.message && j.output.message.content) || [];",
+              "pm.test('toolChoice any produced a toolUse and stopReason tool_use', function () {",
+              "  pm.expect(content.some(function (b) { return b.toolUse && b.toolUse.name === 'pick'; }), pm.response.text()).to.equal(true);",
+              "  pm.expect(j.stopReason, pm.response.text()).to.equal('tool_use');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "146.2 bedrock converse toolChoice auto answers in text when no tool is needed (tool choice)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Say the single word hello. Do not call any tool.\"\n        }\n      ]\n    }\n  ],\n  \"toolConfig\": {\n    \"tools\": [\n      {\n        \"toolSpec\": {\n          \"name\": \"pick\",\n          \"description\": \"Pick a number\",\n          \"inputSchema\": {\n            \"json\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"n\": {\n                  \"type\": \"number\"\n                }\n              }\n            }\n          }\n        }\n      }\n    ],\n    \"toolChoice\": {\n      \"auto\": {}\n    }\n  },\n  \"inferenceConfig\": {\n    \"maxTokens\": 64\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "{{bedrockModel}}",
+            "converse"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var content = (j.output && j.output.message && j.output.message.content) || [];",
+              "pm.test('toolChoice auto returned text and ended the turn', function () {",
+              "  pm.expect(content.some(function (b) { return typeof b.text === 'string' && b.text.length > 0; }), pm.response.text()).to.equal(true);",
+              "  pm.expect(j.stopReason, pm.response.text()).to.equal('end_turn');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "146.3 bedrock converse toolResult with status error and json content round-trips (tool result)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Use the pick tool, then tell me what happened.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"toolUse\": {\n            \"toolUseId\": \"tooluse_h144\",\n            \"name\": \"pick\",\n            \"input\": {\n              \"n\": 1\n            }\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"toolResult\": {\n            \"toolUseId\": \"tooluse_h144\",\n            \"status\": \"error\",\n            \"content\": [\n              {\n                \"json\": {\n                  \"error\": \"tool backend unavailable\"\n                }\n              }\n            ]\n          }\n        }\n      ]\n    }\n  ],\n  \"toolConfig\": {\n    \"tools\": [\n      {\n        \"toolSpec\": {\n          \"name\": \"pick\",\n          \"description\": \"Pick a number\",\n          \"inputSchema\": {\n            \"json\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"n\": {\n                  \"type\": \"number\"\n                }\n              }\n            }\n          }\n        }\n      }\n    ]\n  },\n  \"inferenceConfig\": {\n    \"maxTokens\": 128\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "{{bedrockModel}}",
+            "converse"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var content = (j.output && j.output.message && j.output.message.content) || [];",
+              "pm.test('model answered after an errored json toolResult', function () {",
+              "  pm.expect(content.some(function (b) { return typeof b.text === 'string' && b.text.length > 0; }), pm.response.text()).to.equal(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "146.4 [EXPECT-4XX] bedrock converse additionalModelRequestFields top_k bad value reaches AWS (additional model request fields)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Say hi.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 32\n  },\n  \"additionalModelRequestFields\": {\n    \"top_k\": \"not-a-number\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "{{bedrockModel}}",
+            "converse"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('rejection is a structured error body', function () {",
+              "  var t = pm.response.text();",
+              "  pm.expect(t.length, 'empty rejection body').to.be.above(0);",
+              "  pm.expect(t, 'rejection should mention the offending field or validation: ' + t).to.match(/top_k|validation|invalid|malformed/i);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "146.5 bedrock/global.anthropic.claude-opus-4-7 temperature and top_p are stripped from the Converse body (sampling normalization)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-opus-4-7\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"temperature\": 0.7,\n  \"top_p\": 0.9\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var __b = pm.response.json() || {};",
+              "var rr = (__b.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('raw_request captured', function () { pm.expect(rr, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object'); });",
+              "if (rr) {",
+              "  var ic = rr.inferenceConfig || {};",
+              "  pm.test('inferenceConfig carries no temperature or topP for Opus 4.7', function () {",
+              "    pm.expect(ic, JSON.stringify(rr).slice(0, 600)).to.not.have.property('temperature');",
+              "    pm.expect(ic, JSON.stringify(rr).slice(0, 600)).to.not.have.property('topP');",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "146.6 bedrock titan-embed-text-v2 dimensions=256 on the /openai drop-in returns 256 floats (drop-in embeddings params)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"harness dimensions probe\",\n  \"dimensions\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "embeddings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('drop-in route honoured dimensions=256', function () {",
+              "  var v = j.data && j.data[0] && j.data[0].embedding;",
+              "  pm.expect(v, pm.response.text().slice(0, 300)).to.be.an('array');",
+              "  pm.expect(v.length, 'dimensions ignored on the drop-in route').to.equal(256);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "146.7 [PREVIEW] bedrock eu geo inference profile converse (geo profile eu)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Reply OK.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 16\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/eu.anthropic.claude-haiku-4-5-20251001-v1:0/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "converse"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var content = (j.output && j.output.message && j.output.message.content) || [];",
+              "pm.test('eu geo profile answered with text', function () {",
+              "  pm.expect(content.some(function (b) { return typeof b.text === 'string' && b.text.length > 0; }), pm.response.text()).to.equal(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "146.8 [PREVIEW] bedrock apac geo inference profile converse (geo profile apac)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Reply OK.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 16\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/apac.anthropic.claude-haiku-4-5-20251001-v1:0/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "apac.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "converse"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var content = (j.output && j.output.message && j.output.message.content) || [];",
+              "pm.test('apac geo profile answered with text', function () {",
+              "  pm.expect(content.some(function (b) { return typeof b.text === 'string' && b.text.length > 0; }), pm.response.text()).to.equal(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "146.9 [PREVIEW] bedrock jp geo inference profile converse (geo profile jp)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Reply OK.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 16\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/jp.anthropic.claude-haiku-4-5-20251001-v1:0/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "jp.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "converse"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var content = (j.output && j.output.message && j.output.message.content) || [];",
+              "pm.test('jp geo profile answered with text', function () {",
+              "  pm.expect(content.some(function (b) { return typeof b.text === 'string' && b.text.length > 0; }), pm.response.text()).to.equal(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "146.10 [PREVIEW] bedrock au geo inference profile converse (geo profile au)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Reply OK.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 16\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/au.anthropic.claude-haiku-4-5-20251001-v1:0/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "converse"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var content = (j.output && j.output.message && j.output.message.content) || [];",
+              "pm.test('au geo profile answered with text', function () {",
+              "  pm.expect(content.some(function (b) { return typeof b.text === 'string' && b.text.length > 0; }), pm.response.text()).to.equal(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

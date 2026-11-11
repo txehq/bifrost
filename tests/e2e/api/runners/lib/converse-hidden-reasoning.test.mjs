@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
-const collection = JSON.parse(fs.readFileSync(new URL('../../collections/provider-harness.json', import.meta.url), 'utf8'));
+import { assembleProviderHarness } from './provider-harness-source.mjs';
+const collection = assembleProviderHarness();
 function find(items) {
   for (const item of items) {
     if (item.name === '47.6.2.G /bedrock converse -> openai/o3-mini') return item;

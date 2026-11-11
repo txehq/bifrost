@@ -1,0 +1,158 @@
+{
+  "name": "51. Raw Anthropic thinking rewrite must skip the latest assistant message (PR #6110)",
+  "description": "Bifrost's encrypted-reasoning fail-soft (core/encryptedreasoning.go) answers an upstream refusal of a replayed\nreasoning payload by stripping the unverifiable parts and retrying once. On the raw Anthropic passthrough route\n(/anthropic/v1/messages) that strip is stripRawAnthropicChatThinking, which edits the client's own bytes: it blanks\n\"signature\" on thinking blocks and DROPS redacted_thinking blocks outright.\n\nAnthropic forbids exactly that on one message. Per the Preserving thinking blocks rules\n(https://platform.claude.com/docs/en/build-with-claude/thinking#preserving-thinking-blocks): \"Within the latest\nassistant message, the sequence of consecutive thinking blocks must match what the model generated in the original\nrequest: you can't rearrange, edit, or partially drop them. This includes redacted_thinking blocks.\" Violating it\nreturns a second 400 -- \"`thinking` or `redacted_thinking` blocks in the latest assistant message cannot be\nmodified\" -- so the client got a different, more confusing error than the one the retry was meant to heal, after a\nwasted upstream call. Earlier turns carry no such rule (\"Allowed: outside tool use, omit prior turns' thinking\"),\nso they are still rewritten.\n\nCases A and B pin that no request on this route ever earns the \"cannot be modified\" refusal, on the tool-result\nround trip (the shape the Anthropic troubleshooting page names) and on a plain multi-turn replay. Case C is the\nanti-over-skip guard: the unverifiable payload sits on an EARLIER assistant turn, so the fail-soft must still fire\nand the request must succeed.\n\nFIXTURE CONSTRAINT -- do not \"tidy\" these bodies:\n - The protected turn must be the last message with role \"assistant\", which in case A is index 1, NOT the last\n   array element. A fix that skips messages[len-1] instead of the last assistant message passes case B and still\n   fails case A.\n - Case C needs a trailing assistant turn that carries NO thinking block, otherwise the payload under test would\n   sit on the protected turn and the case would stop testing the earlier-turn path.\n - A 400 is NOT guarded away in the test scripts. After the fix, cases A and B are expected to return Anthropic's\n   original \"Invalid `data` in `redacted_thinking` block\" refusal unretried; only the \"cannot be modified\"\n   wording is a regression.",
+  "item": [
+    {
+      "name": "anthropic/claude-haiku-4-5 /anthropic/v1/messages tool-result replay of unverifiable redacted_thinking must not earn cannot-be-modified - PR #6110",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the retry never edits the latest assistant message', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body.toLowerCase(), 'the strip rewrote the protected assistant turn, so Anthropic refused the retry with a second 400: ' + body).to.not.include('cannot be modified');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 2048,\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 1024\n  },\n  \"tools\": [\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather in a city.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"redacted_thinking\",\n          \"data\": \"EroBCkYIBhgCIkDbfharness6110Qx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4\"\n        },\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_bfharness6110a\",\n          \"name\": \"get_weather\",\n          \"input\": {\n            \"city\": \"Paris\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_bfharness6110a\",\n          \"content\": \"20C, sunny\"\n        }\n      ]\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-haiku-4-5 /anthropic/v1/messages multi-turn replay of unverifiable redacted_thinking must not earn cannot-be-modified - PR #6110",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the retry never edits the latest assistant message', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body.toLowerCase(), 'the strip rewrote the protected assistant turn, so Anthropic refused the retry with a second 400: ' + body).to.not.include('cannot be modified');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 2048,\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 1024\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with just the number 391.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"redacted_thinking\",\n          \"data\": \"EroBCkYIBhgCIkDbfharness6110Qx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4\"\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"391\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with just the number 782.\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-haiku-4-5 /anthropic/v1/messages earlier-turn unverifiable redacted_thinking still degrades instead of 400 - PR #6110",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('an earlier assistant turn is still stripped so the fail-soft heals', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body.toLowerCase(), 'the skip was applied too broadly and the retry edited the protected turn: ' + body).to.not.include('cannot be modified');",
+              "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+              "  // Scoped to the error object rather than the raw body. This row enables thinking, and a SUCCESSFUL response may legitimately carry a redacted_thinking block in content: 'the API may return redacted_thinking blocks when portions of Claude's reasoning are safety-redacted' (https://platform.claude.com/docs/en/build-with-claude/thinking#redacted-thinking-blocks). A raw-text match reads that block as the rejection it is hunting for and fails the row at the exact moment the fail-soft worked. The rejection this looks for arrives as a 4xx error, which is where it is now read from - and the status assertion above already catches that case on its own, so this is the diagnostic, not the only guard.",
+              "  var err = (pm.response.json().error || {}).message || '';",
+              "  pm.expect(err, 'Anthropic rejection reached the client; the encrypted-reasoning fail-soft did not fire on the earlier turn').to.not.include('redacted_thinking');",
+              "  pm.expect(pm.response.json().content, 'no content returned after the stripped retry').to.be.an('array').that.is.not.empty;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 2048,\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 1024\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with just the number 391.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"redacted_thinking\",\n          \"data\": \"EroBCkYIBhgCIkDbfharness6110Qx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4\"\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"391\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with just the number 782.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"782\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with just the number 155.\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    }
+  ]
+}

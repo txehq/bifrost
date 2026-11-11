@@ -1,0 +1,38 @@
+{
+  "name": "Native Cowork base64 JSON",
+  "item": [
+    {
+      "name": "Anthropic claude-haiku-4-5 native Cowork base64 JSON",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          }
+        ],
+        "url": "{{baseUrl}}/anthropic/v1/messages",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"anthropic/claude-haiku-4-5-20251001\", \"max_tokens\": 64, \"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"document\", \"source\": {\"type\": \"base64\", \"media_type\": \"application/json\", \"data\": \"eyJtYXJrZXIiOiJjb2JhbHQtNzI5In0=\"}}, {\"type\": \"text\", \"text\": \"Return only the document marker.\"}]}]}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if ([401,403,429,500,502,503,504].indexOf(pm.response.code)!==-1) return;",
+              "pm.test('native JSON document', function(){pm.expect(pm.response.code,pm.response.text()).to.be.below(400);pm.expect(pm.response.text()).to.include('cobalt-729');});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

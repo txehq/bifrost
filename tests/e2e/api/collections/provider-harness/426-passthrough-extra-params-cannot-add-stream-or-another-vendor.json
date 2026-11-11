@@ -1,0 +1,689 @@
+{
+  "name": "426. Passthrough extra params cannot add stream or another vendor's name for the model (extra-params-unsettable)",
+  "description": "Folder 409 pins the rule that an extra param never replaces a field the request set. That rule reads the converted body, so it says nothing about a field the converter left out. Two kinds of such fields matter. A buffered converter leaves stream out: with extra_params.stream=true the vendor was asked to stream, billed the tokens, and the buffered path could not parse the event stream, so the caller got an error and no usage was recorded (measured against a local vendor; TestExtraParamsCannotSwitchStreaming). And some vendors read the model, or the deployment that stands for it, under a name other than model (model_id, version, deployment, deployment_id, engine): a converter that routes by URL leaves that name out of the body, where one added by an extra param could be read in the URL's place. providerUtils.MergeExtraParamsIntoJSON now refuses an extra param that would add one of these names to a body that lacks it, in any spelling, with 400 caller_invalid_request naming the extra param, before any upstream call; the form writers and Bedrock rerank refuse the same names. The list is one place for every provider (unsettableExtraParamFields). The first seven rows pin the refusal of the shared JSON merge on the /openai drop-in routes, buffered and streamed. The last six cover the paths that apply the rule on their own, one row each with the route's real ingress shape: the OpenAI transcription form on the native and the drop-in route, the ElevenLabs transcription form, the image edit form, Bedrock rerank, and Perplexity chat, whose converter used to read stream out of the extra params. The streamed row plants stream=false against the stream=true the request set, which is the replace case of folder 409 and is kept here beside its buffered twin.",
+  "item": [
+    {
+      "name": "[EXPECT-400] openai gpt-4o-mini extra-params-unsettable: /openai/v1/chat/completions - extra_params.stream cannot turn a buffered request into a stream",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extra-params-unsettable openai gpt-4o-mini extra-params-unsettable: /openai/v1/chat/completions - extra_params.stream cannot turn a buffered request into a stream: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('extra-params-unsettable openai gpt-4o-mini extra-params-unsettable: /openai/v1/chat/completions - extra_params.stream cannot turn a buffered request into a stream: the refusal is the extra-params rule and names stream', function () {",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('stream');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 5,\n  \"extra_params\": {\n    \"stream\": true\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] openai gpt-4o-mini extra-params-unsettable: /openai/v1/chat/completions stream - extra_params.stream cannot turn a stream into a buffered request",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extra-params-unsettable openai gpt-4o-mini extra-params-unsettable: /openai/v1/chat/completions stream - extra_params.stream cannot turn a stream into a buffered request: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('extra-params-unsettable openai gpt-4o-mini extra-params-unsettable: /openai/v1/chat/completions stream - extra_params.stream cannot turn a stream into a buffered request: the refusal is the extra-params rule and names stream', function () {",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('stream');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 5,\n  \"stream\": true,\n  \"extra_params\": {\n    \"stream\": false\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] openai gpt-4o-mini extra-params-unsettable: /openai/v1/chat/completions - extra_params.Stream is refused in any spelling",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extra-params-unsettable openai gpt-4o-mini extra-params-unsettable: /openai/v1/chat/completions - extra_params.Stream is refused in any spelling: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('extra-params-unsettable openai gpt-4o-mini extra-params-unsettable: /openai/v1/chat/completions - extra_params.Stream is refused in any spelling: the refusal is the extra-params rule and names Stream', function () {",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('Stream');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 5,\n  \"extra_params\": {\n    \"Stream\": true\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] openai gpt-4o-mini extra-params-unsettable: /openai/v1/chat/completions - extra_params.engine is refused",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extra-params-unsettable openai gpt-4o-mini extra-params-unsettable: /openai/v1/chat/completions - extra_params.engine is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('extra-params-unsettable openai gpt-4o-mini extra-params-unsettable: /openai/v1/chat/completions - extra_params.engine is refused: the refusal is the extra-params rule and names engine', function () {",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('engine');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 5,\n  \"extra_params\": {\n    \"engine\": \"gpt-4o\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] openai gpt-4o-mini extra-params-unsettable: /openai/v1/chat/completions - extra_params.model_id is refused",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extra-params-unsettable openai gpt-4o-mini extra-params-unsettable: /openai/v1/chat/completions - extra_params.model_id is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('extra-params-unsettable openai gpt-4o-mini extra-params-unsettable: /openai/v1/chat/completions - extra_params.model_id is refused: the refusal is the extra-params rule and names model_id', function () {",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('model_id');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 5,\n  \"extra_params\": {\n    \"model_id\": \"gpt-4o\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] openai text-embedding-3-small extra-params-unsettable: /openai/v1/embeddings - extra_params.deployment is refused",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extra-params-unsettable openai text-embedding-3-small extra-params-unsettable: /openai/v1/embeddings - extra_params.deployment is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('extra-params-unsettable openai text-embedding-3-small extra-params-unsettable: /openai/v1/embeddings - extra_params.deployment is refused: the refusal is the extra-params rule and names deployment', function () {",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('deployment');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/text-embedding-3-small\",\n  \"input\": \"ok\",\n  \"extra_params\": {\n    \"deployment\": \"text-embedding-3-large\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "embeddings"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] openai text-embedding-3-small extra-params-unsettable: /openai/v1/embeddings - extra_params.version is refused",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extra-params-unsettable openai text-embedding-3-small extra-params-unsettable: /openai/v1/embeddings - extra_params.version is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('extra-params-unsettable openai text-embedding-3-small extra-params-unsettable: /openai/v1/embeddings - extra_params.version is refused: the refusal is the extra-params rule and names version', function () {",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('version');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/text-embedding-3-small\",\n  \"input\": \"ok\",\n  \"extra_params\": {\n    \"version\": \"text-embedding-3-large\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "embeddings"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] openai whisper-1 extra-params-unsettable: /v1/audio/transcriptions - an engine form field is refused by the transcription form writer",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extra-params-unsettable openai whisper-1 extra-params-unsettable: /v1/audio/transcriptions - an engine form field is refused by the transcription form writer: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('extra-params-unsettable openai whisper-1 extra-params-unsettable: /v1/audio/transcriptions - an engine form field is refused by the transcription form writer: the refusal is the extra-params rule and names engine', function () {",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('engine');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "openai/whisper-1",
+              "type": "text"
+            },
+            {
+              "key": "engine",
+              "value": "gpt-4o-transcribe",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.mp3",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] openai whisper-1 extra-params-unsettable: /openai/v1/audio/transcriptions - a model_id form field is refused by the transcription form writer",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extra-params-unsettable openai whisper-1 extra-params-unsettable: /openai/v1/audio/transcriptions - a model_id form field is refused by the transcription form writer: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('extra-params-unsettable openai whisper-1 extra-params-unsettable: /openai/v1/audio/transcriptions - a model_id form field is refused by the transcription form writer: the refusal is the extra-params rule and names model_id', function () {",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('model_id');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "openai/whisper-1",
+              "type": "text"
+            },
+            {
+              "key": "model_id",
+              "value": "gpt-4o-transcribe",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.mp3",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] elevenlabs scribe_v2 extra-params-unsettable: /v1/audio/transcriptions - a version form field is refused by the ElevenLabs form writer",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extra-params-unsettable elevenlabs scribe_v2 extra-params-unsettable: /v1/audio/transcriptions - a version form field is refused by the ElevenLabs form writer: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('extra-params-unsettable elevenlabs scribe_v2 extra-params-unsettable: /v1/audio/transcriptions - a version form field is refused by the ElevenLabs form writer: the refusal is the extra-params rule and names version', function () {",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('version');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "elevenlabs/scribe_v2",
+              "type": "text"
+            },
+            {
+              "key": "version",
+              "value": "scribe_v1",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.mp3",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] openai gpt-image-1 extra-params-unsettable: /v1/images/edits - an engine form field is refused by the image edit form writer",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extra-params-unsettable openai gpt-image-1 extra-params-unsettable: /v1/images/edits - an engine form field is refused by the image edit form writer: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('extra-params-unsettable openai gpt-image-1 extra-params-unsettable: /v1/images/edits - an engine form field is refused by the image edit form writer: the refusal is the extra-params rule and names engine', function () {",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('engine');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "openai/gpt-image-1",
+              "type": "text"
+            },
+            {
+              "key": "prompt",
+              "value": "make the background a deep blue",
+              "type": "text"
+            },
+            {
+              "key": "engine",
+              "value": "gpt-image-1.5",
+              "type": "text"
+            },
+            {
+              "key": "image",
+              "src": "tests/e2e/api/fixtures/sample.png",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] bedrock cohere.rerank-v3-5:0 extra-params-unsettable: /v1/rerank - a version field is refused before it reaches the reranker request fields",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extra-params-unsettable bedrock cohere.rerank-v3-5:0 extra-params-unsettable: /v1/rerank - a version field is refused before it reaches the reranker request fields: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('extra-params-unsettable bedrock cohere.rerank-v3-5:0 extra-params-unsettable: /v1/rerank - a version field is refused before it reaches the reranker request fields: the refusal is the extra-params rule and names version', function () {",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('version');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/cohere.rerank-v3-5:0\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital of France.\",\n    \"Carrots are orange.\"\n  ],\n  \"version\": \"cohere.rerank-v4\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/rerank",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "rerank"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] perplexity sonar extra-params-unsettable: /openai/v1/chat/completions - extra_params.stream no longer turns a buffered Perplexity request into a stream",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extra-params-unsettable perplexity sonar extra-params-unsettable: /openai/v1/chat/completions - extra_params.stream no longer turns a buffered Perplexity request into a stream: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('extra-params-unsettable perplexity sonar extra-params-unsettable: /openai/v1/chat/completions - extra_params.stream no longer turns a buffered Perplexity request into a stream: the refusal is the extra-params rule and names stream', function () {",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('stream');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"perplexity/sonar\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 5,\n  \"extra_params\": {\n    \"stream\": true\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    }
+  ]
+}

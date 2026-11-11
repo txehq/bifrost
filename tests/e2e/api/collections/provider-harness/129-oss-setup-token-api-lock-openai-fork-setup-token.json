@@ -1,0 +1,178 @@
+{
+  "name": "129. OSS Setup-Token API Lock (openai fork) (setup token)",
+  "description": "Pins the OSS setup lock: while dashboard auth is not active (no admin account, or auth disabled), every non-public /api call needs the operator's setup token in X-Bifrost-Setup-Token. Missing header is 401, a wrong token is 403, the right token runs as the admin. is-auth-enabled stays public and reports setup_required / setup_token_configured so the dashboard can show the setup screen. The python profile sets setup_token=bifrost-e2e-setup-token and creates no admin, so this run is locked; augment-provider-harness.mjs injects the header on every row and the lockout rows remove it. Once dashboard auth is enabled the setup token stops working, so the wrong-token row then expects 401. Read-only: nothing is created or changed.",
+  "item": [
+    {
+      "name": "openai setup-lock status reports lock state - setup token",
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/session/is-auth-enabled"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('setup-lock status is public and reports the lock state', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  var body = pm.response.json();",
+              "  pm.expect(body.setup_required, 'setup_required missing: ' + pm.response.text()).to.be.a('boolean');",
+              "  pm.expect(body.setup_token_configured, 'setup_token_configured missing: ' + pm.response.text()).to.be.a('boolean');",
+              "  pm.expect(body.setup_required, 'setup_required must mirror is_auth_enabled: ' + pm.response.text()).to.equal(!body.is_auth_enabled);",
+              "  pm.collectionVariables.set('setupLockActive', String(body.setup_required));",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-401] openai setup-lock rejects /api without the setup token - setup token",
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      },
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/providers"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var setupLockActive = pm.collectionVariables.get('setupLockActive');",
+              "pm.test('setup-lock missing token is 401', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+              "  if (setupLockActive === 'true') {",
+              "    pm.expect(pm.response.text(), 'lockout must name the header').to.include('X-Bifrost-Setup-Token');",
+              "  }",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-4XX] openai setup-lock rejects /api with a wrong setup token - setup token",
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      },
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/providers"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.request.headers.upsert({ key: 'X-Bifrost-Setup-Token', value: 'not-the-setup-token' });"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var setupLockActive = pm.collectionVariables.get('setupLockActive');",
+              "pm.test('setup-lock wrong token is 403 while locked, 401 once auth is on', function () {",
+              "  var want = setupLockActive === 'true' ? 403 : 401;",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(want);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "openai setup-lock accepts /api with the setup token - setup token",
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      },
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/providers"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var setupLockActive = pm.collectionVariables.get('setupLockActive');",
+              "pm.test('setup-lock correct token runs the admin call', function () {",
+              "  pm.expect(setupLockActive, 'this row needs the locked python profile (no admin account); is-auth-enabled reported setup_required=' + setupLockActive).to.equal('true');",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.json(), 'failed: ' + pm.response.text()).to.have.property('providers');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "openai setup-lock trades the setup token for an HttpOnly session cookie - setup token",
+      "protocolProfileBehavior": {
+        "disableCookies": true
+      },
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [],
+        "url": "{{baseUrl}}/api/session/setup"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var setupLockActive = pm.collectionVariables.get('setupLockActive');",
+              "pm.test('setup-lock session cookie is HttpOnly, SameSite=Strict and carries no token', function () {",
+              "  pm.expect(setupLockActive, 'this row needs the locked python profile (no admin account); is-auth-enabled reported setup_required=' + setupLockActive).to.equal('true');",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  var raw = pm.response.headers.all().filter(function (h) { return h.key.toLowerCase() === 'set-cookie'; }).map(function (h) { return h.value; }).join('\\n');",
+              "  pm.expect(raw, 'Set-Cookie: ' + raw).to.include('bifrost_setup_session=');",
+              "  pm.expect(raw.toLowerCase(), 'Set-Cookie: ' + raw).to.include('httponly');",
+              "  pm.expect(raw.toLowerCase(), 'Set-Cookie: ' + raw).to.include('samesite=strict');",
+              "  pm.expect(raw, 'cookie must not carry the setup token').to.not.include(pm.variables.get('setupToken'));",
+              "  pm.expect(pm.response.json().expires_at, 'failed: ' + pm.response.text()).to.be.a('string');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

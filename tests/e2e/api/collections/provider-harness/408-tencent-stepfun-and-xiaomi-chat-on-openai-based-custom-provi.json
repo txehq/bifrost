@@ -1,0 +1,933 @@
+{
+  "name": "408. Tencent, StepFun and Xiaomi chat on openai-based custom providers: usage, cached tokens and allowed request types (vendor chat channels) [SERIAL]",
+  "description": "TXE-6439 regression, Bifrost-Tokun contract C3, C4, C5, C12. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. Tencent, StepFun and Xiaomi have no built-in provider: Tokun's reconciler writes each vendor site as an openai-based custom provider, and the config holds them the way it writes them (base_provider_type openai, a named key, max_retries 0, no request_path_overrides, allowed_requests per site): tencent_tokenhub (TokenHub: chat_completion, chat_completion_stream, responses, responses_stream), stepfun (international site api.stepfun.ai: chat_completion, chat_completion_stream, speech), stepfun_cn (domestic site api.stepfun.com: chat_completion, chat_completion_stream, transcription) and xiaomi (chat_completion, chat_completion_stream). Each base is the fixture's /pp/<site>, which records every request body (GET /__wire) and answers with the usage shape the vendor documents. StepFun's international site reports cache hits as a top-level usage.cached_tokens with no prompt_tokens_details and sends usage on every streamed chunk; before TXE-6439 the unified usage had no place for that field and the count was dropped, so the first two cases were red: they pin usage.prompt_tokens_details.cached_read_tokens = 512, streamed and not. The domestic-site case pins the nested prompt_tokens_details.cached_tokens form StepFun's domestic reference documents. The Tencent and Xiaomi cases pin that the three token counts come through and that no cache count is invented when the vendor reports none. The three 'reach the vendor as sent' cases prove the shared change of TXE-6527 on these providers: max_completion_tokens 8 arrives as 8 (it was raised to 16 before TXE-6527) and a service_tier arrives as sent. Those models have no capability record, so their tier is delivered. The fixture's capability sheet also carries one record per vendor provider that lists service tiers (hy-tiered, step-tiered, mimo-tiered: default and priority): a tier outside the list is refused with 400 caller_unsupported_parameter naming service_tier and nothing reaches the vendor, and a listed tier reaches the vendor as sent. Tokun gets the 400 on these providers only for models it gives such a record. The remaining [EXPECT-400] cases send a request type outside a provider's allowed_requests and read the fixture back: nothing reached the vendor. Not recorded from real requests: no vendor key exists yet, so every fixture answer is the documented shape (StepFun API reference and prompt-cache guide; TokenHub response reference); Tencent's Hy model ids, its cache and reasoning usage fields and Xiaomi's full usage page were not found, and hy-fixture stands in for a Hy chat model id. Replace the fixture answers with recorded responses when the staging requests are made.",
+  "item": [
+    {
+      "name": "stepfun/step-5-preview /v1/chat/completions on the international site: StepFun's top-level usage.cached_tokens is served as usage.prompt_tokens_details.cached_read_tokens, from one upstream call (vendor chat channels)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('vendor chat channels setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.test('usage carries the vendor token counts', function () { pm.expect(body.usage, pm.response.text()).to.be.an('object'); pm.expect(body.usage.prompt_tokens, pm.response.text()).to.equal(591); pm.expect(body.usage.completion_tokens, pm.response.text()).to.equal(120); pm.expect(body.usage.total_tokens, pm.response.text()).to.equal(711); });",
+              "pm.test('the cached part of the prompt is at usage.prompt_tokens_details.cached_read_tokens', function () { var d = body.usage && body.usage.prompt_tokens_details; pm.expect(d, pm.response.text()).to.be.an('object'); pm.expect(d.cached_read_tokens, pm.response.text()).to.equal(512); pm.expect(d.cached_tokens, 'and under the OpenAI name: ' + pm.response.text()).to.equal(512); });",
+              "pm.test('usage has no top-level cached_tokens of its own', function () { pm.expect(body.usage.cached_tokens, pm.response.text()).to.equal(undefined); });",
+              "pm.test('the stepfun provider and its named key served the request', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'routing provider header').to.equal('stepfun'); pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), 'routing key header').to.equal('local-error-fixture'); });",
+              "wire(function (calls) { var chat = calls.filter(function (c) { return c.path === '/pp/stepfun/v1/chat/completions'; }); pm.test('exactly one request reached the vendor, on /v1/chat/completions under its base', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(1); pm.expect(chat, JSON.stringify(calls)).to.have.length(1); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"stepfun/step-5-preview\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "stepfun/step-5-preview /v1/chat/completions stream on the international site: the streamed usage carries cached_read_tokens as the non-streamed one does (vendor chat channels)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('vendor chat channels setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "var text = pm.response.text();",
+              "pm.test('the client gets a 200 event stream that ends', function () { pm.expect(pm.response.code, text.slice(0, 400)).to.equal(200); pm.expect(pm.response.headers.get('Content-Type') || '', 'content type').to.include('text/event-stream'); pm.expect(text, 'no [DONE]').to.include('data: [DONE]'); });",
+              "var frames = text.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+              "var withUsage = frames.filter(function (f) { return f.usage; });",
+              "pm.test('a frame carries usage', function () { pm.expect(withUsage.length, text.slice(0, 600)).to.be.above(0); });",
+              "var usage = withUsage.length ? withUsage[withUsage.length - 1].usage : {};",
+              "pm.test('the last usage carries the vendor token counts', function () { pm.expect(usage.prompt_tokens, JSON.stringify(usage)).to.equal(591); pm.expect(usage.completion_tokens, JSON.stringify(usage)).to.equal(120); pm.expect(usage.total_tokens, JSON.stringify(usage)).to.equal(711); });",
+              "pm.test('the cached part of the prompt is at usage.prompt_tokens_details.cached_read_tokens', function () { pm.expect(usage.prompt_tokens_details, JSON.stringify(usage)).to.be.an('object'); pm.expect(usage.prompt_tokens_details.cached_read_tokens, JSON.stringify(usage)).to.equal(512); });",
+              "pm.test('no frame carries a top-level usage.cached_tokens', function () { withUsage.forEach(function (f) { pm.expect(f.usage.cached_tokens, JSON.stringify(f.usage)).to.equal(undefined); }); });",
+              "wire(function (calls) { var chat = calls.filter(function (c) { return c.path === '/pp/stepfun/v1/chat/completions'; }); pm.test('exactly one request reached the vendor, on /v1/chat/completions under its base', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(1); pm.expect(chat, JSON.stringify(calls)).to.have.length(1); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"stepfun/step-5-preview\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "stepfun_cn/step-5-preview /v1/chat/completions on the domestic site: the nested prompt_tokens_details.cached_tokens is served as cached_read_tokens, from one upstream call (vendor chat channels)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('vendor chat channels setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.test('usage carries the vendor token counts', function () { pm.expect(body.usage, pm.response.text()).to.be.an('object'); pm.expect(body.usage.prompt_tokens, pm.response.text()).to.equal(591); pm.expect(body.usage.completion_tokens, pm.response.text()).to.equal(120); pm.expect(body.usage.total_tokens, pm.response.text()).to.equal(711); });",
+              "pm.test('the cached part of the prompt is at usage.prompt_tokens_details.cached_read_tokens', function () { var d = body.usage && body.usage.prompt_tokens_details; pm.expect(d, pm.response.text()).to.be.an('object'); pm.expect(d.cached_read_tokens, pm.response.text()).to.equal(512); pm.expect(d.cached_tokens, 'and under the OpenAI name: ' + pm.response.text()).to.equal(512); });",
+              "pm.test('the stepfun_cn provider and its named key served the request', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'routing provider header').to.equal('stepfun_cn'); pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), 'routing key header').to.equal('local-error-fixture'); });",
+              "wire(function (calls) { var chat = calls.filter(function (c) { return c.path === '/pp/stepfun-cn/v1/chat/completions'; }); pm.test('exactly one request reached the vendor, on /v1/chat/completions under its base', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(1); pm.expect(chat, JSON.stringify(calls)).to.have.length(1); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"stepfun_cn/step-5-preview\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "tencent_tokenhub/hy-fixture /v1/chat/completions on TokenHub: usage comes through the custom provider, from one upstream call (vendor chat channels)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('vendor chat channels setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.test('usage carries the vendor token counts', function () { pm.expect(body.usage, pm.response.text()).to.be.an('object'); pm.expect(body.usage.prompt_tokens, pm.response.text()).to.equal(25); pm.expect(body.usage.completion_tokens, pm.response.text()).to.equal(120); pm.expect(body.usage.total_tokens, pm.response.text()).to.equal(145); });",
+              "pm.test('the vendor reported no cache hit, so none is invented', function () { var d = (body.usage && body.usage.prompt_tokens_details) || {}; pm.expect(d.cached_read_tokens, pm.response.text()).to.equal(undefined); });",
+              "pm.test('the tencent_tokenhub provider and its named key served the request', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'routing provider header').to.equal('tencent_tokenhub'); pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), 'routing key header').to.equal('local-error-fixture'); });",
+              "wire(function (calls) { var chat = calls.filter(function (c) { return c.path === '/pp/tencent/v1/chat/completions'; }); pm.test('exactly one request reached the vendor, on /v1/chat/completions under its base', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(1); pm.expect(chat, JSON.stringify(calls)).to.have.length(1); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"tencent_tokenhub/hy-fixture\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "xiaomi/mimo-v2.6-flash /v1/chat/completions: usage comes through the custom provider, from one upstream call (vendor chat channels)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('vendor chat channels setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.test('usage carries the vendor token counts', function () { pm.expect(body.usage, pm.response.text()).to.be.an('object'); pm.expect(body.usage.prompt_tokens, pm.response.text()).to.equal(25); pm.expect(body.usage.completion_tokens, pm.response.text()).to.equal(120); pm.expect(body.usage.total_tokens, pm.response.text()).to.equal(145); });",
+              "pm.test('the vendor reported no cache hit, so none is invented', function () { var d = (body.usage && body.usage.prompt_tokens_details) || {}; pm.expect(d.cached_read_tokens, pm.response.text()).to.equal(undefined); });",
+              "pm.test('the xiaomi provider and its named key served the request', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'routing provider header').to.equal('xiaomi'); pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), 'routing key header').to.equal('local-error-fixture'); });",
+              "wire(function (calls) { var chat = calls.filter(function (c) { return c.path === '/pp/xiaomi/v1/chat/completions'; }); pm.test('exactly one request reached the vendor, on /v1/chat/completions under its base', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(1); pm.expect(chat, JSON.stringify(calls)).to.have.length(1); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xiaomi/mimo-v2.6-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "tencent_tokenhub/hy-fixture /v1/chat/completions: max_completion_tokens 8 and a service_tier reach the vendor as sent, neither raised nor dropped (vendor chat channels)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('vendor chat channels setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.test('no field was dropped on the way', function () { var e = pm.response.json().extra_fields || {}; pm.expect(e.dropped_compat_plugin_params, pm.response.text()).to.equal(undefined); });",
+              "wire(function (calls) { var chat = calls.filter(function (c) { return c.path === '/pp/tencent/v1/chat/completions'; }); pm.test('exactly one request reached the vendor', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(1); pm.expect(chat, JSON.stringify(calls)).to.have.length(1); }); var sent = chat.length ? JSON.parse(chat[0].body) : {}; pm.test('max_completion_tokens is the 8 the caller sent, not 16', function () { pm.expect(sent.max_completion_tokens, JSON.stringify(sent)).to.equal(8); }); pm.test('service_tier is the tier the caller sent', function () { pm.expect(sent.service_tier, JSON.stringify(sent)).to.equal('flex'); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"tencent_tokenhub/hy-fixture\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_completion_tokens\": 8,\n  \"service_tier\": \"flex\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "stepfun/step-5-preview /v1/chat/completions: max_completion_tokens 8 and a service_tier reach the vendor as sent, neither raised nor dropped (vendor chat channels)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('vendor chat channels setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.test('no field was dropped on the way', function () { var e = pm.response.json().extra_fields || {}; pm.expect(e.dropped_compat_plugin_params, pm.response.text()).to.equal(undefined); });",
+              "wire(function (calls) { var chat = calls.filter(function (c) { return c.path === '/pp/stepfun/v1/chat/completions'; }); pm.test('exactly one request reached the vendor', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(1); pm.expect(chat, JSON.stringify(calls)).to.have.length(1); }); var sent = chat.length ? JSON.parse(chat[0].body) : {}; pm.test('max_completion_tokens is the 8 the caller sent, not 16', function () { pm.expect(sent.max_completion_tokens, JSON.stringify(sent)).to.equal(8); }); pm.test('service_tier is the tier the caller sent', function () { pm.expect(sent.service_tier, JSON.stringify(sent)).to.equal('flex'); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"stepfun/step-5-preview\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_completion_tokens\": 8,\n  \"service_tier\": \"flex\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "xiaomi/mimo-v2.6-flash /v1/chat/completions: max_completion_tokens 8 and a service_tier reach the vendor as sent, neither raised nor dropped (vendor chat channels)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('vendor chat channels setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.test('no field was dropped on the way', function () { var e = pm.response.json().extra_fields || {}; pm.expect(e.dropped_compat_plugin_params, pm.response.text()).to.equal(undefined); });",
+              "wire(function (calls) { var chat = calls.filter(function (c) { return c.path === '/pp/xiaomi/v1/chat/completions'; }); pm.test('exactly one request reached the vendor', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(1); pm.expect(chat, JSON.stringify(calls)).to.have.length(1); }); var sent = chat.length ? JSON.parse(chat[0].body) : {}; pm.test('max_completion_tokens is the 8 the caller sent, not 16', function () { pm.expect(sent.max_completion_tokens, JSON.stringify(sent)).to.equal(8); }); pm.test('service_tier is the tier the caller sent', function () { pm.expect(sent.service_tier, JSON.stringify(sent)).to.equal('flex'); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xiaomi/mimo-v2.6-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_completion_tokens\": 8,\n  \"service_tier\": \"flex\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] tencent_tokenhub/hy-tiered /v1/chat/completions: a service_tier outside the tiers the model's capability record lists is refused before any upstream call (vendor chat channels)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('vendor chat channels setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names service_tier', function () { pm.expect(body.error && body.error.param, pm.response.text()).to.equal('service_tier'); });",
+              "wire(function (calls) { pm.test('nothing reached the vendor', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"tencent_tokenhub/hy-tiered\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"service_tier\": \"flex\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] stepfun/step-tiered /v1/chat/completions: a service_tier outside the tiers the model's capability record lists is refused before any upstream call (vendor chat channels)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('vendor chat channels setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names service_tier', function () { pm.expect(body.error && body.error.param, pm.response.text()).to.equal('service_tier'); });",
+              "wire(function (calls) { pm.test('nothing reached the vendor', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"stepfun/step-tiered\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"service_tier\": \"flex\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] xiaomi/mimo-tiered /v1/chat/completions: a service_tier outside the tiers the model's capability record lists is refused before any upstream call (vendor chat channels)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('vendor chat channels setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names service_tier', function () { pm.expect(body.error && body.error.param, pm.response.text()).to.equal('service_tier'); });",
+              "wire(function (calls) { pm.test('nothing reached the vendor', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xiaomi/mimo-tiered\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"service_tier\": \"flex\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "stepfun/step-tiered /v1/chat/completions: a service_tier the model's capability record lists reaches the vendor as sent, with max_completion_tokens 8 (vendor chat channels)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('vendor chat channels setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.test('no field was dropped on the way', function () { var e = pm.response.json().extra_fields || {}; pm.expect(e.dropped_compat_plugin_params, pm.response.text()).to.equal(undefined); });",
+              "wire(function (calls) { var chat = calls.filter(function (c) { return c.path === '/pp/stepfun/v1/chat/completions'; }); pm.test('exactly one request reached the vendor', function () { pm.expect(chat, JSON.stringify(calls)).to.have.length(1); }); var sent = chat.length ? JSON.parse(chat[0].body) : {}; pm.test('service_tier is the listed tier the caller sent', function () { pm.expect(sent.service_tier, JSON.stringify(sent)).to.equal('priority'); }); pm.test('max_completion_tokens is the 8 the caller sent', function () { pm.expect(sent.max_completion_tokens, JSON.stringify(sent)).to.equal(8); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"stepfun/step-tiered\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_completion_tokens\": 8,\n  \"service_tier\": \"priority\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] tencent_tokenhub/hy-fixture /v1/embeddings is refused before any upstream call: embedding is not in allowed_requests (vendor chat channels)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('vendor chat channels setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('the error names the unsupported operation', function () { pm.expect(body.error && body.error.code, pm.response.text()).to.equal('unsupported_operation'); pm.expect(body.extra_fields && body.extra_fields.request_type, pm.response.text()).to.equal('embedding'); });",
+              "wire(function (calls) { pm.test('nothing reached the vendor', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"tencent_tokenhub/hy-fixture\",\n  \"input\": \"hi\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] stepfun/step-5-preview /v1/embeddings is refused before any upstream call: embedding is not in allowed_requests (vendor chat channels)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('vendor chat channels setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('the error names the unsupported operation', function () { pm.expect(body.error && body.error.code, pm.response.text()).to.equal('unsupported_operation'); pm.expect(body.extra_fields && body.extra_fields.request_type, pm.response.text()).to.equal('embedding'); });",
+              "wire(function (calls) { pm.test('nothing reached the vendor', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"stepfun/step-5-preview\",\n  \"input\": \"hi\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] xiaomi/mimo-v2.6-flash /v1/audio/speech is refused before any upstream call: speech is not in allowed_requests (vendor chat channels)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('vendor chat channels setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('the error names the unsupported operation', function () { pm.expect(body.error && body.error.code, pm.response.text()).to.equal('unsupported_operation'); pm.expect(body.extra_fields && body.extra_fields.request_type, pm.response.text()).to.equal('speech'); });",
+              "wire(function (calls) { pm.test('nothing reached the vendor', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xiaomi/mimo-v2.6-flash\",\n  \"input\": \"hi\",\n  \"voice\": \"alloy\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "name": "159. Azure response annotation fidelity (provider response fixture)",
+  "description": "Local fixture regression like folder 154: run with providerErrorFixture=1 against the isolated gateway. The fixture answers model azure-filtered with Azure prompt_filter_results and per-choice content_filter_results; the gateway must return both.",
+  "item": [
+    {
+      "name": "159.1 azure upstream content-filter annotations survive the gateway (azure content filters)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"azure/azure-filtered\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('content produced', function () { pm.expect(j.choices[0].message.content, pm.response.text()).to.equal('hello'); });",
+              "pm.test('prompt_filter_results is preserved', function () { pm.expect(j.prompt_filter_results, 'dropped: ' + pm.response.text().slice(0, 500)).to.be.an('array'); pm.expect(j.prompt_filter_results[0].content_filter_results.hate.severity).to.equal('safe'); });",
+              "pm.test('per-choice content_filter_results is preserved', function () { pm.expect(j.choices[0].content_filter_results, 'dropped: ' + pm.response.text().slice(0, 500)).to.be.an('object'); pm.expect(j.choices[0].content_filter_results.violence.severity).to.equal('safe'); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

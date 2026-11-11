@@ -1,0 +1,745 @@
+{
+  "name": "178. Gemini Responses code execution tool (PR #1333) (gemini-code-execution)",
+  "description": "PR #1333 (maximhq/bifrost, open) proposed code execution across OpenAI, Anthropic and Gemini. OpenAI and Anthropic already carry it on dev - the OpenAI path forwards code_interpreter and translates the sandbox caller (core/providers/openai/types.go), and the Anthropic path models the full server_tool_use / *_code_execution_tool_result fidelity on ResponsesCodeExecutionCall. Only the Gemini half was missing, and this folder pins that half; it is an independent implementation, not PR #1333's diff.\n\nFour separate gaps in core/providers/gemini/responses.go. (a) convertResponsesToolsToGemini handled only function and web_search, so a code_interpreter tool was dropped before the wire and Gemini never ran code at all - everything downstream was dead code. (b) convertGeminiToolsToResponsesTools did not map codeExecution back, so a Gemini-native request lost the tool on the way in. (c) convertGeminiCandidatesToResponsesOutput emitted executableCode as a markdown-fenced text message and codeExecutionResult as a code_interpreter_call carrying a text content block, with no code and no outputs - not the shape OpenAI and Anthropic produce. (d) processGeminiPart had no case for either part, so a streamed code execution reached the client as nothing.\n\nFix: code_interpreter converts to Gemini's codeExecution tool (dropped alongside a function tool under the same mixed-tool restriction as Google Search, since pre-Gemini-3 models reject the combination outright), round-trips back, and both parts become one structured code_interpreter_call carrying Code and logs Outputs - on the non-streaming path and, via output_item.added/done with an id minted per call, on the stream.\n\nCases: (1) code_interpreter reaches the wire as codeExecution with no invented functionDeclarations; (2) codeExecution is dropped beside a function tool while the function declaration survives; (3) executed code returns as a structured code_interpreter_call carrying code and logs outputs, with no text content block leaking onto the item; (4) streamed execution emits added/done lifecycle events for the item, every opened item is closed, and added/done agree on item_id; (5) text that resumes after a code execution opens a new message item rather than streaming deltas onto the already-closed first one (processGeminiTextPart only opened an item on the very first text, so the answer after the code was missing from response.completed). (6) a code_interpreter_call replayed as input reaches Gemini as the executableCode and codeExecutionResult parts it came from (the structured call carries no content, so convertResponsesMessagesToGeminiContents dropped it and the next turn lost the code and its result). (7-11) the integrations convert the structured call back: the GenAI route (generateContent, streamGenerateContent and a replay of native code parts) must return or forward executableCode and codeExecutionResult parts, and the Anthropic route with a Gemini model must return the server_tool_use and code_execution_tool_result blocks, streamed and not. All eleven assert HTTP 2xx loudly with the response body in the failure message.",
+  "item": [
+    {
+      "name": "code_interpreter tool reaches the Gemini wire as codeExecution",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": \"Compute 6 * 7 by running Python code, then state the result.\",\n  \"tools\": [\n    {\n      \"type\": \"code_interpreter\",\n      \"container\": {\n        \"type\": \"auto\"\n      }\n    }\n  ],\n  \"max_output_tokens\": 512\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('gemini code_interpreter reaches wire: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var body = pm.response.json() || {};",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('gemini code_interpreter reaches wire: raw_request captured', function () {",
+              "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+              "});",
+              "if (!rr || typeof rr !== 'object') { return; }",
+              "var wire = JSON.stringify(rr);",
+              "var ce = (rr.tools || []).filter(function (x) { return x && (x.codeExecution || x.code_execution); });",
+              "pm.test('gemini code_interpreter reaches wire: codeExecution present on the outbound tools', function () {",
+              "  pm.expect(ce.length, 'tools on wire: ' + wire.slice(0, 800)).to.eql(1);",
+              "});",
+              "pm.test('gemini code_interpreter reaches wire: no function declarations invented', function () {",
+              "  var fns = (rr.tools || []).filter(function (x) { return x && x.functionDeclarations; });",
+              "  pm.expect(fns.length, 'tools on wire: ' + wire.slice(0, 800)).to.eql(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "codeExecution is dropped when a function tool is also present",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": \"What is the weather in Tokyo? Use the get_weather tool.\",\n  \"tools\": [\n    {\n      \"type\": \"code_interpreter\",\n      \"container\": {\n        \"type\": \"auto\"\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"max_output_tokens\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('gemini code_interpreter mixed-tool drop: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var body = pm.response.json() || {};",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('gemini code_interpreter mixed-tool drop: raw_request captured', function () {",
+              "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+              "});",
+              "if (!rr || typeof rr !== 'object') { return; }",
+              "var wire = JSON.stringify(rr);",
+              "var ce = (rr.tools || []).filter(function (x) { return x && (x.codeExecution || x.code_execution); });",
+              "pm.test('gemini code_interpreter mixed-tool drop: codeExecution dropped beside a function tool', function () {",
+              "  pm.expect(ce.length, 'tools on wire: ' + wire.slice(0, 800)).to.eql(0);",
+              "});",
+              "pm.test('gemini code_interpreter mixed-tool drop: the function declaration survives', function () {",
+              "  var fns = (rr.tools || []).filter(function (x) { return x && (x.functionDeclarations || []).length > 0; });",
+              "  pm.expect(fns.length, 'tools on wire: ' + wire.slice(0, 800)).to.eql(1);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "executed code comes back as a structured code_interpreter_call",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": \"Run Python code that prints the value of 127 * 3. Use the code execution tool.\",\n  \"tools\": [\n    {\n      \"type\": \"code_interpreter\",\n      \"container\": {\n        \"type\": \"auto\"\n      }\n    }\n  ],\n  \"max_output_tokens\": 1024\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('gemini code_interpreter_call shape: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var body = pm.response.json() || {};",
+              "var dump = JSON.stringify(body.output || []).slice(0, 1200);",
+              "var calls = (body.output || []).filter(function (i) { return i && i.type === 'code_interpreter_call'; });",
+              "pm.test('gemini code_interpreter_call shape: at least one code_interpreter_call item' , function () {",
+              "  pm.expect(calls.length, 'output: ' + dump).to.be.above(0);",
+              "});",
+              "if (calls.length === 0) { return; }",
+              "pm.test('gemini code_interpreter_call shape: the call carries the executed code, not prose text', function () {",
+              "  pm.expect(calls[0].code, 'output: ' + dump).to.be.a('string');",
+              "  pm.expect(calls[0].code.length, 'output: ' + dump).to.be.above(0);",
+              "});",
+              "pm.test('gemini code_interpreter_call shape: outputs are structured logs blocks', function () {",
+              "  var withLogs = calls.filter(function (c) {",
+              "    return (c.outputs || []).some(function (o) { return o && o.type === 'logs' && typeof o.logs === 'string'; });",
+              "  });",
+              "  pm.expect(withLogs.length, 'output: ' + dump).to.be.above(0);",
+              "});",
+              "pm.test('gemini code_interpreter_call shape: no code_interpreter_call leaks a text content block', function () {",
+              "  var texty = calls.filter(function (c) { return c.content !== undefined; });",
+              "  pm.expect(texty.length, 'output: ' + dump).to.eql(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "streamed code execution emits code_interpreter_call item lifecycle events",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": \"Run Python code that prints the value of 127 * 3. Use the code execution tool.\",\n  \"tools\": [\n    {\n      \"type\": \"code_interpreter\",\n      \"container\": {\n        \"type\": \"auto\"\n      }\n    }\n  ],\n  \"stream\": true,\n  \"max_output_tokens\": 1024\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('gemini code_interpreter_call streaming: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var text = pm.response.text();",
+              "var events = [];",
+              "text.split('\\n').forEach(function (line) {",
+              "  var trimmed = line.trim();",
+              "  if (trimmed.indexOf('data:') !== 0) { return; }",
+              "  var payload = trimmed.slice(5).trim();",
+              "  if (!payload || payload === '[DONE]') { return; }",
+              "  try { events.push(JSON.parse(payload)); } catch (e) { /* non-JSON keepalive */ }",
+              "});",
+              "pm.test('gemini code_interpreter_call streaming: stream parsed' , function () {",
+              "  pm.expect(events.length, 'body: ' + text.slice(0, 800)).to.be.above(0);",
+              "});",
+              "function ciItems(kind) {",
+              "  return events.filter(function (e) {",
+              "    return e && e.type === kind && e.item && e.item.type === 'code_interpreter_call';",
+              "  });",
+              "}",
+              "var added = ciItems('response.output_item.added');",
+              "var done = ciItems('response.output_item.done');",
+              "var dump = JSON.stringify(events.map(function (e) { return e.type; })).slice(0, 800);",
+              "pm.test('gemini code_interpreter_call streaming: an item is opened for the code execution', function () {",
+              "  pm.expect(added.length, 'event types: ' + dump).to.be.above(0);",
+              "});",
+              "pm.test('gemini code_interpreter_call streaming: every opened item is also closed', function () {",
+              "  pm.expect(done.length, 'event types: ' + dump).to.eql(added.length);",
+              "});",
+              "if (done.length === 0) { return; }",
+              "var closed = JSON.stringify(done.map(function (e) { return e.item; })).slice(0, 1200);",
+              "pm.test('gemini code_interpreter_call streaming: the closed item carries code and logs outputs', function () {",
+              "  var complete = done.filter(function (e) {",
+              "    var it = e.item || {};",
+              "    return typeof it.code === 'string' && it.code.length > 0 &&",
+              "      (it.outputs || []).some(function (o) { return o && o.type === 'logs'; });",
+              "  });",
+              "  pm.expect(complete.length, 'closed items: ' + closed).to.be.above(0);",
+              "});",
+              "pm.test('gemini code_interpreter_call streaming: added and done agree on item_id', function () {",
+              "  function idOf(e) { return (e.item && e.item.id) || e.item_id; }",
+              "  var ids = added.map(idOf);",
+              "  var doneIds = done.map(idOf);",
+              "  ids.concat(doneIds).forEach(function (id) {",
+              "    pm.expect(id, 'closed items: ' + closed).to.be.a('string').and.not.empty;",
+              "  });",
+              "  pm.expect(doneIds.sort(), 'closed items: ' + closed).to.eql(ids.sort());",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "streamed text after code execution opens a new message item",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": \"First say in one sentence what you will do. Then run Python code that prints the sum of the first 10 primes. Then state the answer in one sentence.\",\n  \"tools\": [\n    {\n      \"type\": \"code_interpreter\",\n      \"container\": {\n        \"type\": \"auto\"\n      }\n    }\n  ],\n  \"stream\": true,\n  \"max_output_tokens\": 1024\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('gemini text after code streaming: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var text = pm.response.text();",
+              "var events = [];",
+              "text.split('\\n').forEach(function (line) {",
+              "  var trimmed = line.trim();",
+              "  if (trimmed.indexOf('data:') !== 0) { return; }",
+              "  var payload = trimmed.slice(5).trim();",
+              "  if (!payload || payload === '[DONE]') { return; }",
+              "  try { events.push(JSON.parse(payload)); } catch (e) { /* non-JSON keepalive */ }",
+              "});",
+              "var dump = JSON.stringify(events.map(function (e) { return [e.type, e.output_index]; })).slice(0, 1200);",
+              "pm.test('gemini text after code streaming: the model ran code', function () {",
+              "  var ran = events.some(function (e) { return e.type === 'response.output_item.added' && e.item && e.item.type === 'code_interpreter_call'; });",
+              "  pm.expect(ran, 'events: ' + dump).to.be.true;",
+              "});",
+              "// The reopen path only runs when text streams before the code: require it, so a model",
+              "// that skips the introduction fails here instead of passing without exercising it.",
+              "var firstCode = -1;",
+              "events.forEach(function (e, i) { if (firstCode < 0 && e.type === 'response.output_item.added' && e.item && e.item.type === 'code_interpreter_call') { firstCode = i; } });",
+              "function textItem(e) { return e.item_id || String(e.output_index); }",
+              "var before = events.filter(function (e, i) { return i < firstCode && e.type === 'response.output_text.delta' && e.delta; });",
+              "var after = events.filter(function (e, i) { return firstCode >= 0 && i > firstCode && e.type === 'response.output_text.delta' && e.delta; });",
+              "pm.test('gemini text after code streaming: text streams before the code runs', function () {",
+              "  pm.expect(firstCode, 'events: ' + dump).to.be.at.least(0);",
+              "  pm.expect(before.length, 'no text before the code - the model skipped the introduction: ' + dump).to.be.above(0);",
+              "});",
+              "pm.test('gemini text after code streaming: the answer opens a different message item', function () {",
+              "  pm.expect(after.length, 'no text after the code: ' + dump).to.be.above(0);",
+              "  var pre = before.map(textItem);",
+              "  after.forEach(function (e) {",
+              "    pm.expect(pre, 'answer delta reused the pre-code item ' + textItem(e) + ': ' + dump).to.not.include(textItem(e));",
+              "  });",
+              "});",
+              "pm.test('gemini text after code streaming: no text delta targets an item already done', function () {",
+              "  var closed = {};",
+              "  var stray = [];",
+              "  events.forEach(function (e) {",
+              "    if (e.type === 'response.output_item.done') { closed[e.output_index] = true; }",
+              "    if (e.type === 'response.output_text.delta' && closed[e.output_index]) { stray.push(e.output_index + ': ' + e.delta); }",
+              "  });",
+              "  pm.expect(stray, 'events: ' + dump).to.eql([]);",
+              "});",
+              "pm.test('gemini text after code streaming: response.completed ends with the answer message', function () {",
+              "  var completed = events.filter(function (e) { return e.type === 'response.completed'; })[0];",
+              "  pm.expect(completed, 'events: ' + dump).to.be.an('object');",
+              "  var output = (completed.response && completed.response.output) || [];",
+              "  var types = JSON.stringify(output.map(function (o) { return o.type; }));",
+              "  var ci = -1;",
+              "  output.forEach(function (o, i) { if (o.type === 'code_interpreter_call') { ci = i; } });",
+              "  pm.expect(ci, 'output types: ' + types).to.be.at.least(0);",
+              "  var after = output.slice(ci + 1).filter(function (o) {",
+              "    return o.type === 'message' && (o.content || []).some(function (c) { return typeof c.text === 'string' && c.text.trim().length > 0; });",
+              "  });",
+              "  pm.expect(after.length, 'output types: ' + types + ' events: ' + dump).to.be.above(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "replayed code_interpreter_call reaches Gemini as executableCode and codeExecutionResult",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"max_output_tokens\": 200,\n  \"tools\": [\n    {\n      \"type\": \"code_interpreter\",\n      \"container\": {\n        \"type\": \"auto\"\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Pick a random number with Python using seed 4242.\"\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"status\": \"completed\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"I'll run the code now.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"code_interpreter_call\",\n      \"id\": \"ci_replaytest0000000000000001\",\n      \"call_id\": \"ci_replaytest0000000000000001\",\n      \"status\": \"completed\",\n      \"code\": \"import random\\nrandom.seed(4242)\\nprint(random.randint(1, 10**9))\",\n      \"outputs\": [\n        {\n          \"type\": \"logs\",\n          \"logs\": \"583920117\\n\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"What exact number did the code print? Reply with only the number.\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('gemini code_interpreter_call replay: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var body = pm.response.json() || {};",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('gemini code_interpreter_call replay: raw_request captured', function () {",
+              "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+              "});",
+              "if (!rr || typeof rr !== 'object') { return; }",
+              "var contents = rr.contents || [];",
+              "var shape = JSON.stringify(contents.map(function (c) { return c.role + ':' + (c.parts || []).map(function (p) { return Object.keys(p).join('+'); }).join(','); }));",
+              "// The call carries code and outputs, not content, so it used to be dropped before the wire.",
+              "pm.test('gemini code_interpreter_call replay: a model turn carries the executableCode and its codeExecutionResult', function () {",
+              "  var turn = contents.filter(function (c) {",
+              "    return c.role === 'model' && (c.parts || []).some(function (p) { return p.executableCode; });",
+              "  })[0];",
+              "  pm.expect(turn, 'contents: ' + shape).to.be.an('object');",
+              "  var code = turn.parts.filter(function (p) { return p.executableCode; })[0].executableCode;",
+              "  var result = (turn.parts.filter(function (p) { return p.codeExecutionResult; })[0] || {}).codeExecutionResult;",
+              "  pm.expect(code.code, 'contents: ' + shape).to.include('random.seed(4242)');",
+              "  pm.expect(result, 'contents: ' + shape).to.be.an('object');",
+              "  pm.expect(result.outcome).to.eql('OUTCOME_OK');",
+              "  pm.expect(result.output).to.eql('583920117\\n');",
+              "});",
+              "pm.test('gemini code_interpreter_call replay: the model answers from the replayed result', function () {",
+              "  pm.expect(JSON.stringify(body.output || []), 'the number only exists in the replayed logs').to.include('583920117');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "genai generateContent returns executableCode and codeExecutionResult parts (gemini-2.5-flash)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Use code execution: run Python code that prints the sum of the first 10 primes, then state the answer in one sentence.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"codeExecution\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 1024\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('genai code execution: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var body = pm.response.json() || {};",
+              "var parts = (((body.candidates || [])[0] || {}).content || {}).parts || [];",
+              "var dump = JSON.stringify(parts.map(function (p) { return Object.keys(p).join('+'); }));",
+              "// The code and its result reach Bifrost as a code_interpreter_call item; the GenAI route used",
+              "// to rebuild parts from text only, so both vanished from the reply.",
+              "pm.test('genai code execution: the reply carries executableCode', function () {",
+              "  var code = parts.filter(function (p) { return p.executableCode; });",
+              "  pm.expect(code.length, 'parts: ' + dump).to.be.above(0);",
+              "  pm.expect(code[0].executableCode.code, 'parts: ' + dump).to.be.a('string').and.not.empty;",
+              "});",
+              "pm.test('genai code execution: the reply carries codeExecutionResult after its code', function () {",
+              "  var ci = -1, ri = -1;",
+              "  parts.forEach(function (p, i) { if (p.executableCode && ci < 0) { ci = i; } if (p.codeExecutionResult && ri < 0) { ri = i; } });",
+              "  pm.expect(ri, 'parts: ' + dump).to.be.above(ci);",
+              "  pm.expect(parts[ri].codeExecutionResult.output, 'parts: ' + dump).to.include('129');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "genai streamGenerateContent streams executableCode and codeExecutionResult parts (gemini-2.5-flash)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Use code execution: run Python code that prints the sum of the first 10 primes, then state the answer in one sentence.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"codeExecution\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 1024\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini-2.5-flash:streamGenerateContent"
+          ],
+          "query": [
+            {
+              "key": "alt",
+              "value": "sse"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('genai code execution stream: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var events = [];",
+              "pm.response.text().split('\\n').forEach(function (line) {",
+              "  var trimmed = line.trim();",
+              "  if (trimmed.indexOf('data:') !== 0) { return; }",
+              "  var payload = trimmed.slice(5).trim();",
+              "  if (!payload || payload === '[DONE]') { return; }",
+              "  try { events.push(JSON.parse(payload)); } catch (e) { /* non-JSON keepalive */ }",
+              "});",
+              "var parts = [];",
+              "events.forEach(function (e) { (((e.candidates || [])[0] || {}).content || {}).parts && e.candidates[0].content.parts.forEach(function (p) { parts.push(p); }); });",
+              "var dump = JSON.stringify(parts.map(function (p) { return Object.keys(p).join('+'); }));",
+              "// The code and its result reach Bifrost as a code_interpreter_call item; the GenAI route used",
+              "// to rebuild parts from text only, so both vanished from the reply.",
+              "pm.test('genai code execution stream: the reply carries executableCode', function () {",
+              "  var code = parts.filter(function (p) { return p.executableCode; });",
+              "  pm.expect(code.length, 'parts: ' + dump).to.be.above(0);",
+              "  pm.expect(code[0].executableCode.code, 'parts: ' + dump).to.be.a('string').and.not.empty;",
+              "});",
+              "pm.test('genai code execution stream: the reply carries codeExecutionResult after its code', function () {",
+              "  var ci = -1, ri = -1;",
+              "  parts.forEach(function (p, i) { if (p.executableCode && ci < 0) { ci = i; } if (p.codeExecutionResult && ri < 0) { ri = i; } });",
+              "  pm.expect(ri, 'parts: ' + dump).to.be.above(ci);",
+              "  pm.expect(parts[ri].codeExecutionResult.output, 'parts: ' + dump).to.include('129');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "genai generateContent replays executableCode and codeExecutionResult history (gemini-2.5-flash)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Pick a random number with Python using seed 4242.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"model\",\n      \"parts\": [\n        {\n          \"executableCode\": {\n            \"language\": \"PYTHON\",\n            \"code\": \"import random\\nrandom.seed(4242)\\nprint(random.randint(1, 10**9))\"\n          }\n        },\n        {\n          \"codeExecutionResult\": {\n            \"outcome\": \"OUTCOME_OK\",\n            \"output\": \"583920117\\n\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"What exact number did the code print? Reply with only the number.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"codeExecution\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 200\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('genai code execution replay: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var body = pm.response.json() || {};",
+              "var text = JSON.stringify((((body.candidates || [])[0] || {}).content || {}).parts || []);",
+              "// The number exists only in the replayed result; the request converter used to drop native",
+              "// code parts, so Gemini never saw it.",
+              "pm.test('genai code execution replay: the model answers from the replayed result', function () {",
+              "  pm.expect(text).to.include('583920117');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "anthropic messages with gemini/gemini-2.5-flash returns code_execution blocks",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"max_tokens\": 1024,\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20250825\",\n      \"name\": \"code_execution\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use code execution: run Python code that prints the sum of the first 10 primes, then state the answer in one sentence.\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('anthropic route gemini code execution: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var body = pm.response.json() || {};",
+              "var blocks = body.content || [];",
+              "var dump = JSON.stringify(blocks.map(function (b) { return b.type; }));",
+              "pm.test('anthropic route gemini code execution: a server_tool_use carries the code', function () {",
+              "  var use = blocks.filter(function (b) { return b.type === 'server_tool_use'; })[0];",
+              "  pm.expect(use, 'blocks: ' + dump).to.be.an('object');",
+              "  pm.expect(JSON.stringify(use.input || {}), 'blocks: ' + dump).to.include('code');",
+              "});",
+              "pm.test('anthropic route gemini code execution: its code_execution_tool_result carries the output', function () {",
+              "  var use = blocks.filter(function (b) { return b.type === 'server_tool_use'; })[0] || {};",
+              "  var res = blocks.filter(function (b) { return /code_execution_tool_result$/.test(b.type || ''); })[0];",
+              "  pm.expect(res, 'blocks: ' + dump).to.be.an('object');",
+              "  pm.expect(res.tool_use_id, 'blocks: ' + dump).to.eql(use.id);",
+              "  pm.expect(JSON.stringify(res.content || {}), 'result: ' + JSON.stringify(res)).to.include('129');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "anthropic messages stream with gemini/gemini-2.5-flash streams code_execution blocks",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"max_tokens\": 1024,\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20250825\",\n      \"name\": \"code_execution\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use code execution: run Python code that prints the sum of the first 10 primes, then state the answer in one sentence.\"\n    }\n  ],\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('anthropic route gemini code execution stream: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var events = [];",
+              "pm.response.text().split('\\n').forEach(function (line) {",
+              "  var trimmed = line.trim();",
+              "  if (trimmed.indexOf('data:') !== 0) { return; }",
+              "  var payload = trimmed.slice(5).trim();",
+              "  if (!payload || payload === '[DONE]') { return; }",
+              "  try { events.push(JSON.parse(payload)); } catch (e) { /* non-JSON keepalive */ }",
+              "});",
+              "var blocks = events.filter(function (e) { return e.type === 'content_block_start' && e.content_block; }).map(function (e) { return e.content_block; });",
+              "// server_tool_use input streams as input_json_delta, so read the code from the deltas.",
+              "var json = {};",
+              "events.forEach(function (e) { if (e.type === 'content_block_delta' && e.delta && e.delta.type === 'input_json_delta') { json[e.index] = (json[e.index] || '') + e.delta.partial_json; } });",
+              "events.forEach(function (e) { if (e.type === 'content_block_start' && e.content_block && e.content_block.type === 'server_tool_use' && json[e.index]) { try { e.content_block.input = JSON.parse(json[e.index]); } catch (x) {} } });",
+              "var dump = JSON.stringify(blocks.map(function (b) { return b.type; }));",
+              "pm.test('anthropic route gemini code execution stream: a server_tool_use carries the code', function () {",
+              "  var use = blocks.filter(function (b) { return b.type === 'server_tool_use'; })[0];",
+              "  pm.expect(use, 'blocks: ' + dump).to.be.an('object');",
+              "  pm.expect(JSON.stringify(use.input || {}), 'blocks: ' + dump).to.include('code');",
+              "});",
+              "pm.test('anthropic route gemini code execution stream: its code_execution_tool_result carries the output', function () {",
+              "  var use = blocks.filter(function (b) { return b.type === 'server_tool_use'; })[0] || {};",
+              "  var res = blocks.filter(function (b) { return /code_execution_tool_result$/.test(b.type || ''); })[0];",
+              "  pm.expect(res, 'blocks: ' + dump).to.be.an('object');",
+              "  pm.expect(res.tool_use_id, 'blocks: ' + dump).to.eql(use.id);",
+              "  pm.expect(JSON.stringify(res.content || {}), 'result: ' + JSON.stringify(res)).to.include('129');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,582 @@
+{
+  "name": "147. Generation config, tool config and media pins (generation and tool config pins)",
+  "description": "Gemini/Vertex backlog rows that were sent but never asserted or never sent: toolConfig AUTO/NONE/allowedFunctionNames, maxOutputTokens on the native and chat routes, functionResponse turn, candidateCount, native :embedContent outputDimensionality, video input, plus [PREVIEW] Imagen and Vertex Claude Haiku/Sonnet 4.5 (region quota/access). Covered elsewhere: Gemini cachedContents CRUD is folder 151 (151.1-151.6), legacy googleSearchRetrieval, vertexAiSearch and vertexRagStore reach Google as [EXPECT-4XX] pins in 151.10-151.12, and grounding over real resources is [PREVIEW] in 155.10/155.11.",
+  "item": [
+    {
+      "name": "147.1 gemini-2.5-flash toolConfig mode AUTO answers in text without a tool call (tool config)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say the single word hello. Do not call any function.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"functionDeclarations\": [\n        {\n          \"name\": \"get_weather\",\n          \"description\": \"Get the weather for a city\",\n          \"parameters\": {\n            \"type\": \"OBJECT\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"STRING\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ]\n          }\n        }\n      ]\n    }\n  ],\n  \"toolConfig\": {\n    \"functionCallingConfig\": {\n      \"mode\": \"AUTO\"\n    }\n  },\n  \"generationConfig\": {\n    \"maxOutputTokens\": 64,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var cand = (j.candidates && j.candidates[0]) || {};",
+              "var ps = (cand.content && cand.content.parts) || [];",
+              "var calls = ps.filter(function (p) { return p.functionCall; });",
+              "var text = ps.map(function (p) { return p.text || ''; }).join('');",
+              "pm.test('AUTO produced text and no functionCall', function () { pm.expect(calls.length, pm.response.text()).to.equal(0); pm.expect(text.length, pm.response.text()).to.be.above(0); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "147.2 gemini-2.5-flash toolConfig mode NONE suppresses a requested tool call (tool config)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"What is the weather in Paris? Use get_weather.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"functionDeclarations\": [\n        {\n          \"name\": \"get_weather\",\n          \"description\": \"Get the weather for a city\",\n          \"parameters\": {\n            \"type\": \"OBJECT\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"STRING\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ]\n          }\n        }\n      ]\n    }\n  ],\n  \"toolConfig\": {\n    \"functionCallingConfig\": {\n      \"mode\": \"NONE\"\n    }\n  },\n  \"generationConfig\": {\n    \"maxOutputTokens\": 128,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var cand = (j.candidates && j.candidates[0]) || {};",
+              "var ps = (cand.content && cand.content.parts) || [];",
+              "var calls = ps.filter(function (p) { return p.functionCall; });",
+              "var text = ps.map(function (p) { return p.text || ''; }).join('');",
+              "pm.test('NONE produced no functionCall', function () { pm.expect(calls.length, 'tool was called despite mode NONE: ' + pm.response.text()).to.equal(0); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "147.3 gemini-2.5-flash allowedFunctionNames forces get_time over get_weather (tool config)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Do whatever you like for Paris.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"functionDeclarations\": [\n        {\n          \"name\": \"get_weather\",\n          \"description\": \"Get the weather for a city\",\n          \"parameters\": {\n            \"type\": \"OBJECT\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"STRING\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ]\n          }\n        },\n        {\n          \"name\": \"get_time\",\n          \"description\": \"Get local time for a city\",\n          \"parameters\": {\n            \"type\": \"OBJECT\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"STRING\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ]\n          }\n        }\n      ]\n    }\n  ],\n  \"toolConfig\": {\n    \"functionCallingConfig\": {\n      \"mode\": \"ANY\",\n      \"allowedFunctionNames\": [\n        \"get_time\"\n      ]\n    }\n  },\n  \"generationConfig\": {\n    \"maxOutputTokens\": 128,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var cand = (j.candidates && j.candidates[0]) || {};",
+              "var ps = (cand.content && cand.content.parts) || [];",
+              "var calls = ps.filter(function (p) { return p.functionCall; });",
+              "var text = ps.map(function (p) { return p.text || ''; }).join('');",
+              "pm.test('only the allowed function was called', function () { pm.expect(calls.length, pm.response.text()).to.be.above(0); calls.forEach(function (p) { pm.expect(p.functionCall.name, pm.response.text()).to.equal('get_time'); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "147.4 gemini-2.5-flash maxOutputTokens=20 truncates with MAX_TOKENS (max output tokens)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Write a long story about a lighthouse keeper, at least 500 words.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 20,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var cand = (j.candidates && j.candidates[0]) || {};",
+              "pm.test('output was cut at the cap', function () {",
+              "  pm.expect(cand.finishReason, pm.response.text()).to.equal('MAX_TOKENS');",
+              "  pm.expect(j.usageMetadata && j.usageMetadata.candidatesTokenCount, pm.response.text()).to.be.at.most(20);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "147.5 gemini-2.5-flash maxOutputTokens via chat max_tokens=20 reports finish_reason length (max output tokens)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Write a long story about a lighthouse keeper, at least 500 words.\"\n    }\n  ],\n  \"max_tokens\": 20\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('chat route maps the cap to finish_reason length', function () {",
+              "  pm.expect(j.choices[0].finish_reason, pm.response.text()).to.equal('length');",
+              "  pm.expect(j.usage.completion_tokens, pm.response.text()).to.be.at.most(20);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "147.6 gemini-2.5-flash functionResponse turn feeds the tool result back to the model (function responses)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"What is the temperature in Paris?\"\n        }\n      ]\n    },\n    {\n      \"role\": \"model\",\n      \"parts\": [\n        {\n          \"functionCall\": {\n            \"name\": \"get_weather\",\n            \"args\": {\n              \"city\": \"Paris\"\n            }\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"functionResponse\": {\n            \"name\": \"get_weather\",\n            \"response\": {\n              \"temperature_celsius\": 21\n            }\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"functionDeclarations\": [\n        {\n          \"name\": \"get_weather\",\n          \"description\": \"Get the weather for a city\",\n          \"parameters\": {\n            \"type\": \"OBJECT\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"STRING\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ]\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 128,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var cand = (j.candidates && j.candidates[0]) || {};",
+              "var ps = (cand.content && cand.content.parts) || [];",
+              "var calls = ps.filter(function (p) { return p.functionCall; });",
+              "var text = ps.map(function (p) { return p.text || ''; }).join('');",
+              "pm.test('answer reflects the functionResponse value', function () { pm.expect(text, pm.response.text()).to.include('21'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "147.7 gemini-2.5-flash candidateCount=2 returns two candidates (candidate count)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Name one colour.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"candidateCount\": 2,\n    \"temperature\": 1,\n    \"maxOutputTokens\": 16,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('two candidates came back', function () { pm.expect(j.candidates, pm.response.text()).to.be.an('array'); pm.expect(j.candidates.length, pm.response.text()).to.equal(2); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "147.8 gemini-embedding-001 native :embedContent honours outputDimensionality=256 with taskType and title (embed content)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"content\": {\n    \"parts\": [\n      {\n        \"text\": \"harness embed probe\"\n      }\n    ]\n  },\n  \"taskType\": \"RETRIEVAL_DOCUMENT\",\n  \"title\": \"probe\",\n  \"outputDimensionality\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-embedding-001:embedContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini",
+            "gemini-embedding-001:embedContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('native embedContent returned 256 values', function () { var v = j.embedding && j.embedding.values; pm.expect(v, pm.response.text().slice(0, 300)).to.be.an('array'); pm.expect(v.length, 'outputDimensionality ignored').to.equal(256); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "147.9 gemini/gemini-2.5-flash https mp4 video input is described (video input)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_url\": \"https://storage.googleapis.com/cloud-samples-data/generative-ai/video/animals.mp4\",\n            \"file_type\": \"video/mp4\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Describe this in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "// Gemini bills an https fileData video by TEXT modality only (~183 prompt tokens), so token counts",
+              "// cannot prove the video was consumed. The wire carried fileData video/mp4 and the reply describes it.",
+              "pm.test('the request carried the https video as fileData video/mp4', function () {",
+              "  var raw = JSON.stringify((j.extra_fields || {}).raw_request || null);",
+              "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.not.equal('null');",
+              "  pm.expect(raw, 'fileData missing from the Gemini request: ' + raw.slice(0, 1500)).to.include('fileData');",
+              "  pm.expect(raw, 'video/mp4 mime type missing: ' + raw.slice(0, 1500)).to.include('video/mp4');",
+              "  pm.expect(raw, 'the video URL did not reach Gemini: ' + raw.slice(0, 1500)).to.include('cloud-samples-data/generative-ai/video/animals.mp4');",
+              "});",
+              "pm.test('the reply describes the video', function () {",
+              "  var c = String((j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '');",
+              "  pm.expect(c, 'empty reply: ' + pm.response.text()).to.not.equal('');",
+              "  pm.expect(c, 'the model could not see the video: ' + c).to.not.match(/(can't|cannot|can not|unable to|not able to|don't have access)[^.]{0,40}(see|view|watch|access|process|open)/i);",
+              "  pm.expect(c, 'the reply does not describe the animals video: ' + c).to.match(/animal|zoo|wildlife|creature|tiger|lion|elephant|bear|panda|bird|monkey|giraffe|penguin|sloth|fox|dog|cat|fish|turtle|owl|frog|rabbit|meerkat|lemur/i);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "147.10 [PREVIEW] vertex/imagen-3.0-generate-002 image generation (imagen)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/imagen-3.0-generate-002\",\n  \"prompt\": \"a small red circle on a white background\",\n  \"n\": 1\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('imagen returned image data', function () { pm.expect(j.data && j.data[0] && (j.data[0].b64_json || j.data[0].url), pm.response.text().slice(0, 300)).to.be.a('string').and.not.empty; });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "147.11 [PREVIEW] gemini/imagen-4.0-generate-001 image generation (imagen)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/imagen-4.0-generate-001\",\n  \"prompt\": \"a small red circle on a white background\",\n  \"n\": 1\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('imagen returned image data', function () { pm.expect(j.data && j.data[0] && (j.data[0].b64_json || j.data[0].url), pm.response.text().slice(0, 300)).to.be.a('string').and.not.empty; });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "147.12 [PREVIEW] vertex/claude-haiku-4-5 basic chat (vertex claude regional gating)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/claude-haiku-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('vertex claude answered', function () { pm.expect(j.choices[0].message.content || '', pm.response.text()).to.not.equal(''); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "147.13 [PREVIEW] vertex/claude-sonnet-4-5 basic chat (vertex claude regional gating)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('vertex claude answered', function () { pm.expect(j.choices[0].message.content || '', pm.response.text()).to.not.equal(''); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

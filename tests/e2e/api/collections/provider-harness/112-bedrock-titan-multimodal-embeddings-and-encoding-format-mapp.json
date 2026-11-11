@@ -1,0 +1,736 @@
+{
+  "name": "112. Bedrock Titan multimodal embeddings and encoding_format mapping (#3632 / #3471) (bedrock-embedding-fixes)",
+  "description": "Pins the Bedrock half of the embeddings stack. Three defects, all of which returned HTTP 200 while being wrong:\n\n1. `inputImage` was never mapped. `ToBedrockTitanEmbeddingRequest` accepted only text parts, so `amazon.titan-embed-image-v1` - a multimodal model - embedded the text and discarded the image, and the native invoke route did not even recognise an image-only body as an embedding request (`DetectInvokeRequestType` looked for texts/images/inputs, not inputImage). 112.A1/112.A2 catch it by comparison, since a dropped image is invisible in a single response; 112.B1/112.B2 pin the native route, where 112.B2's image-only body is the one that used to be misrouted entirely.\n\n2. The Titan invoke envelope has one `embedding` slot, so when `/bedrock/model/{id}/invoke` fronted a provider that returns a vector per input, every vector but one was discarded silently. `bedrockDistinctEmbeddingInputs` now counts inputs and switches to the multi-embedding envelope - 112.C1.\n\n3. `encoding_format` never reached Bedrock. It is the standard field for the thing Bedrock calls `embedding_types` (Cohere) / `embeddingTypes` (Titan). Mapping it across is right, but only for values that change what the provider computes, and only on models that document the field - AWS lists exactly one request field for Titan Text G1 (`inputText`) and none for the multimodal model, and rejects anything else as an extraneous key. So `binary` is forwarded (112.D7), `float` never is - every Titan model returns floats anyway, and V2 echoes `embeddingsByType.float` even when nothing was asked for - and `base64` is encoded locally from the float vector, which is byte-identical to Cohere v4's native base64 (verified by asking AWS for both in one call) and is the only way to serve it on Titan or Cohere v3, whose enums have no base64 at all.\n\nThat matters far beyond an explicit parameter: openai-python sets `encoding_format=base64` itself whenever the caller does not name one, so forwarding it would 400 every plain `embeddings.create()` against those models. 112.D1/112.D3/112.D6 pin base64 across a model that has it natively, one that does not, and G1; 112.D2/112.D5 pin that asking for `float` changes nothing on V2 and G1; 112.D4 pins that the multimodal model never receives the key.\n\n`dimensions` also moves to `embeddingConfig.outputEmbeddingLength` for titan-embed-image-v1, which has no top-level `dimensions` field (112.A3, 112.B2). Run with FEATURE=bedrock-embedding-fixes.",
+  "item": [
+    {
+      "name": "112.A Bedrock Titan multimodal via /v1/embeddings",
+      "item": [
+        {
+          "name": "112.A1 bedrock/amazon.titan-embed-image-v1 - text-only baseline vector - #3632",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-image-v1\",\n  \"input\": [\n    [\n      {\n        \"type\": \"text\",\n        \"text\": \"a red square\"\n      }\n    ]\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Titan multimodal takes text and image in ONE invoke body (inputText + inputImage), so a",
+                  "// dropped image is invisible in a single response. This row records the text-only answer and",
+                  "// 112.A2 sends the same text WITH an image: before #3632 the two came back identical at 200.",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('text-only request to the multimodal model succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 300)).to.eql(200);",
+                  "});",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + body.slice(0, 300)); return; }",
+                  "var data = j.data || [];",
+                  "pm.test('one vector comes back, and is recorded for 112.A2', function () {",
+                  "  pm.expect(data.length, 'wrong vector count; body: ' + body.slice(0, 300)).to.eql(1);",
+                  "  pm.expect(Array.isArray(data[0].embedding), 'embedding is not an array').to.be.true;",
+                  "  pm.expect(data[0].embedding.length, 'embedding is empty').to.be.above(0);",
+                  "  pm.collectionVariables.set('titanTextOnlyVector', JSON.stringify(data[0].embedding.slice(0, 8)));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "112.A2 bedrock/amazon.titan-embed-image-v1 - text+image data URI changes the vector - #3632",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-image-v1\",\n  \"input\": [\n    [\n      {\n        \"type\": \"text\",\n        \"text\": \"a red square\"\n      },\n      {\n        \"type\": \"image\",\n        \"image\": {\n          \"data\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAOklEQVR4nO3RQREAQAjDwHKS8C8AWSchfPhlBZSZUNOdS+90PR5Y8AfIRMhEyETIRMhEyETIRMhEIR/EvwFs/VkrpgAAAABJRU5ErkJggg==\"\n        }\n      }\n    ]\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings?_chain={{titanTextOnlyVector}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ],
+              "query": [
+                {
+                  "key": "_chain",
+                  "value": "{{titanTextOnlyVector}}",
+                  "description": "Ignored by the route; declares the dependency on 112.A1 so chained-vars.mjs pulls it into any filtered or resharded run and guards this row when it is missing."
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The data URI prefix is stripped by titanImagePayload - Titan takes bare base64 in inputImage.",
+                  "// Same text as 112.A1, so any difference in the vector can only come from the image.",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('text+image parts are accepted by the multimodal model', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 300)).to.eql(200);",
+                  "});",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + body.slice(0, 300)); return; }",
+                  "var data = j.data || [];",
+                  "pm.test('the two parts aggregate into ONE vector', function () {",
+                  "  pm.expect(data.length, 'wrong vector count; body: ' + body.slice(0, 300)).to.eql(1);",
+                  "  pm.expect(Array.isArray(data[0].embedding), 'embedding is not an array').to.be.true;",
+                  "  pm.expect(data[0].embedding.length, 'embedding is empty').to.be.above(0);",
+                  "});",
+                  "pm.test('the image reached the model - vector differs from the text-only baseline', function () {",
+                  "  var baseline = pm.collectionVariables.get('titanTextOnlyVector');",
+                  "  pm.expect(baseline, '112.A1 did not record a baseline; this row cannot tell whether the image reached Titan').to.be.a('string');",
+                  "  pm.expect(JSON.stringify(data[0].embedding.slice(0, 8)),",
+                  "    'identical to the text-only vector: inputImage was dropped before the AWS call').to.not.eql(baseline);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "112.A3 bedrock/amazon.titan-embed-image-v1 - dimensions:384 maps to embeddingConfig - #3632",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-image-v1\",\n  \"input\": [\n    [\n      {\n        \"type\": \"text\",\n        \"text\": \"a red square\"\n      },\n      {\n        \"type\": \"image\",\n        \"image\": {\n          \"data\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAOklEQVR4nO3RQREAQAjDwHKS8C8AWSchfPhlBZSZUNOdS+90PR5Y8AfIRMhEyETIRMhEyETIRMhEIR/EvwFs/VkrpgAAAABJRU5ErkJggg==\"\n        }\n      }\n    ]\n  ],\n  \"dimensions\": 384\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// titan-embed-image-v1 has no top-level `dimensions` field; the value belongs under",
+                  "// embeddingConfig.outputEmbeddingLength. A 1024-long vector here means it was sent to the",
+                  "// field this model ignores, and the caller silently got the default size.",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('dimensions is accepted by the multimodal model', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 300)).to.eql(200);",
+                  "});",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + body.slice(0, 300)); return; }",
+                  "var data = j.data || [];",
+                  "pm.test('vector length is 384 - dimensions reached embeddingConfig.outputEmbeddingLength', function () {",
+                  "  pm.expect(data.length, 'no embedding returned: ' + body.slice(0, 300)).to.be.above(0);",
+                  "  pm.expect(Array.isArray(data[0].embedding), 'embedding is not an array').to.be.true;",
+                  "  pm.expect(data[0].embedding.length, 'wrong dimensionality').to.eql(384);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "112.B Bedrock Titan multimodal via the native invoke route",
+      "item": [
+        {
+          "name": "112.B1 bedrock/amazon.titan-embed-image-v1 - native invoke inputText+inputImage - #3632",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"inputText\": \"a red square\",\n  \"inputImage\": \"iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAOklEQVR4nO3RQREAQAjDwHKS8C8AWSchfPhlBZSZUNOdS+90PR5Y8AfIRMhEyETIRMhEyETIRMhEIR/EvwFs/VkrpgAAAABJRU5ErkJggg==\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/amazon.titan-embed-image-v1/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "amazon.titan-embed-image-v1",
+                "invoke"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The caller's own Bedrock wire fields. DetectInvokeRequestType has to see inputImage as an",
+                  "// embedding payload, and the response has to come back in Titan's native envelope rather",
+                  "// than Bifrost's - the invoke route is a drop-in for AWS SDK callers.",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('native invoke body with inputText+inputImage is served as an embedding', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 300)).to.eql(200);",
+                  "});",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + body.slice(0, 300)); return; }",
+                  "pm.test('Titan native envelope: embedding + inputTextTokenCount', function () {",
+                  "  pm.expect(Array.isArray(j.embedding), 'no top-level embedding array; keys: ' + Object.keys(j).join(',')).to.be.true;",
+                  "  pm.expect(j.embedding.length, 'wrong dimensionality for titan-embed-image-v1').to.eql(1024);",
+                  "  pm.expect(j, 'inputTextTokenCount missing from the native envelope').to.have.property('inputTextTokenCount');",
+                  "  pm.expect(j.data, \"Bifrost's own envelope leaked into the native invoke route\").to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "112.B2 bedrock/amazon.titan-embed-image-v1 - native invoke image-only + embeddingConfig - #3632",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"inputImage\": \"iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAOklEQVR4nO3RQREAQAjDwHKS8C8AWSchfPhlBZSZUNOdS+90PR5Y8AfIRMhEyETIRMhEyETIRMhEIR/EvwFs/VkrpgAAAABJRU5ErkJggg==\",\n  \"embeddingConfig\": {\n    \"outputEmbeddingLength\": 384\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/amazon.titan-embed-image-v1/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "amazon.titan-embed-image-v1",
+                "invoke"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// An image-only body carries none of the fields the invoke router used to look for",
+                  "// (texts/images/inputs/inputText), so before #3632 it was not recognised as an embedding",
+                  "// request at all. embeddingConfig.outputEmbeddingLength must also survive the round trip",
+                  "// into EmbeddingParameters.Dimensions and back out to the provider.",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('image-only native invoke body is detected as an embedding request', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 300)).to.eql(200);",
+                  "});",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + body.slice(0, 300)); return; }",
+                  "pm.test('vector length is 384 - embeddingConfig survived the conversion', function () {",
+                  "  pm.expect(Array.isArray(j.embedding), 'no top-level embedding array; keys: ' + Object.keys(j).join(',')).to.be.true;",
+                  "  pm.expect(j.embedding.length, 'wrong dimensionality').to.eql(384);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "112.C Bedrock invoke route fronting a foreign provider",
+      "item": [
+        {
+          "name": "112.C1 bedrock invoke -> openai/text-embedding-3-small - 2 texts return 2 vectors - #3632",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"texts\": [\n    \"alpha kestrel harbor\",\n    \"beta lantern quarry\"\n  ],\n  \"input_type\": \"search_document\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/openai%2Ftext-embedding-3-small/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "openai%2Ftext-embedding-3-small",
+                "invoke"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The Titan invoke envelope has a single `embedding` slot. When this route fronted a provider",
+                  "// that returns one vector per input, the extras were discarded silently at HTTP 200 - and",
+                  "// which one survived depended on whether the provider labelled its entries. Bedrock's own",
+                  "// models never hit this (Titan rejects a batch, Cohere resolves its family), so only the",
+                  "// cross-provider path was affected. bedrockDistinctEmbeddingInputs now counts inputs.",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('two texts through the Bedrock invoke route succeed', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 300)).to.eql(200);",
+                  "});",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + body.slice(0, 300)); return; }",
+                  "pm.test('both vectors survive - multi-embedding envelope, not the single-slot Titan one', function () {",
+                  "  pm.expect(Array.isArray(j.embeddings), 'expected an embeddings array; keys: ' + Object.keys(j).join(',')).to.be.true;",
+                  "  pm.expect(j.embeddings.length, 'vectors were dropped: the Titan envelope keeps only one').to.eql(2);",
+                  "  pm.expect(j.embedding, 'single-slot Titan envelope came back for a 2-input request').to.be.undefined;",
+                  "  pm.expect(j.response_type, 'response_type should mark the float multi-embedding envelope').to.eql('embeddings_floats');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "112.D Bedrock encoding_format maps onto the native representation field",
+      "item": [
+        {
+          "name": "112.D1 bedrock/global.cohere.embed-v4:0 - encoding_format base64 returns a base64 string - #3632",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"input_type\": \"search_document\",\n  \"encoding_format\": \"base64\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// base64 is the one representation Bifrost serves itself rather than asking AWS for:",
+                  "// Cohere v3 has no such enum value and Titan's has none either (53.E3), while v4's native",
+                  "// base64 is byte-identical to encoding the float vector locally - verified by asking AWS",
+                  "// for float and base64 in one call. So one path covers every Bedrock embedding model, and",
+                  "// a float array here means the caller's encoding_format was dropped, as it was before #3632.",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('Cohere v4 on Bedrock returns base64 for encoding_format base64', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 300)).to.eql(200);",
+                  "});",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + body.slice(0, 300)); return; }",
+                  "var data = j.data || [];",
+                  "pm.test('embedding is a base64 string labelled base64', function () {",
+                  "  pm.expect(data.length, 'no embedding returned: ' + body.slice(0, 300)).to.be.above(0);",
+                  "  pm.expect(data[0].embedding, 'expected a base64 string; a float array means encoding_format never reached embedding_types').to.be.a('string');",
+                  "  pm.expect(data[0].embedding.length, 'base64 string is empty').to.be.above(0);",
+                  "  pm.expect(data[0].encoding_format, 'representation label missing').to.eql('base64');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "112.D2 bedrock/amazon.titan-embed-text-v2:0 - encoding_format float keeps the plain shape - #3632",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"Hello world\",\n  \"encoding_format\": \"float\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The other direction of the same mapping: float IS in Titan's embeddingTypes enum, so it",
+                  "// is forwarded to AWS, and the shape must not change. Titan V2 echoes embeddingsByType.float",
+                  "// for an ordinary request, and only a genuinely multi-representation response is labelled -",
+                  "// so a label appearing here would mean single-representation responses started serialising",
+                  "// differently than they did before #3632, which stored logs and cache keys can see.",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('Titan accepts encoding_format float', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 300)).to.eql(200);",
+                  "});",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + body.slice(0, 300)); return; }",
+                  "var data = j.data || [];",
+                  "pm.test('one unlabelled float vector, exactly as before the mapping existed', function () {",
+                  "  pm.expect(data.length, 'wrong vector count; body: ' + body.slice(0, 300)).to.eql(1);",
+                  "  pm.expect(Array.isArray(data[0].embedding), 'expected a float array').to.be.true;",
+                  "  pm.expect(data[0].embedding.length, 'embedding is empty').to.be.above(0);",
+                  "  pm.expect(data[0].encoding_format || '', 'a representation label appeared where the plain shape had none').to.eql('');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "112.D3 bedrock/cohere.embed-english-v3 - encoding_format base64 on a model with no native base64 - #3632",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/cohere.embed-english-v3\",\n  \"input\": \"Hello world\",\n  \"input_type\": \"search_document\",\n  \"encoding_format\": \"base64\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// v3's embedding_types enum has no base64 at all ('base64 is not a valid enum value'), so",
+                  "// unlike 112.D1 this row can only pass if Bifrost encoded the float vector itself. It is the",
+                  "// openai-python default path too: the SDK asks for base64 unless the caller names a format.",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('base64 succeeds on a model whose own enum has no base64', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 300)).to.eql(200);",
+                  "});",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + body.slice(0, 300)); return; }",
+                  "var data = j.data || [];",
+                  "pm.test('embedding is a base64 string of a 1024-value float32 vector', function () {",
+                  "  pm.expect(data.length, 'no embedding returned: ' + body.slice(0, 300)).to.eql(1);",
+                  "  var b64 = data[0].embedding;",
+                  "  pm.expect(b64, 'expected a base64 string').to.be.a('string');",
+                  "  pm.expect(b64, 'not base64 charset').to.match(/^[A-Za-z0-9+/]+={0,2}$/);",
+                  "  var pad = b64.slice(-2) === '==' ? 2 : (b64.slice(-1) === '=' ? 1 : 0);",
+                  "  var bytes = (b64.length / 4) * 3 - pad;",
+                  "  pm.expect(bytes % 4, 'byte length is not a multiple of 4, so it is not float32 data').to.eql(0);",
+                  "  pm.expect(bytes / 4, 'wrong dimensionality for cohere.embed-english-v3').to.eql(1024);",
+                  "  pm.expect(data[0].encoding_format, 'representation label missing').to.eql('base64');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "112.D4 bedrock/amazon.titan-embed-image-v1 - encoding_format never reaches the multimodal model - #3632",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-image-v1\",\n  \"input\": \"a red square\",\n  \"encoding_format\": \"float\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// titan-embed-image-v1 has no embeddingTypes field: AWS answers 'extraneous key",
+                  "// [embeddingTypes] is not permitted' and fails the whole request, so even a valid",
+                  "// representation must not be forwarded for this model. float is served natively (no label);",
+                  "// what matters is that asking for it does not turn a working request into a 400.",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('encoding_format does not break the multimodal model', function () {",
+                  "  pm.expect(pm.response.code, 'failed - embeddingTypes was probably forwarded: ' + body.slice(0, 300)).to.eql(200);",
+                  "});",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + body.slice(0, 300)); return; }",
+                  "var data = j.data || [];",
+                  "pm.test('one float vector of the model default width', function () {",
+                  "  pm.expect(data.length, 'wrong vector count; body: ' + body.slice(0, 300)).to.eql(1);",
+                  "  pm.expect(Array.isArray(data[0].embedding), 'expected a float array').to.be.true;",
+                  "  pm.expect(data[0].embedding.length, 'wrong dimensionality for titan-embed-image-v1').to.eql(1024);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "112.D5 bedrock/amazon.titan-embed-text-v1 - encoding_format float does not break Titan G1 - #3632",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v1\",\n  \"input\": \"Hello world\",\n  \"encoding_format\": \"float\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// AWS documents ONE field for Titan Text G1: inputText. dimensions, normalize and",
+                  "// embeddingTypes are all rejected as extraneous keys, so mapping encoding_format onto",
+                  "// embeddingTypes briefly turned this working request into a 400. float is never put on",
+                  "// the wire now - it is what G1 returns anyway - so only binary is ever forwarded.",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('float is not forwarded to a model that has no embeddingTypes field', function () {",
+                  "  pm.expect(pm.response.code, 'failed - embeddingTypes was probably forwarded: ' + body.slice(0, 300)).to.eql(200);",
+                  "});",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + body.slice(0, 300)); return; }",
+                  "var data = j.data || [];",
+                  "pm.test('one unlabelled 1536-value float vector', function () {",
+                  "  pm.expect(data.length, 'wrong vector count; body: ' + body.slice(0, 300)).to.eql(1);",
+                  "  pm.expect(Array.isArray(data[0].embedding), 'expected a float array').to.be.true;",
+                  "  pm.expect(data[0].embedding.length, 'wrong dimensionality for titan-embed-text-v1').to.eql(1536);",
+                  "  pm.expect(data[0].encoding_format || '', 'G1 has one representation; a label implies a typed response it cannot produce').to.eql('');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "112.D6 bedrock/amazon.titan-embed-text-v1 - encoding_format base64 on Titan G1 - #3632",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v1\",\n  \"input\": \"Hello world\",\n  \"encoding_format\": \"base64\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The openai-python default path on the model with the smallest request surface: the SDK",
+                  "// asks for base64 unless the caller names a format, and G1 has no representation field at",
+                  "// all, so this can only work by encoding the float vector locally.",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('base64 succeeds on a model with no representation field', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 300)).to.eql(200);",
+                  "});",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + body.slice(0, 300)); return; }",
+                  "var data = j.data || [];",
+                  "pm.test('embedding is a base64 string of a 1536-value float32 vector', function () {",
+                  "  pm.expect(data.length, 'no embedding returned: ' + body.slice(0, 300)).to.eql(1);",
+                  "  var b64 = data[0].embedding;",
+                  "  pm.expect(b64, 'expected a base64 string').to.be.a('string');",
+                  "  pm.expect(b64, 'not base64 charset').to.match(/^[A-Za-z0-9+/]+={0,2}$/);",
+                  "  var pad = b64.slice(-2) === '==' ? 2 : (b64.slice(-1) === '=' ? 1 : 0);",
+                  "  var bytes = (b64.length / 4) * 3 - pad;",
+                  "  pm.expect(bytes % 4, 'byte length is not a multiple of 4, so it is not float32 data').to.eql(0);",
+                  "  pm.expect(bytes / 4, 'wrong dimensionality for titan-embed-text-v1').to.eql(1536);",
+                  "  pm.expect(data[0].encoding_format, 'representation label missing').to.eql('base64');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "112.D7 bedrock/amazon.titan-embed-text-v2:0 - encoding_format binary is the one value still forwarded - #3632",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"Hello world\",\n  \"encoding_format\": \"binary\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// binary is the only representation still put on the wire: unlike float it genuinely",
+                  "// changes what AWS computes, and unlike base64 it cannot be derived locally. Floats here",
+                  "// would mean the caller silently got a representation it did not ask for.",
+                  "var body = pm.response.text() || '';",
+                  "pm.test('binary reaches Titan V2', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 300)).to.eql(200);",
+                  "});",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + body.slice(0, 300)); return; }",
+                  "var data = j.data || [];",
+                  "pm.test('vector is int8-valued and labelled binary', function () {",
+                  "  pm.expect(data.length, 'wrong vector count; body: ' + body.slice(0, 300)).to.eql(1);",
+                  "  pm.expect(data[0].encoding_format, 'representation label missing').to.eql('binary');",
+                  "  var v = data[0].embedding;",
+                  "  pm.expect(Array.isArray(v), 'expected an array of quantised values').to.be.true;",
+                  "  pm.expect(v.length, 'vector is empty').to.be.above(0);",
+                  "  for (var i = 0; i < v.length; i++) {",
+                  "    pm.expect(Number.isInteger(v[i]), 'value at ' + i + ' is not an integer: ' + v[i]).to.be.true;",
+                  "    pm.expect(v[i], 'value at ' + i + ' is outside int8 range: ' + v[i]).to.be.within(-128, 127);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

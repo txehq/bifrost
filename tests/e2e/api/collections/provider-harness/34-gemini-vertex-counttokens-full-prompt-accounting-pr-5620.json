@@ -1,0 +1,597 @@
+{
+  "name": "34. Gemini/Vertex countTokens full-prompt accounting (PR #5620)",
+  "description": "Regression: CountTokens unconditionally deleted systemInstruction, generationConfig and toolConfig from the\nrequest body for BOTH Gemini and Vertex, so :countTokens reported only the \"contents\" token count. Reported\ncase: a ~7.4k-token system prompt plus a tool declaration counted as 17 tokens on Vertex.\n\nThe two endpoints need opposite request shapes, which is why one strip broke both:\n  - Gemini (generativelanguage): CountTokensRequest accepts only \"contents\" and \"generateContentRequest\".\n    systemInstruction/tools/toolConfig/generationConfig are 400 \"Unknown name\" at the top level and must be\n    wrapped in the envelope. Top-level \"contents\"/\"model\" are then SILENTLY IGNORED, so the body must carry\n    the envelope and nothing beside it. Before the fix, \"tools\" was never stripped, so any tool-bearing\n    countTokens was a hard 400 rather than an undercount.\n  - Vertex (aiplatform): CountTokensRequest takes contents/systemInstruction/tools/generationConfig FLAT and\n    has no envelope. Only toolConfig (plus safetySettings/cachedContent/serviceTier/labels) is rejected.\n\nThe /genai ingress must therefore parse both shapes and emit whichever the resolved provider requires, and\nthe Bifrost-only \"fallbacks\" routing field must be honoured for routing yet stripped before the upstream call.\n\nAssertions are relative, not absolute: token counts drift across model versions, so each provider records a\ncontents-only baseline and every later case asserts the count exceeds it. A dropped field collapses the count\nback to the baseline, which is exactly what these cases catch. 400 is deliberately NOT in the infra guard —\nfor the tools/toolConfig/fallbacks cases a 400 IS the regression signature.",
+  "item": [
+    {
+      "name": "34.1 GenAI Gemini countTokens contents-only baseline (gemini)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('GenAI Gemini countTokens contents-only request succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "var body = pm.response.json();",
+              "var total = body && body.totalTokens;",
+              "pm.test('GenAI Gemini countTokens returns a positive totalTokens', function () {",
+              "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+              "  pm.expect(total).to.be.above(0);",
+              "});",
+              "pm.test('GenAI Gemini countTokens returns promptTokensDetails', function () {",
+              "  pm.expect(body.promptTokensDetails, 'promptTokensDetails missing: ' + pm.response.text()).to.be.an('array');",
+              "  pm.expect(body.promptTokensDetails.length).to.be.above(0);",
+              "});",
+              "pm.collectionVariables.set('genaiCountTokensBaseline', total);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:countTokens",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "{{genaiModel}}:countTokens"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "34.2 GenAI Gemini countTokens counts a flat systemInstruction (gemini)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('GenAI Gemini countTokens accepts a flat systemInstruction', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "pm.test('GenAI Gemini countTokens does not forward the field verbatim to Google', function () {",
+              "  pm.expect(pm.response.text(), 'upstream rejected systemInstruction').to.not.include('Unknown name \"systemInstruction\"');",
+              "});",
+              "var body = pm.response.json();",
+              "var total = body && body.totalTokens;",
+              "pm.test('GenAI Gemini countTokens returns totalTokens', function () {",
+              "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+              "});",
+              "var baseline = Number(pm.collectionVariables.get('genaiCountTokensBaseline'));",
+              "// Only assert the invariant when the baseline case actually recorded a value (it may have skipped).",
+              "if (!isNaN(baseline) && baseline > 0) {",
+              "  pm.test('a flat systemInstruction counted: total exceeds the contents-only baseline', function () {",
+              "    pm.expect(total, 'prompt material was dropped from the count (' + total + ' vs baseline ' + baseline + '): ' + pm.response.text()).to.be.above(baseline);",
+              "  });",
+              "}",
+              "pm.collectionVariables.set('genaiCountTokensWithSystem', total);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}],\n  \"systemInstruction\": {\"parts\":[{\"text\":\"You are a meticulous support assistant. Always be extremely concise, never speculate, and follow the user instructions exactly without adding commentary of any kind.\"}]}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:countTokens",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "{{genaiModel}}:countTokens"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "34.3 GenAI Gemini countTokens counts flat tools + toolConfig + generationConfig (gemini)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('GenAI Gemini countTokens accepts flat tools, toolConfig and generationConfig', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "pm.test('GenAI Gemini countTokens does not forward the field verbatim to Google', function () {",
+              "  pm.expect(pm.response.text(), 'upstream rejected tools').to.not.include('Unknown name \"tools\"');",
+              "  pm.expect(pm.response.text(), 'upstream rejected toolConfig').to.not.include('Unknown name \"toolConfig\"');",
+              "  pm.expect(pm.response.text(), 'upstream rejected generationConfig').to.not.include('Unknown name \"generationConfig\"');",
+              "});",
+              "var body = pm.response.json();",
+              "var total = body && body.totalTokens;",
+              "pm.test('GenAI Gemini countTokens returns totalTokens', function () {",
+              "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+              "});",
+              "var baseline = Number(pm.collectionVariables.get('genaiCountTokensBaseline'));",
+              "// Only assert the invariant when the baseline case actually recorded a value (it may have skipped).",
+              "if (!isNaN(baseline) && baseline > 0) {",
+              "  pm.test('flat tools, toolConfig and generationConfig counted: total exceeds the contents-only baseline', function () {",
+              "    pm.expect(total, 'prompt material was dropped from the count (' + total + ' vs baseline ' + baseline + '): ' + pm.response.text()).to.be.above(baseline);",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}],\n  \"tools\": [{\"functionDeclarations\":[{\"name\":\"probe_context\",\"description\":\"No-op compatibility probe tool used to verify tool declarations are counted.\",\"parametersJsonSchema\":{\"type\":\"object\",\"properties\":{}}}]}],\n  \"toolConfig\": {\"functionCallingConfig\":{\"mode\":\"AUTO\"}},\n  \"generationConfig\": {\"temperature\":0.2}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:countTokens",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "{{genaiModel}}:countTokens"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "34.4 GenAI Gemini countTokens accepts a generateContentRequest envelope (gemini)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('GenAI Gemini countTokens accepts a generateContentRequest envelope', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "pm.test('GenAI Gemini countTokens does not forward the field verbatim to Google', function () {",
+              "  pm.expect(pm.response.text(), 'upstream rejected generateContentRequest').to.not.include('Unknown name \"generateContentRequest\"');",
+              "});",
+              "var body = pm.response.json();",
+              "var total = body && body.totalTokens;",
+              "pm.test('GenAI Gemini countTokens returns totalTokens', function () {",
+              "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+              "});",
+              "var baseline = Number(pm.collectionVariables.get('genaiCountTokensBaseline'));",
+              "// Only assert the invariant when the baseline case actually recorded a value (it may have skipped).",
+              "if (!isNaN(baseline) && baseline > 0) {",
+              "  pm.test('a generateContentRequest envelope counted: total exceeds the contents-only baseline', function () {",
+              "    pm.expect(total, 'prompt material was dropped from the count (' + total + ' vs baseline ' + baseline + '): ' + pm.response.text()).to.be.above(baseline);",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"generateContentRequest\": {\n    \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}],\n    \"systemInstruction\": {\"parts\":[{\"text\":\"You are a meticulous support assistant. Always be extremely concise, never speculate, and follow the user instructions exactly without adding commentary of any kind.\"}]},\n    \"tools\": [{\"functionDeclarations\":[{\"name\":\"probe_context\",\"description\":\"No-op compatibility probe tool used to verify tool declarations are counted.\",\"parametersJsonSchema\":{\"type\":\"object\",\"properties\":{}}}]}]\n  }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:countTokens",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "{{genaiModel}}:countTokens"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "34.5 GenAI Gemini countTokens strips the Bifrost fallbacks field (gemini)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('GenAI Gemini countTokens accepts a Bifrost fallbacks field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "pm.test('fallbacks is not forwarded verbatim to Google', function () {",
+              "  pm.expect(pm.response.text(), 'upstream rejected fallbacks').to.not.include('Unknown name \"fallbacks\"');",
+              "});",
+              "var total = pm.response.json().totalTokens;",
+              "var withSystem = Number(pm.collectionVariables.get('genaiCountTokensWithSystem'));",
+              "// Only compare when 34.2 actually recorded a value (it may have skipped).",
+              "if (!isNaN(withSystem) && withSystem > 0) {",
+              "  pm.test('fallbacks is routing-only and does not change the counted prompt', function () {",
+              "    pm.expect(total, 'fallbacks altered the token count: ' + pm.response.text()).to.eql(withSystem);",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}],\n  \"systemInstruction\": {\"parts\":[{\"text\":\"You are a meticulous support assistant. Always be extremely concise, never speculate, and follow the user instructions exactly without adding commentary of any kind.\"}]},\n  \"fallbacks\": [\"vertex/gemini-2.5-pro\"]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:countTokens",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "{{genaiModel}}:countTokens"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "34.6 Vertex Gemini countTokens contents-only baseline (vertex)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Vertex Gemini countTokens contents-only request succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "var body = pm.response.json();",
+              "var total = body && body.totalTokens;",
+              "pm.test('Vertex Gemini countTokens returns a positive totalTokens', function () {",
+              "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+              "  pm.expect(total).to.be.above(0);",
+              "});",
+              "pm.test('Vertex Gemini countTokens returns promptTokensDetails', function () {",
+              "  pm.expect(body.promptTokensDetails, 'promptTokensDetails missing: ' + pm.response.text()).to.be.an('array');",
+              "  pm.expect(body.promptTokensDetails.length).to.be.above(0);",
+              "});",
+              "pm.collectionVariables.set('vertexCountTokensBaseline', total);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/vertex/{{vertexModel}}:countTokens",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "vertex",
+            "{{vertexModel}}:countTokens"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "34.7 Vertex Gemini countTokens counts a flat systemInstruction (vertex)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Vertex Gemini countTokens accepts a flat systemInstruction', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "pm.test('Vertex Gemini countTokens does not forward the field verbatim to Google', function () {",
+              "  pm.expect(pm.response.text(), 'upstream rejected systemInstruction').to.not.include('Unknown name \"systemInstruction\"');",
+              "});",
+              "var body = pm.response.json();",
+              "var total = body && body.totalTokens;",
+              "pm.test('Vertex Gemini countTokens returns totalTokens', function () {",
+              "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+              "});",
+              "var baseline = Number(pm.collectionVariables.get('vertexCountTokensBaseline'));",
+              "// Only assert the invariant when the baseline case actually recorded a value (it may have skipped).",
+              "if (!isNaN(baseline) && baseline > 0) {",
+              "  pm.test('a flat systemInstruction counted: total exceeds the contents-only baseline', function () {",
+              "    pm.expect(total, 'prompt material was dropped from the count (' + total + ' vs baseline ' + baseline + '): ' + pm.response.text()).to.be.above(baseline);",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}],\n  \"systemInstruction\": {\"parts\":[{\"text\":\"You are a meticulous support assistant. Always be extremely concise, never speculate, and follow the user instructions exactly without adding commentary of any kind.\"}]}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/vertex/{{vertexModel}}:countTokens",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "vertex",
+            "{{vertexModel}}:countTokens"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "34.8 Vertex Gemini countTokens keeps tools + generationConfig and strips toolConfig (vertex)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Vertex Gemini countTokens accepts flat tools and generationConfig with toolConfig stripped', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "pm.test('Vertex Gemini countTokens does not forward the field verbatim to Google', function () {",
+              "  pm.expect(pm.response.text(), 'upstream rejected toolConfig').to.not.include('Unknown name \"toolConfig\"');",
+              "  pm.expect(pm.response.text(), 'upstream rejected generationConfig').to.not.include('Unknown name \"generationConfig\"');",
+              "  pm.expect(pm.response.text(), 'upstream rejected tools').to.not.include('Unknown name \"tools\"');",
+              "});",
+              "var body = pm.response.json();",
+              "var total = body && body.totalTokens;",
+              "pm.test('Vertex Gemini countTokens returns totalTokens', function () {",
+              "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+              "});",
+              "var baseline = Number(pm.collectionVariables.get('vertexCountTokensBaseline'));",
+              "// Only assert the invariant when the baseline case actually recorded a value (it may have skipped).",
+              "if (!isNaN(baseline) && baseline > 0) {",
+              "  pm.test('flat tools and generationConfig with toolConfig stripped counted: total exceeds the contents-only baseline', function () {",
+              "    pm.expect(total, 'prompt material was dropped from the count (' + total + ' vs baseline ' + baseline + '): ' + pm.response.text()).to.be.above(baseline);",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}],\n  \"tools\": [{\"functionDeclarations\":[{\"name\":\"probe_context\",\"description\":\"No-op compatibility probe tool used to verify tool declarations are counted.\",\"parametersJsonSchema\":{\"type\":\"object\",\"properties\":{}}}]}],\n  \"generationConfig\": {\"temperature\":0.2},\n  \"toolConfig\": {\"functionCallingConfig\":{\"mode\":\"AUTO\"}}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/vertex/{{vertexModel}}:countTokens",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "vertex",
+            "{{vertexModel}}:countTokens"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "34.9 Vertex Gemini countTokens unwraps a generateContentRequest envelope (vertex)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Vertex Gemini countTokens accepts a generateContentRequest envelope (Vertex has none, so it must be unwrapped)', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "pm.test('Vertex Gemini countTokens does not forward the field verbatim to Google', function () {",
+              "  pm.expect(pm.response.text(), 'upstream rejected generateContentRequest').to.not.include('Unknown name \"generateContentRequest\"');",
+              "});",
+              "var body = pm.response.json();",
+              "var total = body && body.totalTokens;",
+              "pm.test('Vertex Gemini countTokens returns totalTokens', function () {",
+              "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+              "});",
+              "var baseline = Number(pm.collectionVariables.get('vertexCountTokensBaseline'));",
+              "// Only assert the invariant when the baseline case actually recorded a value (it may have skipped).",
+              "if (!isNaN(baseline) && baseline > 0) {",
+              "  pm.test('a generateContentRequest envelope (Vertex has none, so it must be unwrapped) counted: total exceeds the contents-only baseline', function () {",
+              "    pm.expect(total, 'prompt material was dropped from the count (' + total + ' vs baseline ' + baseline + '): ' + pm.response.text()).to.be.above(baseline);",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"generateContentRequest\": {\n    \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}],\n    \"systemInstruction\": {\"parts\":[{\"text\":\"You are a meticulous support assistant. Always be extremely concise, never speculate, and follow the user instructions exactly without adding commentary of any kind.\"}]},\n    \"tools\": [{\"functionDeclarations\":[{\"name\":\"probe_context\",\"description\":\"No-op compatibility probe tool used to verify tool declarations are counted.\",\"parametersJsonSchema\":{\"type\":\"object\",\"properties\":{}}}]}]\n  }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/vertex/{{vertexModel}}:countTokens",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "vertex",
+            "{{vertexModel}}:countTokens"
+          ]
+        }
+      },
+      "response": []
+    }
+  ]
+}

@@ -1,0 +1,448 @@
+{
+  "name": "267. Agent Gateway push deliveries: identical appends are at least once and one registration's deliveries keep their order (a2a-push-delivery) [SERIAL]",
+  "description": "TXE-5477 (PR5 preservation group 3a), the delivery half of folder 266's fixture (tests/e2e/api/runners/a2a-push-fixture.mjs): the fixture is both the upstream agent that pushes to the gateway's ingress with the credential the gateway registered (POST /control/push) and the client's callback that records what the gateway delivers (/push-sink/<run>). The harness gateway must allow private push callbacks (server.a2a_allow_private_push_callbacks, set in the python profile) since the sink is on loopback. Pins on the wire: two identical artifact appends pushed by the upstream are both delivered (an append carries no event identity, so appends are at least once instead of being deduplicated away), and when the sink refuses a replacement once, the append accepted after it waits and is delivered after the retried replacement (one registration's deliveries keep acceptance order). Red on main ff00d1500 at 267.6 (one delivery) and 267.10 (the append overtakes the replacement); green on this change.",
+  "item": [
+    {
+      "name": "267.1 a2a push delivery: set a2a_external_client_url so the gateway can mint push callbacks",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"client_config\": {{a2aClientConfig}}}"
+        },
+        "url": "{{baseUrl}}/api/config"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// One fixture agent and one sink per run; both are torn down at the end of the folder.",
+              "if (!pm.variables.get('a2aDeliveryAgent')) { pm.variables.set('a2aDeliveryAgent', 'a2a-push-delivery-' + Date.now()); }",
+              "if (!pm.variables.get('a2aDeliveryRun')) { pm.variables.set('a2aDeliveryRun', 'run-' + Date.now()); }",
+              "pm.variables.set('a2aFixtureBase', pm.variables.get('a2aPushFixtureUrl') || 'http://127.0.0.1:18091');",
+              "// PUT /api/config validates the whole client config, so read the current one and change only the URL.",
+              "var headers = { 'Accept': 'application/json' };",
+              "var setupToken = pm.variables.get('setupToken');",
+              "if (setupToken) { headers['X-Bifrost-Setup-Token'] = setupToken; }",
+              "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config', method: 'GET', header: headers }, function (err, res) {",
+              "  if (err) { throw err; }",
+              "  if (res.code !== 200) { throw new Error('GET /api/config returned ' + res.code + ': ' + res.text()); }",
+              "  var clientConfig = res.json().client_config || {};",
+              "  // The server reports log_retention_days 0 by default but rejects that on write (as set-raw-override-config.mjs notes).",
+              "  if (!(clientConfig.log_retention_days >= 1)) { clientConfig.log_retention_days = 1; }",
+              "  clientConfig.a2a_external_client_url = pm.variables.get('baseUrl');",
+              "  pm.variables.set('a2aClientConfig', JSON.stringify(clientConfig));",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "267.2 a2a push delivery: register the offline A2A push fixture agent [EXPECT-201]",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"name\": \"{{a2aDeliveryAgent}}\", \"agent_card_url\": \"{{a2aFixtureBase}}/.well-known/agent-card.json\", \"enabled\": true, \"allow_by_default\": true, \"forward_accepted_credential\": false, \"forward_accepted_credential_overrides_auth\": false}"
+        },
+        "url": "{{baseUrl}}/api/agents"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 201\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(201); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "267.3 a2a push delivery: SendMessage through the gateway creates a task on the fixture",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"SendMessage\", \"params\": {\"message\": {\"messageId\": \"m-delivery\", \"role\": \"ROLE_USER\", \"parts\": [{\"text\": \"start\"}]}}}"
+        },
+        "url": "{{baseUrl}}/agents/a2a/{{a2aDeliveryAgent}}/json-rpc"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var body = pm.response.json();",
+              "pm.test(\"SendMessage returns a task\", function () {",
+              "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
+              "  pm.expect(body.result && body.result.task && body.result.task.id, 'no task id: ' + pm.response.text()).to.be.a('string');",
+              "  pm.variables.set('a2aDeliveryTask', body.result.task.id);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "267.4 a2a push delivery: the client registers its callback, the fixture's sink, through the gateway",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"CreateTaskPushNotificationConfig\", \"params\": {\"tenant\": \"tenant-a\", \"taskId\": \"{{a2aDeliveryTask}}\", \"id\": \"delivery-config\", \"url\": \"{{a2aFixtureBase}}/push-sink/{{a2aDeliveryRun}}\", \"token\": \"sink-token\"}}"
+        },
+        "url": "{{baseUrl}}/agents/a2a/{{a2aDeliveryAgent}}/json-rpc"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var body = pm.response.json();",
+              "pm.test(\"the callback is registered and the gateway minted its own ingress credential for the upstream\", function () {",
+              "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
+              "  pm.expect(body.result.id).to.equal('delivery-config');",
+              "  pm.expect(pm.response.text()).not.to.include('sink-token');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "267.5 a2a push delivery: the upstream pushes the same artifact append twice through the gateway's ingress",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"taskId\": \"{{a2aDeliveryTask}}\", \"configId\": \"delivery-config\", \"repeat\": 2, \"event\": {\"artifactUpdate\": {\"taskId\": \"{{a2aDeliveryTask}}\", \"contextId\": \"ctx-delivery\", \"append\": true, \"artifact\": {\"artifactId\": \"artifact-1\", \"parts\": [{\"text\": \"ha\"}]}}}}"
+        },
+        "url": "{{a2aFixtureBase}}/control/push"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var body = pm.response.json();",
+              "pm.test(\"both pushes are accepted by the ingress (202)\", function () {",
+              "  pm.expect(body.statuses, pm.response.text()).to.deep.equal([202, 202]);",
+              "  pm.expect(String(body.ingressUrl)).to.include('/push/callback');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "267.6 a2a push delivery: both identical appends reach the client's callback (appends are at least once)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{a2aFixtureBase}}/push-sink/{{a2aDeliveryRun}}/deliveries?min=2&timeoutMs=10000"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var body = pm.response.json();",
+              "pm.test(\"both identical appends are delivered\", function () {",
+              "  pm.expect(body.deliveries, pm.response.text()).to.have.lengthOf(2);",
+              "  body.deliveries.forEach(function (d) {",
+              "    pm.expect(d.token, 'the gateway must present the client token it stored').to.equal('sink-token');",
+              "    pm.expect(d.event.kind).to.equal('artifactUpdate');",
+              "    pm.expect(d.event.append).to.equal(true);",
+              "    pm.expect(d.event.text).to.equal('ha');",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "267.7 a2a push delivery: the sink will refuse the next delivery once, so it backs off",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": "{{a2aFixtureBase}}/push-sink/{{a2aDeliveryRun}}/fail-next"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var body = pm.response.json();",
+              "pm.test(\"the sink is armed to fail once\", function () { pm.expect(body.failNext).to.equal(1); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "267.8 a2a push delivery: the upstream pushes an artifact replacement, whose first delivery the sink refuses",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"taskId\": \"{{a2aDeliveryTask}}\", \"configId\": \"delivery-config\", \"repeat\": 1, \"event\": {\"artifactUpdate\": {\"taskId\": \"{{a2aDeliveryTask}}\", \"contextId\": \"ctx-delivery\", \"append\": false, \"artifact\": {\"artifactId\": \"artifact-1\", \"parts\": [{\"text\": \"final\"}]}}}}"
+        },
+        "url": "{{a2aFixtureBase}}/control/push"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var body = pm.response.json();",
+              "pm.test(\"the replacement is accepted by the ingress (202)\", function () { pm.expect(body.statuses, pm.response.text()).to.deep.equal([202]); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "267.9 a2a push delivery: the upstream then pushes an append that must follow the replacement",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"taskId\": \"{{a2aDeliveryTask}}\", \"configId\": \"delivery-config\", \"repeat\": 1, \"event\": {\"artifactUpdate\": {\"taskId\": \"{{a2aDeliveryTask}}\", \"contextId\": \"ctx-delivery\", \"append\": true, \"artifact\": {\"artifactId\": \"artifact-1\", \"parts\": [{\"text\": \"; more\"}]}}}}"
+        },
+        "url": "{{a2aFixtureBase}}/control/push"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var body = pm.response.json();",
+              "pm.test(\"the append is accepted by the ingress (202)\", function () { pm.expect(body.statuses, pm.response.text()).to.deep.equal([202]); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "267.10 a2a push delivery: the replacement is retried and delivered before the append accepted after it",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{a2aFixtureBase}}/push-sink/{{a2aDeliveryRun}}/deliveries?min=4&timeoutMs=20000"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var body = pm.response.json();",
+              "pm.test(\"the append follows the replacement it was accepted after\", function () {",
+              "  pm.expect(body.deliveries, pm.response.text()).to.have.lengthOf(4);",
+              "  pm.expect(body.failures, 'the sink refused the replacement once').to.have.lengthOf(1);",
+              "  pm.expect(body.failures[0].event.append).to.equal(false);",
+              "  pm.expect(body.deliveries[2].event.append, 'third delivery must be the replacement (append false): ' + JSON.stringify(body.deliveries)).to.equal(false);",
+              "  pm.expect(body.deliveries[2].event.text).to.equal('final');",
+              "  pm.expect(body.deliveries[3].event.append, 'fourth delivery must be the append: ' + JSON.stringify(body.deliveries)).to.equal(true);",
+              "  pm.expect(body.deliveries[3].event.text).to.equal('; more');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "267.11 a2a push delivery: the client deletes its callback",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"DeleteTaskPushNotificationConfig\", \"params\": {\"tenant\": \"tenant-a\", \"taskId\": \"{{a2aDeliveryTask}}\", \"id\": \"delivery-config\"}}"
+        },
+        "url": "{{baseUrl}}/agents/a2a/{{a2aDeliveryAgent}}/json-rpc"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var body = pm.response.json();",
+              "pm.test(\"the callback is deleted\", function () {",
+              "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "267.12 a2a push delivery: delete the fixture registration [EXPECT-204]",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": "{{baseUrl}}/api/agents/{{a2aDeliveryAgent}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 204\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(204); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "267.13 a2a push delivery: clear a2a_external_client_url again",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"client_config\": {{a2aClientConfig}}}"
+        },
+        "url": "{{baseUrl}}/api/config"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// PUT /api/config validates the whole client config, so read the current one and change only the URL.",
+              "var headers = { 'Accept': 'application/json' };",
+              "var setupToken = pm.variables.get('setupToken');",
+              "if (setupToken) { headers['X-Bifrost-Setup-Token'] = setupToken; }",
+              "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config', method: 'GET', header: headers }, function (err, res) {",
+              "  if (err) { throw err; }",
+              "  if (res.code !== 200) { throw new Error('GET /api/config returned ' + res.code + ': ' + res.text()); }",
+              "  var clientConfig = res.json().client_config || {};",
+              "  // The server reports log_retention_days 0 by default but rejects that on write (as set-raw-override-config.mjs notes).",
+              "  if (!(clientConfig.log_retention_days >= 1)) { clientConfig.log_retention_days = 1; }",
+              "  clientConfig.a2a_external_client_url = '';",
+              "  pm.variables.set('a2aClientConfig', JSON.stringify(clientConfig));",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

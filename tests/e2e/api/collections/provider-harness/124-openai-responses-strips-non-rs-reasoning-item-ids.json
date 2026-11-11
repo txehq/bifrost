@@ -1,0 +1,49 @@
+{
+  "name": "124. OpenAI Responses strips non-rs_ reasoning item IDs",
+  "description": "Gemini generates reasoning item IDs like msg_<id>_reasoning_N or reasoning_N. OpenAI only accepts rs_ prefix. Fix: ToOpenAIResponsesRequest strips IDs from reasoning items.",
+  "item": [
+    {
+      "name": "openai/gpt-4o native /v1/responses: reasoning item ID stripped",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('No id parameter rejection on reasoning item', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'OpenAI rejected reasoning id: ' + body).to.not.match(/input\\[\\d+\\]\\.id/);",
+              "});",
+              "pm.test('Replay with Gemini reasoning ID succeeds', function () {",
+              "  pm.expect(pm.response.code, 'responses replay request failed: ' + pm.response.text()).to.be.below(400);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-4o\",\"input\":[{\"type\":\"reasoning\",\"id\":\"msg_abc123_reasoning_0\",\"reasoning\":{\"summary\":[\"thinking about this\"]}},{\"type\":\"message\",\"role\":\"user\",\"content\":\"continue\"}],\"max_output_tokens\":100}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    }
+  ]
+}

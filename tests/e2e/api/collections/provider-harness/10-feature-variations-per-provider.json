@@ -1,0 +1,2244 @@
+{
+  "name": "10. Feature Variations (per-provider)",
+  "description": "Provider-native feature exercises - structured output, server-side tools (web search, code execution), function calling, beta headers, vision, streaming, prompt caching, extended thinking, etc. Each sub-folder targets a single provider's shape via its drop-in route or native call.",
+  "item": [
+    {
+      "name": "OpenAI Features",
+      "item": [
+        {
+          "name": "Structured output (json_schema)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Extract the city, country, and population (rough) for Tokyo.\" }\n  ],\n  \"response_format\": {\n    \"type\": \"json_schema\",\n    \"json_schema\": {\n      \"name\": \"city_info\",\n      \"strict\": true,\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": { \"type\": \"string\" },\n          \"country\": { \"type\": \"string\" },\n          \"population_millions\": { \"type\": \"number\" }\n        },\n        \"required\": [\"city\", \"country\", \"population_millions\"],\n        \"additionalProperties\": false\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Function calling (custom tool)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"What's the weather in Paris?\" }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": { \"city\": { \"type\": \"string\" } },\n          \"required\": [\"city\"]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"auto\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Tool choice forced (required)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Pick a random color.\"}],\n  \"tools\": [{\n    \"type\": \"function\",\n    \"function\": {\n      \"name\": \"pick_color\",\n      \"parameters\": {\"type\":\"object\",\"properties\":{\"hex\":{\"type\":\"string\"}},\"required\":[\"hex\"]}\n    }\n  }],\n  \"tool_choice\": \"required\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Web search (Responses API)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"input\": \"What's the latest news about quantum computing this week?\",\n  \"tools\": [{ \"type\": \"web_search_preview\" }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Code interpreter (Responses API)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o\",\n  \"input\": \"Plot a sine wave and tell me its period.\",\n  \"tools\": [{ \"type\": \"code_interpreter\", \"container\": { \"type\": \"auto\" } }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Vision (image_url)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [{\n    \"role\": \"user\",\n    \"content\": [\n      { \"type\": \"text\", \"text\": \"Describe this image in one sentence.\" },\n      { \"type\": \"image_url\", \"image_url\": { \"url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\" } }\n    ]\n  }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Reasoning effort (gpt-5)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-5\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"What's 17 * 23 + sqrt(144)? Show your reasoning.\"}],\n  \"reasoning_effort\": \"high\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Streaming (chat completions)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Count from 1 to 10.\"}],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "System message + multi-turn",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    { \"role\": \"system\", \"content\": \"You are a pirate. Respond in pirate speak.\" },\n    { \"role\": \"user\", \"content\": \"Hello, what time is it?\" },\n    { \"role\": \"assistant\", \"content\": \"Arrr, the sun be high in the sky, matey!\" },\n    { \"role\": \"user\", \"content\": \"Now tell me a joke.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Anthropic Features",
+      "item": [
+        {
+          "name": "Tool use (custom function)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [{\"role\":\"user\",\"content\":\"What's the weather in Tokyo?\"}],\n  \"tools\": [{\n    \"name\": \"get_weather\",\n    \"description\": \"Get current weather for a city\",\n    \"input_schema\": {\n      \"type\": \"object\",\n      \"properties\": { \"city\": { \"type\": \"string\" } },\n      \"required\": [\"city\"]\n    }\n  }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Tool choice forced (any)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [{\"role\":\"user\",\"content\":\"Pick a color.\"}],\n  \"tools\": [{\n    \"name\": \"pick_color\",\n    \"input_schema\": {\"type\":\"object\",\"properties\":{\"hex\":{\"type\":\"string\"}},\"required\":[\"hex\"]}\n  }],\n  \"tool_choice\": { \"type\": \"any\" }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Web search (web_search_20250305)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 1024,\n  \"messages\": [{\"role\":\"user\",\"content\":\"What's the weather in NYC right now?\"}],\n  \"tools\": [{\n    \"type\": \"web_search_20250305\",\n    \"name\": \"web_search\",\n    \"max_uses\": 3\n  }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Web search w/ dynamic filtering (web_search_20260209)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 4096,\n  \"messages\": [{\"role\":\"user\",\"content\":\"Search for AAPL and GOOGL prices, compute P/E ratio.\"}],\n  \"tools\": [\n    { \"type\": \"web_search_20260209\", \"name\": \"web_search\" },\n    { \"type\": \"code_execution_20250522\", \"name\": \"code_execution\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Web search with domain filter + location",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 1024,\n  \"messages\": [{\"role\":\"user\",\"content\":\"Find recent AI papers from arxiv.\"}],\n  \"tools\": [{\n    \"type\": \"web_search_20250305\",\n    \"name\": \"web_search\",\n    \"max_uses\": 3,\n    \"allowed_domains\": [\"arxiv.org\"],\n    \"user_location\": { \"type\": \"approximate\", \"city\": \"San Francisco\", \"region\": \"California\", \"country\": \"US\", \"timezone\": \"America/Los_Angeles\" }\n  }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Extended thinking (Sonnet 4.6, type=enabled)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 16000,\n  \"thinking\": { \"type\": \"enabled\", \"budget_tokens\": 10000 },\n  \"messages\": [{\"role\":\"user\",\"content\":\"Plan a 7-day trip to Japan focusing on food. Think carefully.\"}]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Adaptive thinking (Opus 4.7)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 16000,\n  \"thinking\": { \"type\": \"adaptive\" },\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve: integral of x^2 * e^(-x) dx from 0 to infinity. Show steps.\"}]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Adaptive thinking (Opus 4.8)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-opus-4-8\",\n  \"max_tokens\": 16000,\n  \"thinking\": { \"type\": \"adaptive\" },\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve: integral of x^2 * e^(-x) dx from 0 to infinity. Show steps.\"}]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Adaptive thinking (Sonnet 5)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-5\",\n  \"max_tokens\": 16000,\n  \"thinking\": { \"type\": \"adaptive\" },\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve: integral of x^2 * e^(-x) dx from 0 to infinity. Show steps.\"}]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Adaptive thinking + effort=high (Sonnet 5)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-5\",\n  \"max_tokens\": 16000,\n  \"thinking\": { \"type\": \"adaptive\" },\n  \"output_config\": { \"effort\": \"high\" },\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve: integral of x^2 * e^(-x) dx from 0 to infinity. Show steps.\"}]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Prompt caching (cache_control: ephemeral)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 512,\n  \"system\": [\n    { \"type\": \"text\", \"text\": \"You are an expert legal assistant.\" },\n    { \"type\": \"text\", \"text\": \"Reference doc: [imagine 1000 lines of legal text here for caching demo]\", \"cache_control\": { \"type\": \"ephemeral\" } }\n  ],\n  \"messages\": [{\"role\":\"user\",\"content\":\"Summarize the doc.\"}]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Computer use - Sonnet 4.5 canonical (old-gen tools, computer-use-2025-01-24)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "computer-use-2025-01-24"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-4-5\",\n  \"max_tokens\": 4096,\n  \"tools\": [\n    { \"type\": \"computer_20250124\", \"name\": \"computer\", \"display_width_px\": 1024, \"display_height_px\": 768, \"display_number\": 1 },\n    { \"type\": \"bash_20250124\", \"name\": \"bash\" },\n    { \"type\": \"text_editor_20250124\", \"name\": \"str_replace_editor\" }\n  ],\n  \"messages\": [{\"role\":\"user\",\"content\":\"Take a screenshot of the desktop.\"}]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Computer use - Sonnet 4.6 canonical (new-gen tools, computer-use-2025-11-24)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "computer-use-2025-11-24"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 4096,\n  \"tools\": [\n    { \"type\": \"computer_20251124\", \"name\": \"computer\", \"display_width_px\": 1024, \"display_height_px\": 768, \"display_number\": 1 },\n    { \"type\": \"bash_20250124\", \"name\": \"bash\" },\n    { \"type\": \"text_editor_20250728\", \"name\": \"str_replace_based_edit_tool\" }\n  ],\n  \"messages\": [{\"role\":\"user\",\"content\":\"Take a screenshot of the desktop.\"}]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Computer use - Sonnet 4.5 + new-gen tools (Bifrost auto-downgrades)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "computer-use-2025-01-24"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-4-5\",\n  \"max_tokens\": 4096,\n  \"tools\": [\n    { \"type\": \"computer_20251124\", \"name\": \"computer\", \"display_width_px\": 1024, \"display_height_px\": 768, \"display_number\": 1 },\n    { \"type\": \"bash_20250124\", \"name\": \"bash\" },\n    { \"type\": \"text_editor_20250728\", \"name\": \"str_replace_based_edit_tool\" }\n  ],\n  \"messages\": [{\"role\":\"user\",\"content\":\"Take a screenshot of the desktop.\"}]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Computer use - Sonnet 4.6 + old-gen tools (Bifrost auto-upgrades)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "computer-use-2025-11-24"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 4096,\n  \"tools\": [\n    { \"type\": \"computer_20250124\", \"name\": \"computer\", \"display_width_px\": 1024, \"display_height_px\": 768, \"display_number\": 1 },\n    { \"type\": \"bash_20250124\", \"name\": \"bash\" },\n    { \"type\": \"text_editor_20250124\", \"name\": \"str_replace_editor\" }\n  ],\n  \"messages\": [{\"role\":\"user\",\"content\":\"Take a screenshot of the desktop.\"}]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Computer use - Sonnet 5 canonical (new-gen tools, computer-use-2025-11-24)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "computer-use-2025-11-24"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-5\",\n  \"max_tokens\": 4096,\n  \"tools\": [\n    { \"type\": \"computer_20251124\", \"name\": \"computer\", \"display_width_px\": 1024, \"display_height_px\": 768, \"display_number\": 1 },\n    { \"type\": \"bash_20250124\", \"name\": \"bash\" },\n    { \"type\": \"text_editor_20250728\", \"name\": \"str_replace_based_edit_tool\" }\n  ],\n  \"messages\": [{\"role\":\"user\",\"content\":\"Take a screenshot of the desktop.\"}]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Computer use - Sonnet 5 + old-gen tools (Bifrost auto-upgrades)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "computer-use-2025-11-24"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-5\",\n  \"max_tokens\": 4096,\n  \"tools\": [\n    { \"type\": \"computer_20250124\", \"name\": \"computer\", \"display_width_px\": 1024, \"display_height_px\": 768, \"display_number\": 1 },\n    { \"type\": \"bash_20250124\", \"name\": \"bash\" },\n    { \"type\": \"text_editor_20250124\", \"name\": \"str_replace_editor\" }\n  ],\n  \"messages\": [{\"role\":\"user\",\"content\":\"Take a screenshot of the desktop.\"}]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Vision (base64 image)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 512,\n  \"messages\": [{\n    \"role\": \"user\",\n    \"content\": [\n      { \"type\": \"image\", \"source\": { \"type\": \"url\", \"url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\" } },\n      { \"type\": \"text\", \"text\": \"Describe this image briefly.\" }\n    ]\n  }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Streaming (SSE)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 800,\n  \"stream\": true,\n  \"messages\": [{\"role\":\"user\",\"content\":\"Count from 1 to 10.\"}]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Code execution — python (code_execution_20250825)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use Python code execution to compute the mean and population standard deviation of [2, 4, 4, 4, 5, 5, 7, 9]. Show the code.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20250825\",\n      \"name\": \"code_execution\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('Anthropic: code execution ran', function () {",
+                  "  var j = pm.response.json();",
+                  "  var blocks = j.content || [];",
+                  "  var names = ['code_execution','bash_code_execution','text_editor_code_execution'];",
+                  "  var stu = blocks.find(function (b) { return b.type === 'server_tool_use' && names.indexOf(b.name) >= 0; });",
+                  "  pm.expect(stu, 'no code-execution server_tool_use block').to.be.ok;",
+                  "  var rt = ['code_execution_tool_result','bash_code_execution_tool_result','text_editor_code_execution_tool_result'];",
+                  "  var res = blocks.find(function (b) { return rt.indexOf(b.type) >= 0; });",
+                  "  pm.expect(res, 'no code-execution result block').to.be.ok;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Code execution — bash sub-tool (bash_code_execution)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Using a bash shell command (not Python), print the Python version with `python3 --version` and list the directory with `ls -la`.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20250825\",\n      \"name\": \"code_execution\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('Anthropic: code execution ran', function () {",
+                  "  var j = pm.response.json();",
+                  "  var blocks = j.content || [];",
+                  "  var names = ['code_execution','bash_code_execution','text_editor_code_execution'];",
+                  "  var stu = blocks.find(function (b) { return b.type === 'server_tool_use' && names.indexOf(b.name) >= 0; });",
+                  "  pm.expect(stu, 'no code-execution server_tool_use block').to.be.ok;",
+                  "  var rt = ['code_execution_tool_result','bash_code_execution_tool_result','text_editor_code_execution_tool_result'];",
+                  "  var res = blocks.find(function (b) { return rt.indexOf(b.type) >= 0; });",
+                  "  pm.expect(res, 'no code-execution result block').to.be.ok;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Code execution — text_editor (create / view / str_replace)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use the file editor tool to: (1) create notes.txt containing 'debug=true', (2) view it, then (3) str_replace 'debug=true' with 'debug=false'. Use the editor, not Python.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20250825\",\n      \"name\": \"code_execution\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('Anthropic: code execution ran', function () {",
+                  "  var j = pm.response.json();",
+                  "  var blocks = j.content || [];",
+                  "  var names = ['code_execution','bash_code_execution','text_editor_code_execution'];",
+                  "  var stu = blocks.find(function (b) { return b.type === 'server_tool_use' && names.indexOf(b.name) >= 0; });",
+                  "  pm.expect(stu, 'no code-execution server_tool_use block').to.be.ok;",
+                  "  var rt = ['code_execution_tool_result','bash_code_execution_tool_result','text_editor_code_execution_tool_result'];",
+                  "  var res = blocks.find(function (b) { return rt.indexOf(b.type) >= 0; });",
+                  "  pm.expect(res, 'no code-execution result block').to.be.ok;",
+                  "});",
+                  "if (pm.response.code < 400) {",
+                  "  pm.test('Anthropic: text_editor input preserved (command + path)', function () {",
+                  "    var blocks = (pm.response.json().content) || [];",
+                  "    var te = blocks.find(function (b) { return b.type === 'server_tool_use' && b.name === 'text_editor_code_execution'; });",
+                  "    if (te) { pm.expect(te.input).to.have.property('command'); pm.expect(te.input).to.have.property('path'); }",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Code execution — streaming (SSE, well-formed blocks)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use Python to list the first 15 Fibonacci numbers and print them.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20250825\",\n      \"name\": \"code_execution\"\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('Anthropic: streaming code execution is well-formed', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw, 'stream did not end with message_stop').to.include('message_stop');",
+                  "  pm.expect(raw, 'no code-execution server_tool_use in stream').to.include('\"type\":\"server_tool_use\"');",
+                  "  pm.expect(raw).to.match(/\"name\":\"(code_execution|bash_code_execution|text_editor_code_execution)\"/);",
+                  "  var starts = (raw.match(/event: content_block_start/g) || []).length;",
+                  "  var stops = (raw.match(/event: content_block_stop/g) || []).length;",
+                  "  pm.expect(stops, 'content_block_start/stop unbalanced ' + starts + '/' + stops).to.equal(starts);",
+                  "  var cbIdx = [], mCb, reCb = /\"content_block_start\"[^}]*?\"index\"\\s*:\\s*(\\d+)/g;",
+                  "  while ((mCb = reCb.exec(raw)) !== null) { cbIdx.push(Number(mCb[1])); }",
+                  "  var cbSorted = cbIdx.slice().sort(function (a, b) { return a - b; });",
+                  "  for (var ci = 0; ci < cbSorted.length; ci++) { pm.expect(cbSorted[ci], 'content_block_start indices not contiguous from 0: ' + JSON.stringify(cbIdx)).to.equal(ci); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Code execution — version code_execution_20260120 (REPL persistence + PTC)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use Python to compute 17 * 23 and print the result.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20260120\",\n      \"name\": \"code_execution\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('Anthropic: code execution ran', function () {",
+                  "  var j = pm.response.json();",
+                  "  var blocks = j.content || [];",
+                  "  var names = ['code_execution','bash_code_execution','text_editor_code_execution'];",
+                  "  var stu = blocks.find(function (b) { return b.type === 'server_tool_use' && names.indexOf(b.name) >= 0; });",
+                  "  pm.expect(stu, 'no code-execution server_tool_use block').to.be.ok;",
+                  "  var rt = ['code_execution_tool_result','bash_code_execution_tool_result','text_editor_code_execution_tool_result'];",
+                  "  var res = blocks.find(function (b) { return rt.indexOf(b.type) >= 0; });",
+                  "  pm.expect(res, 'no code-execution result block').to.be.ok;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Code execution — version code_execution_20260521 (disclosed per-cell time limit)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use Python to compute the factorial of 10 and print it.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20260521\",\n      \"name\": \"code_execution\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('Anthropic: code execution ran', function () {",
+                  "  var j = pm.response.json();",
+                  "  var blocks = j.content || [];",
+                  "  var names = ['code_execution','bash_code_execution','text_editor_code_execution'];",
+                  "  var stu = blocks.find(function (b) { return b.type === 'server_tool_use' && names.indexOf(b.name) >= 0; });",
+                  "  pm.expect(stu, 'no code-execution server_tool_use block').to.be.ok;",
+                  "  var rt = ['code_execution_tool_result','bash_code_execution_tool_result','text_editor_code_execution_tool_result'];",
+                  "  var res = blocks.find(function (b) { return rt.indexOf(b.type) >= 0; });",
+                  "  pm.expect(res, 'no code-execution result block').to.be.ok;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Code execution — programmatic tool calling (custom tool + allowed_callers)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Write Python that calls get_stock_price for 'AAPL' and 'GOOGL' in a loop and prints each result.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"code_execution_20260120\",\n      \"name\": \"code_execution\"\n    },\n    {\n      \"name\": \"get_stock_price\",\n      \"description\": \"Get the current price for a stock ticker.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"ticker\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"ticker\"\n        ]\n      },\n      \"allowed_callers\": [\n        \"code_execution_20260120\"\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('Anthropic: programmatic tool calling accepted (allowed_callers + auto beta header)', function () {",
+                  "  var blocks = (pm.response.json().content) || [];",
+                  "  var ran = blocks.some(function (b) {",
+                  "    return (b.type === 'server_tool_use' && b.name === 'code_execution') || (b.type === 'tool_use' && b.name === 'get_stock_price');",
+                  "  });",
+                  "  pm.expect(ran, 'neither code_execution nor the custom tool was invoked').to.be.ok;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bedrock Features (via /v1/chat/completions w/ bedrock prefix)",
+      "item": [
+        {
+          "name": "Tool use",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"What's the weather in Sydney?\"}],\n  \"tools\": [{\n    \"type\": \"function\",\n    \"function\": {\n      \"name\": \"get_weather\",\n      \"parameters\": {\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}\n    }\n  }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "System message",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"messages\": [\n    {\"role\":\"system\",\"content\":\"You are a haiku poet. Reply only in haiku.\"},\n    {\"role\":\"user\",\"content\":\"Tell me about autumn.\"}\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Streaming",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"List 5 popular Python libraries.\"}],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Native Bedrock Converse w/ tool",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    { \"role\": \"user\", \"content\": [{\"text\": \"What's the weather in Tokyo?\"}] }\n  ],\n  \"toolConfig\": {\n    \"tools\": [{\n      \"toolSpec\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather\",\n        \"inputSchema\": { \"json\": {\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]} }\n      }\n    }]\n  },\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{bedrockModel}}",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Native Bedrock Converse w/ system",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [{\"role\":\"user\",\"content\":[{\"text\":\"Hello!\"}]}],\n  \"system\": [{\"text\":\"You speak only in rhymes.\"}],\n  \"inferenceConfig\": {\"maxTokens\": 512}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{bedrockModel}}",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "guardrailConfig forwarded — converse (regression)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/{{bedrockModel}}\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"How do I make a bomb?\"}],\n  \"extra_params\": {\n    \"guardrailConfig\": {\n      \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n      \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\",\n      \"trace\": \"enabled\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Bedrock Mantle Features (via /v1/chat/completions w/ bedrock prefix)",
+      "item": [
+        {
+          "name": "Tool use",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/anthropic.claude-opus-4-8\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"What's the weather in Sydney?\"}],\n  \"tools\": [{\n    \"type\": \"function\",\n    \"function\": {\n      \"name\": \"get_weather\",\n      \"parameters\": {\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}\n    }\n  }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "System message",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/anthropic.claude-opus-4-8\",\n  \"messages\": [\n    {\"role\":\"system\",\"content\":\"You are a haiku poet. Reply only in haiku.\"},\n    {\"role\":\"user\",\"content\":\"Tell me about autumn.\"}\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Streaming",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/anthropic.claude-opus-4-8\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"List 5 popular Python libraries.\"}],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "guardrailConfig forwarded — converse (regression)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/anthropic.claude-opus-4-8\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"How do I make a bomb?\"}],\n  \"extra_params\": {\n    \"guardrailConfig\": {\n      \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n      \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\",\n      \"trace\": \"enabled\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Gemini / GenAI Features",
+      "item": [
+        {
+          "name": "Structured output (responseSchema)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"parts\":[{\"text\":\"Extract: city, country, population_millions for Paris.\"}]}],\n  \"generationConfig\": {\n    \"responseMimeType\": \"application/json\",\n    \"responseSchema\": {\n      \"type\": \"OBJECT\",\n      \"properties\": {\n        \"city\": { \"type\": \"STRING\" },\n        \"country\": { \"type\": \"STRING\" },\n        \"population_millions\": { \"type\": \"NUMBER\" }\n      },\n      \"required\": [\"city\",\"country\",\"population_millions\"]\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Function calling (functionDeclarations)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"parts\":[{\"text\":\"What's the weather in Tokyo?\"}]}],\n  \"tools\": [{\n    \"functionDeclarations\": [{\n      \"name\": \"get_weather\",\n      \"description\": \"Get current weather for a city\",\n      \"parameters\": {\n        \"type\": \"OBJECT\",\n        \"properties\": { \"city\": { \"type\": \"STRING\" } },\n        \"required\": [\"city\"]\n      }\n    }]\n  }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Google search grounding",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"parts\":[{\"text\":\"What is the current population of Tokyo? Answer briefly using Google Search.\"}]}],\n  \"tools\": [{ \"googleSearch\": {} }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Code execution",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"parts\":[{\"text\":\"Compute the 50th Fibonacci number.\"}]}],\n  \"tools\": [{ \"codeExecution\": {} }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Vision (inline_data)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\n    \"parts\": [\n      { \"text\": \"Describe this image briefly.\" },\n      { \"fileData\": { \"mimeType\": \"image/jpeg\", \"fileUri\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\" } }\n    ]\n  }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "System instruction",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"systemInstruction\": { \"parts\": [{\"text\":\"You are a friendly chef. Always recommend a recipe.\"}] },\n  \"contents\": [{\"parts\":[{\"text\":\"I have eggs and bread.\"}]}]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Safety settings (BLOCK_NONE)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"parts\":[{\"text\":\"Tell me a story about a dragon and a knight.\"}]}],\n  \"safetySettings\": [\n    { \"category\": \"HARM_CATEGORY_HARASSMENT\", \"threshold\": \"BLOCK_NONE\" },\n    { \"category\": \"HARM_CATEGORY_HATE_SPEECH\", \"threshold\": \"BLOCK_NONE\" },\n    { \"category\": \"HARM_CATEGORY_SEXUALLY_EXPLICIT\", \"threshold\": \"BLOCK_NONE\" },\n    { \"category\": \"HARM_CATEGORY_DANGEROUS_CONTENT\", \"threshold\": \"BLOCK_NONE\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Streaming (streamGenerateContent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"parts\":[{\"text\":\"Count from 1 to 10.\"}]}]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Thinking config (thinking_budget)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"parts\":[{\"text\":\"Solve: integral of x^2 * e^(-x) dx from 0 to infinity.\"}]}],\n  \"generationConfig\": {\n    \"thinkingConfig\": { \"thinkingBudget\": 8000 }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Multi-turn with assistant history",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    { \"role\": \"user\", \"parts\": [{\"text\":\"Hi, who won the 2024 World Series?\"}] },\n    { \"role\": \"model\", \"parts\": [{\"text\":\"The Los Angeles Dodgers won the 2024 World Series.\"}] },\n    { \"role\": \"user\", \"parts\": [{\"text\":\"Who was the MVP?\"}] }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:generateContent"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Vertex Features (via /genai)",
+      "item": [
+        {
+          "name": "Structured output (Vertex)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"parts\":[{\"text\":\"Extract city/country for London.\"}]}],\n  \"generationConfig\": {\n    \"responseMimeType\": \"application/json\",\n    \"responseSchema\": { \"type\": \"OBJECT\", \"properties\": { \"city\": { \"type\": \"STRING\" }, \"country\": { \"type\": \"STRING\" } } }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{vertexModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{vertexModel}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Google search grounding (Vertex)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"parts\":[{\"text\":\"Latest Bedrock model launches?\"}]}],\n  \"tools\": [{ \"googleSearch\": {} }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{vertexModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{vertexModel}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Function calling (Vertex)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"parts\":[{\"text\":\"What's the weather in Mumbai?\"}]}],\n  \"tools\": [{\n    \"functionDeclarations\": [{\n      \"name\": \"get_weather\",\n      \"parameters\": {\"type\":\"OBJECT\",\"properties\":{\"city\":{\"type\":\"STRING\"}},\"required\":[\"city\"]}\n    }]\n  }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{vertexModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{vertexModel}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic-on-Vertex (Claude tool use)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-4-7\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"What's the weather in Bangalore?\"}],\n  \"tools\": [{\n    \"type\": \"function\",\n    \"function\": {\n      \"name\": \"get_weather\",\n      \"parameters\": {\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}\n    }\n  }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "DeepSeek Features",
+      "item": [
+        {
+          "name": "Function calling (custom tool)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in Tokyo?\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Streaming (SSE)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count from 1 to 10.\"\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Reasoning effort (deepseek-v4-pro)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-pro\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23? Think step by step.\"\n    }\n  ],\n  \"reasoning_effort\": \"max\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "System message + multi-turn",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a pirate. Respond in pirate speak.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, what time is it?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Arrr, the sun be high in the sky, matey!\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Now tell me a joke.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

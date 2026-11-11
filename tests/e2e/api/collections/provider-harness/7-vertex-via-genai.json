@@ -1,0 +1,38 @@
+{
+  "name": "7. Vertex (via /genai)",
+  "description": "Bifrost surfaces Vertex AI through the same GenAI router; use a Vertex-style model identifier (or rely on Bifrost's provider routing in your config) and the `generateContent` path.",
+  "item": [
+    {
+      "name": "POST /genai/v1beta/models/{vertexModel}:generateContent",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [{ \"text\": \"Hello from Vertex via GenAI.\" }]\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/{{vertexModel}}:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "{{vertexModel}}:generateContent"
+          ]
+        }
+      }
+    }
+  ]
+}

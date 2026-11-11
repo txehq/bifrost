@@ -1,0 +1,178 @@
+{
+  "name": "156. Sampling range and retrieval shape live pins (sampling and retrieval pins)",
+  "description": "[EXPECT-4XX] pins for the two partial rows whose remaining variant is deterministic: Gemini sampling values outside the documented range (a 2xx would mean Bifrost clamped or dropped the field) and the retrieval.dynamicRetrievalConfig shape on Vertex (not a valid Vertex tool shape; the rejection proves the tool reached Google). Exact wording is confirmed on the first live run.",
+  "item": [
+    {
+      "name": "156.1 [EXPECT-4XX] gemini-2.5-flash native temperature out of range reaches Google (gemini sampling)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say hi.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"temperature\": 5,\n    \"maxOutputTokens\": 16\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Google rejects the out-of-range temperature and names it', function () { var t = pm.response.text(); pm.expect(pm.response.code, 'expected Google’s 400 validation error: ' + t).to.equal(400); pm.expect(t, 'an authentication error proves nothing about the parameter: ' + t).to.not.match(/API key|API_KEY_INVALID|UNAUTHENTICATED|PERMISSION_DENIED|authentication credentials/i); pm.expect(t, 'rejection does not name the out-of-range temperature; field may not have reached Google: ' + t).to.match(/temperature/i); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "156.2 [EXPECT-4XX] gemini-2.5-flash native topP out of range reaches Google (gemini sampling)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say hi.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"topP\": 2,\n    \"maxOutputTokens\": 16\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Google rejects the out-of-range topP and names it', function () { var t = pm.response.text(); pm.expect(pm.response.code, 'expected Google’s 400 validation error: ' + t).to.equal(400); pm.expect(t, 'an authentication error proves nothing about the parameter: ' + t).to.not.match(/API key|API_KEY_INVALID|UNAUTHENTICATED|PERMISSION_DENIED|authentication credentials/i); pm.expect(t, 'rejection does not name the out-of-range topP; field may not have reached Google: ' + t).to.match(/top.?p/i); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "156.3 [EXPECT-4XX] gemini-2.5-flash native topK below the minimum reaches Google (gemini sampling)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say hi.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"topK\": -5,\n    \"maxOutputTokens\": 16\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Google rejects the negative topK and names it', function () { var t = pm.response.text(); pm.expect(pm.response.code, 'expected Google’s 400 validation error: ' + t).to.equal(400); pm.expect(t, 'an authentication error proves nothing about the parameter: ' + t).to.not.match(/API key|API_KEY_INVALID|UNAUTHENTICATED|PERMISSION_DENIED|authentication credentials/i); pm.expect(t, 'rejection does not name the negative topK; field may not have reached Google: ' + t).to.match(/top.?k/i); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "156.4 [EXPECT-4XX] vertex/gemini-2.5-flash retrieval.dynamicRetrievalConfig is not a valid tool shape and reaches Google (vertex dynamic retrieval)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say hi.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"retrieval\": {\n        \"dynamicRetrievalConfig\": {\n          \"mode\": \"MODE_DYNAMIC\",\n          \"dynamicThreshold\": 0.3\n        }\n      }\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 16\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "vertex",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Google rejects the retrieval shape and names it', function () { var t = pm.response.text(); pm.expect(pm.response.code, 'expected Google’s 400 validation error: ' + t).to.equal(400); pm.expect(t, 'an authentication error proves nothing about the parameter: ' + t).to.not.match(/API key|API_KEY_INVALID|UNAUTHENTICATED|PERMISSION_DENIED|authentication credentials/i); pm.expect(t, 'rejection does not name the retrieval shape; field may not have reached Google: ' + t).to.match(/retrieval|dynamic/i); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

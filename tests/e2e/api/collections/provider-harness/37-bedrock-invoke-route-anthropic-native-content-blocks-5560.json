@@ -1,0 +1,155 @@
+{
+  "name": "37. Bedrock Invoke Route Anthropic-Native Content Blocks (#5560)",
+  "description": "Regression for #5560. The Bedrock InvokeModel route (POST /bedrock/model/{modelId}/invoke) accepts Claude's native Anthropic Messages format for the request body, but BedrockContentBlock only recognized Converse's field-name-discriminated shape (toolUse/toolResult/image.source.bytes), not Anthropic's type-discriminated shape (type:\"image\"/\"tool_use\"/\"tool_result\"). Unknown JSON fields are silently ignored by the JSON decoder, so every non-text content block deserialized to an all-nil BedrockContentBlock with no error, and was then silently skipped downstream - only text blocks coincidentally matched field names between the two shapes and survived. Case 1 pins the image half of the bug using the issue's own reproduction shape: a request with an image block plus a fallback instruction ('answer NOIMAGE if you cannot see any image') must not get the NOIMAGE sentinel, since a fixed ingress actually delivers the image to the model. Case 2 pins the tool_use/tool_result half: a conversation history already containing a completed tool call and its result must not cause the model to blindly re-invoke the same tool (the exact stop_reason: tool_use defect observed in the issue), because it now actually sees the prior tool_result instead of a dropped/empty turn. Case 3 pins the same image defect on the streaming ingress (POST .../invoke-with-response-stream), since both invoke routes parse the request body through the same BedrockContentBlock deserialization before diverging into streaming vs. non-streaming response generation.",
+  "item": [
+    {
+      "name": "Bedrock invoke: image content block survives Anthropic-native ingress (Haiku 4.5) - #5560",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('invoke request with Anthropic-native image block succeeds - #5560', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var body = pm.response.json();",
+              "pm.test('invoke: image block is not silently dropped (regression for #5560 - the ingress previously deserialized Anthropic-native image blocks to an all-nil block and dropped them, so the model never saw the image and fell back to the NOIMAGE sentinel) - #5560', function () {",
+              "  var text = (body.content || []).map(function (c) { return c.text || ''; }).join(' ');",
+              "  pm.expect(text.toUpperCase(), 'model response: ' + JSON.stringify(body.content)).to.not.include('NOIMAGE');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"image\",\n          \"source\": {\n            \"type\": \"base64\",\n            \"media_type\": \"image/png\",\n            \"data\": \"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What color is this image? Answer with exactly one word. If you cannot see any image at all, answer exactly: NOIMAGE\"\n        }\n      ]\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "invoke"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Bedrock invoke: tool_use/tool_result history survives Anthropic-native ingress, no blind re-call (Haiku 4.5) - #5560",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('invoke request with Anthropic-native tool_use/tool_result history succeeds - #5560', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var body = pm.response.json();",
+              "pm.test('invoke: tool_use/tool_result pair is not silently dropped, model does not blindly re-call the tool (regression for #5560 - stop_reason was previously tool_use because the prior tool_result never reached the model, the exact defect reproduced in the issue) - #5560', function () {",
+              "  pm.expect(body.stop_reason, 'stop_reason=' + body.stop_reason + ' body=' + JSON.stringify(body)).to.not.equal('tool_use');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 64,\n  \"tools\": [\n    {\n      \"name\": \"get_time\",\n      \"description\": \"Get the current time for a given timezone.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"timezone\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"timezone\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What time is it in UTC? Use the get_time tool if you need to, but if the answer is already in the conversation, just report it directly.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_5560test\",\n          \"name\": \"get_time\",\n          \"input\": {\n            \"timezone\": \"UTC\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_5560test\",\n          \"content\": \"3:45 PM UTC\"\n        }\n      ]\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "invoke"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Bedrock invoke-with-response-stream: image content block survives Anthropic-native ingress (Haiku 4.5) - #5560",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('invoke-with-response-stream with Anthropic-native image block succeeds - #5560', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "pm.test('invoke-with-response-stream: image content block is not silently dropped on the streaming ingress either (regression for #5560 - both invoke routes share the same BedrockContentBlock deserialization) - #5560', function () {",
+              "  var rawText = pm.response.text() || '';",
+              "  var b64Matches = rawText.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+              "  pm.expect(b64Matches.length, 'expected at least one invoke-stream chunk event: ' + rawText.slice(0, 300)).to.be.above(0);",
+              "  var text = b64Matches.map(function (m) {",
+              "    var b64 = m.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1];",
+              "    try { return JSON.parse(Buffer.from(b64, 'base64').toString('utf8')); } catch (e) { return null; }",
+              "  }).filter(function (e) { return e && e.delta && typeof e.delta.text === 'string'; })",
+              "    .map(function (e) { return e.delta.text; }).join('');",
+              "  pm.expect(text.toUpperCase(), 'streamed text: ' + text.slice(0, 500)).to.not.include('NOIMAGE');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"image\",\n          \"source\": {\n            \"type\": \"base64\",\n            \"media_type\": \"image/png\",\n            \"data\": \"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What color is this image? Answer with exactly one word. If you cannot see any image at all, answer exactly: NOIMAGE\"\n        }\n      ]\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke-with-response-stream",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "invoke-with-response-stream"
+          ]
+        }
+      },
+      "response": []
+    }
+  ]
+}

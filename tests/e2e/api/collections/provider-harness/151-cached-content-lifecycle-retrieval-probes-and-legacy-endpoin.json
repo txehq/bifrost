@@ -1,0 +1,605 @@
+{
+  "name": "151. Cached content lifecycle, retrieval probes and legacy endpoints (cached content and retrieval pins)",
+  "description": "Gemini cachedContents create/get/patch/list/generate/delete as one ordered lifecycle (cachePrefix is ~23k chars, over the 1k/4k-token minimums; the 5 minute ttl bounds a leaked entry if a middle case fails). Create/get/patch/delete bodies are carved out of the collection shape check in __skipShape because they carry no inference content. The Vertex lifecycle (151.7-151.9) is [PREVIEW]: it needs a real vertexProject, and the resource-name model form is best-effort until a live run. 151.10-151.12 are [EXPECT-4XX] live pins: googleSearchRetrieval (Gemini 2.x is expected to reject the legacy tool), and a nonexistent Vertex AI Search datastore / RAG corpus, each proving the field reaches Google. 151.13/151.14 probe the legacy /v1/complete route and batch results for an unknown id.",
+  "item": [
+    {
+      "name": "151.1 gemini cachedContents create stores the long prefix (cached content crud)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"models/gemini-2.5-flash\",\n  \"displayName\": \"h149-lifecycle\",\n  \"systemInstruction\": {\n    \"parts\": [\n      {\n        \"text\": \"{{cachePrefix}}\"\n      }\n    ]\n  },\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Acknowledge the manual.\"\n        }\n      ]\n    }\n  ],\n  \"ttl\": \"300s\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/cachedContents",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "cachedContents"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('create returns a cachedContents name', function () { pm.expect(j.name, pm.response.text()).to.match(/^cachedContents\\/.+/); });",
+              "pm.collectionVariables.set('h151CacheName', j.name);",
+              "pm.collectionVariables.set('h151CacheId', String(j.name || '').split('/').pop());"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "151.2 gemini cachedContents get returns the created entry (cached content crud)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/cachedContents/{{h151CacheId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "cachedContents",
+            "{{h151CacheId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('get returns the same name and an expireTime', function () { pm.expect(j.name, pm.response.text()).to.equal(pm.collectionVariables.get('h151CacheName')); pm.expect(j.expireTime, pm.response.text()).to.be.a('string'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "151.3 gemini cachedContents patch ttl extends expireTime (cached content crud)",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"ttl\": \"600s\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/cachedContents/{{h151CacheId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "cachedContents",
+            "{{h151CacheId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('patch keeps the entry and returns an expireTime', function () { pm.expect(j.name, pm.response.text()).to.equal(pm.collectionVariables.get('h151CacheName')); pm.expect(j.expireTime, pm.response.text()).to.be.a('string'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "151.4 gemini cachedContents list is well-formed (cached content crud)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/cachedContents",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "cachedContents"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('list returns a cachedContents array', function () { pm.expect(j.cachedContents, pm.response.text().slice(0, 400)).to.be.an('array'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "151.5 gemini generateContent with cachedContent bills cached tokens (long-context caching)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"In one short sentence, what is the manual about?\"\n        }\n      ]\n    }\n  ],\n  \"cachedContent\": \"{{h151CacheName}}\",\n  \"generationConfig\": {\n    \"maxOutputTokens\": 64,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('usage reports cached content tokens', function () { pm.expect(j.usageMetadata && j.usageMetadata.cachedContentTokenCount, 'cachedContent not applied: ' + pm.response.text().slice(0, 600)).to.be.above(0); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "151.6 gemini cachedContents delete removes the entry (cached content crud)",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/cachedContents/{{h151CacheId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "cachedContents",
+            "{{h151CacheId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('delete succeeded with an empty or acknowledgement body', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "151.7 [PREVIEW] vertex cachedContents create on the regional path (vertex long-context caching)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-model-provider",
+            "value": "vertex"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"projects/{{vertexProject}}/locations/{{vertexLocation}}/publishers/google/models/gemini-2.5-flash\",\n  \"displayName\": \"h149-vertex\",\n  \"systemInstruction\": {\n    \"parts\": [\n      {\n        \"text\": \"{{cachePrefix}}\"\n      }\n    ]\n  },\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Acknowledge the manual.\"\n        }\n      ]\n    }\n  ],\n  \"ttl\": \"300s\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/projects/{{vertexProject}}/locations/{{vertexLocation}}/cachedContents",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "projects",
+            "{{vertexProject}}",
+            "locations",
+            "{{vertexLocation}}",
+            "cachedContents"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('vertex create returns a cachedContents resource name', function () { pm.expect(j.name, pm.response.text()).to.match(/cachedContents\\/.+/); });",
+              "pm.collectionVariables.set('h151VertexCacheName', j.name);",
+              "pm.collectionVariables.set('h151VertexCacheId', String(j.name || '').split('/').pop());"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "151.8 [PREVIEW] vertex generateContent with the cachedContent resource bills cached tokens (vertex long-context caching)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"In one short sentence, what is the manual about?\"\n        }\n      ]\n    }\n  ],\n  \"cachedContent\": \"{{h151VertexCacheName}}\",\n  \"generationConfig\": {\n    \"maxOutputTokens\": 64,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "vertex",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('usage reports cached content tokens', function () { pm.expect(j.usageMetadata && j.usageMetadata.cachedContentTokenCount, 'cachedContent not applied: ' + pm.response.text().slice(0, 600)).to.be.above(0); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "151.9 [PREVIEW] vertex cachedContents delete cleans up (vertex long-context caching)",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-model-provider",
+            "value": "vertex"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/projects/{{vertexProject}}/locations/{{vertexLocation}}/cachedContents/{{h151VertexCacheId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "projects",
+            "{{vertexProject}}",
+            "locations",
+            "{{vertexLocation}}",
+            "cachedContents",
+            "{{h151VertexCacheId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('vertex delete succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "151.10 [EXPECT-4XX] vertex/gemini-2.5-flash legacy googleSearchRetrieval dynamicRetrievalConfig reaches Google (search grounding retrieval)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won the most recent World Cup?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearchRetrieval\": {\n        \"dynamicRetrievalConfig\": {\n          \"mode\": \"MODE_DYNAMIC\",\n          \"dynamicThreshold\": 0.3\n        }\n      }\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 64\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "vertex",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Google names the legacy retrieval tool in its rejection', function () { var t = pm.response.text(); pm.expect(t, 'rejection does not mention search/retrieval; field may not have reached Google: ' + t).to.match(/google.?search|retrieval|not supported/i); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "151.11 [EXPECT-4XX] vertex/gemini-2.5-flash vertexAiSearch malformed datastore name reaches Google (vertex ai search grounding)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"What does the index say?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"retrieval\": {\n        \"vertexAiSearch\": {\n          \"datastore\": \"h149-not-a-datastore-resource-name\"\n        }\n      }\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 64\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "vertex",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Google rejects the unknown datastore', function () { var t = pm.response.text(); pm.expect(t, 'a general auth or model-invocation refusal says nothing about the datastore: ' + t).to.not.match(/aiplatform\\.endpoints\\.predict|API key|API_KEY_INVALID|UNAUTHENTICATED|authentication credentials/i); pm.expect(t, 'rejection does not identify the submitted datastore: ' + t).to.match(/h149-not-a-datastore-resource-name|data.?store|vertex_?ai_?search/i); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "151.12 [EXPECT-4XX] vertex/gemini-2.5-flash vertexRagStore corpus that does not exist reaches Google (rag corpora)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"What does the corpus say?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"retrieval\": {\n        \"vertexRagStore\": {\n          \"ragResources\": [\n            {\n              \"ragCorpus\": \"projects/{{vertexProject}}/locations/{{vertexLocation}}/ragCorpora/h149-does-not-exist\"\n            }\n          ]\n        }\n      }\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 64\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "vertex",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Google rejects the unknown rag corpus', function () { var t = pm.response.text(); pm.expect(t, 'a general auth or model-invocation refusal says nothing about the corpus: ' + t).to.not.match(/aiplatform\\.endpoints\\.predict|API key|API_KEY_INVALID|UNAUTHENTICATED|authentication credentials/i); pm.expect(t, 'rejection does not identify the submitted rag corpus: ' + t).to.match(/h149-does-not-exist|rag.?corpora|rag.?corpus/i); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "151.13 [EXPECT-200] anthropic legacy /v1/complete with top_k on claude-opus-4-7 is served (text completions)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"prompt\": \"\\n\\nHuman: Reply OK.\\n\\nAssistant:\",\n  \"max_tokens_to_sample\": 16,\n  \"top_k\": 5\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/complete",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "complete"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// The legacy /v1/complete endpoint keeps top_k on post-Opus-4.6 models (only Messages rejects it), so Bifrost",
+              "// forwarding it (core/providers/anthropic/text.go) must still come back as a normal completion.",
+              "var j; try { j = pm.response.json(); } catch (e) { j = null; }",
+              "pm.test('legacy completion with top_k is served', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(j, 'not JSON: ' + pm.response.text()).to.be.an('object'); pm.expect(j.type, pm.response.text()).to.equal('completion'); pm.expect(j.completion, pm.response.text()).to.be.a('string').that.is.not.empty; });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "151.14 [EXPECT-4XX] anthropic message batch results for an unknown batch id is a clean not-found (batch results)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages/batches/msgbatch_h149doesnotexist/results",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages",
+            "batches",
+            "msgbatch_h149doesnotexist",
+            "results"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j; try { j = pm.response.json(); } catch (e) { j = null; }",
+              "pm.test('unknown batch results returns an Anthropic error envelope', function () { pm.expect(j, 'not JSON: ' + pm.response.text()).to.be.an('object'); pm.expect(j.type === 'error' || j.error, pm.response.text()).to.be.ok; });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

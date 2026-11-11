@@ -1,0 +1,160 @@
+{
+  "name": "20. Anthropic Redacted Thinking Round-Trip (#5093 / PR #5094)",
+  "description": "Regression coverage for PR #5094 (fixes #5093): Anthropic returns safety-flagged reasoning as redacted_thinking blocks (an encrypted data payload, arriving complete in content_block_start with no deltas) and requires them to be replayed unmodified in multi-turn tool use - dropping them is the documented top cause of the 400 'thinking or redacted_thinking blocks in the latest assistant message cannot be modified'. Pre-fix, the responses surface lost the blocks twice: ToBifrostResponsesStream had no content_block_start case for redacted_thinking (streaming clients received zero encrypted_content items), and convertBifrostReasoningToAnthropicThinking gated on Summary != nil, so items carrying an empty summary list next to encrypted_content were never converted back on replay. Cases use Anthropic's documented magic string to deterministically trigger redacted thinking. Case 1 pins the streaming emission; case 2 pins the non-streaming baseline and captures the replay input into a collection variable; case 3 replays the tool-use continuation, which 400s pre-fix.",
+  "item": [
+    {
+      "name": "anthropic/claude-sonnet-4-5 /v1/responses streaming carries redacted_thinking as encrypted reasoning items - #5093",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Streaming redacted thinking emitted as encrypted reasoning items - #5093', function () {",
+              "  pm.expect(pm.response.code, 'stream request failed: ' + pm.response.text()).to.be.below(400);",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'expected SSE frames').to.include('data:');",
+              "  var occurrences = (body.match(/encrypted_content/g) || []).length;",
+              "  pm.expect(occurrences, 'redacted_thinking blocks dropped from the converted stream (regression of PR #5094)').to.be.above(0);",
+              "  pm.expect(body, 'expected reasoning output_item.added events').to.include('response.output_item.added');",
+              "  pm.expect(body, 'expected the stream to complete').to.include('response.completed');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"anthropic/claude-sonnet-4-5\",\"input\":\"ANTHROPIC_MAGIC_STRING_TRIGGER_REDACTED_THINKING_46C9A13E193C177646C7398A98432ECCCE4C1253D5E2D82641AC0E52CC2876CB Think about why the sky is blue, then answer in one word.\",\"reasoning\":{\"max_tokens\":2048},\"max_output_tokens\":4096,\"stream\":true}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-sonnet-4-5 /v1/responses non-streaming preserves redacted_thinking + captures replay input - #5093",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Non-streaming redacted thinking preserved as encrypted reasoning item - #5093', function () {",
+              "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.output, 'expected output array').to.be.an('array').that.is.not.empty;",
+              "  var reasoning = j.output.filter(function (o) { return o.type === 'reasoning'; });",
+              "  pm.expect(reasoning.length, 'expected at least one reasoning output item').to.be.above(0);",
+              "  pm.expect(pm.response.text(), 'expected the encrypted payload on the reasoning item').to.include('encrypted_content');",
+              "});",
+              "// Capture the replay input for the next request: original user turn, assistant",
+              "// output echoed verbatim, and a tool result for the function call. Only set when",
+              "// a tool call exists so the replay case skips instead of false-failing (Anthropic",
+              "// rejects forced tool_choice with thinking enabled, so the call is prompted).",
+              "try {",
+              "  var body = pm.response.json();",
+              "  // Every tool call has to be answered, not just the first one. Current models",
+              "  // emit parallel calls, and a history that replays a call without its output is",
+              "  // rejected outright - OpenAI answers \"No tool output found for function call",
+              "  // <id>\", Anthropic and Bedrock require a tool_result per tool_use. Answering",
+              "  // only calls[0] made these rows flake whenever the model parallelized.",
+              "  var calls = (body.output || []).filter(function (o) { return o.type === 'function_call' && o.call_id; });",
+              "  if (calls.length) {",
+              "    var input = [{ type: 'message', role: 'user', content: \"ANTHROPIC_MAGIC_STRING_TRIGGER_REDACTED_THINKING_46C9A13E193C177646C7398A98432ECCCE4C1253D5E2D82641AC0E52CC2876CB What time is it? Use the get_time tool.\" }]",
+              "      .concat(body.output)",
+              "      .concat(calls.map(function (c) { return { type: 'function_call_output', call_id: c.call_id, output: '{\"time\": \"12:00 UTC\"}' }; }));",
+              "    pm.collectionVariables.set('redactedReplayInput5093', JSON.stringify(input));",
+              "  }",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"anthropic/claude-sonnet-4-5\",\"input\":\"ANTHROPIC_MAGIC_STRING_TRIGGER_REDACTED_THINKING_46C9A13E193C177646C7398A98432ECCCE4C1253D5E2D82641AC0E52CC2876CB What time is it? Use the get_time tool.\",\"tools\":[{\"type\":\"function\",\"name\":\"get_time\",\"description\":\"Get the current time\",\"parameters\":{\"type\":\"object\",\"properties\":{\"timezone\":{\"type\":\"string\"}},\"required\":[]}}],\"reasoning\":{\"max_tokens\":2048},\"max_output_tokens\":4096}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-sonnet-4-5 /v1/responses replay of redacted_thinking accepted on tool-use continuation - #5093",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Skip when the capture step did not run or found no tool call: the body",
+              "// placeholder stays unresolved, so there is nothing meaningful to replay.",
+              "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+              "pm.test('Replayed redacted_thinking accepted before tool_use (regression of PR #5094) - #5093', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'Anthropic rejected the replayed turn - redacted_thinking was stripped from the outgoing request').to.not.include('cannot be modified');",
+              "  pm.expect(pm.response.code, 'replay request failed: ' + body).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.output, 'expected an output array').to.be.an('array').that.is.not.empty;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"anthropic/claude-sonnet-4-5\", \"input\": {{redactedReplayInput5093}}, \"tools\": [{\"type\":\"function\",\"name\":\"get_time\",\"description\":\"Get the current time\",\"parameters\":{\"type\":\"object\",\"properties\":{\"timezone\":{\"type\":\"string\"}},\"required\":[]}}], \"reasoning\": {\"max_tokens\": 2048}, \"max_output_tokens\": 4096}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    }
+  ]
+}

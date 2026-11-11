@@ -1,0 +1,174 @@
+{
+  "name": "317. BFL provider registered, every operation unsupported (bfl provider)",
+  "description": "The bfl provider is Black Forest Labs' own API (FLUX images as tasks, FLUX 3 video). This folder pins the registration only: the profile configures bfl with the global base_url, the provider loads with it, and every operation answers 400 unsupported_operation until its own ticket adds it. A 400 unsupported_operation cannot come from BFL, whose errors are FastAPI bodies with a detail field, so these rows also prove no upstream call answered. Any non-empty BFL_API_KEY works here, because nothing is sent upstream; without one the key is filtered out and the rows fail with no key for the model. The x-key header and the 429 status are pinned offline in core/providers/bfl, since no route reaches BFL yet.",
+  "item": [
+    {
+      "name": "GET /api/providers/bfl - provider loads with the global base",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('bfl is configured with its base', function () {",
+              "  var text = pm.response.text();",
+              "  pm.expect(pm.response.code, 'failed: ' + text).to.eql(200);",
+              "  var nc = pm.response.json().network_config || {};",
+              "  pm.expect(nc.base_url, text).to.eql('https://api.bfl.ai');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/providers/bfl",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "providers",
+            "bfl"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] /v1/images/generations - FLUX image generation answers unsupported with no upstream call - bfl/flux-2-pro",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('image_generation is refused as unsupported by bfl', function () {",
+              "  var text = pm.response.text();",
+              "  pm.expect(pm.response.code, 'want 400 unsupported_operation, got: ' + text).to.eql(400);",
+              "  var body = pm.response.json();",
+              "  pm.expect(body.error && body.error.code, text).to.eql('unsupported_operation');",
+              "  pm.expect(body.error.message, text).to.include('image_generation');",
+              "  pm.expect(body.error.message, text).to.include('bfl');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bfl/flux-2-pro\",\n  \"prompt\": \"A lighthouse at dusk\",\n  \"n\": 1\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] /v1/videos - FLUX 3 video generation answers unsupported with no upstream call - bfl/flux-3-video",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('video_generation is refused as unsupported by bfl', function () {",
+              "  var text = pm.response.text();",
+              "  pm.expect(pm.response.code, 'want 400 unsupported_operation, got: ' + text).to.eql(400);",
+              "  var body = pm.response.json();",
+              "  pm.expect(body.error && body.error.code, text).to.eql('unsupported_operation');",
+              "  pm.expect(body.error.message, text).to.include('video_generation');",
+              "  pm.expect(body.error.message, text).to.include('bfl');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bfl/flux-3-video\",\n  \"prompt\": \"A paper boat drifting down a rain gutter\",\n  \"seconds\": \"5\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] /v1/chat/completions - chat answers unsupported with no upstream call - bfl/flux-2-pro",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('chat_completion is refused as unsupported by bfl', function () {",
+              "  var text = pm.response.text();",
+              "  pm.expect(pm.response.code, 'want 400 unsupported_operation, got: ' + text).to.eql(400);",
+              "  var body = pm.response.json();",
+              "  pm.expect(body.error && body.error.code, text).to.eql('unsupported_operation');",
+              "  pm.expect(body.error.message, text).to.include('chat_completion');",
+              "  pm.expect(body.error.message, text).to.include('bfl');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bfl/flux-2-pro\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi.\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    }
+  ]
+}

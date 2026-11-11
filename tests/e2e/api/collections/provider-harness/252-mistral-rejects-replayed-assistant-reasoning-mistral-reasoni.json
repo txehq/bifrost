@@ -1,0 +1,204 @@
+{
+  "name": "252. Mistral rejects replayed assistant reasoning (mistral-reasoning-replay)",
+  "description": "Mistral validates chat requests strictly and 422s any unknown assistant field (extra_forbidden). Once Bifrost surfaces zai-glm-5-3 thinking blocks as reasoning, clients send that reasoning back on the next turn: reasoning_content on /v1/chat/completions, a thinking block on /anthropic/v1/messages (Claude Code), a reasoning item on /v1/responses. All of them reached Mistral as assistant reasoning_content and failed every follow-up turn. Each case replays one turn of reasoning and must get a 200; the unary chat case also asserts the outbound body carries no reasoning field. Vertex-hosted Mistral shares applyMistralCompatibility and is pinned by the Go unit test only (no Vertex Mistral model in the harness profile).",
+  "item": [
+    {
+      "name": "mistral/zai-glm-5-3 /v1/chat/completions assistant reasoning_content replay is stripped before Mistral - mistral-reasoning-replay",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.text() || '';",
+              "pm.test('replayed assistant reasoning is not rejected by Mistral', function () {",
+              "  pm.expect(body, 'Mistral rejected a replayed reasoning field (extra_forbidden): ' + body).to.not.include('extra_forbidden');",
+              "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+              "});",
+              "pm.test('reasoning_content never reaches the Mistral request body', function () {",
+              "  var raw = pm.response.json().extra_fields.raw_request;",
+              "  var parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+              "  var assistant = (parsed.messages || []).filter(function (m) { return m.role === 'assistant'; })[0];",
+              "  pm.expect(assistant, 'no assistant message in raw_request: ' + JSON.stringify(raw)).to.not.equal(undefined);",
+              "  pm.expect(assistant, 'assistant reasoning leaked to Mistral: ' + JSON.stringify(assistant)).to.not.have.any.keys('reasoning_content', 'reasoning', 'reasoning_details');",
+              "  pm.expect(assistant.content, 'assistant answer text must survive the strip').to.equal('Hi! What can I help you with today?');",
+              "  pm.expect(pm.response.json().choices, 'no choices returned: ' + body).to.be.an('array').that.is.not.empty;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"mistral/zai-glm-5-3\",\"max_tokens\":512,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"assistant\",\"content\":\"Hi! What can I help you with today?\",\"reasoning_content\":\"Simple greeting. Respond briefly.\"},{\"role\":\"user\",\"content\":\"Reply with just the word ok.\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "mistral/zai-glm-5-3 /v1/chat/completions streaming assistant reasoning_content replay is stripped before Mistral - mistral-reasoning-replay",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.text() || '';",
+              "pm.test('replayed assistant reasoning is not rejected by Mistral', function () {",
+              "  pm.expect(body, 'Mistral rejected a replayed reasoning field (extra_forbidden): ' + body).to.not.include('extra_forbidden');",
+              "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+              "});",
+              "pm.test('stream completes without an error frame', function () {",
+              "  pm.expect(body, 'no SSE chunks returned: ' + body).to.include('data:');",
+              "  pm.expect(body, 'stream ended with an error frame: ' + body).to.not.include('\"error\"');",
+              "  pm.expect(body, 'stream did not finish: ' + body).to.include('[DONE]');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"mistral/zai-glm-5-3\",\"max_tokens\":512,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"assistant\",\"content\":\"Hi! What can I help you with today?\",\"reasoning_content\":\"Simple greeting. Respond briefly.\"},{\"role\":\"user\",\"content\":\"Reply with just the word ok.\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "mistral/zai-glm-5-3 /anthropic/v1/messages streaming thinking block replay (Claude Code shape) is stripped before Mistral - mistral-reasoning-replay",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.text() || '';",
+              "pm.test('replayed assistant reasoning is not rejected by Mistral', function () {",
+              "  pm.expect(body, 'Mistral rejected a replayed reasoning field (extra_forbidden): ' + body).to.not.include('extra_forbidden');",
+              "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+              "});",
+              "pm.test('anthropic stream completes without an error event', function () {",
+              "  pm.expect(body, 'stream ended with an error event: ' + body).to.not.include('event: error');",
+              "  pm.expect(body, 'stream did not reach message_stop: ' + body).to.include('message_stop');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"mistral/zai-glm-5-3\",\"max_tokens\":512,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"Simple greeting. Respond briefly.\",\"signature\":\"\"},{\"type\":\"text\",\"text\":\"Hi! What can I help you with today?\"}]},{\"role\":\"user\",\"content\":\"Reply with just the word ok.\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "mistral/zai-glm-5-3 /v1/responses reasoning item replay is stripped before Mistral - mistral-reasoning-replay",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.text() || '';",
+              "pm.test('replayed assistant reasoning is not rejected by Mistral', function () {",
+              "  pm.expect(body, 'Mistral rejected a replayed reasoning field (extra_forbidden): ' + body).to.not.include('extra_forbidden');",
+              "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+              "});",
+              "pm.test('responses request completes with a message', function () {",
+              "  var json = pm.response.json();",
+              "  pm.expect(json.status, 'response not completed: ' + body).to.equal('completed');",
+              "  pm.expect((json.output || []).some(function (o) { return o.type === 'message'; }), 'no message output: ' + body).to.equal(true);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"mistral/zai-glm-5-3\",\"max_output_tokens\":512,\"input\":[{\"role\":\"user\",\"content\":\"hi\"},{\"type\":\"reasoning\",\"summary\":[],\"content\":[{\"type\":\"reasoning_text\",\"text\":\"Simple greeting. Respond briefly.\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hi! What can I help you with today?\"}]},{\"role\":\"user\",\"content\":\"Reply with just the word ok.\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    }
+  ]
+}

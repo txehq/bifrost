@@ -1,0 +1,975 @@
+{
+  "name": "155. Fixture-gated coverage (fixtures supplied through collection variables)",
+  "description": "Rows that need an account resource the harness cannot create, expressed as [PREVIEW] cases that read the resource from a collection variable. Nothing runs by default (include_preview=1 is required) and every variable defaults to a clearly fake placeholder. Set the variable with --env-var or --global-var, for example --env-var openaiVectorStoreId=vs_abc. Variables: openaiVectorStoreId (155.1); bedrockBatchRoleArn/bedrockBatchInputS3Uri/bedrockBatchOutputS3Uri/bedrockBatchModelId (155.5a-c, which share h155JobArnEnc and must run in order); bedrockProvisionedModelArn, bedrockAppInferenceProfileArn, bedrockPromptArn (155.6-155.8; the value must be URL-encoded because it sits in the path); bedrockVideoB64 (155.9, a base64 mp4); vertexAiSearchDatastore and vertexRagCorpus (155.10/155.11); azureSearchEndpoint/azureSearchIndex/azureSearchKey (155.12); vertexGemmaModel (155.15, a self-deployed endpoint); anthropicSettledBatchId (155.16). Sora and Veo (155.3/155.4) are paid and slow: create only, no polling. Spend-limit ids go through extra-header forwarding (x-bf-eh-x-goog-spend-limit-id reaches Vertex as x-goog-spend-limit-id, pinned by 161.12); its Provisioned Throughput analog is service_tier priority/flex, sent to Vertex as the X-Vertex-AI-LLM-Shared-Request-Type header on the global endpoint (155.18); that header is not observable from the response, so the case asserts the request still succeeds. The Bedrock stop and Anthropic results bodies are carved out of the generic shape check in __skipShape.",
+  "item": [
+    {
+      "name": "155.1 [PREVIEW] openai/gpt-4o-mini responses file_search over a real vector store returns results (file search)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Using the attached knowledge, summarise it in one sentence.\",\n  \"tools\": [\n    {\n      \"type\": \"file_search\",\n      \"vector_store_ids\": [\n        \"{{openaiVectorStoreId}}\"\n      ]\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"include\": [\n    \"file_search_call.results\"\n  ],\n  \"max_output_tokens\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('output has a file_search_call with results', function () { var c = (j.output || []).filter(function (o) { return o.type === 'file_search_call'; })[0]; pm.expect(c, pm.response.text().slice(0, 800)).to.be.an('object'); pm.expect(c.results, 'include did not return results').to.be.an('array'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.2 [PREVIEW] openai/computer-use-preview responses computer_use_preview returns a computer_call (computer use preview)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/computer-use-preview\",\n  \"input\": \"Open example.com in the browser.\",\n  \"tools\": [\n    {\n      \"type\": \"computer_use_preview\",\n      \"display_width\": 1024,\n      \"display_height\": 768,\n      \"environment\": \"browser\"\n    }\n  ],\n  \"truncation\": \"auto\",\n  \"max_output_tokens\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('output has a computer_call', function () { pm.expect((j.output || []).some(function (o) { return o.type === 'computer_call'; }), pm.response.text().slice(0, 800)).to.equal(true); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.3a [PREVIEW] openai/sora-2 video create returns a queued job (videos api)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/sora-2\",\n  \"prompt\": \"a red circle on a white background\",\n  \"seconds\": \"4\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('create returns a video job id and a pending status', function () { pm.expect(j.id, pm.response.text()).to.be.a('string').and.not.empty; pm.expect(['queued', 'in_progress', 'completed'], pm.response.text()).to.include(j.status); });",
+              "pm.collectionVariables.set('h155VideoId', j.id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.3b [PREVIEW] openai video retrieve returns the created job (videos api)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/{{h155VideoId}}?provider=openai",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "{{h155VideoId}}?provider=openai"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('retrieve returns the same job', function () { pm.expect(j.id, pm.response.text()).to.equal(pm.collectionVariables.get('h155VideoId')); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.3c [PREVIEW] openai video delete removes the created job (videos api cleanup)",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/{{h155VideoId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "{{h155VideoId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the created video job is deleted', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); var j = pm.response.json(); pm.expect(j.deleted, pm.response.text()).to.equal(true); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.4 [PREVIEW] vertex/veo-3.0-fast-generate-001 video create returns a job id (veo)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/veo-3.0-fast-generate-001\",\n  \"prompt\": \"a red circle on a white background\",\n  \"seconds\": \"4\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('create returns a video job id', function () { pm.expect(j.id, pm.response.text()).to.be.a('string').and.not.empty; });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.5a [PREVIEW] bedrock model-invocation-job create returns a jobArn (async invocation jobs)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"jobName\": \"bf-h153-{{$timestamp}}\",\n  \"roleArn\": \"{{bedrockBatchRoleArn}}\",\n  \"modelId\": \"{{bedrockBatchModelId}}\",\n  \"inputDataConfig\": {\n    \"s3InputDataConfig\": {\n      \"s3Uri\": \"{{bedrockBatchInputS3Uri}}\"\n    }\n  },\n  \"outputDataConfig\": {\n    \"s3OutputDataConfig\": {\n      \"s3Uri\": \"{{bedrockBatchOutputS3Uri}}\"\n    }\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model-invocation-job",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model-invocation-job"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('create returns a jobArn', function () { pm.expect(j.jobArn, pm.response.text()).to.match(/^arn:aws/); });",
+              "pm.collectionVariables.set('h155JobArnEnc', encodeURIComponent(j.jobArn));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.5b [PREVIEW] bedrock model-invocation-job get returns the created job (async invocation jobs)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model-invocation-job/{{h155JobArnEnc}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model-invocation-job",
+            "{{h155JobArnEnc}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('get returns a job with a status', function () { pm.expect(j.jobArn, pm.response.text()).to.match(/^arn:aws/); pm.expect(j.status, pm.response.text()).to.be.a('string'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.5c [PREVIEW] bedrock model-invocation-job stop cancels the created job (async invocation jobs)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model-invocation-job/{{h155JobArnEnc}}/stop",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model-invocation-job",
+            "{{h155JobArnEnc}}",
+            "stop"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('stop accepted', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.6 [PREVIEW] bedrock provisioned-throughput model ARN converse answers (provisioned throughput)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Reply OK.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 16\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/{{bedrockProvisionedModelArn}}/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "{{bedrockProvisionedModelArn}}",
+            "converse"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var content = (j.output && j.output.message && j.output.message.content) || [];",
+              "pm.test('model answered', function () { pm.expect(content.some(function (b) { return typeof b.text === 'string' && b.text.length > 0; }), pm.response.text().slice(0, 600)).to.equal(true); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.7 [PREVIEW] bedrock application inference profile ARN converse answers (application inference profiles)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Reply OK.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 16\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/{{bedrockAppInferenceProfileArn}}/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "{{bedrockAppInferenceProfileArn}}",
+            "converse"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var content = (j.output && j.output.message && j.output.message.content) || [];",
+              "pm.test('model answered', function () { pm.expect(content.some(function (b) { return typeof b.text === 'string' && b.text.length > 0; }), pm.response.text().slice(0, 600)).to.equal(true); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.8 [PREVIEW] bedrock managed prompt ARN with promptVariables fills the variable (prompt variables)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"promptVariables\": {\n    \"topic\": {\n      \"text\": \"harness coverage\"\n    }\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/{{bedrockPromptArn}}/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "{{bedrockPromptArn}}",
+            "converse"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var content = (j.output && j.output.message && j.output.message.content) || [];",
+              "pm.test('model answered', function () { pm.expect(content.some(function (b) { return typeof b.text === 'string' && b.text.length > 0; }), pm.response.text().slice(0, 600)).to.equal(true); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.9 [PREVIEW] bedrock nova-pro converse video block with a real mp4 is understood (video input)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Describe this clip in one sentence.\"\n        },\n        {\n          \"video\": {\n            \"format\": \"mp4\",\n            \"source\": {\n              \"bytes\": \"{{bedrockVideoB64}}\"\n            }\n          }\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 128\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/us.amazon.nova-pro-v1:0/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "us.amazon.nova-pro-v1:0",
+            "converse"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var content = (j.output && j.output.message && j.output.message.content) || [];",
+              "pm.test('model answered', function () { pm.expect(content.some(function (b) { return typeof b.text === 'string' && b.text.length > 0; }), pm.response.text().slice(0, 600)).to.equal(true); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.10 [PREVIEW] vertex/gemini-2.5-flash vertexAiSearch over a real datastore is grounded (vertex ai search grounding)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"What does the index say?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"retrieval\": {\n        \"vertexAiSearch\": {\n          \"datastore\": \"{{vertexAiSearchDatastore}}\"\n        }\n      }\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 128\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "vertex",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var cand = (j.candidates && j.candidates[0]) || {};",
+              "pm.test('answer is grounded in the retrieval source', function () { pm.expect(cand.groundingMetadata, 'no groundingMetadata: ' + pm.response.text().slice(0, 800)).to.be.an('object'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.11 [PREVIEW] vertex/gemini-2.5-flash vertexRagStore over a real corpus is grounded (rag corpora)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"What does the corpus say?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"retrieval\": {\n        \"vertexRagStore\": {\n          \"ragResources\": [\n            {\n              \"ragCorpus\": \"{{vertexRagCorpus}}\"\n            }\n          ]\n        }\n      }\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 128\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "vertex",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var cand = (j.candidates && j.candidates[0]) || {};",
+              "pm.test('answer is grounded in the retrieval source', function () { pm.expect(cand.groundingMetadata, 'no groundingMetadata: ' + pm.response.text().slice(0, 800)).to.be.an('object'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.12 [PREVIEW] azure On Your Data over a real search index answers (on your data)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "api-key",
+            "value": "{{openaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is in the index? One sentence.\"\n    }\n  ],\n  \"data_sources\": [\n    {\n      \"type\": \"azure_search\",\n      \"parameters\": {\n        \"endpoint\": \"{{azureSearchEndpoint}}\",\n        \"index_name\": \"{{azureSearchIndex}}\",\n        \"authentication\": {\n          \"type\": \"api_key\",\n          \"key\": \"{{azureSearchKey}}\"\n        }\n      }\n    }\n  ],\n  \"max_tokens\": 128\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/openai/deployments/{{azureDeployment}}/chat/completions?api-version={{azureApiVersion}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "openai",
+            "deployments",
+            "{{azureDeployment}}",
+            "chat",
+            "completions?api-version={{azureApiVersion}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('model answered', function () { pm.expect(j.choices[0].message.content || '', pm.response.text().slice(0, 400)).to.not.equal(''); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.13 [PREVIEW] azure/gpt-4o-audio-preview chat input_audio wav is understood (audio input on azure)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"azure/gpt-4o-audio-preview\",\n  \"modalities\": [\n    \"text\"\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"In a few words, describe the sound in this clip.\"\n        },\n        {\n          \"type\": \"input_audio\",\n          \"input_audio\": {\n            \"data\": \"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\",\n            \"format\": \"wav\"\n          }\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 64\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('model answered', function () { pm.expect(j.choices[0].message.content || '', pm.response.text().slice(0, 400)).to.not.equal(''); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.14 azure batches list through the /openai drop-in is well-formed (azure batch)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/batches?provider=azure",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "batches?provider=azure"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('azure batch list is a data array', function () { pm.expect(j.data, pm.response.text().slice(0, 400)).to.be.an('array'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.15 [PREVIEW] vertex self-deployed Gemma endpoint chat answers (gemma on vertex)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/{{vertexGemmaModel}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('model answered', function () { pm.expect(j.choices[0].message.content || '', pm.response.text().slice(0, 400)).to.not.equal(''); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.16 [PREVIEW] anthropic message batch results for a settled batch are JSONL records (message batches)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages/batches/{{anthropicSettledBatchId}}/results",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages",
+            "batches",
+            "{{anthropicSettledBatchId}}",
+            "results"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var lines = pm.response.text().split('\\n').filter(function (l) { return l.trim().length; });",
+              "pm.test('results are JSONL records with a custom_id and a result', function () {",
+              "  pm.expect(lines.length, 'no result lines: ' + pm.response.text().slice(0, 300)).to.be.above(0);",
+              "  var r = JSON.parse(lines[0]);",
+              "  pm.expect(r.custom_id, lines[0].slice(0, 300)).to.be.a('string');",
+              "  pm.expect(r.result, lines[0].slice(0, 300)).to.be.an('object');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.17 [PREVIEW] openai/gpt-4o-mini service_tier priority is accepted and echoed (service tier)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"service_tier\": \"priority\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('response carries a service_tier', function () { pm.expect(j.service_tier, pm.response.text()).to.be.a('string').and.not.empty; });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.18 [PREVIEW] vertex/gemini-2.5-flash service_tier priority selects the shared request type on the global endpoint (provisioned throughput analog)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"service_tier\": \"priority\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('model answered', function () { pm.expect(j.choices[0].message.content || '', pm.response.text().slice(0, 400)).to.not.equal(''); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.19 [PREVIEW] anthropic web_fetch_20250910 with its beta header (web fetch)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "anthropic-beta",
+            "value": "web-fetch-2025-09-10"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 512,\n  \"tools\": [\n    {\n      \"type\": \"web_fetch_20250910\",\n      \"name\": \"web_fetch\",\n      \"max_uses\": 1\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Fetch https://example.com and tell me its page title.\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('model invoked the web_fetch server tool', function () { pm.expect((j.content || []).some(function (b) { return b.type === 'server_tool_use' && b.name === 'web_fetch'; }), pm.response.text().slice(0, 800)).to.equal(true); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "155.20 [PREVIEW] anthropic web_fetch_20260309 (web fetch)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 512,\n  \"tools\": [\n    {\n      \"type\": \"web_fetch_20260309\",\n      \"name\": \"web_fetch\",\n      \"max_uses\": 1\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Fetch https://example.com and tell me its page title.\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('model invoked the web_fetch server tool', function () { pm.expect((j.content || []).some(function (b) { return b.type === 'server_tool_use' && b.name === 'web_fetch'; }), pm.response.text().slice(0, 800)).to.equal(true); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

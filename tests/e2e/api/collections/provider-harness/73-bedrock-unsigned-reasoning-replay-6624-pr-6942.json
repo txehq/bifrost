@@ -1,0 +1,305 @@
+{
+  "name": "73. Bedrock unsigned-reasoning replay (#6624 / PR #6942)",
+  "description": "Unsigned Claude thinking must be removed on replay. Covers Responses reasoning summaries, reasoning-only assistant message content (filtering must not leave content:null), and Chat reasoning_details, each unary and streaming. The response-rendering sibling is pinned with deterministic Go output fixtures because a request cannot force a live provider to return an unsigned embedded reasoning content block. A 400 or streamed error is a regression, not an infrastructure skip.",
+  "item": [
+    {
+      "name": "bedrock/global.anthropic.claude-sonnet-4-6 unsigned-reasoning embedded-only unary - #6624",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('unsigned replay succeeds without signature or empty-content errors', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "  pm.expect(pm.response.text()).to.not.include('thinking.signature: Field required');",
+              "  pm.expect(pm.response.text()).to.not.include('Invalid `signature`');",
+              "});",
+              "pm.test('assistant returned text', function () {",
+              "  var body = pm.response.json();",
+              "  pm.expect((body.output || []).some(function (m) { return (m.content || []).some(function (b) { return b.type === 'output_text' && b.text; }); }), pm.response.text()).to.eql(true);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"reasoning_text\",\n          \"text\": \"I should answer briefly.\",\n          \"signature\": \"\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly OK.\"\n    }\n  ],\n  \"max_output_tokens\": 64,\n  \"stream\": false\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "bedrock/global.anthropic.claude-sonnet-4-6 unsigned-reasoning summary unary - #6624",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('unsigned replay succeeds without signature or empty-content errors', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "  pm.expect(pm.response.text()).to.not.include('thinking.signature: Field required');",
+              "  pm.expect(pm.response.text()).to.not.include('Invalid `signature`');",
+              "});",
+              "pm.test('assistant returned text', function () {",
+              "  var body = pm.response.json();",
+              "  pm.expect((body.output || []).some(function (m) { return (m.content || []).some(function (b) { return b.type === 'output_text' && b.text; }); }), pm.response.text()).to.eql(true);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"type\": \"reasoning\",\n      \"summary\": [\n        {\n          \"type\": \"summary_text\",\n          \"text\": \"I should answer briefly.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Hello.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly OK.\"\n    }\n  ],\n  \"max_output_tokens\": 64,\n  \"stream\": false\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "bedrock/global.anthropic.claude-sonnet-4-6 unsigned-reasoning chat unary - #6624",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('unsigned replay succeeds without signature or empty-content errors', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "  pm.expect(pm.response.text()).to.not.include('thinking.signature: Field required');",
+              "  pm.expect(pm.response.text()).to.not.include('Invalid `signature`');",
+              "});",
+              "pm.test('assistant returned text', function () {",
+              "  var body = pm.response.json();",
+              "  pm.expect(body.choices[0].message.content, pm.response.text()).to.be.a('string').and.not.empty;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Hello.\",\n      \"reasoning_details\": [\n        {\n          \"type\": \"reasoning.text\",\n          \"text\": \"I should answer briefly.\",\n          \"signature\": \"\",\n          \"index\": 0\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly OK.\"\n    }\n  ],\n  \"max_tokens\": 64,\n  \"stream\": false\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "bedrock/global.anthropic.claude-sonnet-4-6 unsigned-reasoning embedded-only streaming - #6624",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('unsigned replay succeeds without signature or empty-content errors', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "  pm.expect(pm.response.text()).to.not.include('thinking.signature: Field required');",
+              "  pm.expect(pm.response.text()).to.not.include('Invalid `signature`');",
+              "});",
+              "pm.test('stream returns output and completes without an error event', function () {",
+              "  var events = [];",
+              "  pm.response.text().split(/\\r?\\n/).forEach(function (line) {",
+              "    if (line.indexOf('data:') !== 0) { return; }",
+              "    var data = line.slice(5).trim();",
+              "    if (!data || data === '[DONE]') { return; }",
+              "    events.push(JSON.parse(data));",
+              "  });",
+              "  pm.expect(events.length, pm.response.text()).to.be.above(0);",
+              "  events.forEach(function (event) { pm.expect(event.error, JSON.stringify(event)).to.not.exist; pm.expect(event.type).to.not.eql('response.failed'); });",
+              "  pm.expect(events.some(function (e) { return e.type === 'response.output_text.delta' && e.delta; }), pm.response.text()).to.eql(true);",
+              "  pm.expect(events.some(function (e) { return e.type === 'response.completed'; }), pm.response.text()).to.eql(true);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"reasoning_text\",\n          \"text\": \"I should answer briefly.\",\n          \"signature\": \"\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly OK.\"\n    }\n  ],\n  \"max_output_tokens\": 64,\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "bedrock/global.anthropic.claude-sonnet-4-6 unsigned-reasoning summary streaming - #6624",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('unsigned replay succeeds without signature or empty-content errors', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "  pm.expect(pm.response.text()).to.not.include('thinking.signature: Field required');",
+              "  pm.expect(pm.response.text()).to.not.include('Invalid `signature`');",
+              "});",
+              "pm.test('stream returns output and completes without an error event', function () {",
+              "  var events = [];",
+              "  pm.response.text().split(/\\r?\\n/).forEach(function (line) {",
+              "    if (line.indexOf('data:') !== 0) { return; }",
+              "    var data = line.slice(5).trim();",
+              "    if (!data || data === '[DONE]') { return; }",
+              "    events.push(JSON.parse(data));",
+              "  });",
+              "  pm.expect(events.length, pm.response.text()).to.be.above(0);",
+              "  events.forEach(function (event) { pm.expect(event.error, JSON.stringify(event)).to.not.exist; pm.expect(event.type).to.not.eql('response.failed'); });",
+              "  pm.expect(events.some(function (e) { return e.type === 'response.output_text.delta' && e.delta; }), pm.response.text()).to.eql(true);",
+              "  pm.expect(events.some(function (e) { return e.type === 'response.completed'; }), pm.response.text()).to.eql(true);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"type\": \"reasoning\",\n      \"summary\": [\n        {\n          \"type\": \"summary_text\",\n          \"text\": \"I should answer briefly.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Hello.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly OK.\"\n    }\n  ],\n  \"max_output_tokens\": 64,\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "bedrock/global.anthropic.claude-sonnet-4-6 unsigned-reasoning chat streaming - #6624",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('unsigned replay succeeds without signature or empty-content errors', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "  pm.expect(pm.response.text()).to.not.include('thinking.signature: Field required');",
+              "  pm.expect(pm.response.text()).to.not.include('Invalid `signature`');",
+              "});",
+              "pm.test('stream returns output and completes without an error event', function () {",
+              "  var events = [];",
+              "  pm.response.text().split(/\\r?\\n/).forEach(function (line) {",
+              "    if (line.indexOf('data:') !== 0) { return; }",
+              "    var data = line.slice(5).trim();",
+              "    if (!data || data === '[DONE]') { return; }",
+              "    events.push(JSON.parse(data));",
+              "  });",
+              "  pm.expect(events.length, pm.response.text()).to.be.above(0);",
+              "  events.forEach(function (event) { pm.expect(event.error, JSON.stringify(event)).to.not.exist; pm.expect(event.type).to.not.eql('response.failed'); });",
+              "  pm.expect(events.some(function (e) { return (e.choices || []).some(function (c) { return c.delta && c.delta.content; }); }), pm.response.text()).to.eql(true);",
+              "  pm.expect(pm.response.text()).to.include('[DONE]');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Hello.\",\n      \"reasoning_details\": [\n        {\n          \"type\": \"reasoning.text\",\n          \"text\": \"I should answer briefly.\",\n          \"signature\": \"\",\n          \"index\": 0\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly OK.\"\n    }\n  ],\n  \"max_tokens\": 64,\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,395 @@
+{
+  "name": "144. OpenAI chat and responses parameter pins (openai param pins)",
+  "description": "Closes backlog rows that had a request but no assertion: n, logit_bias, parallel_tool_calls true and false, service_tier, previous_response_id continuation, and Responses stream-event ordering. 144.2 is [EXPECT-4XX] on purpose: an out-of-range logit_bias value is only rejected if the field reaches OpenAI, so a 2xx would mean Bifrost swallowed it.",
+  "item": [
+    {
+      "name": "144.1 openai/gpt-4o-mini n=3 returns three indexed choices (n-completions)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Name one fruit.\"\n    }\n  ],\n  \"n\": 3,\n  \"temperature\": 1,\n  \"max_tokens\": 16\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('n=3 yields exactly three choices', function () {",
+              "  pm.expect(j.choices, 'no choices: ' + pm.response.text()).to.be.an('array');",
+              "  pm.expect(j.choices.length, 'got ' + j.choices.length + ' choices: ' + pm.response.text()).to.equal(3);",
+              "});",
+              "pm.test('choice indexes are 0,1,2 and each has content', function () {",
+              "  var idx = j.choices.map(function (c) { return c.index; }).sort();",
+              "  pm.expect(idx, pm.response.text()).to.eql([0, 1, 2]);",
+              "  j.choices.forEach(function (c) { pm.expect((c.message && c.message.content) || '', pm.response.text()).to.not.equal(''); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "144.2 [EXPECT-4XX] openai/gpt-4o-mini logit_bias out of range reaches provider (logit_bias)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"logit_bias\": {\n    \"1234\": 1000\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('upstream names logit_bias in the rejection', function () {",
+              "  pm.expect(pm.response.text(), 'rejection does not mention logit_bias; field may not have reached the provider: ' + pm.response.text()).to.match(/logit.?bias/i);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "144.3 openai/gpt-4o-mini parallel_tool_calls=true returns two tool calls (parallel tool calls)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_weather for Paris and get_time for Tokyo. Use both tools.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_time\",\n        \"description\": \"Get the local time for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"parallel_tool_calls\": true,\n  \"max_tokens\": 128\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var tc = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.tool_calls) || [];",
+              "pm.test('parallel_tool_calls=true yields both tool calls', function () {",
+              "  pm.expect(tc.length, 'expected >=2 tool calls: ' + pm.response.text()).to.be.at.least(2);",
+              "  var names = tc.map(function (t) { return t.function.name; }).sort();",
+              "  pm.expect(names, pm.response.text()).to.include.members(['get_time', 'get_weather']);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "144.4 openai/gpt-4o-mini parallel_tool_calls=false returns a single tool call (parallel tool calls)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_weather for Paris and get_time for Tokyo. Use both tools.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_time\",\n        \"description\": \"Get the local time for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"parallel_tool_calls\": false,\n  \"max_tokens\": 128\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var tc = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.tool_calls) || [];",
+              "pm.test('parallel_tool_calls=false yields exactly one tool call', function () {",
+              "  pm.expect(tc.length, 'expected exactly 1 tool call: ' + pm.response.text()).to.equal(1);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "144.5 openai/gpt-4o-mini service_tier=default is echoed (service tier)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"service_tier\": \"default\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('response carries service_tier default', function () {",
+              "  pm.expect(j.service_tier, 'service_tier missing or changed: ' + pm.response.text()).to.equal('default');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "144.6a openai/gpt-4o-mini responses turn 1 stores a code word (previous_response_id)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Remember the code word BIFROSTPELICAN. Reply with OK only.\",\n  \"store\": true,\n  \"max_output_tokens\": 32\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('turn 1 returns a response id', function () {",
+              "  pm.expect(j.id, 'no response id: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+              "});",
+              "pm.collectionVariables.set('h144PrevRespId', j.id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "144.6b openai/gpt-4o-mini responses turn 2 recalls via previous_response_id (previous_response_id)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"What was the code word? Answer with the word only.\",\n  \"previous_response_id\": \"{{h144PrevRespId}}\",\n  \"max_output_tokens\": 32\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var text = (j.output || []).map(function (o) { return (o.content || []).map(function (c) { return c.text || ''; }).join(''); }).join('');",
+              "pm.test('turn 2 links to turn 1 and recalls the code word', function () {",
+              "  pm.expect(j.previous_response_id, 'previous_response_id not echoed: ' + pm.response.text()).to.equal(pm.collectionVariables.get('h144PrevRespId'));",
+              "  pm.expect(text.toUpperCase(), 'code word not recalled: ' + pm.response.text()).to.include('BIFROSTPELICAN');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "144.6c openai/gpt-4o-mini responses deletes the stored response (previous_response_id cleanup)",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses/{{h144PrevRespId}}?provider=openai",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses",
+            "{{h144PrevRespId}}?provider=openai"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the stored response is deleted', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); var j = pm.response.json(); pm.expect(j.deleted, pm.response.text()).to.equal(true); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "144.7 openai/gpt-4o-mini responses stream emits ordered lifecycle events (stream events)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Say hi.\",\n  \"stream\": true,\n  \"max_output_tokens\": 32\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text();",
+              "var types = [], seqs = [];",
+              "raw.split('\\n').forEach(function (l) {",
+              "  if (l.indexOf('data:') !== 0) { return; }",
+              "  var d = l.slice(5).trim();",
+              "  if (!d || d === '[DONE]') { return; }",
+              "  try { var e = JSON.parse(d); types.push(e.type); if (typeof e.sequence_number === 'number') { seqs.push(e.sequence_number); } } catch (x) {}",
+              "});",
+              "pm.test('lifecycle events appear in order', function () {",
+              "  var order = ['response.created', 'response.output_item.added', 'response.output_text.delta', 'response.output_item.done', 'response.completed'];",
+              "  var last = -1;",
+              "  order.forEach(function (t) {",
+              "    var i = types.indexOf(t);",
+              "    pm.expect(i, 'missing event ' + t + '; saw: ' + types.join(',')).to.be.above(-1);",
+              "    pm.expect(i, t + ' out of order; saw: ' + types.join(',')).to.be.above(last);",
+              "    last = i;",
+              "  });",
+              "});",
+              "pm.test('sequence_number strictly increases', function () {",
+              "  pm.expect(seqs.length, 'no sequence_number fields: ' + raw.slice(0, 400)).to.be.above(1);",
+              "  for (var k = 1; k < seqs.length; k++) { pm.expect(seqs[k], 'sequence regressed at ' + k).to.be.above(seqs[k - 1]); }",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

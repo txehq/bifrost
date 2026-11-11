@@ -1,0 +1,168 @@
+{
+  "name": "21. Responses Stream Usage Persistence (#4846 / PR #4899)",
+  "description": "Regression coverage for PR #4899 (fixes #4846): the final response.completed SSE event of a Responses stream carries response.usage, but the streaming accumulator dedupes chunks by ChunkIndex and reads stream metadata from the highest index. OpenAI-compatible Responses streams set ChunkIndex from the provider's sequence_number (core/providers/openai/openai.go), so providers that omit or reuse sequence_number (e.g. Unsloth via Codex CLI) delivered the terminal event with an already-seen index - it was deduped away and LLM Logs persisted 0/0 tokens with no raw JSON. The fix remaps late terminal events to a reserved trailing index. These cases pin the end-to-end invariant (usage on the wire implies usage in the logs DB) via the dbverify reporter (x-request-id + x-bf-expect-cost, asserting cost>0 && total_tokens>0), across the native OpenAI Responses SSE path and the converted Anthropic path, with a non-streaming baseline to isolate streaming-specific failures. Note: live OpenAI numbers its events correctly, so the exact omitted-sequence_number trigger is pinned by the Go unit test in PR #4899; a faithful harness repro would need an OpenAI-compatible mock provider in the gateway config.",
+  "item": [
+    {
+      "name": "[Accounting] openai/gpt-4o-mini responses streaming records usage - #4846",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('OpenAI native Responses stream: stream completes with usage on the wire - #4846', function () {",
+              "  pm.expect(pm.response.code, 'stream request failed: ' + pm.response.text()).to.equal(200);",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'expected SSE frames').to.include('data:');",
+              "  pm.expect(body, 'expected a terminal response.completed event').to.include('response.completed');",
+              "  pm.expect(body, 'expected response.usage on the terminal event').to.include('total_tokens');",
+              "});",
+              "// Persistence is asserted by the dbverify reporter: the logs row keyed on",
+              "// x-request-id must have cost>0 && total_tokens>0. Pre-#4899, a provider that",
+              "// omits or reuses sequence_number got its terminal event deduped by the stream",
+              "// accumulator and the row persisted 0/0 despite usage being on the wire."
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "usage-responses-openai-stream-{{$guid}}"
+          },
+          {
+            "key": "x-bf-expect-cost",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":\"Reply with the single word: pong.\",\"max_output_tokens\":64,\"stream\":true}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[Accounting] anthropic/claude-haiku-4-5 responses streaming records usage - #4846",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Converted Anthropic Responses stream: stream completes with usage on the wire - #4846', function () {",
+              "  pm.expect(pm.response.code, 'stream request failed: ' + pm.response.text()).to.equal(200);",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'expected SSE frames').to.include('data:');",
+              "  pm.expect(body, 'expected a terminal response.completed event').to.include('response.completed');",
+              "  pm.expect(body, 'expected response.usage on the terminal event').to.include('total_tokens');",
+              "});",
+              "// Persistence is asserted by the dbverify reporter: the logs row keyed on",
+              "// x-request-id must have cost>0 && total_tokens>0. Pre-#4899, a provider that",
+              "// omits or reuses sequence_number got its terminal event deduped by the stream",
+              "// accumulator and the row persisted 0/0 despite usage being on the wire."
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "usage-responses-anthropic-stream-{{$guid}}"
+          },
+          {
+            "key": "x-bf-expect-cost",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"input\":\"Reply with the single word: pong.\",\"max_output_tokens\":64,\"stream\":true}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[Accounting] openai/gpt-4o-mini responses non-streaming records usage - #4846",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Non-streaming Responses baseline: usage in the response body - #4846', function () {",
+              "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.usage, 'expected usage on the response').to.exist;",
+              "  pm.expect(Number(j.usage.total_tokens || 0), 'expected total_tokens > 0').to.be.above(0);",
+              "});",
+              "// Baseline pair for the streaming cases: if this passes while a streaming",
+              "// case fails dbverify, the regression is stream-accumulator-specific."
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "usage-responses-openai-nonstream-{{$guid}}"
+          },
+          {
+            "key": "x-bf-expect-cost",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":\"Reply with the single word: pong.\",\"max_output_tokens\":64}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    }
+  ]
+}

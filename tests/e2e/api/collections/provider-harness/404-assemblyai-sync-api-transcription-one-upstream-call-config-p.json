@@ -1,0 +1,1221 @@
+{
+  "name": "404. AssemblyAI Sync API transcription: one upstream call, config part, duration usage, vendor errors (assemblyai transcription)",
+  "description": "TXE-6435, contract C3, C4, C5, C6. The assemblyai provider transcribes with one call to AssemblyAI's Sync API (POST /v1/transcribe): the model is the X-AAI-Model header, the audio is the audio part and the request fields are the JSON config part; it never polls. 404.1 to 404.18 are a local fixture regression with no live provider call: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json (its assemblyai provider points at the fixture's /pp/assemblyai) and run with providerErrorFixture=1; they are skipped otherwise. The fixture answers /pp/assemblyai/v1/transcribe in the vendor's shape, counts each call under assemblyai:<model> and keeps what it received (GET /__assemblyai). 404.2 and 404.3 pin one request to one upstream call, the header, the two parts, the extra fields in the config unchanged, and usage{type: duration, seconds} = audio_duration_ms / 1000 with the vendor body in raw_response. 404.4 and 404.5 pin the same through the OpenAI drop-in route /openai/v1/audio/transcriptions, whose extra form fields and config object reach the config part. 404.6 and 404.7 pin the Gemini-shaped route /genai/v1beta/models/{model}:generateContent with inline audio: the audio is the audio part and the request's text is the config prompt. 404.8 and 404.9 pin a vendor error: the vendor's status, its detail as the message, its title as the code, Retry-After as retry_after_ms and the error_type for the status. 404.10 to 404.13 pin that a field the Sync API cannot deliver (a subtitle response_format, the segment granularity, temperature on the drop-in route, and an audio url in place of the file) is a 400 caller_unsupported_parameter. 404.14 pins the shared extra-params rule (TXE-7018): language_codes sent as an extra field beside the unified language is a 400 caller_invalid_request naming it, never applied over the request's own field. 404.15 to 404.17 pin file_format: on the native route and on the drop-in route it names audio that has no signature (the fixture's text file standing in for raw PCM), the audio part is sent as audio/pcm, and file_format is not sent as a config member. 404.18 reads the counters: each vendor error reached the fixture once and the refused requests never did. The last case is live: it needs ASSEMBLYAI_API_KEY and is skipped when the profile's key is unset. Before this provider existed the fork had no assemblyai provider, so none of these requests could be served.",
+  "item": [
+    {
+      "name": "404.1 fixture counters reset before the assemblyai transcription rows",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('counters cleared', function () { pm.expect(pm.response.json().data[0].reset, pm.response.text()).to.equal(true); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__reset"
+      }
+    },
+    {
+      "name": "404.2 /v1/audio/transcriptions - transcript, words in seconds and usage.seconds = audio_duration_ms / 1000 - assemblyai/universal-3-5-pro",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('one Sync API response becomes the unified transcription', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(j.text, pm.response.text()).to.eql('The quick brown fox.');",
+              "  pm.expect(j.usage, 'no usage: ' + pm.response.text()).to.be.an('object');",
+              "  pm.expect(j.usage.type, pm.response.text()).to.eql('duration');",
+              "  pm.expect(j.usage.seconds, 'audio_duration_ms 3312 / 1000: ' + pm.response.text()).to.eql(3.312);",
+              "  pm.expect(j.duration, pm.response.text()).to.eql(3.312);",
+              "});",
+              "pm.test('word times are seconds, from the vendor milliseconds', function () {",
+              "  pm.expect(j.words, 'no words: ' + pm.response.text()).to.be.an('array').with.lengthOf(4);",
+              "  pm.expect(j.words[0], JSON.stringify(j.words[0])).to.deep.include({ word: 'The', start: 0.14, end: 0.26 });",
+              "  pm.expect(j.words[3], JSON.stringify(j.words[3])).to.deep.include({ word: 'fox.', start: 0.9, end: 1.5 });",
+              "});",
+              "pm.test('the vendor body is returned raw and the named key served', function () {",
+              "  var raw = j.extra_fields && j.extra_fields.raw_response;",
+              "  pm.expect(raw, 'no raw_response: ' + pm.response.text()).to.be.an('object');",
+              "  pm.expect(raw.audio_duration_ms, JSON.stringify(raw)).to.eql(3312);",
+              "  pm.expect(raw.session_id, JSON.stringify(raw)).to.be.a('string').that.is.not.empty;",
+              "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'provider header').to.eql('assemblyai');",
+              "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), 'key header').to.eql('assemblyai-fixture');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "assemblyai-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          },
+          {
+            "key": "x-bf-send-back-raw-response",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "assemblyai/universal-3-5-pro",
+              "type": "text"
+            },
+            {
+              "key": "language",
+              "value": "en",
+              "type": "text"
+            },
+            {
+              "key": "prompt",
+              "value": "A fable about a fox.",
+              "type": "text"
+            },
+            {
+              "key": "timestamp_granularities[]",
+              "value": "word",
+              "type": "text"
+            },
+            {
+              "key": "keyterms_prompt",
+              "value": "Bifrost",
+              "type": "text"
+            },
+            {
+              "key": "keyterms_prompt",
+              "value": "Tokun",
+              "type": "text"
+            },
+            {
+              "key": "sample_rate",
+              "value": "16000",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.mp3",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "404.3 the assemblyai transcription reached the Sync API exactly once, with X-AAI-Model, an audio part and a config part",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls;",
+              "pm.test('exactly one upstream call (contract C3)', function () {",
+              "  pm.expect(calls, pm.response.text()).to.be.an('array').with.lengthOf(1);",
+              "});",
+              "var call = calls[0] || { parts: [] };",
+              "pm.test('the model is the X-AAI-Model header and the key is the bare Authorization value', function () {",
+              "  pm.expect(call.model, JSON.stringify(call)).to.eql('universal-3-5-pro');",
+              "  pm.expect(call.authorization, JSON.stringify(call)).to.eql('aai-fixture-key');",
+              "});",
+              "pm.test('an audio part with the audio Content-Type, then a JSON config part', function () {",
+              "  pm.expect(call.parts.map(function (p) { return p.name; }), JSON.stringify(call.parts)).to.eql(['audio', 'config']);",
+              "  pm.expect(call.parts[0].contentType, JSON.stringify(call.parts[0])).to.eql('audio/mpeg');",
+              "  pm.expect(call.parts[0].bytes, 'audio bytes').to.be.above(1000);",
+              "  pm.expect(call.parts[1].contentType, JSON.stringify(call.parts[1])).to.eql('application/json');",
+              "});",
+              "pm.test('unified fields and extra fields reach the config unchanged (contract C4)', function () {",
+              "  var config = JSON.parse(call.parts[1].text);",
+              "  pm.expect(config, call.parts[1].text).to.eql({",
+              "    prompt: 'A fable about a fox.',",
+              "    language_codes: ['en'],",
+              "    timestamps: true,",
+              "    keyterms_prompt: ['Bifrost', 'Tokun'],",
+              "    sample_rate: 16000",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__assemblyai"
+      }
+    },
+    {
+      "name": "404.4 /openai/v1/audio/transcriptions - the OpenAI drop-in route reaches the Sync API with its extra form fields - assemblyai/universal-3-5-pro",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('the drop-in route returns the transcript and the billable duration', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(j.text, pm.response.text()).to.eql('The quick brown fox.');",
+              "  pm.expect(j.usage, 'no usage: ' + pm.response.text()).to.be.an('object');",
+              "  pm.expect(j.usage.type, pm.response.text()).to.eql('duration');",
+              "  pm.expect(j.usage.seconds, pm.response.text()).to.eql(3.312);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "assemblyai-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "assemblyai/universal-3-5-pro",
+              "type": "text"
+            },
+            {
+              "key": "timestamps",
+              "value": "true",
+              "type": "text"
+            },
+            {
+              "key": "keyterms_prompt",
+              "value": "Bifrost",
+              "type": "text"
+            },
+            {
+              "key": "keyterms_prompt",
+              "value": "Tokun",
+              "type": "text"
+            },
+            {
+              "key": "config",
+              "value": "{\"conversation_context\":[\"Hello.\",\"42\"]}",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.mp3",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "404.5 the /openai route made one more Sync API call, its extra form fields in the config part",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls;",
+              "pm.test('one call per request: two requests, two calls', function () {",
+              "  pm.expect(calls, pm.response.text()).to.be.an('array').with.lengthOf(2);",
+              "});",
+              "var call = calls[1] || { parts: [] };",
+              "pm.test('the drop-in request carried the same header and parts', function () {",
+              "  pm.expect(call.model, JSON.stringify(call)).to.eql('universal-3-5-pro');",
+              "  pm.expect(call.parts.map(function (p) { return p.name; }), JSON.stringify(call.parts)).to.eql(['audio', 'config']);",
+              "  pm.expect(call.parts[0].contentType, JSON.stringify(call.parts[0])).to.eql('audio/mpeg');",
+              "});",
+              "pm.test('extra form fields and the config object reach the config part', function () {",
+              "  pm.expect(JSON.parse(call.parts[1].text), call.parts[1].text).to.eql({",
+              "    timestamps: true,",
+              "    keyterms_prompt: ['Bifrost', 'Tokun'],",
+              "    conversation_context: ['Hello.', '42']",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__assemblyai"
+      }
+    },
+    {
+      "name": "404.6 /genai/v1beta/models/{model}:generateContent - the Gemini-shaped route with inline audio reaches the Sync API, its text as the prompt - assemblyai/universal-3-5-pro",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the Gemini-shaped route returns the transcript', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.text(), 'no transcript: ' + pm.response.text()).to.include('The quick brown fox.');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "assemblyai-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"A fable about a fox.\"\n        },\n        {\n          \"inlineData\": {\n            \"mimeType\": \"audio/wav\",\n            \"data\": \"UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/assemblyai/universal-3-5-pro:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "assemblyai",
+            "universal-3-5-pro:generateContent"
+          ]
+        }
+      }
+    },
+    {
+      "name": "404.7 the /genai route made one more Sync API call: the inline audio as the audio part, the text as the config prompt",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls;",
+              "pm.test('one call per request: three requests, three calls', function () {",
+              "  pm.expect(calls, pm.response.text()).to.be.an('array').with.lengthOf(3);",
+              "});",
+              "var call = calls[2] || { parts: [] };",
+              "pm.test('the inline WAV is the audio part and the text is the prompt', function () {",
+              "  pm.expect(call.model, JSON.stringify(call)).to.eql('universal-3-5-pro');",
+              "  pm.expect(call.parts.map(function (p) { return p.name; }), JSON.stringify(call.parts)).to.eql(['audio', 'config']);",
+              "  pm.expect(call.parts[0].contentType, JSON.stringify(call.parts[0])).to.eql('audio/wav');",
+              "  pm.expect(JSON.parse(call.parts[1].text), call.parts[1].text).to.eql({ prompt: 'A fable about a fox.' });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__assemblyai"
+      }
+    },
+    {
+      "name": "404.8 [EXPECT-429] /v1/audio/transcriptions - a vendor 429 keeps its status, detail, title and Retry-After, error_type provider_rate_limited - assemblyai/aai-upstream-429",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('the vendor status and problem details come back as is (contract C6)', function () {",
+              "  pm.expect(pm.response.code, 'expected 429: ' + pm.response.text()).to.eql(429);",
+              "  pm.expect(j.is_bifrost_error, pm.response.text()).to.eql(false);",
+              "  pm.expect(j.error.message, pm.response.text()).to.eql('Rate limit exceeded.');",
+              "  pm.expect(j.error.code, pm.response.text()).to.eql('Too Many Requests');",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text()).to.eql('provider_rate_limited');",
+              "  pm.expect(j.extra_fields.retry_after_ms, pm.response.text()).to.eql(7000);",
+              "  pm.expect(j.extra_fields.raw_response, pm.response.text()).to.eql({ status: 429, title: 'Too Many Requests', detail: 'Rate limit exceeded.' });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "assemblyai-fixture"
+          },
+          {
+            "key": "x-bf-send-back-raw-response",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "assemblyai/aai-upstream-429",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.mp3",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "404.9 [EXPECT-400] /v1/audio/transcriptions - a vendor 400 keeps its status, error_type caller_invalid_request - assemblyai/aai-upstream-400",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('a vendor 400 is the caller\\'s, with the vendor\\'s words', function () {",
+              "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+              "  pm.expect(j.error.message, pm.response.text()).to.eql('Audio must be at least 80 ms long.');",
+              "  pm.expect(j.error.code, pm.response.text()).to.eql('Audio Too Short');",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text()).to.eql('caller_invalid_request');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "assemblyai-fixture"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "assemblyai/aai-upstream-400",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.mp3",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "404.10 [EXPECT-400] /v1/audio/transcriptions - response_format srt is refused as caller_unsupported_parameter, not dropped - assemblyai/universal-3-5-pro",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('a field the Sync API cannot deliver is a 400 naming the field (contract C4)', function () {",
+              "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error.param, pm.response.text()).to.eql('response_format');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "assemblyai-fixture"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "assemblyai/universal-3-5-pro",
+              "type": "text"
+            },
+            {
+              "key": "response_format",
+              "value": "srt",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.mp3",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "404.11 [EXPECT-400] /v1/audio/transcriptions - the segment timestamp granularity is refused as caller_unsupported_parameter - assemblyai/universal-3-5-pro",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('segment timings do not exist on the Sync API, so the request is refused', function () {",
+              "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error.param, pm.response.text()).to.eql('timestamp_granularities');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "assemblyai-fixture"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "assemblyai/universal-3-5-pro",
+              "type": "text"
+            },
+            {
+              "key": "response_format",
+              "value": "verbose_json",
+              "type": "text"
+            },
+            {
+              "key": "timestamp_granularities[]",
+              "value": "segment",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.mp3",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "404.12 [EXPECT-400] /openai/v1/audio/transcriptions - temperature, a unified field the Sync API does not take, is refused as caller_unsupported_parameter - assemblyai/universal-3-5-pro",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('the declared-fields check refuses temperature before a key is chosen', function () {",
+              "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+              "  pm.expect(pm.response.text(), 'error_type').to.include('caller_unsupported_parameter');",
+              "  pm.expect(pm.response.text(), 'the field is named').to.include('temperature');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "assemblyai-fixture"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "assemblyai/universal-3-5-pro",
+              "type": "text"
+            },
+            {
+              "key": "temperature",
+              "value": "0.2",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.mp3",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "404.13 [EXPECT-400] /v1/audio/transcriptions - an audio url in place of the file is refused as caller_unsupported_parameter: the Sync API takes no URL - assemblyai/universal-3-5-pro",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('a URL-only request is refused before a key is chosen, and never downloaded', function () {",
+              "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error.param, pm.response.text()).to.eql('url');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "assemblyai-fixture"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "assemblyai/universal-3-5-pro",
+              "type": "text"
+            },
+            {
+              "key": "url",
+              "value": "https://example.com/sample.mp3",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "404.14 [EXPECT-400] /v1/audio/transcriptions - language_codes as an extra field beside the unified language is refused as caller_invalid_request, never applied over it - assemblyai/universal-3-5-pro",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('an extra field never replaces a config member the request set', function () {",
+              "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text()).to.eql('caller_invalid_request');",
+              "  pm.expect(j.error.param, pm.response.text()).to.eql('language_codes');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "assemblyai-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "assemblyai/universal-3-5-pro",
+              "type": "text"
+            },
+            {
+              "key": "language",
+              "value": "en",
+              "type": "text"
+            },
+            {
+              "key": "language_codes",
+              "value": "[\"en\",\"fr\"]",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.mp3",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "404.15 /v1/audio/transcriptions - file_format names headerless audio: the form field reaches the provider as the unified field - assemblyai/universal-3-5-pro",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the request is served', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "assemblyai-fixture"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "assemblyai/universal-3-5-pro",
+              "type": "text"
+            },
+            {
+              "key": "file_format",
+              "value": "pcm",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.txt",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "404.16 /openai/v1/audio/transcriptions - file_format on the drop-in route names headerless audio too, and is not sent as a config member - assemblyai/universal-3-5-pro",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the request is served', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "assemblyai-fixture"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "assemblyai/universal-3-5-pro",
+              "type": "text"
+            },
+            {
+              "key": "file_format",
+              "value": "pcm",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.txt",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "404.17 both file_format requests sent the audio part as audio/pcm, with no config part",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls.slice(-2);",
+              "pm.test('file_format is the audio part Content-Type on the native and the drop-in route', function () {",
+              "  pm.expect(calls, pm.response.text()).to.be.an('array').with.lengthOf(2);",
+              "  calls.forEach(function (call) {",
+              "    pm.expect(call.parts.map(function (p) { return p.name; }), JSON.stringify(call.parts)).to.eql(['audio']);",
+              "    pm.expect(call.parts[0].contentType, JSON.stringify(call.parts[0])).to.eql('audio/pcm');",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__assemblyai"
+      }
+    },
+    {
+      "name": "404.18 each assemblyai vendor error reached the Sync API once and the refused requests never did",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var h = pm.response.json().data[0].hits;",
+              "pm.test('no second call after a vendor error, no call for a refused field', function () {",
+              "  pm.expect(h['assemblyai:aai-upstream-429'], JSON.stringify(h)).to.equal(1);",
+              "  pm.expect(h['assemblyai:aai-upstream-400'], JSON.stringify(h)).to.equal(1);",
+              "  pm.expect(h['assemblyai:universal-3-5-pro'], 'only the five served requests reached the vendor: ' + JSON.stringify(h)).to.equal(5);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__hits"
+      }
+    },
+    {
+      "name": "/v1/audio/transcriptions - live Sync API transcript with duration usage and word timings - assemblyai/universal-3-5-pro",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('AssemblyAI returns a transcript and the billable duration', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(j.text, 'no transcript: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+              "  pm.expect(j.usage, 'no usage: ' + pm.response.text()).to.be.an('object');",
+              "  pm.expect(j.usage.type, pm.response.text()).to.eql('duration');",
+              "  pm.expect(j.usage.seconds, pm.response.text()).to.be.above(0);",
+              "  pm.expect(j.extra_fields.raw_response.audio_duration_ms / 1000, 'usage.seconds is audio_duration_ms / 1000').to.eql(j.usage.seconds);",
+              "});",
+              "pm.test('timestamps reached the config: words carry times in seconds', function () {",
+              "  pm.expect(j.words, 'no words: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+              "  pm.expect(j.words[j.words.length - 1].end, JSON.stringify(j.words)).to.be.above(0).and.at.most(j.usage.seconds + 1);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          },
+          {
+            "key": "x-bf-send-back-raw-response",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "assemblyai/universal-3-5-pro",
+              "type": "text"
+            },
+            {
+              "key": "timestamp_granularities[]",
+              "value": "word",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.mp3",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      }
+    }
+  ]
+}

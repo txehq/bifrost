@@ -2,7 +2,6 @@
 // No test framework needed (the tests/e2e/api dir has no test runner configured), same shape as
 // ci-interval.test.mjs next door.
 import assert from "node:assert";
-import { readFileSync } from "node:fs";
 import {
   walkRequests,
   buildProducerIndex,
@@ -11,6 +10,7 @@ import {
   injectChainedVarGuards,
   varsSetBy,
 } from "./chained-vars.mjs";
+import { assembleProviderHarness } from "./provider-harness-source.mjs";
 
 let passed = 0;
 function test(name, fn) {
@@ -416,8 +416,7 @@ test("script-only dependencies never get a body guard", () => {
 // one newman process. This walks the real collection so the next hand-written pair that
 // forgets the link fails here rather than intermittently in a live sweep.
 test("every hand-written 'turn N' row in provider-harness.json links to its earlier turn", () => {
-  const source = new URL("../../collections/provider-harness.json", import.meta.url);
-  const collection = JSON.parse(readFileSync(source, "utf8"));
+  const collection = assembleProviderHarness();
   const entries = walkRequests(collection.item);
   const index = buildProducerIndex(entries);
   const unlinked = [];

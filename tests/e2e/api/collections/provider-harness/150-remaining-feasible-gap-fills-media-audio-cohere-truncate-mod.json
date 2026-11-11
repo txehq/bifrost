@@ -1,0 +1,311 @@
+{
+  "name": "150. Remaining feasible gap fills (media, audio, cohere truncate, model garden pins)",
+  "description": "Backlog gaps that need no new fixtures beyond tests/e2e/api/fixtures/sample.png: OpenAI image edit and variation (multipart), audio output, Azure Responses web_search_preview, Bedrock Cohere embed-v4 truncate (valid RIGHT with max_tokens; v3 value END as [EXPECT-4XX]), DeepSeek on Vertex. [PREVIEW] marks rows gated on model access or region quota: dall-e-2 availability, gpt-4o-audio-preview on the key, an Azure web-search deployment, and the exact DeepSeek MaaS model id (unpinned until a live run).",
+  "item": [
+    {
+      "name": "150.1 openai/gpt-image-1 image edit multipart returns image data (image edit)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('image data returned', function () { pm.expect(j.data && j.data[0] && (j.data[0].b64_json || j.data[0].url), pm.response.text().slice(0, 300)).to.be.a('string').and.not.empty; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "openai/gpt-image-1",
+              "type": "text"
+            },
+            {
+              "key": "prompt",
+              "value": "make the background a deep blue",
+              "type": "text"
+            },
+            {
+              "key": "image",
+              "src": "tests/e2e/api/fixtures/sample.png",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
+          ]
+        }
+      }
+    },
+    {
+      "name": "150.2 [PREVIEW] openai/dall-e-2 image variation multipart returns image data (image variation)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('image data returned', function () { pm.expect(j.data && j.data[0] && (j.data[0].b64_json || j.data[0].url), pm.response.text().slice(0, 300)).to.be.a('string').and.not.empty; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "openai/dall-e-2",
+              "type": "text"
+            },
+            {
+              "key": "n",
+              "value": "1",
+              "type": "text"
+            },
+            {
+              "key": "image",
+              "src": "tests/e2e/api/fixtures/sample.png",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/variations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "variations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "150.3 [PREVIEW] openai/gpt-4o-audio-preview audio output modality returns audio data (audio output)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-audio-preview\",\n  \"modalities\": [\n    \"text\",\n    \"audio\"\n  ],\n  \"audio\": {\n    \"voice\": \"alloy\",\n    \"format\": \"wav\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in one short sentence.\"\n    }\n  ],\n  \"max_tokens\": 128\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var m = (j.choices && j.choices[0] && j.choices[0].message) || {};",
+              "pm.test('message carries audio data and a transcript', function () {",
+              "  pm.expect(m.audio && m.audio.data, 'no audio.data: ' + pm.response.text().slice(0, 400)).to.be.a('string').and.not.empty;",
+              "  pm.expect(m.audio.transcript || '', 'no transcript').to.not.equal('');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "150.4 [PREVIEW] azure/gpt-4o responses web_search_preview emits a web_search_call (azure web search)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"azure/gpt-4o\",\n  \"input\": \"Search the web: who won the most recent FIFA World Cup?\",\n  \"tools\": [\n    {\n      \"type\": \"web_search_preview\"\n    }\n  ],\n  \"max_output_tokens\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('output includes a web_search_call item', function () {",
+              "  pm.expect((j.output || []).some(function (o) { return o.type === 'web_search_call'; }), 'no web_search_call: ' + pm.response.text().slice(0, 800)).to.equal(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "150.5 bedrock cohere embed-v4 native invoke accepts truncate RIGHT with max_tokens (cohere truncate)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"texts\": [\n    \"the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog\"\n  ],\n  \"input_type\": \"search_document\",\n  \"truncate\": \"RIGHT\",\n  \"max_tokens\": 64,\n  \"embedding_types\": [\n    \"float\"\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/global.cohere.embed-v4:0/invoke",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "global.cohere.embed-v4:0",
+            "invoke"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('one float vector came back for the over-length text', function () {",
+              "  var f = j.embeddings && (j.embeddings.float || j.embeddings);",
+              "  pm.expect(f, pm.response.text().slice(0, 300)).to.be.an('array');",
+              "  pm.expect(f.length, pm.response.text().slice(0, 300)).to.equal(1);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "150.6 [EXPECT-4XX] bedrock cohere embed-v4 rejects an unknown truncate value MIDDLE (cohere truncate)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"texts\": [\n    \"truncate enum probe\"\n  ],\n  \"input_type\": \"search_document\",\n  \"truncate\": \"MIDDLE\",\n  \"embedding_types\": [\n    \"float\"\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/global.cohere.embed-v4:0/invoke",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "global.cohere.embed-v4:0",
+            "invoke"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('AWS names the bad truncate value', function () { var t = pm.response.text(); pm.expect(t, 'rejection does not mention truncate/validation: ' + t).to.match(/truncate|validation|invalid|enum/i); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "150.7 [PREVIEW] vertex/deepseek-ai/deepseek-v3.2-maas basic chat (deepseek on vertex)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/deepseek-ai/deepseek-v3.2-maas\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('deepseek answered', function () { pm.expect(j.choices[0].message.content || '', pm.response.text()).to.not.equal(''); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

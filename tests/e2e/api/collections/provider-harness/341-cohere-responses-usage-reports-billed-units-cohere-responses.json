@@ -1,0 +1,55 @@
+{
+  "name": "341. Cohere Responses usage reports billed units (cohere responses billed units)",
+  "description": "TXE-6986. Cohere through /v1/responses settles on billed_units like chat (folder 323): when billed_units carries input and output tokens they fill input_tokens and output_tokens, and the processed usage.tokens go to usage.processed_tokens{prompt_tokens, completion_tokens}, the same object as on chat usage. The streamed response.completed maps the same way (Go tests in core/providers/cohere).",
+  "item": [
+    {
+      "name": "/v1/responses - input_tokens and output_tokens are Cohere's billed units, processed counts in processed_tokens - cohere/command-a-03-2025 - TXE-6986",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var u = pm.response.json().usage || {};",
+              "pm.test('usage carries billed counts and processed_tokens (TXE-6986)', function () {",
+              "  pm.expect(u.input_tokens, 'usage: ' + JSON.stringify(u)).to.be.above(0);",
+              "  pm.expect(u.output_tokens, 'usage: ' + JSON.stringify(u)).to.be.above(0);",
+              "  pm.expect(u.total_tokens).to.eql(u.input_tokens + u.output_tokens);",
+              "  pm.expect(u.processed_tokens, 'processed_tokens missing: ' + JSON.stringify(u)).to.be.an('object');",
+              "  // Cohere bills fewer input tokens than it processes (the system preamble and template are not billed).",
+              "  pm.expect(u.processed_tokens.prompt_tokens, 'usage: ' + JSON.stringify(u)).to.be.at.least(u.input_tokens);",
+              "  pm.expect(u.processed_tokens.completion_tokens, 'usage: ' + JSON.stringify(u)).to.be.above(0);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"cohere/command-a-03-2025\",\n  \"max_output_tokens\": 64,\n  \"instructions\": \"You are a terse assistant. Answer in one short sentence.\",\n  \"input\": \"Name the largest planet in the solar system.\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    }
+  ]
+}

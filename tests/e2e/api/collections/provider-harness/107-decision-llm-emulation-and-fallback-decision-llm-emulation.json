@@ -1,0 +1,230 @@
+{
+  "name": "107. Decision LLM emulation and fallback (decision-llm-emulation)",
+  "item": [
+    {
+      "name": "/v1/decisions - LLM emulates decision as primary - openai/gpt-4o-mini",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('emulated decision succeeds', function () {",
+              "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "var body = pm.response.json();",
+              "pm.test('every question emulated into a typed answer with confidence', function () {",
+              "    pm.expect(body.answers.is_frustrated.kind).to.eql('noul');",
+              "    pm.expect(body.answers.is_frustrated.value).to.be.a('number');",
+              "    pm.expect(body.answers.is_frustrated.value).to.be.at.least(0);",
+              "    pm.expect(body.answers.is_frustrated.value).to.be.at.most(1);",
+              "    pm.expect(body.answers.is_frustrated.confidence).to.be.a('number');",
+              "    pm.expect(['billing', 'bug', 'other']).to.include(body.answers.category.value);",
+              "    pm.expect(body.answers.urgency.kind).to.eql('score');",
+              "    pm.expect(body.answers.urgency.value).to.be.a('number');",
+              "});",
+              "pm.test('resolved by the LLM provider with usage', function () {",
+              "    pm.expect(body.extra_fields.provider).to.eql('openai');",
+              "    pm.expect(body.usage.prompt_tokens).to.be.above(0);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-compat",
+            "value": "[\"convert_decision_to_responses\"]"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/decisions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "decisions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"state\": \"Customer: I was double charged and support ignored my emails. I want a refund now or I cancel.\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges and refunds\",\n        \"bug\": \"product defects\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"Rate how urgently this needs a human reply\",\n      \"criteria\": [\n        \"low\",\n        \"medium\",\n        \"high\"\n      ]\n    }\n  }\n}"
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "/v1/decisions - emulation forwards criteria descriptions to the model (opaque option codes) - openai/gpt-4o-mini",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('emulated decision with structured criteria succeeds', function () {",
+              "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "var body = pm.response.json();",
+              "pm.test('criteria descriptions reached the model: opaque code resolved via its rubric', function () {",
+              "    // The option keys are meaningless codes; only the criteria descriptions",
+              "    // say what they mean. Without the descriptions on the wire the model can",
+              "    // only guess among opt_a/opt_b/opt_c/opt_d, so this pins the forwarding.",
+              "    pm.expect(body.answers.pick.kind, 'body: ' + pm.response.text()).to.eql('choice');",
+              "    pm.expect(body.answers.pick.value).to.eql('opt_a');",
+              "    pm.expect(body.answers.pick.probabilities, 'choice probabilities are a required response field').to.be.an('object');",
+              "});",
+              "pm.test('noul and structured-score questions answered in range', function () {",
+              "    pm.expect(body.answers.approve_review.kind).to.eql('noul');",
+              "    pm.expect(body.answers.approve_review.value).to.be.at.least(0.5);",
+              "    pm.expect(body.answers.urgency.kind).to.eql('score');",
+              "    pm.expect(body.answers.urgency.value).to.be.a('number');",
+              "    // The legend echoes each level's description verbatim - structured",
+              "    // levels come back as objects/arrays, not stringified.",
+              "    pm.expect(body.answers.urgency.legend['0']).to.eql('can wait a week');",
+              "    pm.expect(body.answers.urgency.legend['1']).to.deep.eql({level: 'should be answered soon'});",
+              "    pm.expect(body.answers.urgency.legend['2']).to.deep.eql(['needs a reply today', 'churn risk']);",
+              "    pm.expect(body.answers.urgency.probabilities, 'score probabilities are a required response field').to.be.an('object');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-compat",
+            "value": "[\"convert_decision_to_responses\"]"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/decisions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "decisions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"state\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": {\n    \"approve_review\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Should this ticket get a billing review?\",\n      \"criteria\": {\n        \"true\": \"the customer reports a concrete billing error\",\n        \"false\": [\n          \"no billing problem is described\",\n          \"general inquiry\"\n        ]\n      }\n    },\n    \"pick\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category. The option names are opaque codes; use the criteria descriptions to decide.\",\n      \"criteria\": {\n        \"opt_a\": {\n          \"rubric\": \"charges and refunds\"\n        },\n        \"opt_b\": \"product defects\",\n        \"opt_c\": null,\n        \"opt_d\": [\n          \"installation help\",\n          \"how-to setup questions\"\n        ]\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"Rate how urgently this needs a human reply\",\n      \"criteria\": [\n        \"can wait a week\",\n        {\n          \"level\": \"should be answered soon\"\n        },\n        [\n          \"needs a reply today\",\n          \"churn risk\"\n        ]\n      ]\n    }\n  }\n}"
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "/v1/decisions - failing primary falls through to LLM fallback - openai",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('fallback LLM emulated the decision', function () {",
+              "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "var body = pm.response.json();",
+              "pm.test('answer came back from the fallback', function () {",
+              "    pm.expect(body.answers.is_confirmation.kind).to.eql('noul');",
+              "    pm.expect(body.answers.is_confirmation.value).to.be.a('number');",
+              "    pm.expect(body.extra_fields.provider).to.eql('openai');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-compat",
+            "value": "[\"convert_decision_to_responses\"]"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/decisions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "decisions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/nonexistent-model-xyz\",\n  \"fallbacks\": [\n    \"openai/gpt-4o-mini\"\n  ],\n  \"state\": \"Reply: sounds good, see you at 3pm.\",\n  \"questions\": {\n    \"is_confirmation\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does this confirm the meeting?\"\n    }\n  }\n}"
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "/typesafe/v1/systemone - LLM emulates in native shape - openai/gpt-4o-mini",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('native systemone emulation succeeds', function () {",
+              "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "var body = pm.response.json();",
+              "pm.test('native answer shape from an emulated turn', function () {",
+              "    pm.expect(body.answers.is_phishing.type).to.eql('noul');",
+              "    pm.expect(body.answers.is_phishing.noul).to.be.a('number');",
+              "    pm.expect(body.usage.input_tokens).to.be.above(0);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-compat",
+            "value": "[\"convert_decision_to_responses\"]"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/typesafe/v1/systemone",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "typesafe",
+            "v1",
+            "systemone"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"state\": \"Email: verify your password at bank-secure.xyz within 24h.\",\n  \"questions\": {\n    \"is_phishing\": {\n      \"type\": \"noul\",\n      \"instructions\": \"Is this phishing?\"\n    }\n  }\n}"
+        }
+      },
+      "response": []
+    }
+  ]
+}

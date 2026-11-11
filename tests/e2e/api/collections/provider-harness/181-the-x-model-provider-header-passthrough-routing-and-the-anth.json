@@ -1,0 +1,236 @@
+{
+  "name": "181. The x-model-provider header: passthrough routing and the Anthropic file and batch routes (model-provider-header)",
+  "description": "Wire-level pins for the x-model-provider header outside the model string. On the catch-all passthrough routes it may only restate the route's own provider: it no longer redirects a caller-shaped request to another provider's keys and upstream. On the Anthropic file and batch routes it picks the provider the operation runs against. Folder 9 covers an unknown value and the path guard on the passthrough routes.\n\nRows: (1) /openai_passthrough with x-model-provider: openai is served by openai, and the log row records the passthrough there; (2) naming any other provider, whether anthropic or the profile's OpenAI-based custom provider openai_pc_auto, is refused with 400 before anything is dispatched; (3) and (4) an unknown provider on the Anthropic files and message batches routes is refused with 400 naming it. Run with FEATURE=\"model-provider-header\".",
+  "item": [
+    {
+      "name": "openai x-model-provider naming the passthrough route's own provider is served by it, on its keys - model-provider-header",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "pm.collectionVariables.set('mph1ReqId', 'model-provider-header-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var BASE = pm.variables.get('baseUrl');",
+              "// The log row is written by the batching writer, so it is polled until it has settled.",
+              "function logRow(reqId, cb) {",
+              "  var tries = 0;",
+              "  (function poll() {",
+              "    pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(reqId), method: 'GET' }, function (err, res) {",
+              "      var j = null; if (!err && res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+              "      if (j && j.status && j.status !== 'processing') { return cb(j); }",
+              "      if (++tries < 15) { return setTimeout(poll, 1000); }",
+              "      cb(null);",
+              "    });",
+              "  })();",
+              "}",
+              "var text = pm.response.text();",
+              "var h = function (name) { return pm.response.headers.get(name); };",
+              "var reqId = pm.collectionVariables.get('mph1ReqId');",
+              "pm.test('the route’s own provider served the passthrough', function () {",
+              "  pm.expect(h('x-bifrost-provider'), text.slice(0, 400)).to.eql('openai');",
+              "  pm.expect(h('x-bifrost-routing-info-requested-provider'), text.slice(0, 400)).to.eql('openai');",
+              "});",
+              "logRow(reqId, function (j) {",
+              "  pm.test('the log row records a passthrough served by openai', function () {",
+              "    pm.expect(j, 'log ' + reqId + ' never settled').to.be.an('object');",
+              "    pm.expect(j.object, JSON.stringify(j).slice(0, 400)).to.eql('chat_completion');",
+              "    pm.expect(j.is_passthrough, JSON.stringify(j).slice(0, 400)).to.eql(true);",
+              "    pm.expect(j.provider).to.eql('openai');",
+              "  });",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-model-provider",
+            "value": "openai"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{mph1ReqId}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai_passthrough",
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] openai x-model-provider naming any other provider on a passthrough route is refused before dispatch - model-provider-header",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var MISMATCH = 'provider does not match the passthrough route: expected openai';",
+              "var errorOf = function (res) { var j = {}; try { j = res.json() || {}; } catch (e) { j = {}; } return (j.error || {}).message; };",
+              "pm.test('a standard provider other than the route’s is refused, and nothing is dispatched', function () {",
+              "  pm.expect(errorOf(pm.response), pm.response.text()).to.eql(MISMATCH);",
+              "  pm.expect(pm.response.headers.get('x-bifrost-provider'), pm.response.text()).to.equal(undefined);",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/openai_passthrough/v1/chat/completions', method: 'POST', header: { 'Content-Type': 'application/json', 'x-model-provider': 'openai_pc_auto' }, body: { mode: 'raw', raw: JSON.stringify({\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":3}) } }, function (err, res) {",
+              "  pm.test('a custom provider built on the route’s provider is refused too: the header must name the route’s provider exactly', function () {",
+              "    pm.expect(res && res.code, err ? String(err) : res.text()).to.eql(400);",
+              "    pm.expect(errorOf(res), res.text()).to.eql(MISMATCH);",
+              "  });",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-model-provider",
+            "value": "anthropic"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai_passthrough",
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] openai an unknown x-model-provider on the Anthropic files route is refused - model-provider-header",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('the unknown provider is refused by name on the files route', function () {",
+              "  var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+              "  pm.expect((j.error || {}).type, pm.response.text()).to.eql('invalid_request_error');",
+              "  pm.expect((j.error || {}).message, pm.response.text()).to.include('bifrost-harness-unknown-provider').and.to.include('not found');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "anthropic-beta",
+            "value": "files-api-2025-04-14"
+          },
+          {
+            "key": "x-model-provider",
+            "value": "bifrost-harness-unknown-provider"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/files",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "files"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] openai an unknown x-model-provider on the Anthropic message batches route is refused - model-provider-header",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('the unknown provider is refused by name on the message batches route', function () {",
+              "  var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+              "  pm.expect((j.error || {}).type, pm.response.text()).to.eql('invalid_request_error');",
+              "  pm.expect((j.error || {}).message, pm.response.text()).to.include('bifrost-harness-unknown-provider').and.to.include('not found');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "anthropic-beta",
+            "value": "files-api-2025-04-14"
+          },
+          {
+            "key": "x-model-provider",
+            "value": "bifrost-harness-unknown-provider"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages",
+            "batches"
+          ]
+        }
+      }
+    }
+  ]
+}

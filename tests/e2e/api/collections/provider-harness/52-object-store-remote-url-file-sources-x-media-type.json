@@ -1,0 +1,662 @@
+{
+  "name": "52. Object-store & remote URL file sources x media type",
+  "description": "Pins how a URL-sourced file reaches the provider, which depends on the scheme AND the target model family - not the scheme alone.\n\ngs:// on the Gemini family is forwarded as fileData.fileUri: it is the documented form (the v1 aiplatform discovery doc defines fileUri as \"The URI of the file in Google Cloud Storage\"), it resolves under the caller's own project IAM with no crawler involved, and it keeps large media out of bifrost's 25 MiB inline path - which is what makes video input viable at all. Regression guarded: gs:// used to be handed to the http fetcher and died with 'unsupported URL scheme \"gs\" (only http/https allowed)'.\n\ngs:// on the Anthropic family is downloaded from Cloud Storage with the request key's Google credentials and inlined, because Claude on Google Cloud accepts base64 sources only (\"Input sources (URL sources for images and documents, Files API)\" is listed under Features not supported).\n\nhttps stays inlined for every family. Forwarding it was measured here and Vertex rejected all six 47.10 endpoint shapes with \"Cannot fetch content from the provided URL ... Status: URL_REJECTED-REJECTED_FC_TOO_MANY_PENDING\" after ~59s each.\n\nA scheme bifrost cannot download is forwarded verbatim rather than rejected here: bifrost inlines only what it can fetch, and whether a source is usable is the provider's call - an answer that stays correct as provider capabilities change. So s3:// reaches Vertex and Vertex rejects it, while on Bedrock Converse it IS resolvable and travels as the s3Location union member of DocumentSource/ImageSource. These rows assert only that the rejection comes from the provider, never from a bifrost-side scheme guard.\n\nMedia types are chosen per model: Gemini covers document/image/audio/video, Claude only document/image. Images use an image_url block, because a file block maps to an Anthropic document block whose source accepts application/pdf only.",
+  "item": [
+    {
+      "name": "52.A1 gs:// document -> vertex/gemini-2.5-flash",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_url\": \"gs://cloud-samples-data/generative-ai/pdf/1706.03762v7.pdf\",\n            \"file_type\": \"application/pdf\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Summarize this document in one sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+              "// collection-level 2xx test own it and skip the feature assertion.",
+              "var j; try { j = pm.response.json(); } catch (e) {",
+              "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+              "var txt = (((j.choices || [])[0] || {}).message || {}).content || '';",
+              "pm.test('document reached the model', function () {",
+              "  pm.expect(String(txt).length, 'empty reply').to.be.above(15);",
+              "  pm.expect(String(txt), 'model reported it could not read the document: ' +",
+              "    String(txt).slice(0, 300))",
+              "    .to.not.match(/unable to (read|access|open)|can.?t (read|access|open)|cannot (read|access|open)|(there (is|was)|received|see) no (document|image|audio|video)|didn.?t receive/i);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "52.A2 gs:// image -> vertex/gemini-2.5-flash",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"gs://cloud-samples-data/generative-ai/image/scones.jpg\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Describe this in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+              "// collection-level 2xx test own it and skip the feature assertion.",
+              "var j; try { j = pm.response.json(); } catch (e) {",
+              "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+              "var txt = (((j.choices || [])[0] || {}).message || {}).content || '';",
+              "pm.test('image reached the model', function () {",
+              "  pm.expect(String(txt).length, 'empty reply').to.be.above(15);",
+              "  pm.expect(String(txt), 'model reported it could not read the image: ' +",
+              "    String(txt).slice(0, 300))",
+              "    .to.not.match(/unable to (read|access|open)|can.?t (read|access|open)|cannot (read|access|open)|(there (is|was)|received|see) no (document|image|audio|video)|didn.?t receive/i);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "52.A3 gs:// audio -> vertex/gemini-2.5-flash",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_url\": \"gs://cloud-samples-data/generative-ai/audio/pixel.mp3\",\n            \"file_type\": \"audio/mpeg\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Describe this in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+              "// collection-level 2xx test own it and skip the feature assertion.",
+              "var j; try { j = pm.response.json(); } catch (e) {",
+              "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+              "var txt = (((j.choices || [])[0] || {}).message || {}).content || '';",
+              "pm.test('audio reached the model', function () {",
+              "  pm.expect(String(txt).length, 'empty reply').to.be.above(15);",
+              "  pm.expect(String(txt), 'model reported it could not read the audio: ' +",
+              "    String(txt).slice(0, 300))",
+              "    .to.not.match(/unable to (read|access|open)|can.?t (read|access|open)|cannot (read|access|open)|(there (is|was)|received|see) no (document|image|audio|video)|didn.?t receive/i);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "52.A4 gs:// video -> vertex/gemini-2.5-flash",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_url\": \"gs://cloud-samples-data/generative-ai/video/animals.mp4\",\n            \"file_type\": \"video/mp4\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Describe this in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+              "// collection-level 2xx test own it and skip the feature assertion.",
+              "var j; try { j = pm.response.json(); } catch (e) {",
+              "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+              "var txt = (((j.choices || [])[0] || {}).message || {}).content || '';",
+              "pm.test('video reached the model', function () {",
+              "  pm.expect(String(txt).length, 'empty reply').to.be.above(15);",
+              "  pm.expect(String(txt), 'model reported it could not read the video: ' +",
+              "    String(txt).slice(0, 300))",
+              "    .to.not.match(/unable to (read|access|open)|can.?t (read|access|open)|cannot (read|access|open)|(there (is|was)|received|see) no (document|image|audio|video)|didn.?t receive/i);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "52.B1 gs:// document -> vertex/claude-opus-4-7 (fetched from Cloud Storage, inlined)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/claude-opus-4-7\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_url\": \"gs://cloud-samples-data/generative-ai/pdf/1706.03762v7.pdf\",\n            \"file_type\": \"application/pdf\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Summarize this document in one sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+              "// collection-level 2xx test own it and skip the feature assertion.",
+              "var j; try { j = pm.response.json(); } catch (e) {",
+              "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+              "var txt = (((j.choices || [])[0] || {}).message || {}).content || '';",
+              "pm.test('document reached the model', function () {",
+              "  pm.expect(String(txt).length, 'empty reply').to.be.above(15);",
+              "  pm.expect(String(txt), 'model reported it could not read the document: ' +",
+              "    String(txt).slice(0, 300))",
+              "    .to.not.match(/unable to (read|access|open)|can.?t (read|access|open)|cannot (read|access|open)|(there (is|was)|received|see) no (document|image|audio|video)|didn.?t receive/i);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "52.B2 gs:// image -> vertex/claude-opus-4-7 (fetched from Cloud Storage, inlined)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/claude-opus-4-7\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"gs://cloud-samples-data/generative-ai/image/scones.jpg\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Describe this in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+              "// collection-level 2xx test own it and skip the feature assertion.",
+              "var j; try { j = pm.response.json(); } catch (e) {",
+              "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+              "var txt = (((j.choices || [])[0] || {}).message || {}).content || '';",
+              "pm.test('image reached the model', function () {",
+              "  pm.expect(String(txt).length, 'empty reply').to.be.above(15);",
+              "  pm.expect(String(txt), 'model reported it could not read the image: ' +",
+              "    String(txt).slice(0, 300))",
+              "    .to.not.match(/unable to (read|access|open)|can.?t (read|access|open)|cannot (read|access|open)|(there (is|was)|received|see) no (document|image|audio|video)|didn.?t receive/i);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "52.C1 https:// audio -> vertex/gemini-2.5-flash (inlined, not forwarded)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_url\": \"https://storage.googleapis.com/cloud-samples-data/generative-ai/audio/pixel.mp3\",\n            \"file_type\": \"audio/mpeg\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Describe this in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+              "// collection-level 2xx test own it and skip the feature assertion.",
+              "var j; try { j = pm.response.json(); } catch (e) {",
+              "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+              "var txt = (((j.choices || [])[0] || {}).message || {}).content || '';",
+              "pm.test('audio reached the model', function () {",
+              "  pm.expect(String(txt).length, 'empty reply').to.be.above(15);",
+              "  pm.expect(String(txt), 'model reported it could not read the audio: ' +",
+              "    String(txt).slice(0, 300))",
+              "    .to.not.match(/unable to (read|access|open)|can.?t (read|access|open)|cannot (read|access|open)|(there (is|was)|received|see) no (document|image|audio|video)|didn.?t receive/i);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "52.C2 https:// video -> vertex/gemini-2.5-flash (inlined, not forwarded)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_url\": \"https://storage.googleapis.com/cloud-samples-data/generative-ai/video/animals.mp4\",\n            \"file_type\": \"video/mp4\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Describe this in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+              "// collection-level 2xx test own it and skip the feature assertion.",
+              "var j; try { j = pm.response.json(); } catch (e) {",
+              "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+              "var txt = (((j.choices || [])[0] || {}).message || {}).content || '';",
+              "pm.test('video reached the model', function () {",
+              "  pm.expect(String(txt).length, 'empty reply').to.be.above(15);",
+              "  pm.expect(String(txt), 'model reported it could not read the video: ' +",
+              "    String(txt).slice(0, 300))",
+              "    .to.not.match(/unable to (read|access|open)|can.?t (read|access|open)|cannot (read|access|open)|(there (is|was)|received|see) no (document|image|audio|video)|didn.?t receive/i);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-4XX] 52.D1 s3:// document -> vertex/gemini-2.5-flash (forwarded, provider rejects)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_url\": \"s3://bifrost-harness-no-such-bucket/doc.pdf\",\n            \"file_type\": \"application/pdf\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Summarize this document in one sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 64\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('s3:// is forwarded to vertex, not rejected by bifrost', function () {",
+              "  pm.expect(txt, 'bifrost rejected the scheme instead of forwarding it: ' + txt.slice(0, 300))",
+              "    .to.not.match(/unsupported URL scheme|only http\\/https allowed/i);",
+              "  var j; try { j = JSON.parse(txt); } catch (e) { return; }",
+              "  pm.expect(j.is_bifrost_error, 'the rejection must come from vertex, not bifrost: ' + txt.slice(0, 300))",
+              "    .to.not.eql(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-4XX] 52.E1 s3:// document -> bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 (refused: model cannot read s3Location)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_url\": \"s3://bifrost-harness-no-such-bucket/doc.pdf\",\n            \"file_type\": \"application/pdf\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Summarize this document in one sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 64\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "// Converse validates the s3Location union, then translates to the model's native format,",
+              "// where Anthropic has no S3 source type - the member is dropped and the model answers",
+              "// 'document.source.type: Field required', naming a field Converse does not have. That is",
+              "// never a working request, so Bifrost refuses it here with the way out.",
+              "pm.test('s3:// document to an Anthropic model is refused by bifrost, with the fix named', function () {",
+              "  pm.expect(pm.response.code, 'expected 400 from bifrost, got ' + pm.response.code + ': ' + txt.slice(0, 300)).to.eql(400);",
+              "  pm.expect(txt, 'the refusal must name the model limitation: ' + txt.slice(0, 300))",
+              "    .to.match(/does not support s3:\\/\\/ references/i);",
+              "  pm.expect(txt, 'a refusal that does not say what to send instead leaves the caller as stuck as the raw 400 did: ' + txt.slice(0, 300))",
+              "    .to.match(/file_data|presign/i);",
+              "  pm.expect(txt, 'the block must never reach the model, so its source.type complaint must be gone: ' + txt.slice(0, 300))",
+              "    .to.not.match(/source\\.type/i);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-4XX] 52.E2 s3:// image -> bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 (refused: model cannot read s3Location)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"s3://bifrost-harness-no-such-bucket/shot.png\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Describe this in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 64\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('s3:// image to an Anthropic model is refused by bifrost, with the fix named', function () {",
+              "  pm.expect(pm.response.code, 'expected 400 from bifrost, got ' + pm.response.code + ': ' + txt.slice(0, 300)).to.eql(400);",
+              "  pm.expect(txt, 'the refusal must name the model limitation: ' + txt.slice(0, 300))",
+              "    .to.match(/does not support s3:\\/\\/ references/i);",
+              "  pm.expect(txt, 'the image hint differs from the document one and must reach the caller: ' + txt.slice(0, 300))",
+              "    .to.match(/data: URL|presign/i);",
+              "  pm.expect(txt, 'the model gate runs ahead of format resolution, so this is not a format complaint: ' + txt.slice(0, 300))",
+              "    .to.not.match(/cannot determine image format/i);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-4XX] 52.E3 s3:// document -> bedrock/us.amazon.nova-lite-v1:0 (forwarded as s3Location, bucket rejects)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/us.amazon.nova-lite-v1:0\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_url\": \"s3://bifrost-harness-no-such-bucket/doc.pdf\",\n            \"file_type\": \"application/pdf\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Summarize this document in one sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 64\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "var body = {};",
+              "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "var wire = JSON.stringify(rr || null);",
+              "// The bucket does not exist, so the upstream call fails either way. What this row pins is",
+              "// the OUTBOUND payload, which is deterministic: asserting on the error text would only",
+              "// prove what AWS happens to say this week. 52.E1 is the same request to a model that",
+              "// cannot read s3Location, and must be refused by Bifrost instead of reaching Converse.",
+              "pm.test('s3:// document reaches Converse as s3Location for a model that reads it', function () {",
+              "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+              "  var doc = null;",
+              "  (rr.messages || []).forEach(function (m) { (m.content || []).forEach(function (b) { if (b && b.document) { doc = b.document; } }); });",
+              "  pm.expect(doc, 'no document block on the wire: ' + wire.slice(0, 400)).to.be.an('object');",
+              "  var src = doc.source || {};",
+              "  var srcTxt = JSON.stringify(src).slice(0, 400);",
+              "  // DocumentSource is a union and s3Location is an S3Location object whose uri member is",
+              "  // required, so a bare string there is refused by Converse while still satisfying a",
+              "  // substring search for the key and for the URI independently.",
+              "  pm.expect(src.s3Location, 'the document source must be a nested s3Location object: ' + srcTxt).to.be.an('object');",
+              "  pm.expect(src.s3Location.uri, 'the object URI must survive verbatim on the required uri member: ' + srcTxt)",
+              "    .to.eql('s3://bifrost-harness-no-such-bucket/doc.pdf');",
+              "  pm.expect(src.bytes === undefined || src.bytes === null, 'nothing is downloaded on the s3Location path, so no base64 bytes member: ' + srcTxt).to.be.true;",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-4XX] 52.E4 s3:// image -> bedrock/us.amazon.nova-lite-v1:0 (forwarded as s3Location, bucket rejects)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/us.amazon.nova-lite-v1:0\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"s3://bifrost-harness-no-such-bucket/shot.png\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Describe this in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 64\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "var body = {};",
+              "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "var wire = JSON.stringify(rr || null);",
+              "pm.test('s3:// image reaches Converse as s3Location for a model that reads it', function () {",
+              "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+              "  var img = null;",
+              "  (rr.messages || []).forEach(function (m) { (m.content || []).forEach(function (b) { if (b && b.image) { img = b.image; } }); });",
+              "  pm.expect(img, 'no image block on the wire: ' + wire.slice(0, 400)).to.be.an('object');",
+              "  var src = img.source || {};",
+              "  var srcTxt = JSON.stringify(src).slice(0, 400);",
+              "  // ImageSource is a union and s3Location is an S3Location object whose uri member is",
+              "  // required, so a bare string there is refused by Converse while still satisfying a",
+              "  // substring search for the key and for the URI independently.",
+              "  pm.expect(src.s3Location, 'the image source must be a nested s3Location object: ' + srcTxt).to.be.an('object');",
+              "  pm.expect(src.s3Location.uri, 'the object URI must survive verbatim on the required uri member: ' + srcTxt)",
+              "    .to.eql('s3://bifrost-harness-no-such-bucket/shot.png');",
+              "  pm.expect(src.bytes === undefined || src.bytes === null, 'nothing is downloaded on the s3Location path, so no base64 bytes member: ' + srcTxt).to.be.true;",
+              "  pm.expect(img.format, 'the .png key is the only format signal on this path, and Converse requires one: ' + wire.slice(0, 400)).to.eql('png');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

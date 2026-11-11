@@ -1,0 +1,506 @@
+{
+  "name": "167. DeepSeek served-model pricing (served-model)",
+  "description": "DeepSeek keeps accepting retired model ids (deepseek-v4-flash) but serves deepseek-flash behind them and bills at its price. The DeepSeek provider stamps the served model on routing_info.server_side_fallback_model, which pricing resolves ahead of the requested model. Two sources feed it: on the default (OpenAI-compatible) endpoint the response `model` names deepseek-flash, so the stamp must equal the response model; DeepSeek's Anthropic endpoint echoes the requested id back, so there the stamp comes from the datasheet entry's server_side_model and must equal deepseek-flash. The Anthropic rows go through the harness profile's deepseek-v4-flash-anthropic alias (use_anthropic_endpoints). Each endpoint is pinned on chat and Responses, non-streaming (body field plus the x-bifrost-routing-info-server-side-fallback-model header) and streaming (the terminal usage chunk / response.completed event, which is what pricing reads). The default-endpoint text completion stream case pins the final chunk, which Bifrost builds with the requested id and must still carry the served model.",
+  "item": [
+    {
+      "name": "deepseek/deepseek-v4-flash chat non-stream reports served model",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var text = pm.response.text();",
+              "var body = pm.response.json();",
+              "var model = body.model;",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('DeepSeek served a newer model than requested', function () {",
+              "  pm.expect(model, 'served model: ' + text).to.be.a('string').and.not.eql('deepseek-v4-flash');",
+              "});",
+              "pm.test('server_side_fallback_model names the served model', function () {",
+              "  pm.expect(ri.server_side_fallback_model, 'pricing keys on this field: ' + text).to.eql(model);",
+              "});",
+              "pm.test('served-model header matches routing_info', function () {",
+              "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-server-side-fallback-model'), text).to.eql(ri.server_side_fallback_model);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "deepseek/deepseek-v4-flash chat stream reports served model",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var text = pm.response.text();",
+              "var target = null;",
+              "text.split('\\n').forEach(function (line) {",
+              "  if (line.indexOf('data: ') !== 0) { return; }",
+              "  var data = line.slice(6).trim();",
+              "  if (data === '[DONE]') { return; }",
+              "  var ev;",
+              "  try { ev = JSON.parse(data); } catch (e) { return; }",
+              "  if (ev.usage) { target = ev; }",
+              "});",
+              "pm.test('stream carried the usage chunk', function () {",
+              "  pm.expect(target, 'not found in stream: ' + text).to.not.eql(null);",
+              "});",
+              "var model = (target || {}).model;",
+              "var ri = ((target || {}).extra_fields || {}).routing_info || {};",
+              "pm.test('DeepSeek served a newer model than requested', function () {",
+              "  pm.expect(model, 'served model: ' + text).to.be.a('string').and.not.eql('deepseek-v4-flash');",
+              "});",
+              "pm.test('server_side_fallback_model names the served model', function () {",
+              "  pm.expect(ri.server_side_fallback_model, 'pricing keys on this field: ' + text).to.eql(model);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "deepseek/deepseek-v4-flash text completion stream reports served model on the final chunk",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var text = pm.response.text();",
+              "var target = null;",
+              "text.split('\\n').forEach(function (line) {",
+              "  if (line.indexOf('data: ') !== 0) { return; }",
+              "  var data = line.slice(6).trim();",
+              "  if (data === '[DONE]') { return; }",
+              "  var ev;",
+              "  try { ev = JSON.parse(data); } catch (e) { return; }",
+              "  if (ev.usage) { target = ev; }",
+              "});",
+              "pm.test('stream carried the usage chunk', function () {",
+              "  pm.expect(target, 'not found in stream: ' + text).to.not.eql(null);",
+              "});",
+              "var model = (target || {}).model;",
+              "var ri = ((target || {}).extra_fields || {}).routing_info || {};",
+              "pm.test('DeepSeek served a newer model than requested', function () {",
+              "  pm.expect(model, 'served model: ' + text).to.be.a('string').and.not.eql('deepseek-v4-flash');",
+              "});",
+              "pm.test('server_side_fallback_model names the served model', function () {",
+              "  pm.expect(ri.server_side_fallback_model, 'pricing keys on this field: ' + text).to.eql(model);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"prompt\": \"Hello\",\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "deepseek/deepseek-v4-flash responses non-stream reports served model",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var text = pm.response.text();",
+              "var body = pm.response.json();",
+              "var model = body.model;",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('DeepSeek served a newer model than requested', function () {",
+              "  pm.expect(model, 'served model: ' + text).to.be.a('string').and.not.eql('deepseek-v4-flash');",
+              "});",
+              "pm.test('server_side_fallback_model names the served model', function () {",
+              "  pm.expect(ri.server_side_fallback_model, 'pricing keys on this field: ' + text).to.eql(model);",
+              "});",
+              "pm.test('served-model header matches routing_info', function () {",
+              "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-server-side-fallback-model'), text).to.eql(ri.server_side_fallback_model);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": \"Hello\",\n  \"max_output_tokens\": 16\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "deepseek/deepseek-v4-flash responses stream reports served model",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var text = pm.response.text();",
+              "var target = null;",
+              "text.split('\\n').forEach(function (line) {",
+              "  if (line.indexOf('data: ') !== 0) { return; }",
+              "  var data = line.slice(6).trim();",
+              "  if (data === '[DONE]') { return; }",
+              "  var ev;",
+              "  try { ev = JSON.parse(data); } catch (e) { return; }",
+              "  if (ev.type === 'response.completed' || ev.type === 'response.incomplete') { target = ev; }",
+              "});",
+              "pm.test('stream carried a terminal response.completed or response.incomplete event', function () {",
+              "  pm.expect(target, 'not found in stream: ' + text).to.not.eql(null);",
+              "});",
+              "var model = ((target || {}).response || {}).model;",
+              "var ri = ((target || {}).extra_fields || {}).routing_info || {};",
+              "pm.test('DeepSeek served a newer model than requested', function () {",
+              "  pm.expect(model, 'served model: ' + text).to.be.a('string').and.not.eql('deepseek-v4-flash');",
+              "});",
+              "pm.test('server_side_fallback_model names the served model', function () {",
+              "  pm.expect(ri.server_side_fallback_model, 'pricing keys on this field: ' + text).to.eql(model);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": \"Hello\",\n  \"max_output_tokens\": 16,\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "deepseek/deepseek-v4-flash-anthropic chat non-stream reports served model",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var text = pm.response.text();",
+              "var body = pm.response.json();",
+              "var model = body.model;",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('server_side_fallback_model comes from the datasheet server_side_model', function () {",
+              "  pm.expect(ri.server_side_fallback_model, 'DeepSeek\\'s Anthropic endpoint echoes deepseek-v4-flash back (model=' + model + '), so this needs server_side_model on the datasheet entry: ' + text).to.eql('deepseek-flash');",
+              "});",
+              "pm.test('served-model header matches routing_info', function () {",
+              "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-server-side-fallback-model'), text).to.eql(ri.server_side_fallback_model);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "deepseek/deepseek-v4-flash-anthropic chat stream reports served model",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var text = pm.response.text();",
+              "var target = null;",
+              "text.split('\\n').forEach(function (line) {",
+              "  if (line.indexOf('data: ') !== 0) { return; }",
+              "  var data = line.slice(6).trim();",
+              "  if (data === '[DONE]') { return; }",
+              "  var ev;",
+              "  try { ev = JSON.parse(data); } catch (e) { return; }",
+              "  if (ev.usage) { target = ev; }",
+              "});",
+              "pm.test('stream carried the usage chunk', function () {",
+              "  pm.expect(target, 'not found in stream: ' + text).to.not.eql(null);",
+              "});",
+              "var model = (target || {}).model;",
+              "var ri = ((target || {}).extra_fields || {}).routing_info || {};",
+              "pm.test('server_side_fallback_model comes from the datasheet server_side_model', function () {",
+              "  pm.expect(ri.server_side_fallback_model, 'DeepSeek\\'s Anthropic endpoint echoes deepseek-v4-flash back (model=' + model + '), so this needs server_side_model on the datasheet entry: ' + text).to.eql('deepseek-flash');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "deepseek/deepseek-v4-flash-anthropic responses non-stream reports served model",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var text = pm.response.text();",
+              "var body = pm.response.json();",
+              "var model = body.model;",
+              "var ri = (body.extra_fields || {}).routing_info || {};",
+              "pm.test('server_side_fallback_model comes from the datasheet server_side_model', function () {",
+              "  pm.expect(ri.server_side_fallback_model, 'DeepSeek\\'s Anthropic endpoint echoes deepseek-v4-flash back (model=' + model + '), so this needs server_side_model on the datasheet entry: ' + text).to.eql('deepseek-flash');",
+              "});",
+              "pm.test('served-model header matches routing_info', function () {",
+              "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-server-side-fallback-model'), text).to.eql(ri.server_side_fallback_model);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"input\": \"Hello\",\n  \"max_output_tokens\": 16\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "deepseek/deepseek-v4-flash-anthropic responses stream reports served model",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var text = pm.response.text();",
+              "var target = null;",
+              "text.split('\\n').forEach(function (line) {",
+              "  if (line.indexOf('data: ') !== 0) { return; }",
+              "  var data = line.slice(6).trim();",
+              "  if (data === '[DONE]') { return; }",
+              "  var ev;",
+              "  try { ev = JSON.parse(data); } catch (e) { return; }",
+              "  if (ev.type === 'response.completed' || ev.type === 'response.incomplete') { target = ev; }",
+              "});",
+              "pm.test('stream carried a terminal response.completed or response.incomplete event', function () {",
+              "  pm.expect(target, 'not found in stream: ' + text).to.not.eql(null);",
+              "});",
+              "var model = ((target || {}).response || {}).model;",
+              "var ri = ((target || {}).extra_fields || {}).routing_info || {};",
+              "pm.test('server_side_fallback_model comes from the datasheet server_side_model', function () {",
+              "  pm.expect(ri.server_side_fallback_model, 'DeepSeek\\'s Anthropic endpoint echoes deepseek-v4-flash back (model=' + model + '), so this needs server_side_model on the datasheet entry: ' + text).to.eql('deepseek-flash');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"input\": \"Hello\",\n  \"max_output_tokens\": 16,\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    }
+  ]
+}

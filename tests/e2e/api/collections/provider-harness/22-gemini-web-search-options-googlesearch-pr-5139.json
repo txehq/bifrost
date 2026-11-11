@@ -1,0 +1,119 @@
+{
+  "name": "22. Gemini web_search_options → googleSearch (PR #5139)",
+  "description": "PR #5139: OpenAI `web_search_options` on /v1/chat/completions is mapped to a Gemini GoogleSearch tool, and Gemini groundingMetadata is converted back into OpenAI-compatible `url_citation` annotations (non-streaming and streaming, deduplicated via GeminiStreamState). Before the fix the option was silently dropped on Gemini routes: the request returned 200 with no grounding and no annotations, so a plain status assertion cannot pin this. These cases require url_citation annotations to be present.",
+  "item": [
+    {
+      "name": "gemini/gemini-2.5-flash web_search_options → url_citation annotations (non-streaming) - PR #5139",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What was a major world news headline this week? Answer in one short sentence, using Google Search for current information.\"\n    }\n  ],\n  \"web_search_options\": {},\n  \"max_tokens\": 2000\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('web_search_options non-streaming: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var msg = pm.response.json().choices[0].message;",
+              "pm.test('web_search_options non-streaming: content non-empty', function () {",
+              "  pm.expect(msg.content, 'empty content: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+              "});",
+              "pm.test('web_search_options non-streaming: url_citation annotations present (dropped before PR #5139)', function () {",
+              "  pm.expect(msg.annotations, 'no annotations: ' + pm.response.text()).to.be.an('array').and.not.empty;",
+              "  msg.annotations.forEach(function (a) {",
+              "    pm.expect(a.type).to.eql('url_citation');",
+              "    pm.expect(a.url_citation && a.url_citation.url, 'annotation missing url').to.be.a('string').and.not.empty;",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "gemini/gemini-2.5-flash web_search_options → streamed url_citation annotations (SSE) - PR #5139",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What was a major world news headline this week? Answer in one short sentence, using Google Search for current information.\"\n    }\n  ],\n  \"web_search_options\": {},\n  \"stream\": true,\n  \"max_tokens\": 2000\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('web_search_options streaming: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var annotations = [];",
+              "var finished = false;",
+              "pm.response.text().split('\\n').forEach(function (line) {",
+              "  if (line.indexOf('data:') !== 0) { return; }",
+              "  var payload = line.slice(5).trim();",
+              "  if (!payload || payload === '[DONE]') { return; }",
+              "  var chunk;",
+              "  try { chunk = JSON.parse(payload); } catch (e) { return; }",
+              "  var choice = chunk.choices && chunk.choices[0];",
+              "  if (!choice) { return; }",
+              "  if (choice.finish_reason) { finished = true; }",
+              "  if (choice.delta && choice.delta.annotations) { annotations = annotations.concat(choice.delta.annotations); }",
+              "});",
+              "pm.test('web_search_options streaming: stream reached finish_reason', function () {",
+              "  pm.expect(finished, 'no finish_reason in stream').to.be.true;",
+              "});",
+              "pm.test('web_search_options streaming: delta url_citation annotations present (dropped before PR #5139)', function () {",
+              "  pm.expect(annotations.length, 'no annotations in any delta').to.be.greaterThan(0);",
+              "  annotations.forEach(function (a) { pm.expect(a.type).to.eql('url_citation'); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,172 @@
+{
+  "name": "113. Vertex embedding usage and batch arity (#1587) (vertex-embedding-usage)",
+  "description": "Vertex serves embeddings from two endpoints and Bifrost picks between them by model name: gemini-embedding-2* goes to `:embedContent`, everything else to `:predict`. They report usage in different places, and only one of them was being read.\n\n`:embedContent` returns `usageMetadata.promptTokenCount`, but `GeminiEmbeddingResponse` - shared with the Gemini provider - had no field for it, so it was dropped at unmarshal: HTTP 200, `usage: null`, and a null cost in the logs (the live half of #1587). 113.A1 pins it. 113.A2 is the control on the other endpoint, where usage comes from per-embedding `statistics.tokenCount` instead - that branch must keep working, since both now run through the same converter.\n\n113.A3 pins the arity. `:embedContent` takes exactly one content, and Vertex offers no batch alternative for these models: `:batchEmbedContents` is 404 there, `contents[]` is rejected as an unknown field, and `:predict` answers FAILED_PRECONDITION - all verified against the live endpoint. So a batched request is a caller error and must stay a clean 400 rather than becoming a 500 or a silently truncated response. Note this is model-class specific: the same batched request to a `:predict` model returns one vector per input (53.C3). Run with FEATURE=vertex-embedding-usage.",
+  "item": [
+    {
+      "name": "113.A1 vertex/gemini-embedding-2-preview - :embedContent reports upstream usage - #1587",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-embedding-2-preview\",\n  \"input\": \"alpha kestrel harbor\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Upstream sends usageMetadata: {promptTokenCount, promptTokensDetails, totalTokenCount}.",
+              "// A null usage here means the field was dropped at unmarshal again, which bills the request",
+              "// as zero tokens - visible as a null cost in the logs rather than as an error.",
+              "var body = pm.response.text() || '';",
+              "pm.test(':embedContent model returns an embedding', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 300)).to.eql(200);",
+              "});",
+              "var j; try { j = pm.response.json(); } catch (e) {",
+              "  pm.expect.fail('response was not JSON: ' + body.slice(0, 300)); return; }",
+              "var data = j.data || [];",
+              "pm.test('one vector comes back', function () {",
+              "  pm.expect(data.length, 'wrong vector count; body: ' + body.slice(0, 300)).to.eql(1);",
+              "  pm.expect(Array.isArray(data[0].embedding), 'embedding is not an array').to.be.true;",
+              "  pm.expect(data[0].embedding.length, 'embedding is empty').to.be.above(0);",
+              "});",
+              "pm.test('usage is carried through from usageMetadata', function () {",
+              "  pm.expect(j.usage, 'usage missing entirely - usageMetadata was dropped at unmarshal').to.be.an('object');",
+              "  pm.expect(j.usage.prompt_tokens, 'prompt_tokens is 0/absent; this request bills as free').to.be.above(0);",
+              "  pm.expect(j.usage.total_tokens, 'total_tokens is 0/absent').to.be.above(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "113.A2 vertex/text-embedding-005 - :predict usage still comes from statistics - #1587",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/text-embedding-005\",\n  \"input\": \"alpha kestrel harbor\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Control for 113.A1. This endpoint reports no usageMetadata; usage is summed from each",
+              "// prediction's statistics.tokenCount. Both paths share one converter, so the usageMetadata",
+              "// branch must not have shadowed this one.",
+              "var body = pm.response.text() || '';",
+              "pm.test(':predict model returns an embedding', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 300)).to.eql(200);",
+              "});",
+              "var j; try { j = pm.response.json(); } catch (e) {",
+              "  pm.expect.fail('response was not JSON: ' + body.slice(0, 300)); return; }",
+              "var data = j.data || [];",
+              "pm.test('one vector comes back', function () {",
+              "  pm.expect(data.length, 'wrong vector count; body: ' + body.slice(0, 300)).to.eql(1);",
+              "  pm.expect(Array.isArray(data[0].embedding), 'embedding is not an array').to.be.true;",
+              "});",
+              "pm.test('usage is populated from per-embedding statistics', function () {",
+              "  pm.expect(j.usage, 'usage missing entirely').to.be.an('object');",
+              "  pm.expect(j.usage.prompt_tokens, 'prompt_tokens is 0/absent - the statistics branch regressed').to.be.above(0);",
+              "  pm.expect(j.usage.total_tokens, 'total_tokens is 0/absent').to.be.above(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "113.A3 [EXPECT-4XX] vertex/gemini-embedding-2-preview - batch input is a clean 400 - #1587",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-embedding-2-preview\",\n  \"input\": [\n    \"Hello!\",\n    \"World\"\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Verified against the live endpoint: Vertex has no batch shape for this model class.",
+              "//   :embedContent with contents[]  -> 400 Unknown name \"contents\"",
+              "//   :batchEmbedContents            -> 404 (endpoint does not exist on Vertex)",
+              "//   :predict (1 or 2 instances)    -> 400 FAILED_PRECONDITION",
+              "// So the rejection belongs to the caller, and must be raised before the provider call rather",
+              "// than surfacing as a 5xx or a response quietly covering only the first input. 53.C3 is the",
+              "// contrast: the same batched request to a :predict model returns one vector per input.",
+              "var body = pm.response.text() || '';",
+              "pm.test('batch input is rejected with 400', function () {",
+              "  pm.expect(pm.response.code, 'expected 400; body: ' + body.slice(0, 300)).to.eql(400);",
+              "});",
+              "var j; try { j = pm.response.json(); } catch (e) {",
+              "  pm.expect.fail('response was not JSON: ' + body.slice(0, 300)); return; }",
+              "pm.test('the error explains the arity and no partial result came back', function () {",
+              "  var message = ((j.error || {}).message) || '';",
+              "  pm.expect(message.toLowerCase(), 'error does not explain the arity: ' + JSON.stringify(j).slice(0, 300))",
+              "    .to.include('batch');",
+              "  pm.expect((j.data || []).length, 'a vector came back alongside the rejection').to.eql(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

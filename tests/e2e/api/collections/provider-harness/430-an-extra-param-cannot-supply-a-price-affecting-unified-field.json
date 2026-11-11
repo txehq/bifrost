@@ -1,0 +1,306 @@
+{
+  "name": "430. An extra param cannot supply a price-affecting unified field the request did not send (extra-params-price-field)",
+  "description": "Contract C4, agreement three: a field that affects the price is either delivered or refused with 400 caller_unsupported_parameter naming it. Core checked that for the request's own unified fields only. A price-affecting field named among the extra params (extra_params.size, .n, .dimensions, .speed) was merged into the vendor's body, or read there by the converter, with no unified field showing it, so the vendor billed for a size, a count or a speed the gateway never saw. Only the Tencent provider guarded it, with its own list. schemas.CheckExtraParamPriceFields now refuses, in the request worker before a key is chosen and for every provider, an extra param that names a price-affecting field of the operation's C4 table when the request did not send that field itself. The name is compared ignoring letter case. A field the request did send keeps working, including where the handlers keep it among the extra params for converters that read it there; a vendor's own name for the field (BytePlus ratio) and the three fields C4 exempts (prompt, seed, negative_prompt) are not refused. The rule is pinned in Go over every operation and field of the table and through the real worker (TestCheckExtraParamPriceFieldsRefusesEveryC4FieldOfEveryOperation, TestRequestWorkerRejectsPriceFieldAmongExtraParamsBeforeUpstream). These rows pin it on the /openai drop-in routes, the HTTP routes on which extra_params is unwrapped: embeddings, image generation and speech. The last row is the control: the same field sent as the request's own is delivered. Video create has no row because no HTTP route unwraps extra_params for it; its fields are covered in Go.",
+  "item": [
+    {
+      "name": "[EXPECT-400] openai text-embedding-3-small extra-params-price-field: /openai/v1/embeddings - extra_params.dimensions is refused",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extra-params-price-field openai text-embedding-3-small extra-params-price-field: /openai/v1/embeddings - extra_params.dimensions is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('extra-params-price-field openai text-embedding-3-small extra-params-price-field: /openai/v1/embeddings - extra_params.dimensions is refused: the refusal is caller_unsupported_parameter and names the extra param', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('dimensions');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('dimensions');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/text-embedding-3-small\",\n  \"input\": \"ok\",\n  \"extra_params\": {\n    \"dimensions\": 256\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "embeddings"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] openai text-embedding-3-small extra-params-price-field: /openai/v1/embeddings - extra_params.Dimensions is refused in any letter case",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extra-params-price-field openai text-embedding-3-small extra-params-price-field: /openai/v1/embeddings - extra_params.Dimensions is refused in any letter case: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('extra-params-price-field openai text-embedding-3-small extra-params-price-field: /openai/v1/embeddings - extra_params.Dimensions is refused in any letter case: the refusal is caller_unsupported_parameter and names the extra param', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('Dimensions');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('dimensions');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/text-embedding-3-small\",\n  \"input\": \"ok\",\n  \"extra_params\": {\n    \"Dimensions\": 256\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "embeddings"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] openai gpt-image-1 extra-params-price-field: /openai/v1/images/generations - extra_params.size is refused",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extra-params-price-field openai gpt-image-1 extra-params-price-field: /openai/v1/images/generations - extra_params.size is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('extra-params-price-field openai gpt-image-1 extra-params-price-field: /openai/v1/images/generations - extra_params.size is refused: the refusal is caller_unsupported_parameter and names the extra param', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('size');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('size');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-image-1\",\n  \"prompt\": \"a red square\",\n  \"extra_params\": {\n    \"size\": \"1536x1024\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] openai gpt-image-1 extra-params-price-field: /openai/v1/images/generations - extra_params.n is refused",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extra-params-price-field openai gpt-image-1 extra-params-price-field: /openai/v1/images/generations - extra_params.n is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('extra-params-price-field openai gpt-image-1 extra-params-price-field: /openai/v1/images/generations - extra_params.n is refused: the refusal is caller_unsupported_parameter and names the extra param', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('n');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('n');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-image-1\",\n  \"prompt\": \"a red square\",\n  \"extra_params\": {\n    \"n\": 4\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] openai tts-1 extra-params-price-field: /openai/v1/audio/speech - extra_params.speed is refused",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extra-params-price-field openai tts-1 extra-params-price-field: /openai/v1/audio/speech - extra_params.speed is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('extra-params-price-field openai tts-1 extra-params-price-field: /openai/v1/audio/speech - extra_params.speed is refused: the refusal is caller_unsupported_parameter and names the extra param', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('speed');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('speed');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/tts-1\",\n  \"input\": \"ok\",\n  \"voice\": \"alloy\",\n  \"extra_params\": {\n    \"speed\": 4\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai text-embedding-3-small extra-params-price-field: /openai/v1/embeddings - dimensions sent as the request's own field is delivered",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extra-params-price-field control: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+              "var j = pm.response.json();",
+              "pm.test('extra-params-price-field control: the request field dimensions reached the vendor', function () {",
+              "  pm.expect(j.data, 'data').to.be.an('array').with.lengthOf(1);",
+              "  pm.expect(j.data[0].embedding, 'embedding').to.be.an('array').with.lengthOf(256);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/text-embedding-3-small\",\n  \"input\": \"ok\",\n  \"dimensions\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "embeddings"
+          ]
+        }
+      }
+    }
+  ]
+}

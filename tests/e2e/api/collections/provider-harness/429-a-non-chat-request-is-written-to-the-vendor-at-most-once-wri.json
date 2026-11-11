@@ -1,0 +1,368 @@
+{
+  "name": "429. A non-chat request is written to the vendor at most once (write-once transport)",
+  "description": "Pins TXE-7044 (contract C3) on the wire. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. The openai provider's base is the fixture and its max_retries is 0, so the only thing that could repeat a request is the HTTP transport's stale-connection retry: a request sent on a pooled keep-alive connection that fails before the first response byte used to be written again on a new connection. Rows 2 to 4: an image request succeeds (leaving a connection in the pool), the next one (model gpt-image-drop) is read in full by the fixture and its connection dropped; it fails as provider_connection_failed and GET /__wire shows it exactly once. Before the change it appeared twice. Row 5: the request after it succeeds. Rows 6 to 8: the same on /v1/chat/completions with upstream-cut, which keeps the retry (chat behaviour does not change, contract C2): the fixture counts it twice. A pooled connection the upstream closed while idle, which a write-once request must survive, and every provider's non-chat operations are pinned by the Go tests (providers/utils TestContextTransport_WriteOnceRequestIsNeverResent, core TestNonChatRequestsReachTheVendorOnce).",
+  "item": [
+    {
+      "name": "429.1 reset the fixture's record (write-once transport)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__reset"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture reset its record', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.json().data[0].reset).to.eql(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "429.2 openai/gpt-image-1.5 POST /v1/images/generations succeeds and leaves a keep-alive connection in the pool (write-once transport)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-image-1.5\",\n  \"prompt\": \"a paper boat on a pond\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the image request succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.json().data, pm.response.text()).to.have.length(1);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "429.3 [EXPECT-502] openai/gpt-image-drop POST /v1/images/generations fails when the upstream reads the request and drops the connection (write-once transport)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-image-drop\",\n  \"prompt\": \"a paper boat on a pond\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('an image request the upstream read and dropped fails as a vendor connection failure', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(502);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.is_bifrost_error, pm.response.text()).to.eql(false);",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_connection_failed');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "429.4 openai image request the upstream read and dropped reached it exactly once (write-once transport)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__wire"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path === '/v1/images/generations'; });",
+              "var models = calls.map(function (c) { return JSON.parse(c.body).model; });",
+              "pm.test('the dropped image request was written once: a non-chat request is never resent', function () {",
+              "  pm.expect(models, JSON.stringify(models)).to.eql(['gpt-image-1.5', 'gpt-image-drop']);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "429.5 openai/gpt-image-1.5 POST /v1/images/generations succeeds after the dropped request, on a new connection (write-once transport)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-image-1.5\",\n  \"prompt\": \"a paper boat on a pond\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the next image request succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "429.6 openai/upstream-ok POST /v1/chat/completions succeeds and leaves a keep-alive connection in the pool (write-once transport)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/upstream-ok\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 1\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the chat request succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "429.7 [EXPECT-502] openai/upstream-cut POST /v1/chat/completions fails when the upstream reads the request and drops the connection (write-once transport)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/upstream-cut\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 1\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a chat request the upstream read and dropped fails as a vendor connection failure', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(502);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.is_bifrost_error, pm.response.text()).to.eql(false);",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_connection_failed');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "429.8 openai chat request the upstream read and dropped was written twice: chat keeps the stale-connection retry (write-once transport)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__hits"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var h = pm.response.json().data[0].hits;",
+              "pm.test('chat behaviour is unchanged: the dropped chat request was written again on a new connection', function () {",
+              "  pm.expect(h['upstream-cut'], JSON.stringify(h)).to.eql(2);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

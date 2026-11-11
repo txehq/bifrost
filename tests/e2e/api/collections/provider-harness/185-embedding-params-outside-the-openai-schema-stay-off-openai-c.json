@@ -1,0 +1,51 @@
+{
+  "name": "185. Embedding params outside the OpenAI schema stay off OpenAI-compatible wires (openai-compat-embedding-params)",
+  "description": "task_type / title / auto_truncate are first-class embedding params (Gemini, Vertex), but the shared OpenAI converter used to copy them onto the wire for every OpenAI-compatible provider. Strict providers such as Mistral reject unknown keys with 422 \"Extra inputs are not permitted\". Only encoding_format and dimensions are OpenAI fields, so only those are forwarded.",
+  "item": [
+    {
+      "name": "185.1 mistral/mistral-embed - task_type, title and auto_truncate are not forwarded",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"mistral/mistral-embed\",\"input\":\"Hello world\",\"task_type\":\"RETRIEVAL_QUERY\",\"title\":\"t\",\"auto_truncate\":true}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('mistral embedding params: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var data = (pm.response.json() || {}).data || [];",
+              "pm.test('mistral embedding params: one non-empty embedding', function () {",
+              "  pm.expect(data.length, pm.response.text()).to.eql(1);",
+              "  pm.expect((data[0].embedding || []).length, pm.response.text()).to.be.above(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

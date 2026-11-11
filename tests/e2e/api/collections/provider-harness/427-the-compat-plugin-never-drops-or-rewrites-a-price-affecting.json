@@ -1,0 +1,162 @@
+{
+  "name": "427. The compat plugin never drops or rewrites a price-affecting field (compat price fields)",
+  "description": "Local fixture regression for TXE-7026 (Bifrost–Tokun contract C4), no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, and run with providerErrorFixture=1; every case is skipped otherwise. The gateway config sets no compat option, so the compat plugin's parameter drop is on (its default). The fixture's capability sheet has records for oc-capped and cp-capped (max_output_tokens 64, no parameter list, no reasoning or service-tier support), so before TXE-7026 the plugin dropped every field these cases send and lowered the output cap. 427.2 sends a chat request to moonshot/oc-capped with max_completion_tokens 100000, service_tier flex, prompt_cache_key, reasoning_effort high and seed, and reads the body the vendor received: the four price-affecting fields arrive as sent, and seed (not price-affecting, not in the record) is dropped and is the only name in extra_fields.dropped_compat_plugin_params. 427.3 does the same on /v1/responses of the openai-based custom provider cp_plain with max_output_tokens 100000, service_tier, prompt_cache_key and reasoning.effort, with top_p as the dropped field.",
+  "item": [
+    {
+      "name": "427.1 fixture counters and recorded requests reset",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('counters cleared', function () { pm.expect(j.data[0].reset, pm.response.text()).to.equal(true); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__reset"
+      }
+    },
+    {
+      "name": "427.2 moonshot chat on a model with a capability record reaches the vendor with its output cap, tier, prompt_cache_key and reasoning as sent (compat price fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var dropped = (pm.response.json().extra_fields || {}).dropped_compat_plugin_params || [];",
+              "pm.test('the compat plugin reports no price-affecting field as dropped', function () { ['max_completion_tokens', 'max_output_tokens', 'service_tier', 'prompt_cache_key', 'prompt_cache_retention', 'reasoning'].forEach(function (f) { pm.expect(dropped, pm.response.text()).to.not.include(f); }); });",
+              "pm.test('a field that does not affect the price is still dropped and reported', function () { pm.expect(dropped, pm.response.text()).to.include('seed'); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/oc/v1/chat/completions' && JSON.parse(c.body).model === 'oc-capped'; });",
+              "  pm.test('one request reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(1); });",
+              "  var sent = JSON.parse(calls[0].body);",
+              "  pm.test('max_completion_tokens is the 100000 the caller sent, not the model limit', function () { pm.expect(sent.max_completion_tokens, calls[0].body).to.equal(100000); });",
+              "  pm.test('service_tier reached the vendor', function () { pm.expect(sent.service_tier, calls[0].body).to.equal('flex'); });",
+              "  pm.test('prompt_cache_key reached the vendor', function () { pm.expect(sent.prompt_cache_key, calls[0].body).to.equal('tenant-42'); });",
+              "  pm.test('reasoning_effort reached the vendor', function () { pm.expect(sent.reasoning_effort, calls[0].body).to.equal('high'); });",
+              "  pm.test('seed did not reach the vendor', function () { pm.expect(sent, calls[0].body).to.not.have.property('seed'); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"moonshot/oc-capped\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_completion_tokens\": 100000,\n  \"service_tier\": \"flex\",\n  \"prompt_cache_key\": \"tenant-42\",\n  \"reasoning_effort\": \"high\",\n  \"seed\": 7\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "427.3 openai-based custom provider responses on a model with a capability record reaches the vendor with its output cap, tier, prompt_cache_key and reasoning as sent (compat price fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var dropped = (pm.response.json().extra_fields || {}).dropped_compat_plugin_params || [];",
+              "pm.test('the compat plugin reports no price-affecting field as dropped', function () { ['max_completion_tokens', 'max_output_tokens', 'service_tier', 'prompt_cache_key', 'prompt_cache_retention', 'reasoning'].forEach(function (f) { pm.expect(dropped, pm.response.text()).to.not.include(f); }); });",
+              "pm.test('a field that does not affect the price is still dropped and reported', function () { pm.expect(dropped, pm.response.text()).to.include('top_p'); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/cp/v1/responses' && JSON.parse(c.body).model === 'cp-capped'; });",
+              "  pm.test('one request reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(1); });",
+              "  var sent = JSON.parse(calls[0].body);",
+              "  pm.test('max_output_tokens is the 100000 the caller sent, not the model limit', function () { pm.expect(sent.max_output_tokens, calls[0].body).to.equal(100000); });",
+              "  pm.test('service_tier reached the vendor', function () { pm.expect(sent.service_tier, calls[0].body).to.equal('flex'); });",
+              "  pm.test('prompt_cache_key reached the vendor', function () { pm.expect(sent.prompt_cache_key, calls[0].body).to.equal('tenant-42'); });",
+              "  pm.test('reasoning.effort reached the vendor', function () { pm.expect(sent.reasoning && sent.reasoning.effort, calls[0].body).to.equal('high'); });",
+              "  pm.test('top_p did not reach the vendor', function () { pm.expect(sent, calls[0].body).to.not.have.property('top_p'); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"cp_plain/cp-capped\",\n  \"input\": \"hi\",\n  \"max_output_tokens\": 100000,\n  \"service_tier\": \"flex\",\n  \"prompt_cache_key\": \"tenant-42\",\n  \"reasoning\": {\n    \"effort\": \"high\"\n  },\n  \"top_p\": 0.5\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    }
+  ]
+}

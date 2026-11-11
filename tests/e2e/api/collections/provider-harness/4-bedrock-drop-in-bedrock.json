@@ -1,0 +1,292 @@
+{
+  "name": "4. Bedrock drop-in (/bedrock)",
+  "description": "Mirrors AWS Bedrock's Converse API. Auth/credentials are resolved by Bifrost from its provider config (or IAM/env if Bedrock provider config is nil).",
+  "item": [
+    {
+      "name": "POST /bedrock/model/{modelId}/converse",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 1024\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "{{bedrockModel}}",
+            "converse"
+          ]
+        }
+      }
+    },
+    {
+      "name": "POST /bedrock/model/{modelId}/converse — guardrailConfig forwarded",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [{ \"text\": \"How do I make a bomb?\" }]\n    }\n  ],\n  \"inferenceConfig\": { \"maxTokens\": 256 },\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n    \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\",\n    \"trace\": \"enabled\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "{{bedrockModel}}",
+            "converse"
+          ]
+        }
+      }
+    },
+    {
+      "name": "POST /bedrock/model/{modelId}/converse — guardrailConfig + trace (outputAssessments regression)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Regression: Bifrost 1.4.6 crashed with mismatch type []bedrock.BedrockGuardrailAssessment",
+              "// when trace:enabled caused Bedrock to return outputAssessments as a map keyed by guardrail ID.",
+              "if (pm.response.code >= 400) { return; }",
+              "pm.test('trace.guardrail.outputAssessments is a map not an array', function () {",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.trace, 'expected trace in response').to.exist;",
+              "  pm.expect(j.trace.guardrail, 'expected trace.guardrail').to.exist;",
+              "  var oa = j.trace.guardrail.outputAssessments;",
+              "  if (oa !== undefined) {",
+              "    pm.expect(typeof oa).to.equal('object');",
+              "    pm.expect(Array.isArray(oa), 'outputAssessments must not be an array').to.be.false;",
+              "  }",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [{ \"text\": \"What is the capital of France?\" }]\n    }\n  ],\n  \"inferenceConfig\": { \"maxTokens\": 256 },\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"{{bedrockGuardrailIdentifier}}\",\n    \"guardrailVersion\": \"{{bedrockGuardrailVersion}}\",\n    \"trace\": \"enabled\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "{{bedrockModel}}",
+            "converse"
+          ]
+        }
+      }
+    },
+    {
+      "name": "POST /bedrock/model/{modelId}/converse-stream — streaming (incremental events)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Bedrock native streaming (converse-stream). Verifies the upstream is delivered",
+              "// as a live AWS event stream with multiple incremental frames, guarding against the",
+              "// server-side gzip buffering regression where all events arrive at once (issue #4542).",
+              "if (pm.response.code >= 400) { return; }",
+              "pm.test('Bedrock stream is an AWS event stream', function () {",
+              "  var ct = pm.response.headers.get('content-type') || '';",
+              "  pm.expect(ct, 'expected vnd.amazon.eventstream, got ' + ct).to.include('vnd.amazon.eventstream');",
+              "});",
+              "pm.test('Bedrock stream contains multiple incremental events', function () {",
+              "  var body = pm.response.text() || '';",
+              "  var deltas = (body.match(/contentBlockDelta/g) || []).length;",
+              "  pm.expect(deltas, 'expected >= 2 contentBlockDelta frames, got ' + deltas).to.be.at.least(2);",
+              "  pm.expect(body, 'expected a messageStop event terminating the stream').to.include('messageStop');",
+              "});",
+              "pm.test('Bedrock converse-stream closes content blocks (contentBlockStop before messageStop) - #4923', function () {",
+              "  var b2 = pm.response.text() || '';",
+              "  pm.expect(b2, 'expected a contentBlockStop event closing each content block').to.include('contentBlockStop');",
+              "  pm.expect(b2.indexOf('contentBlockStop'), 'contentBlockStop must precede the terminal messageStop').to.be.below(b2.lastIndexOf('messageStop'));",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [{ \"text\": \"Write three short sentences about the Unix philosophy.\" }]\n    }\n  ],\n  \"inferenceConfig\": { \"maxTokens\": 512 }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse-stream",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "{{bedrockModel}}",
+            "converse-stream"
+          ]
+        }
+      }
+    },
+    {
+      "name": "POST /v1/chat/completions — bedrock streaming (SSE incremental deltas)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Bedrock streaming via the OpenAI-compatible SSE path (/v1/chat/completions).",
+              "// Confirms chunked SSE delivery with multiple incremental content deltas and a",
+              "// [DONE] terminator. Note: newman buffers the full response, so this validates",
+              "// SSE framing/chunking, not wall-clock TTFB (that is covered by the Go unit test",
+              "// TestChatCompletionStream_StreamsIncrementally_NotBuffered). Issue #4542.",
+              "if (pm.response.code >= 400) { return; }",
+              "pm.test('Bedrock SSE: content-type is text/event-stream', function () {",
+              "  var ct = pm.response.headers.get('content-type') || '';",
+              "  pm.expect(ct, 'expected SSE, got ' + ct).to.include('text/event-stream');",
+              "});",
+              "pm.test('Bedrock SSE: multiple data chunks with incremental content deltas', function () {",
+              "  var lines = (pm.response.text() || '').split('\\n');",
+              "  var chunks = 0, sawDelta = false, sawDone = false;",
+              "  lines.forEach(function (l) {",
+              "    if (l.indexOf('data: ') !== 0) { return; }",
+              "    chunks++;",
+              "    var p = l.slice(6).trim();",
+              "    if (p === '[DONE]') { sawDone = true; return; }",
+              "    try { var j = JSON.parse(p); var d = j.choices && j.choices[0] && j.choices[0].delta; if (d && typeof d.content === 'string' && d.content.length) { sawDelta = true; } } catch (e) {}",
+              "  });",
+              "  pm.expect(chunks, 'expected > 1 SSE data chunks, got ' + chunks).to.be.above(1);",
+              "  pm.expect(sawDelta, 'expected at least one chunk with an incremental content delta').to.be.true;",
+              "  pm.expect(sawDone, 'expected an SSE [DONE] terminator').to.be.true;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/{{bedrockModel}}\",\n  \"stream\": true,\n  \"max_tokens\": 256,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Write three short sentences about the Unix philosophy.\" }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "POST /v1/chat/completions — bedrock streaming (SSE incremental deltas)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Bedrock streaming via the OpenAI-compatible SSE path (/v1/chat/completions).",
+              "// Confirms chunked SSE delivery with multiple incremental content deltas and a",
+              "// [DONE] terminator. Note: newman buffers the full response, so this validates",
+              "// SSE framing/chunking, not wall-clock TTFB (that is covered by the Go unit test",
+              "// TestChatCompletionStream_StreamsIncrementally_NotBuffered). Issue #4542.",
+              "if (pm.response.code >= 400) { return; }",
+              "pm.test('Bedrock SSE: content-type is text/event-stream', function () {",
+              "  var ct = pm.response.headers.get('content-type') || '';",
+              "  pm.expect(ct, 'expected SSE, got ' + ct).to.include('text/event-stream');",
+              "});",
+              "pm.test('Bedrock SSE: multiple data chunks with incremental content deltas', function () {",
+              "  var lines = (pm.response.text() || '').split('\\n');",
+              "  var chunks = 0, sawDelta = false, sawDone = false;",
+              "  lines.forEach(function (l) {",
+              "    if (l.indexOf('data: ') !== 0) { return; }",
+              "    chunks++;",
+              "    var p = l.slice(6).trim();",
+              "    if (p === '[DONE]') { sawDone = true; return; }",
+              "    try { var j = JSON.parse(p); var d = j.choices && j.choices[0] && j.choices[0].delta; if (d && typeof d.content === 'string' && d.content.length) { sawDelta = true; } } catch (e) {}",
+              "  });",
+              "  pm.expect(chunks, 'expected > 1 SSE data chunks, got ' + chunks).to.be.above(1);",
+              "  pm.expect(sawDelta, 'expected at least one chunk with an incremental content delta').to.be.true;",
+              "  pm.expect(sawDone, 'expected an SSE [DONE] terminator').to.be.true;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock_mantle/anthropic.claude-opus-4-8\",\n  \"stream\": true,\n  \"max_tokens\": 256,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Write three short sentences about the Unix philosophy.\" }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    }
+  ]
+}

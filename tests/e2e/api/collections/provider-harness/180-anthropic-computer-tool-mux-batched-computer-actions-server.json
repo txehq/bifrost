@@ -1,0 +1,653 @@
+{
+  "name": "180. Anthropic computer tool mux, batched computer actions, server-tool cache_control (anthropic-computer-mux)",
+  "description": "Three conversion fixes on the Responses -> Anthropic path (core/providers/anthropic/responses.go), plus the reverse tool mapping.\n\n1. Server-tool cache_control. convertBifrostToolToAnthropic built every server tool (web_search, web_fetch, code_execution, dated computer, memory, tool_search, bash, text_editor, advisor) without cache_control; only plain function tools and the computer toolset kept it. A prompt-cache breakpoint on a server tool silently vanished. Fix: applyResponsesToolAnthropicFlags copies cache_control for every branch. 180.1 pins it on web_search and the dated computer tool.\n\n2. OpenAI computer tool. The newer {type:\"computer\"} tool (no display or environment fields) had no case in convertBifrostToolToAnthropic, fell through to the function-tool path and was dropped for having no name - the model ran without the tool and nothing reported it. Fix: it becomes the bare computer_toolset_20260801 wherever the target takes a toolset (180.2 Anthropic, 180.3 Vertex) and is dropped where it does not, since dated tools require display_*_px >= 1 (180.4, a guard: it was already dropped, now by design and reported by ValidateResponsesToolsForProvider). Reverse: an Anthropic toolset used to become computer_use_preview with a 0x0 display; it now maps to {type:\"computer\"} (180.5, /anthropic drop-in -> OpenAI).\n\n3. Batched computer actions. computer_call.actions (folder 179 added the field) was ignored by the Anthropic converter. Request side: a call carrying only actions became a tool_use with no input. It now becomes one tool_use per action - earlier actions get <call_id>_<i>, the last keeps the call id so the single screenshot output pairs with it - and each earlier action gets an \"ok\" filler tool_result (180.6). Response side: a Claude computer tool_use now reaches the client with the action in both action (computer_use_preview clients) and actions:[action] (computer tool clients), non-streaming (180.6) and streaming (180.7). This differs from folder 179, which leaves action unsynthesized for OpenAI's own replies: there the upstream chose the batched shape, here Bifrost is producing the OpenAI shape from Anthropic's single action, so it fills both readers' fields.",
+  "item": [
+    {
+      "name": "180.1 anthropic/claude-sonnet-4-6 /v1/responses server tools keep cache_control (web_search, dated computer)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{anthropicKey}}"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_output_tokens\": 16,\n  \"tool_choice\": \"none\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"web_search\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    },\n    {\n      \"type\": \"computer_use_preview\",\n      \"display_width\": 1280,\n      \"display_height\": 800,\n      \"environment\": \"browser\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "if (pm.response.code !== 200) { return; }",
+              "var body = pm.response.json() || {};",
+              "var raw = (body.extra_fields || {}).raw_request;",
+              "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+              "pm.test('raw_request captured', function () {",
+              "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+              "});",
+              "if (!raw || typeof raw !== 'object') { return; }",
+              "var tools = raw.tools || [];",
+              "var toolsDump = JSON.stringify(tools).slice(0, 700);",
+              "function sent(prefix) { return tools.filter(function (t) { return t && String(t.type || '').indexOf(prefix) === 0; })[0]; }",
+              "var ws = sent('web_search_');",
+              "var cu = sent('computer_2');",
+              "pm.test('both server tools reach Anthropic', function () {",
+              "  pm.expect(ws, 'web_search missing: ' + toolsDump).to.be.an('object');",
+              "  pm.expect(cu, 'dated computer tool missing: ' + toolsDump).to.be.an('object');",
+              "});",
+              "pm.test('web_search keeps its cache_control breakpoint', function () {",
+              "  pm.expect((ws || {}).cache_control, 'cache_control dropped: ' + toolsDump).to.eql({ type: 'ephemeral' });",
+              "});",
+              "pm.test('the dated computer tool keeps its cache_control breakpoint', function () {",
+              "  pm.expect((cu || {}).cache_control, 'cache_control dropped: ' + toolsDump).to.eql({ type: 'ephemeral' });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "180.2 anthropic/claude-opus-5-5 /v1/responses OpenAI computer tool becomes the bare toolset",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{anthropicKey}}"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-opus-5-5\",\n  \"max_output_tokens\": 16,\n  \"tool_choice\": \"none\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "if (pm.response.code !== 200) { return; }",
+              "var body = pm.response.json() || {};",
+              "var raw = (body.extra_fields || {}).raw_request;",
+              "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+              "pm.test('raw_request captured', function () {",
+              "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+              "});",
+              "if (!raw || typeof raw !== 'object') { return; }",
+              "var tools = raw.tools || [];",
+              "var toolsDump = JSON.stringify(tools).slice(0, 700);",
+              "// The OpenAI computer tool has no display geometry, so its only Anthropic form is the bare toolset.",
+              "// Before the fix it fell through to the function-tool path and was dropped for having no name.",
+              "var toolset = tools.filter(function (t) { return t && t.type === 'computer_toolset_20260801'; });",
+              "pm.test('the computer tool is sent as the bare toolset', function () {",
+              "  pm.expect(toolset.length, 'no toolset on the wire: ' + toolsDump).to.eql(1);",
+              "  pm.expect(toolset[0].name, 'name is rejected on a toolset entry: ' + toolsDump).to.be.undefined;",
+              "  pm.expect(toolset[0].display_width_px, 'a toolset takes no geometry: ' + toolsDump).to.be.undefined;",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "180.3 vertex/claude-opus-5-5 /v1/responses OpenAI computer tool becomes the bare toolset",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{anthropicKey}}"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_output_tokens\": 16,\n  \"tool_choice\": \"none\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "if (pm.response.code !== 200) { return; }",
+              "var body = pm.response.json() || {};",
+              "var raw = (body.extra_fields || {}).raw_request;",
+              "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+              "pm.test('raw_request captured', function () {",
+              "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+              "});",
+              "if (!raw || typeof raw !== 'object') { return; }",
+              "var tools = raw.tools || [];",
+              "var toolsDump = JSON.stringify(tools).slice(0, 700);",
+              "// The OpenAI computer tool has no display geometry, so its only Anthropic form is the bare toolset.",
+              "// Before the fix it fell through to the function-tool path and was dropped for having no name.",
+              "var toolset = tools.filter(function (t) { return t && t.type === 'computer_toolset_20260801'; });",
+              "pm.test('the computer tool is sent as the bare toolset', function () {",
+              "  pm.expect(toolset.length, 'no toolset on the wire: ' + toolsDump).to.eql(1);",
+              "  pm.expect(toolset[0].name, 'name is rejected on a toolset entry: ' + toolsDump).to.be.undefined;",
+              "  pm.expect(toolset[0].display_width_px, 'a toolset takes no geometry: ' + toolsDump).to.be.undefined;",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "180.4 anthropic/claude-sonnet-4-6 /v1/responses OpenAI computer tool dropped on a dated-only model",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{anthropicKey}}"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "if (pm.response.code !== 200) { return; }",
+              "var body = pm.response.json() || {};",
+              "var raw = (body.extra_fields || {}).raw_request;",
+              "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+              "pm.test('raw_request captured', function () {",
+              "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+              "});",
+              "if (!raw || typeof raw !== 'object') { return; }",
+              "var tools = raw.tools || [];",
+              "var toolsDump = JSON.stringify(tools).slice(0, 700);",
+              "// Sonnet 4.6 takes only dated computer tools, which require display_*_px >= 1; the computer tool has none.",
+              "pm.test('no computer tool is sent in a form the model would reject', function () {",
+              "  for (var i = 0; i < tools.length; i++) {",
+              "    pm.expect(String(tools[i].type || ''), 'computer tool sent to a dated-only model: ' + toolsDump).to.not.include('computer');",
+              "  }",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "180.5 openai/gpt-6.1-sol /anthropic/v1/messages computer toolset becomes the OpenAI computer tool",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-6.1-sol\",\n  \"max_tokens\": 16,\n  \"tool_choice\": {\n    \"type\": \"none\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_toolset_20260801\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "if (pm.response.code !== 200) { return; }",
+              "var body = pm.response.json() || {};",
+              "var raw = (body.extra_fields || {}).raw_request;",
+              "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+              "pm.test('raw_request captured', function () {",
+              "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+              "});",
+              "if (!raw || typeof raw !== 'object') { return; }",
+              "var tools = raw.tools || [];",
+              "var toolsDump = JSON.stringify(tools).slice(0, 700);",
+              "// The toolset carries no geometry. It used to become computer_use_preview with display 0x0;",
+              "// the geometry-free OpenAI computer tool is the faithful counterpart.",
+              "var computer = tools.filter(function (t) { return t && t.type === 'computer'; });",
+              "pm.test('the toolset is sent as the OpenAI computer tool', function () {",
+              "  pm.expect(computer.length, 'no computer tool on the wire: ' + toolsDump).to.eql(1);",
+              "  pm.expect(computer[0].display_width, 'the computer tool takes no geometry: ' + toolsDump).to.be.undefined;",
+              "  pm.expect(computer[0].display_height, 'the computer tool takes no geometry: ' + toolsDump).to.be.undefined;",
+              "});",
+              "pm.test('no 0x0 computer_use_preview is synthesized', function () {",
+              "  for (var i = 0; i < tools.length; i++) {",
+              "    pm.expect(tools[i].type, toolsDump).to.not.eql('computer_use_preview');",
+              "  }",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "180.6 anthropic/claude-sonnet-4-6 /v1/responses batched computer_call actions split per action, reply carries action and actions",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{anthropicKey}}"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Click at 100,200 and type hi.\"\n    },\n    {\n      \"type\": \"computer_call\",\n      \"id\": \"cu_harness131\",\n      \"call_id\": \"call_harness131\",\n      \"status\": \"completed\",\n      \"actions\": [\n        {\n          \"type\": \"click\",\n          \"button\": \"left\",\n          \"x\": 100,\n          \"y\": 200\n        },\n        {\n          \"type\": \"type\",\n          \"text\": \"hi\"\n        }\n      ]\n    },\n    {\n      \"type\": \"computer_call_output\",\n      \"call_id\": \"call_harness131\",\n      \"output\": {\n        \"type\": \"computer_screenshot\",\n        \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Now take a screenshot. Do it now.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_use_preview\",\n      \"display_width\": 1280,\n      \"display_height\": 800,\n      \"environment\": \"browser\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "if (pm.response.code !== 200) { return; }",
+              "var body = pm.response.json() || {};",
+              "var raw = (body.extra_fields || {}).raw_request;",
+              "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+              "pm.test('raw_request captured', function () {",
+              "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object');",
+              "});",
+              "if (!raw || typeof raw !== 'object') { return; }",
+              "var tools = raw.tools || [];",
+              "var toolsDump = JSON.stringify(tools).slice(0, 700);",
+              "function assertBothActions(call, dump) {",
+              "  pm.expect(call.action, 'computer_call lost the single action (computer_use_preview clients read it): ' + dump).to.be.an('object');",
+              "  pm.expect(call.actions, 'computer_call has no actions array (new computer tool clients read it): ' + dump).to.be.an('array');",
+              "  pm.expect(call.actions.length, dump).to.eql(1);",
+              "  pm.expect(call.actions[0].type, 'actions[0] must match action: ' + dump).to.eql(call.action.type);",
+              "}",
+              "var msgs = raw.messages || [];",
+              "var msgsDump = JSON.stringify(msgs).slice(0, 1200);",
+              "function blocks(m) { return (m && Array.isArray(m.content)) ? m.content : []; }",
+              "var uses = [], results = [];",
+              "for (var i = 0; i < msgs.length; i++) {",
+              "  var bs = blocks(msgs[i]);",
+              "  for (var j = 0; j < bs.length; j++) {",
+              "    if (bs[j].type === 'tool_use') { uses.push(bs[j]); }",
+              "    if (bs[j].type === 'tool_result') { results.push(bs[j]); }",
+              "  }",
+              "}",
+              "// Anthropic takes one action per tool_use. Before the fix the call became a single tool_use with no input.",
+              "pm.test('one tool_use per batched action, last one keeps the call id', function () {",
+              "  pm.expect(uses.length, 'messages: ' + msgsDump).to.eql(2);",
+              "  pm.expect(uses[0].id, msgsDump).to.eql('call_harness131_0');",
+              "  pm.expect((uses[0].input || {}).action, msgsDump).to.eql('left_click');",
+              "  pm.expect((uses[0].input || {}).coordinate, msgsDump).to.eql([100, 200]);",
+              "  pm.expect(uses[1].id, msgsDump).to.eql('call_harness131');",
+              "  pm.expect((uses[1].input || {}).action, msgsDump).to.eql('type');",
+              "  pm.expect((uses[1].input || {}).text, msgsDump).to.eql('hi');",
+              "});",
+              "pm.test('every tool_use has a tool_result, the screenshot on the last', function () {",
+              "  var ids = results.map(function (r) { return r.tool_use_id; });",
+              "  pm.expect(ids, msgsDump).to.eql(['call_harness131_0', 'call_harness131']);",
+              "  pm.expect(JSON.stringify(results[1].content || ''), 'screenshot not on the last result: ' + msgsDump).to.include('image');",
+              "});",
+              "var calls = (body.output || []).filter(function (o) { return o && o.type === 'computer_call'; });",
+              "var outDump = JSON.stringify(body.output || []).slice(0, 900);",
+              "pm.test('the model returned a computer_call', function () {",
+              "  pm.expect(calls.length, 'output: ' + outDump).to.be.above(0);",
+              "});",
+              "pm.test('the returned computer_call carries both action and actions', function () {",
+              "  for (var k = 0; k < calls.length; k++) { assertBothActions(calls[k], outDump); }",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "180.7 anthropic/claude-sonnet-4-6 /v1/responses stream computer_call carries action and actions",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{anthropicKey}}"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_output_tokens\": 256,\n  \"stream\": true,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot. Do it now.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_use_preview\",\n      \"display_width\": 1280,\n      \"display_height\": 800,\n      \"environment\": \"browser\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('stream completed without an upstream rejection', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.text(), 'stream carried an error frame').to.not.include('invalid_request_error');",
+              "});",
+              "function assertBothActions(call, dump) {",
+              "  pm.expect(call.action, 'computer_call lost the single action (computer_use_preview clients read it): ' + dump).to.be.an('object');",
+              "  pm.expect(call.actions, 'computer_call has no actions array (new computer tool clients read it): ' + dump).to.be.an('array');",
+              "  pm.expect(call.actions.length, dump).to.eql(1);",
+              "  pm.expect(call.actions[0].type, 'actions[0] must match action: ' + dump).to.eql(call.action.type);",
+              "}",
+              "pm.test('output_item.done for the computer_call carries both action and actions', function () {",
+              "  var lines = pm.response.text().split('\\n');",
+              "  var seen = 0;",
+              "  for (var i = 0; i < lines.length; i++) {",
+              "    var line = lines[i].trim();",
+              "    if (line.indexOf('data:') !== 0) { continue; }",
+              "    var payload = line.slice(5).trim();",
+              "    if (!payload || payload === '[DONE]') { continue; }",
+              "    var ev;",
+              "    try { ev = JSON.parse(payload); } catch (e) { continue; }",
+              "    if (ev.type !== 'response.output_item.done') { continue; }",
+              "    var it = ev.item || {};",
+              "    if (it.type !== 'computer_call') { continue; }",
+              "    seen++;",
+              "    assertBothActions(it, payload.slice(0, 700));",
+              "  }",
+              "  pm.expect(seen, 'no computer_call in the stream: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "180.8 openai/gpt-6.1-sol /anthropic/v1/messages stream computer_call actions become complete tool_use blocks",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-6.1-sol\",\n  \"max_tokens\": 800,\n  \"stream\": true,\n  \"tool_choice\": {\n    \"type\": \"any\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot of the screen now using the computer tool.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_toolset_20260801\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "if (pm.response.code !== 200) { return; }",
+              "var events = [];",
+              "pm.response.text().split('\\n').forEach(function (line) {",
+              "  var trimmed = line.trim();",
+              "  if (trimmed.indexOf('data:') !== 0) { return; }",
+              "  var payload = trimmed.slice(5).trim();",
+              "  if (!payload || payload === '[DONE]') { return; }",
+              "  try { events.push(JSON.parse(payload)); } catch (e) { /* non-JSON keepalive */ }",
+              "});",
+              "var dump = JSON.stringify(events.map(function (e) { return e.type + (e.index !== undefined ? '@' + e.index : ''); })).slice(0, 1200);",
+              "var uses = {};",
+              "events.forEach(function (e) {",
+              "  if (e.type === 'content_block_start' && e.content_block && e.content_block.type === 'tool_use') {",
+              "    uses[e.index] = { id: e.content_block.id, name: e.content_block.name, input: '', stopped: false };",
+              "  } else if (e.type === 'content_block_delta' && uses[e.index] && e.delta && e.delta.type === 'input_json_delta') {",
+              "    uses[e.index].input += e.delta.partial_json || '';",
+              "  } else if (e.type === 'content_block_stop' && uses[e.index]) {",
+              "    uses[e.index].stopped = true;",
+              "  }",
+              "});",
+              "var list = Object.keys(uses).map(function (k) { return uses[k]; });",
+              "pm.test('the model made at least one computer tool_use', function () {",
+              "  pm.expect(list.length, 'events: ' + dump).to.be.above(0);",
+              "});",
+              "// OpenAI streams a computer_call's actions only on output_item.done, as actions with no",
+              "// action. The converter read only action, so each block closed with an empty input.",
+              "pm.test('every computer tool_use streams a complete action', function () {",
+              "  list.forEach(function (u) {",
+              "    pm.expect(u.stopped, 'block never closed: ' + JSON.stringify(u)).to.be.true;",
+              "    var input = null;",
+              "    try { input = JSON.parse(u.input); } catch (e) { input = null; }",
+              "    pm.expect(input, 'input is not a JSON object: ' + JSON.stringify(u)).to.be.an('object');",
+              "    pm.expect(input.action, 'input carries no action: ' + JSON.stringify(u)).to.be.a('string').and.not.empty;",
+              "    pm.expect(u.id, 'tool_use without id: ' + JSON.stringify(u)).to.be.a('string').and.not.empty;",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "180.9 openai/gpt-6.1-sol /anthropic/v1/messages computer-use turn 2 replays the tool_use as a GA computer_call",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-6.1-sol\",\n  \"max_tokens\": 400,\n  \"tools\": [\n    {\n      \"type\": \"computer_toolset_20260801\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot, then tell me what you see in one sentence.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"call_turn2_180\",\n          \"name\": \"computer\",\n          \"input\": {\n            \"action\": \"screenshot\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"call_turn2_180\",\n          \"content\": [\n            {\n              \"type\": \"image\",\n              \"source\": {\n                \"type\": \"base64\",\n                \"media_type\": \"image/png\",\n                \"data\": \"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\"\n              }\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "// Turn 2 of every computer-use loop replays the tool_use. The GA computer tool rejects a",
+              "// computer_call carrying action (\"must include exactly one of action or actions\") and one",
+              "// whose id does not begin with \"cu\", and Bifrost sent both.",
+              "pm.test('request succeeded', function () {",
+              "  pm.expect(txt, 'action/actions 400 resurfaced').to.not.include('exactly one of');",
+              "  pm.expect(txt, 'computer_call id prefix 400 resurfaced').to.not.include(\"begins with 'cu'\");",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + txt).to.eql(200);",
+              "});",
+              "if (pm.response.code !== 200) { return; }",
+              "var body = pm.response.json() || {};",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('raw_request captured', function () {",
+              "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 400)).to.be.an('object');",
+              "});",
+              "if (!rr || typeof rr !== 'object') { return; }",
+              "var calls = (rr.input || []).filter(function (i) { return i && i.type === 'computer_call'; });",
+              "pm.test('the replayed computer_call carries actions only, with a cu id', function () {",
+              "  pm.expect(calls.length, 'input: ' + JSON.stringify(rr.input).slice(0, 700)).to.eql(1);",
+              "  pm.expect(calls[0].action, 'action must not reach the GA computer tool: ' + JSON.stringify(calls[0])).to.be.undefined;",
+              "  pm.expect((calls[0].actions || []).map(function (a) { return a.type; })).to.eql(['screenshot']);",
+              "  pm.expect(String(calls[0].id || 'cu'), JSON.stringify(calls[0])).to.match(/^cu/);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

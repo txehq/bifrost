@@ -55,6 +55,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { resolveCiIntervalMs } from "./lib/ci-interval.mjs";
+import { readHarnessCollection } from "./lib/provider-harness-source.mjs";
 import {
   makeMatchProvider,
   providerOfItem,
@@ -253,12 +254,13 @@ function loadDenominatorsForPass(pass) {
     ? [pass.collection]
     : [
         join(TMP_DIR, "harness-filtered.json"),
-        "tests/e2e/api/collections/provider-harness.json",
+        // The source itself, one file per folder (TXE-7136); assembled on read.
+        "tests/e2e/api/collections/provider-harness",
       ];
   for (const path of candidates) {
     if (!existsSync(path)) continue;
     try {
-      const data = JSON.parse(readFileSync(path, "utf8"));
+      const data = readHarnessCollection(path);
       const counts = countByProvider(data, PROVIDERS, itemProvider);
       for (const p of PROVIDERS) setPassTotal(p, pass.index, counts[p]);
       return true;

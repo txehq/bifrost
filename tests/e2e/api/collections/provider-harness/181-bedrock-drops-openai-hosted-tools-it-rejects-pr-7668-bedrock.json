@@ -1,0 +1,181 @@
+{
+  "name": "181. Bedrock drops OpenAI hosted tools it rejects (PR #7668) (bedrock-hosted-tool-drop)",
+  "description": "PR #7668 (fix: drop shell tool for bedrock). filterUnsupportedTools in core/providers/openai/responses.go forwarded shell, local_shell, code_interpreter, image_generation, computer_use_preview and programmatic_tool_calling to every OpenAI-compatible target. Bedrock Mantle (/openai/v1 and /v1) and the bedrock-runtime /openai/v1/responses route reject all six on every model they serve (Mantle enumerates the tool types it takes in the 400 and omits them), so any Codex-style request carrying one of them failed outright. Fix: isOpenAISupportedToolType gates those six on the base provider and drops them for bedrock and bedrock_mantle; apply_patch stays because the gpt-5.x/gpt-6 models there accept it.\n\nCases: (1) bedrock_mantle and (2) bedrock (legacy runtime route) send all six plus apply_patch and a function tool and assert via x-bf-send-back-raw-request that only apply_patch and the function reach the wire, with a 2xx (pre-fix: 400 from the provider); (3) openai control - the same filter must keep shell for OpenAI itself, so the drop is provider-scoped, not global.",
+  "item": [
+    {
+      "name": "181.1 bedrock_mantle/openai.gpt-5.6-sol /v1/responses drops shell, local_shell, code_interpreter, image_generation, computer_use_preview and programmatic_tool_calling (Mantle) - PR #7668",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-5.6-sol\",\n  \"input\": \"Say hi in one word.\",\n  \"max_output_tokens\": 64,\n  \"tools\": [\n    {\n      \"type\": \"shell\",\n      \"environment\": {\n        \"type\": \"local\"\n      }\n    },\n    {\n      \"type\": \"local_shell\"\n    },\n    {\n      \"type\": \"code_interpreter\",\n      \"container\": {\n        \"type\": \"auto\"\n      }\n    },\n    {\n      \"type\": \"image_generation\"\n    },\n    {\n      \"type\": \"computer_use_preview\",\n      \"display_width\": 1024,\n      \"display_height\": 768,\n      \"environment\": \"browser\"\n    },\n    {\n      \"type\": \"programmatic_tool_calling\"\n    },\n    {\n      \"type\": \"apply_patch\"\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_time\",\n      \"description\": \"Get the current time.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('bedrock_mantle/openai.gpt-5.6-sol hosted tool drop: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var body = pm.response.json() || {};",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('bedrock_mantle/openai.gpt-5.6-sol hosted tool drop: raw_request captured', function () {",
+              "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+              "});",
+              "if (!rr || typeof rr !== 'object') { return; }",
+              "var wireTypes = (rr.tools || []).map(function (t) { return t && t.type; });",
+              "pm.test('bedrock_mantle/openai.gpt-5.6-sol hosted tool drop: no rejected tool type reaches the wire', function () {",
+              "  ['shell', 'local_shell', 'code_interpreter', 'image_generation', 'computer_use_preview', 'programmatic_tool_calling'].forEach(function (t) {",
+              "    pm.expect(wireTypes, t + ' reached Bedrock, which rejects it on every model').to.not.include(t);",
+              "  });",
+              "});",
+              "pm.test('bedrock_mantle/openai.gpt-5.6-sol hosted tool drop: apply_patch and the function tool survive', function () {",
+              "  pm.expect(wireTypes, 'wire tools: ' + JSON.stringify(wireTypes)).to.eql(['apply_patch', 'function']);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "181.2 bedrock/openai.gpt-5.6-sol /v1/responses drops shell, local_shell, code_interpreter, image_generation, computer_use_preview and programmatic_tool_calling (bedrock-runtime /openai/v1) - PR #7668",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/openai.gpt-5.6-sol\",\n  \"input\": \"Say hi in one word.\",\n  \"max_output_tokens\": 64,\n  \"tools\": [\n    {\n      \"type\": \"shell\",\n      \"environment\": {\n        \"type\": \"local\"\n      }\n    },\n    {\n      \"type\": \"local_shell\"\n    },\n    {\n      \"type\": \"code_interpreter\",\n      \"container\": {\n        \"type\": \"auto\"\n      }\n    },\n    {\n      \"type\": \"image_generation\"\n    },\n    {\n      \"type\": \"computer_use_preview\",\n      \"display_width\": 1024,\n      \"display_height\": 768,\n      \"environment\": \"browser\"\n    },\n    {\n      \"type\": \"programmatic_tool_calling\"\n    },\n    {\n      \"type\": \"apply_patch\"\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_time\",\n      \"description\": \"Get the current time.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('bedrock/openai.gpt-5.6-sol hosted tool drop: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var body = pm.response.json() || {};",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('bedrock/openai.gpt-5.6-sol hosted tool drop: raw_request captured', function () {",
+              "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+              "});",
+              "if (!rr || typeof rr !== 'object') { return; }",
+              "var wireTypes = (rr.tools || []).map(function (t) { return t && t.type; });",
+              "pm.test('bedrock/openai.gpt-5.6-sol hosted tool drop: no rejected tool type reaches the wire', function () {",
+              "  ['shell', 'local_shell', 'code_interpreter', 'image_generation', 'computer_use_preview', 'programmatic_tool_calling'].forEach(function (t) {",
+              "    pm.expect(wireTypes, t + ' reached Bedrock, which rejects it on every model').to.not.include(t);",
+              "  });",
+              "});",
+              "pm.test('bedrock/openai.gpt-5.6-sol hosted tool drop: apply_patch and the function tool survive', function () {",
+              "  pm.expect(wireTypes, 'wire tools: ' + JSON.stringify(wireTypes)).to.eql(['apply_patch', 'function']);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "181.3 openai/gpt-5.3-codex /v1/responses keeps the shell tool (drop is Bedrock-only) - PR #7668",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-5.3-codex\",\n  \"input\": \"Say hi in one word.\",\n  \"max_output_tokens\": 40,\n  \"tools\": [\n    {\n      \"type\": \"shell\",\n      \"environment\": {\n        \"type\": \"local\"\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_time\",\n      \"description\": \"Get the current time.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('openai shell control: 2xx', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var body = pm.response.json() || {};",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('openai shell control: raw_request captured', function () {",
+              "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+              "});",
+              "if (!rr || typeof rr !== 'object') { return; }",
+              "var wireTypes = (rr.tools || []).map(function (t) { return t && t.type; });",
+              "pm.test('openai shell control: shell still reaches OpenAI', function () {",
+              "  pm.expect(wireTypes, 'wire tools: ' + JSON.stringify(wireTypes)).to.eql(['shell', 'function']);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

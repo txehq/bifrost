@@ -1,0 +1,560 @@
+{
+  "name": "153. Resumable files, computer use and response field path pins (files computer use and response field pins)",
+  "description": "Held rows resolved with evidence. Gemini Files native lifecycle (153.1a-d share h153UploadUrl/h153FileId and must run in order; the resumable initiation and finalize bodies, and DELETE, are carved out of the generic shape check in __skipShape). Passthrough computer_use forwards the CLIENT beta header (no injection exists on the passthrough path, so the row is re-scoped to forwarding plus credential stripping). Cross-model computer use goes through /v1/responses computer_use_preview, because /v1/chat tools only support function and custom. Multi-value and unknown anthropic-beta follow the documented 400 behaviour. Bedrock additionalModelResponseFieldPaths follows the documented /stop_sequence example and the documented 400 for a malformed pointer. 153.8 embeds a 1s wav generated at build time (about 10KB) and is [PREVIEW] for gpt-4o-audio-preview access.",
+  "item": [
+    {
+      "name": "153.1a gemini files upload step 1 returns a resumable upload url (gemini files lifecycle)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          },
+          {
+            "key": "X-Goog-Upload-Protocol",
+            "value": "resumable"
+          },
+          {
+            "key": "X-Goog-Upload-Command",
+            "value": "start"
+          },
+          {
+            "key": "X-Goog-Upload-Header-Content-Type",
+            "value": "text/plain"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"file\": {\n    \"display_name\": \"h151-probe\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/upload/v1beta/files",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "upload",
+            "v1beta",
+            "files"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var url = pm.response.headers.get('X-Goog-Upload-URL');",
+              "pm.test('initiation returns an upload url carrying an upload_id', function () { pm.expect(url, 'no X-Goog-Upload-URL header; body: ' + pm.response.text()).to.be.a('string').and.include('upload_id='); pm.expect(pm.response.headers.get('X-Goog-Upload-Status')).to.equal('active'); });",
+              "pm.collectionVariables.set('h153UploadUrl', url);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "153.1b gemini files upload step 2 finalizes and returns the file (gemini files lifecycle)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var f = j.file || j;",
+              "pm.test('finalize returns a files/ resource name and uri', function () { pm.expect(f.name, pm.response.text()).to.match(/^files\\/.+/); pm.expect(f.uri, pm.response.text()).to.be.a('string').and.not.empty; });",
+              "pm.test('final upload status header is set', function () { pm.expect(pm.response.headers.get('X-Goog-Upload-Status')).to.equal('final'); });",
+              "pm.collectionVariables.set('h153FileId', String(f.name || '').split('/').pop());"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "text/plain"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          },
+          {
+            "key": "X-Goog-Upload-Command",
+            "value": "upload, finalize"
+          },
+          {
+            "key": "X-Goog-Upload-Offset",
+            "value": "0"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "harness gemini files probe"
+        },
+        "url": "{{h153UploadUrl}}"
+      }
+    },
+    {
+      "name": "153.1c gemini files get returns the uploaded file (gemini files lifecycle)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/files/{{h153FileId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "files",
+            "{{h153FileId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('get returns the uploaded file name', function () { pm.expect(j.name, pm.response.text()).to.equal('files/' + pm.collectionVariables.get('h153FileId')); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "153.1d gemini files delete removes the uploaded file (gemini files lifecycle)",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/files/{{h153FileId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "files",
+            "{{h153FileId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('delete succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "153.2 anthropic passthrough computer_use forwards the client beta header and ignores a bogus x-api-key (passthrough computer use)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "bogus-h151"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "anthropic-beta",
+            "value": "computer-use-2025-11-24"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 512,\n  \"tools\": [\n    {\n      \"type\": \"computer_20251124\",\n      \"name\": \"computer\",\n      \"display_width_px\": 1024,\n      \"display_height_px\": 768\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"any\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot of the desktop.\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic_passthrough/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic_passthrough",
+            "v1",
+            "messages"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('model answered with a computer tool_use', function () { var t = (j.content || []).filter(function (b) { return b.type === 'tool_use' && b.name === 'computer'; })[0]; pm.expect(t, 'no computer tool_use: ' + pm.response.text().slice(0, 800)).to.be.an('object'); });",
+              "pm.test('bogus credential is not echoed', function () { pm.expect(pm.response.text().indexOf('bogus-h151'), 'bogus credential leaked').to.equal(-1); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "153.3 anthropic/claude-sonnet-4-6 responses computer_use_preview is translated to a computer_20251124 tool (computer use cross-model)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"input\": \"Take a screenshot of the desktop.\",\n  \"tools\": [\n    {\n      \"type\": \"computer_use_preview\",\n      \"display_width\": 1024,\n      \"display_height\": 768,\n      \"environment\": \"linux\"\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"max_output_tokens\": 512\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var __b = pm.response.json() || {};",
+              "var rr = (__b.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('raw_request captured', function () { pm.expect(rr, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object'); });",
+              "if (rr) {",
+              "  pm.test('wire tool is the new-gen computer tool named computer', function () { var t = (rr.tools || []).filter(function (x) { return /^computer_20/.test(x.type || ''); })[0]; pm.expect(t, JSON.stringify(rr.tools || []).slice(0, 600)).to.be.an('object'); pm.expect(t.name).to.equal('computer'); });",
+              "}",
+              "pm.test('output carries a computer_call item', function () { pm.expect((__b.output || []).some(function (o) { return o.type === 'computer_call'; }), pm.response.text().slice(0, 800)).to.equal(true); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "153.4 anthropic native comma-separated anthropic-beta values are all accepted (explicit beta list)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "anthropic-beta",
+            "value": "computer-use-2025-11-24,prompt-caching-2024-07-31"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 512,\n  \"tools\": [\n    {\n      \"type\": \"computer_20251124\",\n      \"name\": \"computer\",\n      \"display_width_px\": 1024,\n      \"display_height_px\": 768\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"any\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot of the desktop.\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('model answered with a computer tool_use', function () { var t = (j.content || []).filter(function (b) { return b.type === 'tool_use' && b.name === 'computer'; })[0]; pm.expect(t, 'no computer tool_use: ' + pm.response.text().slice(0, 800)).to.be.an('object'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "153.5 anthropic native bare anthropic-beta header is not forwarded without a header allowlist (explicit beta list)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "anthropic-beta",
+            "value": "invalid-beta-h151-2099-01-01"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('unknown bare anthropic-beta was dropped, so Anthropic answered normally', function () { pm.expect(j.type, 'the invalid beta reached Anthropic; bare anthropic-beta must only be forwarded when a header allowlist permits it: ' + pm.response.text().slice(0, 600)).to.equal('message'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "153.6 bedrock converse additionalModelResponseFieldPaths returns stop_sequence when a stop sequence fires (response field paths)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Repeat exactly, in lowercase: one, two, three, four\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 128,\n    \"stopSequences\": [\n      \"three\"\n    ]\n  },\n  \"additionalModelResponseFieldPaths\": [\n    \"/stop_sequence\"\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "{{bedrockModel}}",
+            "converse"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 600)).to.equal(200); });",
+              "var j = pm.response.json();",
+              "pm.test('stop sequence fired and was echoed through additionalModelResponseFields', function () {",
+              "  pm.expect(j.stopReason, pm.response.text().slice(0, 600)).to.equal('stop_sequence');",
+              "  pm.expect(j.additionalModelResponseFields, 'additionalModelResponseFields missing: ' + pm.response.text().slice(0, 600)).to.be.an('object');",
+              "  pm.expect(j.additionalModelResponseFields.stop_sequence).to.equal('three');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "153.6b bedrock converse-stream messageStop carries stop_sequence and additionalModelResponseFields (response field paths)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Repeat exactly, in lowercase: one, two, three, four\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 128,\n    \"stopSequences\": [\n      \"three\"\n    ]\n  },\n  \"additionalModelResponseFieldPaths\": [\n    \"/stop_sequence\"\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse-stream",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "{{bedrockModel}}",
+            "converse-stream"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.text() || '';",
+              "pm.test('HTTP 200 AWS event stream', function () {",
+              "  pm.expect(pm.response.code, body.slice(0, 600)).to.equal(200);",
+              "  pm.expect(pm.response.headers.get('content-type') || '', 'content-type').to.include('vnd.amazon.eventstream');",
+              "});",
+              "pm.test('messageStop reports the native stop_sequence and echoes additionalModelResponseFields', function () {",
+              "  var stop = body.slice(body.lastIndexOf('messageStop'));",
+              "  pm.expect(body, 'no messageStop event: ' + body.slice(-600)).to.include('messageStop');",
+              "  pm.expect(stop, 'messageStop payload: ' + stop.slice(0, 600)).to.match(/\"stopReason\"\\s*:\\s*\"stop_sequence\"/);",
+              "  pm.expect(stop, 'messageStop payload: ' + stop.slice(0, 600)).to.match(/\"additionalModelResponseFields\"\\s*:\\s*\\{\\s*\"stop_sequence\"\\s*:\\s*\"three\"/);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "153.7 [EXPECT-400] bedrock converse malformed JSON pointer in additionalModelResponseFieldPaths is rejected (response field paths)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Say hi.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 32\n  },\n  \"additionalModelResponseFieldPaths\": [\n    \"stop_sequence\"\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "{{bedrockModel}}",
+            "converse"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('AWS validation error is surfaced', function () { var t = pm.response.text(); pm.expect(t.length, 'empty rejection body').to.be.above(0); pm.expect(t, 'rejection does not look like a validation error: ' + t).to.match(/validation|pointer|invalid|path/i); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "153.8 [PREVIEW] openai/gpt-4o-audio-preview chat input_audio wav is understood (audio input)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-audio-preview\",\n  \"modalities\": [\n    \"text\"\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"In a few words, describe the sound in this clip.\"\n        },\n        {\n          \"type\": \"input_audio\",\n          \"input_audio\": {\n            \"data\": \"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\",\n            \"format\": \"wav\"\n          }\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 64\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('model replied about the audio', function () { pm.expect(j.choices[0].message.content || '', pm.response.text().slice(0, 400)).to.not.equal(''); pm.expect(j.usage.prompt_tokens, 'audio tokens not counted').to.be.above(20); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

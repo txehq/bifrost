@@ -1,0 +1,135 @@
+{
+  "name": "98. Bedrock service tier capability gating (bedrock-service-tier-gating)",
+  "description": "Bedrock supports non-Standard service tiers only for an explicit subset of models. Sending service_tier=priority to a Standard-only model such as GPT-5.6 Luna previously reached Converse as serviceTier.type=priority and failed with HTTP 400 (\"The provided service tier is not supported for this model.\"). The first two cases pin both native request builders: Responses and Chat Completions must omit unsupported priority from the Bedrock Runtime request so AWS selects Standard. The third case prevents an over-broad fix by requiring Bedrock Mantle to retain priority for Grok 4.6, whose model capability row advertises Priority/Flex support. Run this folder with compat off so the provider serializers, rather than compat parameter dropping, own the assertions.",
+  "item": [
+    {
+      "name": "bedrock/global.openai.gpt-5.6-luna /v1/responses drops unsupported priority - bedrock-service-tier-gating",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-compat",
+            "value": "[]"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/global.openai.gpt-5.6-luna\",\n  \"input\": \"Reply with exactly: OK\",\n  \"max_output_tokens\": 32,\n  \"service_tier\": \"priority\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text() || '';",
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+              "pm.test('Bedrock Responses does not send unsupported Luna priority', function () {",
+              "  pm.expect(text, 'unsupported service tier reached Bedrock: ' + text).to.not.include('The provided service tier is not supported for this model.');",
+              "  pm.expect(pm.response.code, 'request failed: ' + text).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var body = pm.response.json() || {};",
+              "var raw = (body.extra_fields || {}).raw_request;",
+              "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+              "pm.test('Bedrock Responses provider request omits serviceTier', function () {",
+              "  pm.expect(raw, 'extra_fields.raw_request missing - is send_back_raw_request honoured? body=' + text).to.be.an('object');",
+              "  pm.expect(raw, 'unsupported serviceTier survived: ' + JSON.stringify(raw)).to.not.have.property('serviceTier');",
+              "  pm.expect(raw, 'OpenAI spelling leaked into Converse: ' + JSON.stringify(raw)).to.not.have.property('service_tier');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "bedrock/global.openai.gpt-5.6-luna /v1/chat/completions drops unsupported priority - bedrock-service-tier-gating",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-compat",
+            "value": "[]"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/global.openai.gpt-5.6-luna\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Reply with exactly: OK\"}],\n  \"max_tokens\": 32,\n  \"service_tier\": \"priority\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text() || '';",
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+              "pm.test('Bedrock Chat does not send unsupported Luna priority', function () {",
+              "  pm.expect(text, 'unsupported service tier reached Bedrock: ' + text).to.not.include('The provided service tier is not supported for this model.');",
+              "  pm.expect(pm.response.code, 'request failed: ' + text).to.be.below(400);",
+              "});",
+              "if (pm.response.code >= 400) { return; }",
+              "var body = pm.response.json() || {};",
+              "var raw = (body.extra_fields || {}).raw_request;",
+              "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+              "pm.test('Bedrock Chat provider request omits serviceTier', function () {",
+              "  pm.expect(raw, 'extra_fields.raw_request missing - is send_back_raw_request honoured? body=' + text).to.be.an('object');",
+              "  pm.expect(raw, 'unsupported serviceTier survived: ' + JSON.stringify(raw)).to.not.have.property('serviceTier');",
+              "  pm.expect(raw, 'OpenAI spelling leaked into Converse: ' + JSON.stringify(raw)).to.not.have.property('service_tier');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

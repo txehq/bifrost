@@ -1,0 +1,947 @@
+{
+  "name": "130. Anthropic per-message effort override (mid-conversation output_config) forwarded on /anthropic/v1/messages (per-message-effort)",
+  "description": "Pi 0.87.1 with supportsMidConvoEffort sends a top-level output_config.effort (\"high\") and overrides it for the current turn with an effort-only mid-conversation system message: {\"role\":\"system\",\"content\":[],\"output_config\":{\"effort\":\"low\"}} under beta mid-conversation-output-config-2026-07-01. Bifrost's AnthropicMessage (core/providers/anthropic/types.go) kept only role and content, so on the normalized /anthropic/v1/messages path (any non-Claude-Code user agent) the override was dropped on ingress (no content blocks -> no neutral item) and the upstream request ran at the top-level effort; changing effort between turns was silently ignored and the beta header was never derived.\n\nThe fix carries the per-message output_config on AnthropicMessage and on the neutral ResponsesMessage, re-emits it as an effort-only role:\"system\" message (empty content array, placement-exempt) when the provider+model supports per-turn effort (Anthropic direct: Opus 5+, Sonnet 5.5, Fable/Mythos), injects mid-conversation-output-config-2026-07-01 from the body on both the typed and raw-body paths, and drops the item fail-soft elsewhere (unsupported Claude models, and the OpenAI-shaped egress, which has no equivalent and rejects an empty-content system item).\n\nCases: (1) anthropic/claude-opus-5-5 non-streaming with x-bf-send-back-raw-request -> 200 with text AND the echoed raw_request carries exactly one role:system message with content [] and output_config.effort low while the top-level effort stays high (pre-fix: the override is absent from raw_request); (2) the same request streaming (Pi's actual shape) -> 200 SSE with content_block_delta and message_stop, no error event; (3) anthropic/claude-opus-4-8 (mid-conversation system supported, per-turn effort not) -> 200 and raw_request carries no system message, pinning the fail-soft drop instead of a forwarded 400.\n\nVertex rows (Claude Code raw passthrough): Claude Code 2.1.285 also sends output_config on a text-bearing role:\"system\" message. Vertex rejects it with \"messages.1.output_config: Extra inputs are not permitted\" (seen in production on Opus 5.5, Fable 5.1 and Sonnet 5.5). StripUnsupportedFieldsFromRawBody and the typed stripUnsupportedAnthropicFields now remove messages[].output_config wherever per-message effort is unsupported, keep the system text and top-level effort, and drop effort-only system items whole. Red pre-fix (400), green post-fix (200).",
+  "item": [
+    {
+      "name": "anthropic/claude-opus-5-5 /anthropic/v1/messages per-message effort override (system content [] + output_config.effort low) reaches the provider - per-message-effort",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "var body = {};",
+              "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "var wire = JSON.stringify(rr || null);",
+              "",
+              "// Pi 0.87.1 (supportsMidConvoEffort) sends a top-level output_config.effort plus an effort-only",
+              "// role:\"system\" message ({content: [], output_config: {effort: low}}) overriding it for the current",
+              "// turn, under beta mid-conversation-output-config-2026-07-01. Pre-fix AnthropicMessage kept only",
+              "// role and content, so the override was dropped and the upstream request ran at the top-level effort.",
+              "pm.test('anthropic claude-opus-5-5 per-message effort override request is accepted (200 with text)', function () {",
+              "  pm.expect(pm.response.code, 'want 200; a 400 means the override reached Anthropic malformed or the beta header was not injected, and any other status is a real failure: ' + txt.slice(0, 400)).to.eql(200);",
+              "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+              "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+              "});",
+              "",
+              "pm.test('anthropic claude-opus-5-5 per-message effort: the effort-only system message reaches the provider with effort low', function () {",
+              "  if (pm.response.headers.get('x-bifrost-request-type') === 'passthrough') {",
+              "    // Native Messages passthrough forwards the caller's body as sent and returns Anthropic's own",
+              "    // bytes, so there is no raw_request; anthropicmsg and the route tests cover those bytes offline.",
+              "    pm.expect(pm.response.headers.get('x-bifrost-provider'), 'native passthrough answered by another provider: ' + pm.response.text().slice(0, 300)).to.eql('anthropic');",
+              "    return;",
+              "  }",
+              "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+              "  pm.expect(rr.output_config && rr.output_config.effort, 'top-level output_config.effort must stay high: ' + wire.slice(0, 400)).to.eql('high');",
+              "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+              "  var overrides = msgs.filter(function (m) { return m && m.role === 'system' && m.output_config && m.output_config.effort === 'low'; });",
+              "  pm.expect(overrides.length, 'per-message output_config.effort=low was dropped before the provider (pre-fix: AnthropicMessage kept only role+content): ' + wire.slice(0, 600)).to.eql(1);",
+              "  pm.expect(Array.isArray(overrides[0].content) && overrides[0].content.length === 0, 'effort-only system message must carry an empty content array: ' + JSON.stringify(overrides[0])).to.be.true;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "anthropic-beta",
+            "value": "mid-conversation-output-config-2026-07-01"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"high\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [],\n      \"output_config\": {\n        \"effort\": \"low\"\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-opus-5-5 /anthropic/v1/messages per-message effort override streaming (Pi shape) completes - per-message-effort",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('anthropic claude-opus-5-5 per-message effort override streams a complete reply (200, SSE)', function () {",
+              "  pm.expect(pm.response.code, 'want 200; a 400 means the override reached Anthropic malformed or the beta header was not injected, and any other status is a real failure: ' + txt.slice(0, 400)).to.eql(200);",
+              "  pm.expect(txt, 'expected an SSE message_start event: ' + txt.slice(0, 300)).to.include('message_start');",
+              "  pm.expect(txt, 'expected at least one content_block_delta: ' + txt.slice(0, 300)).to.include('content_block_delta');",
+              "  pm.expect(txt, 'expected the stream to close with message_stop: ' + txt.slice(-300)).to.include('message_stop');",
+              "  pm.expect(txt, 'stream carried an error event: ' + txt.slice(0, 400)).to.not.include('\"type\":\"error\"');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "anthropic-beta",
+            "value": "mid-conversation-output-config-2026-07-01"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"high\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [],\n      \"output_config\": {\n        \"effort\": \"low\"\n      }\n    }\n  ],\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[SKIP] [NATIVE-PASSTHROUGH] anthropic/claude-opus-4-8 /anthropic/v1/messages per-message effort override dropped fail-soft on a model without per-turn effort - per-message-effort",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "var body = {};",
+              "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "var wire = JSON.stringify(rr || null);",
+              "",
+              "// Opus 4.8 accepts mid-conversation system messages but not per-turn effort (Anthropic 400s",
+              "// \"output_config.effort requires a model that supports per-turn effort\"), so the override is",
+              "// dropped instead of forwarded into a guaranteed rejection; the top-level effort still applies.",
+              "pm.test('anthropic claude-opus-4-8 per-message effort override is dropped fail-soft (200, override not forwarded)', function () {",
+              "  pm.expect(pm.response.code, 'want 200; a 400 means the per-message override was forwarded to a model without per-turn effort support: ' + txt.slice(0, 400)).to.eql(200);",
+              "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+              "  pm.expect(rr.output_config && rr.output_config.effort, 'top-level output_config.effort must stay high: ' + wire.slice(0, 400)).to.eql('high');",
+              "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+              "  var forwarded = msgs.filter(function (m) { return m && m.role === 'system'; });",
+              "  pm.expect(forwarded.length, 'effort-only system message must not be forwarded to a model without per-turn effort support: ' + wire.slice(0, 600)).to.eql(0);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "anthropic-beta",
+            "value": "mid-conversation-output-config-2026-07-01"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-opus-4-8\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"high\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [],\n      \"output_config\": {\n        \"effort\": \"low\"\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-sonnet-5-5 /anthropic/v1/messages per-message effort on a text-bearing system item stays native - per-message-effort",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "var body = {};",
+              "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "var wire = JSON.stringify(rr || null);",
+              "",
+              "// Sonnet 5.5 supports both mid-conversation system messages and per-message effort (Anthropic docs),",
+              "// so a text-bearing system item with an override must go out natively with the override intact,",
+              "// not be inlined as a <system-reminder> user turn with the effort dropped (PR #7714 review).",
+              "pm.test('anthropic claude-sonnet-5-5 per-message effort on a text-bearing system item is accepted (200 with text)', function () {",
+              "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+              "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+              "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+              "});",
+              "pm.test('anthropic claude-sonnet-5-5 per-message effort: text system item stays native and keeps effort low', function () {",
+              "  if (pm.response.headers.get('x-bifrost-request-type') === 'passthrough') {",
+              "    // Native Messages passthrough forwards the caller's body as sent and returns Anthropic's own",
+              "    // bytes, so there is no raw_request; anthropicmsg and the route tests cover those bytes offline.",
+              "    pm.expect(pm.response.headers.get('x-bifrost-provider'), 'native passthrough answered by another provider: ' + pm.response.text().slice(0, 300)).to.eql('anthropic');",
+              "    return;",
+              "  }",
+              "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+              "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+              "  var sys = msgs.filter(function (m) { return m && m.role === 'system'; });",
+              "  pm.expect(sys.length, 'text-bearing system item was inlined instead of forwarded as role system: ' + wire.slice(0, 600)).to.eql(1);",
+              "  pm.expect(sys[0].output_config && sys[0].output_config.effort, 'override dropped from the text-bearing system item: ' + JSON.stringify(sys[0])).to.eql('low');",
+              "  pm.expect(JSON.stringify(sys[0].content), 'system text missing: ' + JSON.stringify(sys[0])).to.include('Answer in lowercase.');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "anthropic-beta",
+            "value": "mid-conversation-output-config-2026-07-01"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-sonnet-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"high\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": \"Answer in lowercase.\",\n      \"output_config\": {\n        \"effort\": \"low\"\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-opus-5-5 /anthropic/v1/messages per-message effort effort-only system followed by text system stays one native group - per-message-effort",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "var body = {};",
+              "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "var wire = JSON.stringify(rr || null);",
+              "",
+              "// Consecutive system messages are one placement group (Anthropic docs), so a text system item",
+              "// right after the effort-only override must also go out natively, not be inlined because its",
+              "// immediate predecessor is a system message rather than the user turn (PR #7714 review).",
+              "pm.test('anthropic claude-opus-5-5 effort-only system followed by text system is accepted (200 with text)', function () {",
+              "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+              "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+              "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+              "});",
+              "pm.test('anthropic claude-opus-5-5 per-message effort: both system items reach the provider as one system group', function () {",
+              "  if (pm.response.headers.get('x-bifrost-request-type') === 'passthrough') {",
+              "    // Native Messages passthrough forwards the caller's body as sent and returns Anthropic's own",
+              "    // bytes, so there is no raw_request; anthropicmsg and the route tests cover those bytes offline.",
+              "    pm.expect(pm.response.headers.get('x-bifrost-provider'), 'native passthrough answered by another provider: ' + pm.response.text().slice(0, 300)).to.eql('anthropic');",
+              "    return;",
+              "  }",
+              "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+              "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+              "  var roles = msgs.map(function (m) { return m && m.role; });",
+              "  pm.expect(roles, 'want user,system,system (second system item was inlined as a user reminder): ' + wire.slice(0, 600)).to.eql(['user', 'system', 'system']);",
+              "  pm.expect(msgs[1].output_config && msgs[1].output_config.effort, 'effort-only override lost: ' + JSON.stringify(msgs[1])).to.eql('low');",
+              "  pm.expect(JSON.stringify(msgs[2].content), 'text system item lost its text: ' + JSON.stringify(msgs[2])).to.include('Answer in lowercase.');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "anthropic-beta",
+            "value": "mid-conversation-output-config-2026-07-01"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"high\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [],\n      \"output_config\": {\n        \"effort\": \"low\"\n      }\n    },\n    {\n      \"role\": \"system\",\n      \"content\": \"Answer in lowercase.\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-opus-5-5 /anthropic/v1/messages per-message effort on the first member of a system group stays native - per-message-effort",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "var body = {};",
+              "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "var wire = JSON.stringify(rr || null);",
+              "",
+              "// The placement rule applies to a consecutive system group as a whole, so the FIRST member of",
+              "// [user, system(text+override), system(text)] is judged by what follows the group, not by its",
+              "// sibling; judging it by the sibling inlined it as a user reminder and dropped its override.",
+              "pm.test('anthropic claude-opus-5-5 per-message effort on the first member of a system group is accepted (200 with text)', function () {",
+              "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+              "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+              "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+              "});",
+              "pm.test('anthropic claude-opus-5-5 per-message effort: both members of the system group stay native, first keeps effort low', function () {",
+              "  if (pm.response.headers.get('x-bifrost-request-type') === 'passthrough') {",
+              "    // Native Messages passthrough forwards the caller's body as sent and returns Anthropic's own",
+              "    // bytes, so there is no raw_request; anthropicmsg and the route tests cover those bytes offline.",
+              "    pm.expect(pm.response.headers.get('x-bifrost-provider'), 'native passthrough answered by another provider: ' + pm.response.text().slice(0, 300)).to.eql('anthropic');",
+              "    return;",
+              "  }",
+              "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+              "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+              "  var roles = msgs.map(function (m) { return m && m.role; });",
+              "  pm.expect(roles, 'want user,system,system (first system item was inlined as a user reminder): ' + wire.slice(0, 600)).to.eql(['user', 'system', 'system']);",
+              "  pm.expect(msgs[1].output_config && msgs[1].output_config.effort, 'first system item lost its override: ' + JSON.stringify(msgs[1])).to.eql('low');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "anthropic-beta",
+            "value": "mid-conversation-output-config-2026-07-01"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"high\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": \"Answer in lowercase.\",\n      \"output_config\": {\n        \"effort\": \"low\"\n      }\n    },\n    {\n      \"role\": \"system\",\n      \"content\": \"Be brief.\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-opus-5-5 /anthropic/v1/messages per-message effort leading effort-only item keeps the system prompt hoisted - per-message-effort",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "var body = {};",
+              "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "var wire = JSON.stringify(rr || null);",
+              "",
+              "// A leading effort-only item is not a conversation turn: the system prompt after it must still",
+              "// be hoisted into the top-level system block, not demoted to a mid-conversation reminder that",
+              "// gets inlined as a user turn and leaves system null.",
+              "pm.test('anthropic claude-opus-5-5 leading effort-only item then system prompt is accepted (200 with text)', function () {",
+              "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+              "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+              "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+              "});",
+              "pm.test('anthropic claude-opus-5-5 per-message effort: system prompt after a leading effort-only item is hoisted, not inlined', function () {",
+              "  if (pm.response.headers.get('x-bifrost-request-type') === 'passthrough') {",
+              "    // Native Messages passthrough forwards the caller's body as sent and returns Anthropic's own",
+              "    // bytes, so there is no raw_request; anthropicmsg and the route tests cover those bytes offline.",
+              "    pm.expect(pm.response.headers.get('x-bifrost-provider'), 'native passthrough answered by another provider: ' + pm.response.text().slice(0, 300)).to.eql('anthropic');",
+              "    return;",
+              "  }",
+              "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+              "  pm.expect(JSON.stringify(rr.system || null), 'system prompt missing from the top-level system block: ' + wire.slice(0, 600)).to.include('single word: ok');",
+              "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+              "  var roles = msgs.map(function (m) { return m && m.role; });",
+              "  pm.expect(roles, 'want system(effort-only),user (system prompt was inlined as a user reminder): ' + wire.slice(0, 600)).to.eql(['system', 'user']);",
+              "  pm.expect(msgs[0].output_config && msgs[0].output_config.effort, 'leading effort-only override lost: ' + JSON.stringify(msgs[0])).to.eql('low');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "anthropic-beta",
+            "value": "mid-conversation-output-config-2026-07-01"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [],\n      \"output_config\": {\n        \"effort\": \"low\"\n      }\n    },\n    {\n      \"role\": \"system\",\n      \"content\": \"Always reply with the single word: ok\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[SKIP] [NATIVE-PASSTHROUGH] anthropic/claude-opus-5-5 /anthropic/v1/messages per-message effort without a client anthropic-beta header (gateway injects the beta) - per-message-effort",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "var body = {};",
+              "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "var wire = JSON.stringify(rr || null);",
+              "",
+              "// No client anthropic-beta header on purpose: the gateway must derive",
+              "// mid-conversation-output-config-2026-07-01 from the per-message output_config in the body",
+              "// (typed and raw-body paths). Anthropic rejects the field without the header, so a 200 here is",
+              "// the wire-level proof that injection happened; the sibling cases all send the header themselves.",
+              "pm.test('anthropic claude-opus-5-5 per-message effort without a client beta header is accepted (gateway injected the beta)', function () {",
+              "  pm.expect(pm.response.code, 'want 200; a 400 here means mid-conversation-output-config-2026-07-01 was not injected from the body: ' + txt.slice(0, 400)).to.eql(200);",
+              "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+              "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+              "});",
+              "pm.test('anthropic claude-opus-5-5 per-message effort without a client beta header: the override still reaches the provider', function () {",
+              "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+              "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+              "  var overrides = msgs.filter(function (m) { return m && m.role === 'system' && m.output_config && m.output_config.effort === 'low'; });",
+              "  pm.expect(overrides.length, 'effort-only system message missing from the forwarded request: ' + wire.slice(0, 600)).to.eql(1);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"high\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [],\n      \"output_config\": {\n        \"effort\": \"low\"\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "vertex/claude-opus-5-5 Claude Code passthrough text-bearing system item with output_config (Claude Code 2.1.285 shape) - per-message effort stripped for Vertex - per-message-effort",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "var body = {};",
+              "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "",
+              "// Claude Code (claude-cli UA) takes the raw-body passthrough. Vertex has no per-message effort",
+              "// and rejected the nested field with 'messages.1.output_config: Extra inputs are not permitted'.",
+              "// Bifrost now strips messages[].output_config off Anthropic direct (StripUnsupportedFieldsFromRawBody),",
+              "// keeping the system text and the top-level output_config.effort; effort-only system items are dropped.",
+              "pm.test('vertex/claude-opus-5-5 Claude Code passthrough text-bearing system item with output_config (Claude Code 2.1.285 shape): accepted (200 with text)', function () {",
+              "  pm.expect(txt, 'per-message output_config reached Vertex: ' + txt.slice(0, 400)).to.not.include('Extra inputs are not permitted');",
+              "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+              "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+              "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "User-Agent",
+            "value": "claude-cli/2.1.285 (external, cli)"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Answer in lowercase.\"\n        }\n      ],\n      \"output_config\": {\n        \"effort\": \"medium\"\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "vertex/claude-sonnet-5-5 Claude Code passthrough text-bearing system item with output_config (Claude Code 2.1.285 shape) - per-message effort stripped for Vertex - per-message-effort",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "var body = {};",
+              "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "",
+              "// Claude Code (claude-cli UA) takes the raw-body passthrough. Vertex has no per-message effort",
+              "// and rejected the nested field with 'messages.1.output_config: Extra inputs are not permitted'.",
+              "// Bifrost now strips messages[].output_config off Anthropic direct (StripUnsupportedFieldsFromRawBody),",
+              "// keeping the system text and the top-level output_config.effort; effort-only system items are dropped.",
+              "pm.test('vertex/claude-sonnet-5-5 Claude Code passthrough text-bearing system item with output_config (Claude Code 2.1.285 shape): accepted (200 with text)', function () {",
+              "  pm.expect(txt, 'per-message output_config reached Vertex: ' + txt.slice(0, 400)).to.not.include('Extra inputs are not permitted');",
+              "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+              "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+              "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "User-Agent",
+            "value": "claude-cli/2.1.285 (external, cli)"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/claude-sonnet-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Answer in lowercase.\"\n        }\n      ],\n      \"output_config\": {\n        \"effort\": \"medium\"\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "vertex/claude-fable-5-1 Claude Code passthrough effort-only system item - per-message effort stripped for Vertex - per-message-effort",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "var body = {};",
+              "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "",
+              "// Claude Code (claude-cli UA) takes the raw-body passthrough. Vertex has no per-message effort",
+              "// and rejected the nested field with 'messages.1.output_config: Extra inputs are not permitted'.",
+              "// Bifrost now strips messages[].output_config off Anthropic direct (StripUnsupportedFieldsFromRawBody),",
+              "// keeping the system text and the top-level output_config.effort; effort-only system items are dropped.",
+              "pm.test('vertex/claude-fable-5-1 Claude Code passthrough effort-only system item: accepted (200 with text)', function () {",
+              "  pm.expect(txt, 'per-message output_config reached Vertex: ' + txt.slice(0, 400)).to.not.include('Extra inputs are not permitted');",
+              "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+              "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+              "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "User-Agent",
+            "value": "claude-cli/2.1.285 (external, cli)"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/claude-fable-5-1\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"high\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [],\n      \"output_config\": {\n        \"effort\": \"low\"\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-opus-5-5 /v1/responses per-message effort on a leading (hoisted) system item survives as an effort-only message - per-message-effort",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "var body = {};",
+              "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "var wire = JSON.stringify(rr || null);",
+              "",
+              "// A system item carrying text AND output_config.effort can only go out natively at a valid",
+              "// placement. On the hoist/inline fallbacks the override is re-emitted as an effort-only",
+              "// system message, which Anthropic exempts from placement rules (PR #8018 review).",
+              "pm.test('anthropic claude-opus-5-5 leading system item hoisted: accepted (200 with text)', function () {",
+              "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+              "  var out = Array.isArray(body.output) ? body.output : [];",
+              "  var hasText = out.some(function (o) { return Array.isArray(o.content) && o.content.some(function (c) { return c.text; }); });",
+              "  pm.expect(hasText, 'expected output text: ' + txt.slice(0, 300)).to.be.true;",
+              "});",
+              "pm.test('anthropic claude-opus-5-5 leading system item hoisted: effort-only override reaches the wire', function () {",
+              "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+              "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+              "  var sys = msgs.filter(function (m) { return m && m.role === 'system'; });",
+              "  pm.expect(sys.length, 'want exactly one effort-only system message: ' + wire.slice(0, 600)).to.eql(1);",
+              "  pm.expect(sys[0].output_config && sys[0].output_config.effort, 'override lost: ' + JSON.stringify(sys[0])).to.eql('low');",
+              "  pm.expect(Array.isArray(sys[0].content) && sys[0].content.length, 'effort-only message must carry an empty content array: ' + JSON.stringify(sys[0])).to.eql(0);",
+              "  pm.expect(JSON.stringify(rr.system || ''), 'leading system text not hoisted: ' + wire.slice(0, 600)).to.include('Answer in lowercase.');",
+              "  pm.expect(msgs[0] && msgs[0].role, 'effort-only override must be the first message: ' + wire.slice(0, 600)).to.eql('system');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{anthropicKey}}"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-opus-5-5\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Answer in lowercase.\",\n      \"output_config\": {\n        \"effort\": \"low\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic/claude-opus-5-5 /v1/responses per-message effort on a placement-rejected (inlined) system item survives as an effort-only message - per-message-effort",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "var body = {};",
+              "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "var rr = (body.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "var wire = JSON.stringify(rr || null);",
+              "",
+              "// A system item carrying text AND output_config.effort can only go out natively at a valid",
+              "// placement. On the hoist/inline fallbacks the override is re-emitted as an effort-only",
+              "// system message, which Anthropic exempts from placement rules (PR #8018 review).",
+              "pm.test('anthropic claude-opus-5-5 placement-rejected system item inlined: accepted (200 with text)', function () {",
+              "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+              "  var out = Array.isArray(body.output) ? body.output : [];",
+              "  var hasText = out.some(function (o) { return Array.isArray(o.content) && o.content.some(function (c) { return c.text; }); });",
+              "  pm.expect(hasText, 'expected output text: ' + txt.slice(0, 300)).to.be.true;",
+              "});",
+              "pm.test('anthropic claude-opus-5-5 placement-rejected system item inlined: effort-only override reaches the wire', function () {",
+              "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+              "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+              "  var sys = msgs.filter(function (m) { return m && m.role === 'system'; });",
+              "  pm.expect(sys.length, 'want exactly one effort-only system message: ' + wire.slice(0, 600)).to.eql(1);",
+              "  pm.expect(sys[0].output_config && sys[0].output_config.effort, 'override lost: ' + JSON.stringify(sys[0])).to.eql('low');",
+              "  pm.expect(Array.isArray(sys[0].content) && sys[0].content.length, 'effort-only message must carry an empty content array: ' + JSON.stringify(sys[0])).to.eql(0);",
+              "  var at = msgs.indexOf(sys[0]);",
+              "  var next = JSON.stringify(msgs[at + 1] || null);",
+              "  pm.expect(next, 'effort-only override must precede the inlined reminder: ' + wire.slice(0, 600)).to.include('system-reminder');",
+              "  pm.expect(next, 'inlined reminder lost the system text: ' + wire.slice(0, 600)).to.include('Answer in lowercase.');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{anthropicKey}}"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-opus-5-5\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Remember the word: blue\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": \"Answer in lowercase.\",\n      \"output_config\": {\n        \"effort\": \"low\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    }
+  ]
+}

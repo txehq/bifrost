@@ -1,0 +1,818 @@
+{
+  "name": "225. MCP tool auto-injection scope: off by default, opt-in header, and the auto-inject window (mcp-tool-injection) [SERIAL]",
+  "description": "The harness profile sets mcp.tool_manager_config.disable_auto_tool_inject: true, so the sse_mcp fixture (examples/mcps/remote-test-server on :3012) no longer adds echo/add/greet and its server instructions to every chat and responses request: before that, ~190 unrelated rows saw tools and a system message they never sent. disable_auto_tool_inject is gateway-wide (core/mcp/toolmanager.go ParseAndAddToolsToRequest), there is no per-client or per-virtual-key switch, and governance only stamps a virtual key's tool list when auto-injection is on or an include-clients header is present. So this folder is the auto-injection scope: a [SERIAL] window that flips the flag on through PUT /api/config, with nothing else running against the gateway, and restores it.\n\nThree scopes are pinned, chat and responses each: (c) the default scope without an MCP header gets no sse_mcp tool and no server instructions on the provider wire (the regression pin for the profile change, asserted before the window and again after the restore); (b) x-bf-mcp-include-clients: sse_mcp opts one request in while auto-injection is off; (a) with auto-injection on, a request with no MCP header gets the tools and the instructions, and the auto-executable echo tool runs server side. Wire rows send tool_choice none so the single upstream turn is the one asserted; run rows assert the final upstream turn carries the echo tool's result ({\"echoed\": ...}) and the answer carries the echoed token. Provider-level injected_tools (folder 198) resolve independently of this flag (core/injectedtools.go) and are not covered here.",
+  "item": [
+    {
+      "name": "[EXPECT-200] openai read current config, auto-injection is off by default - mcp-tool-injection",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('mcp-tool-injection read current config', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  var cc = pm.response.json().client_config;",
+              "  pm.expect(cc, pm.response.text()).to.be.an('object');",
+              "  pm.expect(cc.mcp_disable_auto_tool_inject, 'the harness profile must keep MCP auto-injection off: ' + pm.response.text()).to.equal(true);",
+              "  pm.collectionVariables.set('mcpToolInjectionClientConfig', JSON.stringify(cc));",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config?from_db=true",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ],
+          "query": [
+            {
+              "key": "from_db",
+              "value": "true"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-200] openai gpt-4o-mini chat default scope without a header gets no sse_mcp tools - mcp-tool-injection",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('chat default scope: no sse_mcp tool and no server instructions reached the provider', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  var body = pm.response.json();",
+              "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || null);",
+              "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.not.equal('null');",
+              "  pm.expect(raw, 'an sse_mcp tool was injected without an opt-in: ' + raw.slice(0, 1500)).to.not.include('sse_mcp-');",
+              "  pm.expect(raw, 'sse_mcp server instructions were injected without an opt-in: ' + raw.slice(0, 1500)).to.not.include('Prefer echo for plain text');",
+              "  pm.expect(body.choices[0].message.tool_calls || [], 'a tool call came back: ' + pm.response.text()).to.have.length(0);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 20,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word ready.\"\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-200] openai gpt-4o-mini responses default scope without a header gets no sse_mcp tools - mcp-tool-injection",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('responses default scope: no sse_mcp tool and no server instructions reached the provider', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  var body = pm.response.json();",
+              "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || null);",
+              "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.not.equal('null');",
+              "  pm.expect(raw, 'an sse_mcp tool was injected without an opt-in: ' + raw.slice(0, 1500)).to.not.include('sse_mcp-');",
+              "  pm.expect(raw, 'sse_mcp server instructions were injected without an opt-in: ' + raw.slice(0, 1500)).to.not.include('Prefer echo for plain text');",
+              "  pm.expect((body.output || []).filter(function (o) { return o && o.type === 'function_call'; }), 'a tool call came back: ' + pm.response.text()).to.have.length(0);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 20,\n  \"input\": \"Reply with the single word ready.\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-200] openai gpt-4o-mini chat include-clients header declares sse_mcp tools and instructions - mcp-tool-injection",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('chat include-clients: sse_mcp tools and server instructions reached the provider', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  var body = pm.response.json();",
+              "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || null);",
+              "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.not.equal('null');",
+              "  ['sse_mcp-echo', 'sse_mcp-add', 'sse_mcp-greet'].forEach(function (name) {",
+              "    pm.expect(raw, name + ' was not declared upstream: ' + raw.slice(0, 2000)).to.include(name);",
+              "  });",
+              "  pm.expect(raw, 'sse_mcp-web_search is outside tools_to_execute and must not be declared: ' + raw.slice(0, 2000)).to.not.include('sse_mcp-web_search');",
+              "  pm.expect(raw, 'the sse_mcp server instructions were not injected: ' + raw.slice(0, 2000)).to.include('Prefer echo for plain text');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-mcp-include-clients",
+            "value": "sse_mcp"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 20,\n  \"tool_choice\": \"none\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word ready.\"\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-200] openai gpt-4o-mini responses include-clients header declares sse_mcp tools and instructions - mcp-tool-injection",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('responses include-clients: sse_mcp tools and server instructions reached the provider', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  var body = pm.response.json();",
+              "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || null);",
+              "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.not.equal('null');",
+              "  ['sse_mcp-echo', 'sse_mcp-add', 'sse_mcp-greet'].forEach(function (name) {",
+              "    pm.expect(raw, name + ' was not declared upstream: ' + raw.slice(0, 2000)).to.include(name);",
+              "  });",
+              "  pm.expect(raw, 'sse_mcp-web_search is outside tools_to_execute and must not be declared: ' + raw.slice(0, 2000)).to.not.include('sse_mcp-web_search');",
+              "  pm.expect(raw, 'the sse_mcp server instructions were not injected: ' + raw.slice(0, 2000)).to.include('Prefer echo for plain text');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-mcp-include-clients",
+            "value": "sse_mcp"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 20,\n  \"tool_choice\": \"none\",\n  \"input\": \"Reply with the single word ready.\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-200] openai gpt-4o-mini chat include-clients header runs the auto-executable echo tool - mcp-tool-injection",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('chat include-clients: the auto-executable echo tool ran server side and fed the answer', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  var body = pm.response.json();",
+              "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || null);",
+              "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.not.equal('null');",
+              "  var text = String(body.choices[0].message.content || '');",
+              "  pm.expect(body.choices[0].message.tool_calls || [], 'the tool call came back unexecuted: ' + pm.response.text()).to.have.length(0);",
+              "  pm.expect(text, 'the answer does not carry the echoed message: ' + pm.response.text()).to.include('mcp-autoinject-7319');",
+              "  pm.expect(raw, 'the final upstream turn carries no echo tool result, so the tool never ran: ' + raw.slice(0, 2000)).to.include('echoed');",
+              "  pm.expect(raw, 'sse_mcp-echo was not declared upstream: ' + raw.slice(0, 2000)).to.include('sse_mcp-echo');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-mcp-include-clients",
+            "value": "sse_mcp"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 200,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call the sse_mcp-echo tool once with the message mcp-autoinject-7319, then reply with the value the tool returned and nothing else.\"\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-200] openai turn auto-injection on - mcp-tool-injection",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var cc = JSON.parse(pm.collectionVariables.get('mcpToolInjectionClientConfig'));",
+              "cc.mcp_disable_auto_tool_inject = false;",
+              "pm.variables.set('mcpToolInjectionBody', JSON.stringify({ client_config: cc }));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('mcp-tool-injection turn auto-injection on', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{{mcpToolInjectionBody}}"
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-200] openai gpt-4o-mini chat auto-injection without a header declares sse_mcp tools and instructions - mcp-tool-injection",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('chat auto-injection: sse_mcp tools and server instructions reached the provider', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  var body = pm.response.json();",
+              "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || null);",
+              "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.not.equal('null');",
+              "  ['sse_mcp-echo', 'sse_mcp-add', 'sse_mcp-greet'].forEach(function (name) {",
+              "    pm.expect(raw, name + ' was not declared upstream: ' + raw.slice(0, 2000)).to.include(name);",
+              "  });",
+              "  pm.expect(raw, 'sse_mcp-web_search is outside tools_to_execute and must not be declared: ' + raw.slice(0, 2000)).to.not.include('sse_mcp-web_search');",
+              "  pm.expect(raw, 'the sse_mcp server instructions were not injected: ' + raw.slice(0, 2000)).to.include('Prefer echo for plain text');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 20,\n  \"tool_choice\": \"none\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word ready.\"\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-200] openai gpt-4o-mini responses auto-injection without a header declares sse_mcp tools and instructions - mcp-tool-injection",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('responses auto-injection: sse_mcp tools and server instructions reached the provider', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  var body = pm.response.json();",
+              "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || null);",
+              "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.not.equal('null');",
+              "  ['sse_mcp-echo', 'sse_mcp-add', 'sse_mcp-greet'].forEach(function (name) {",
+              "    pm.expect(raw, name + ' was not declared upstream: ' + raw.slice(0, 2000)).to.include(name);",
+              "  });",
+              "  pm.expect(raw, 'sse_mcp-web_search is outside tools_to_execute and must not be declared: ' + raw.slice(0, 2000)).to.not.include('sse_mcp-web_search');",
+              "  pm.expect(raw, 'the sse_mcp server instructions were not injected: ' + raw.slice(0, 2000)).to.include('Prefer echo for plain text');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 20,\n  \"tool_choice\": \"none\",\n  \"input\": \"Reply with the single word ready.\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-200] openai gpt-4o-mini chat auto-injection without a header runs the auto-executable echo tool - mcp-tool-injection",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('chat auto-injection: the auto-executable echo tool ran server side and fed the answer', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  var body = pm.response.json();",
+              "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || null);",
+              "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.not.equal('null');",
+              "  var text = String(body.choices[0].message.content || '');",
+              "  pm.expect(body.choices[0].message.tool_calls || [], 'the tool call came back unexecuted: ' + pm.response.text()).to.have.length(0);",
+              "  pm.expect(text, 'the answer does not carry the echoed message: ' + pm.response.text()).to.include('mcp-autoinject-7319');",
+              "  pm.expect(raw, 'the final upstream turn carries no echo tool result, so the tool never ran: ' + raw.slice(0, 2000)).to.include('echoed');",
+              "  pm.expect(raw, 'sse_mcp-echo was not declared upstream: ' + raw.slice(0, 2000)).to.include('sse_mcp-echo');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 200,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call the sse_mcp-echo tool once with the message mcp-autoinject-7319, then reply with the value the tool returned and nothing else.\"\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-200] openai gpt-4o-mini responses auto-injection without a header runs the auto-executable echo tool - mcp-tool-injection",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('responses auto-injection: the auto-executable echo tool ran server side and fed the answer', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  var body = pm.response.json();",
+              "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || null);",
+              "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.not.equal('null');",
+              "  var text = body.output_text || '';",
+              "  (body.output || []).forEach(function (o) { if (!o || o.type !== 'message') { return; } (o.content || []).forEach(function (c) { if (c && c.type === 'output_text' && typeof c.text === 'string') { text += c.text; } }); });",
+              "  pm.expect(text, 'the answer does not carry the echoed message: ' + pm.response.text()).to.include('mcp-autoinject-7319');",
+              "  pm.expect(raw, 'the final upstream turn carries no echo tool result, so the tool never ran: ' + raw.slice(0, 2000)).to.include('echoed');",
+              "  pm.expect(raw, 'sse_mcp-echo was not declared upstream: ' + raw.slice(0, 2000)).to.include('sse_mcp-echo');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 300,\n  \"input\": \"Call the sse_mcp-echo tool once with the message mcp-autoinject-7319, then reply with the value the tool returned and nothing else.\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-200] openai restore auto-injection off - mcp-tool-injection",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.variables.set('mcpToolInjectionBody', JSON.stringify({ client_config: JSON.parse(pm.collectionVariables.get('mcpToolInjectionClientConfig')) }));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('mcp-tool-injection restore auto-injection off', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{{mcpToolInjectionBody}}"
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-200] openai restored config keeps auto-injection off - mcp-tool-injection",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('mcp-tool-injection restored config keeps auto-injection off', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.json().client_config.mcp_disable_auto_tool_inject, 'auto-injection was left on: ' + pm.response.text()).to.equal(true);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config?from_db=true",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ],
+          "query": [
+            {
+              "key": "from_db",
+              "value": "true"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-200] openai gpt-4o-mini chat default scope after the restore gets no sse_mcp tools - mcp-tool-injection",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('chat default scope after restore: no sse_mcp tool and no server instructions reached the provider', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  var body = pm.response.json();",
+              "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || null);",
+              "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.not.equal('null');",
+              "  pm.expect(raw, 'an sse_mcp tool was injected without an opt-in: ' + raw.slice(0, 1500)).to.not.include('sse_mcp-');",
+              "  pm.expect(raw, 'sse_mcp server instructions were injected without an opt-in: ' + raw.slice(0, 1500)).to.not.include('Prefer echo for plain text');",
+              "  pm.expect(body.choices[0].message.tool_calls || [], 'a tool call came back: ' + pm.response.text()).to.have.length(0);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 20,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word ready.\"\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-200] openai gpt-4o-mini responses default scope after the restore gets no sse_mcp tools - mcp-tool-injection",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('responses default scope after restore: no sse_mcp tool and no server instructions reached the provider', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  var body = pm.response.json();",
+              "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || null);",
+              "  pm.expect(raw, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.not.equal('null');",
+              "  pm.expect(raw, 'an sse_mcp tool was injected without an opt-in: ' + raw.slice(0, 1500)).to.not.include('sse_mcp-');",
+              "  pm.expect(raw, 'sse_mcp server instructions were injected without an opt-in: ' + raw.slice(0, 1500)).to.not.include('Prefer echo for plain text');",
+              "  pm.expect((body.output || []).filter(function (o) { return o && o.type === 'function_call'; }), 'a tool call came back: ' + pm.response.text()).to.have.length(0);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 20,\n  \"input\": \"Reply with the single word ready.\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

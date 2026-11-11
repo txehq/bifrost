@@ -1,0 +1,408 @@
+{
+  "name": "9. Passthrough (catch-all forwarding)",
+  "description": "Catch-all routes that forward the request body byte-for-byte to the upstream provider, with Bifrost injecting its own configured key. The handler at transports/bifrost-http/integrations/router.go:604 strips Authorization / API-Key / X-API-Key / X-Goog-API-Key from the inbound request - so these requests intentionally omit those headers. Bedrock and Vertex have no passthrough variant (AWS SigV4 / Google OAuth can't be bridged this way).",
+  "item": [
+    {
+      "name": "POST /openai_passthrough/v1/audio/speech: binary response body logged as placeholder",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('binary passthrough body: speech succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+              "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+              "pm.test('binary passthrough body: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+              "// The upstream returns MP3 bytes (NUL bytes, invalid UTF-8). The logging writer must store a",
+              "// size placeholder instead of the raw bytes, which Postgres rejects with SQLSTATE 22021 and",
+              "// which fail the whole batch INSERT. Poll: the row is written by the batching writer.",
+              "function checkLog(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+              "    var j = (!err && res.code === 200) ? res.json() : null;",
+              "    // A pending request evicted while idle is stored first as a partial row without the response",
+              "    // body, so keep polling while the field is absent; a present value is asserted at once.",
+              "    if (j && j.passthrough_response_body !== undefined) {",
+              "      pm.test('binary passthrough body: response body stored as placeholder', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j.passthrough_response_body)).to.match(/^<binary content omitted: \\d+ bytes>$/); });",
+              "      return;",
+              "    }",
+              "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+              "    pm.test('binary passthrough body: log row with response body appeared', function () { pm.expect.fail('log ' + reqId + ' has no passthrough_response_body after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+              "  });",
+              "}",
+              "checkLog(0);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gpt-4o-mini-tts\",\n  \"input\": \"Hi\",\n  \"voice\": \"alloy\",\n  \"response_format\": \"mp3\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai_passthrough/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai_passthrough",
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      }
+    },
+    {
+      "name": "POST /openai_passthrough/v1/chat/completions",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Hello via OpenAI passthrough.\" }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai_passthrough",
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "POST /openai_passthrough/v1/responses",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"input\": \"Hello via OpenAI Responses passthrough.\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai_passthrough/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai_passthrough",
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "POST /anthropic_passthrough/v1/messages",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Hello via Anthropic passthrough.\" }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic_passthrough/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic_passthrough",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "POST /azure_passthrough/openai/deployments/{deployment}/chat/completions",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Hello via Azure passthrough.\" }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/azure_passthrough/openai/deployments/{{azureDeployment}}/chat/completions?api-version={{azureApiVersion}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "azure_passthrough",
+            "openai",
+            "deployments",
+            "{{azureDeployment}}",
+            "chat",
+            "completions"
+          ],
+          "query": [
+            {
+              "key": "api-version",
+              "value": "{{azureApiVersion}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "POST /azure_passthrough/openai/deployments/{deployment}/chat/completions (no api-version — default injected)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Hello via Azure passthrough without api-version.\" }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/azure_passthrough/openai/deployments/{{azureDeployment}}/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "azure_passthrough",
+            "openai",
+            "deployments",
+            "{{azureDeployment}}",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "POST /azure_passthrough/openai/v1/responses (no api-version — preview injected)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{azureDeployment}}\",\n  \"input\": \"Hello via Azure v1 responses passthrough without api-version.\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/azure_passthrough/openai/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "azure_passthrough",
+            "openai",
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "POST /azure_passthrough/openai/deployments/gpt-4o-transcribe/audio/transcriptions (no api-version — default injected)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "gpt-4o-transcribe",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.mp3",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/azure_passthrough/openai/deployments/gpt-4o-transcribe/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "azure_passthrough",
+            "openai",
+            "deployments",
+            "gpt-4o-transcribe",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "POST /genai_passthrough/v1beta/models/{model}:generateContent",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    { \"parts\": [{ \"text\": \"Hello via GenAI passthrough.\" }] }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/{{genaiModel}}:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai_passthrough",
+            "v1beta",
+            "models",
+            "{{genaiModel}}:generateContent"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] POST /genai_passthrough/v1@host/x with x-model-provider anthropic - passthrough path guard rejects before upstream",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Passthrough path guard: a remainder whose first segment carries '@' would be concatenated",
+              "// onto the provider BaseURL and could re-point the upstream authority. The router must reject",
+              "// it with 400 before any provider dispatch - no live provider is involved in this case.",
+              "pm.test('router rejects the path before dispatch', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+              "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('invalid passthrough path');",
+              "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'request must not have been routed to a provider').to.not.exist;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-model-provider",
+            "value": "anthropic"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai_passthrough/v1@127.0.0.1/x",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai_passthrough",
+            "v1@127.0.0.1",
+            "x"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] POST /anthropic_passthrough/v1/messages with unknown x-model-provider - passthrough path guard rejects before upstream",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// x-model-provider selects the key pool and upstream for the catch-all passthrough, so it",
+              "// must be a known provider. An unknown value is a 400 from the router, never a dispatch.",
+              "pm.test('router rejects the unknown provider before dispatch', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+              "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('x-model-provider');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "x-model-provider",
+            "value": "not-a-provider"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Hello via Anthropic passthrough.\" }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic_passthrough/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic_passthrough",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    }
+  ]
+}

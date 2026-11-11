@@ -1,7 +1,7 @@
 # Bifrost Harness Coverage Backlog
 
 Per-provider inventory of features sourced from each provider's official docs, cross-referenced
-against the current harness collection (`provider-harness.json`). Each row is a candidate test
+against the current harness collection (`collections/provider-harness/`, one file per folder). Each row is a candidate test
 addition; checked rows are already covered.
 
 Legend:

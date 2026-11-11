@@ -2222,7 +2222,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' "SMOKE=1"          "Run only the curated smoke set in tests/e2e/api/collections/smoke-manifest.json (~100 requests"; \
 		printf '  %-18s %s\n' ""                "  across all $(words $(HARNESS_PROVIDERS)) providers) instead of the full ~1900-request sweep. SMOKE=<path> uses a different manifest."; \
 		printf '  %-18s %s\n' ""                "  Rows are matched by (folder, name) against the AUGMENTED collection, which is the only way to reach the"; \
-		printf '  %-18s %s\n' ""                "  generated cache-parity rows - they do not exist in provider-harness.json and cannot be tagged in place."; \
+		printf '  %-18s %s\n' ""                "  generated cache-parity rows - they do not exist in collections/provider-harness/ and cannot be tagged in place."; \
 		printf '  %-18s %s\n' ""                "  Forces the deferred cache-parity pass ON: a third of the smoke set is cache parity, and the default"; \
 		printf '  %-18s %s\n' ""                "  deferral only fires on an unfiltered run. Composes with PROVIDER; RERUN_FAILED wins and skips the defer."; \
 		printf '  %-18s %s\n' "PARALLEL=0"       "Disable per-provider parallelism (default: ON). When ON, forks one newman per provider ($(HARNESS_PROVIDERS)) concurrently; reports merged into tmp/newman-report.json. The htmlextra report is only emitted in sequential mode (PARALLEL=0)."; \
@@ -2694,7 +2694,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	: "unset has its requests skipped with a 'skipped: no key' assertion instead of failing on"; \
 	: "credentials (tests/e2e/api/runners/lib/keyless-providers.mjs)."; \
 	$(USE_NODE); run_quiet node tests/e2e/api/runners/augment-provider-harness.mjs \
-		--source tests/e2e/api/collections/provider-harness.json \
+		--source tests/e2e/api/collections/provider-harness \
 		--profile "$$APP_DIR_VAL/config.json" \
 		--out tmp/harness-augmented.json || { say "$(RED)Harness augmentation failed$(NC)"; exit 1; }; \
 	COLLECTION_FILE="tmp/harness-augmented.json"; \

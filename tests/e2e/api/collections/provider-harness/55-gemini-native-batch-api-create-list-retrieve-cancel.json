@@ -1,0 +1,192 @@
+{
+  "name": "55. Gemini Native Batch API (create/list/retrieve/cancel)",
+  "description": "Bifrost wires up Gemini's native batch surface (/genai/v1beta/models/{model}:batchGenerateContent, /genai/v1beta/batches[...]) alongside the already-covered OpenAI and Anthropic batch APIs (folder 12 Round 3), but it had zero harness coverage of its own. Unlike OpenAI, Gemini batch create takes inline requests directly in the body (batch.inputConfig.requests), so no file-upload step is required - same shape as Anthropic. These cases pin: create accepts inline requests and returns an operation name + pending state, list returns an array, retrieve round-trips the created batch's id, and cancel transitions it to a cancelling/cancelled-ish state without erroring.",
+  "item": [
+    {
+      "name": "Gemini: create batch (gemini-2.5-pro)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"batch\": {\n    \"displayName\": \"bifrost-harness-batch\",\n    \"inputConfig\": {\n      \"requests\": {\n        \"requests\": [\n          {\"request\": {\"contents\": [{\"role\": \"user\", \"parts\": [{\"text\": \"Say hello\"}]}], \"generationConfig\": {\"maxOutputTokens\": 16}}, \"metadata\": {\"key\": \"req-1\"}},\n          {\"request\": {\"contents\": [{\"role\": \"user\", \"parts\": [{\"text\": \"Say goodbye\"}]}], \"generationConfig\": {\"maxOutputTokens\": 16}}, \"metadata\": {\"key\": \"req-2\"}}\n        ]\n      }\n    }\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:batchGenerateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "{{genaiModel}}:batchGenerateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Clear any stale id before this request so a failed creation",
+              "// can't leave 'Gemini: retrieve batch'/'cancel batch' chaining onto an old batch.",
+              "pm.collectionVariables.unset('genaiBatchId');"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Gemini create batch: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+              "var j = pm.response.json();",
+              "pm.test('Gemini create batch: has name', function () { pm.expect(j.name).to.be.a('string').and.not.empty; });",
+              "pm.test('Gemini create batch: has metadata.state', function () { pm.expect(j.metadata).to.be.an('object'); pm.expect(j.metadata.state).to.be.a('string').and.not.empty; });",
+              "if (typeof j.name === 'string' && j.name) { pm.collectionVariables.set('genaiBatchId', j.name.replace(/^batches\\//, '')); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Gemini: list batches",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "batches"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Gemini list batches: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+              "var j = pm.response.json();",
+              "pm.test('Gemini list batches: operations is array (or omitted when empty)', function () { pm.expect(j.operations === undefined || Array.isArray(j.operations)).to.eql(true); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Gemini: retrieve batch",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/batches/{{genaiBatchId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "batches",
+            "{{genaiBatchId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Create didn't set an id (skipped on a guarded code, or failed) - nothing to retrieve.",
+              "if (!pm.collectionVariables.get('genaiBatchId')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Gemini retrieve batch: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+              "var j = pm.response.json();",
+              "pm.test('Gemini retrieve batch: name matches create', function () { pm.expect(typeof j.name === 'string' ? j.name.replace(/^batches\\//, '') : j.name).to.eql(pm.collectionVariables.get('genaiBatchId')); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Gemini: cancel batch",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/batches/{{genaiBatchId}}:cancel",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "batches",
+            "{{genaiBatchId}}:cancel"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Create didn't set an id (skipped on a guarded code, or failed) - nothing to cancel.",
+              "if (!pm.collectionVariables.get('genaiBatchId')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Gemini cancel batch: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

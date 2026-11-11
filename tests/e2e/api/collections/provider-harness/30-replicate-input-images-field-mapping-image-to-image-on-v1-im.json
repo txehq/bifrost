@@ -1,0 +1,102 @@
+{
+  "name": "30. Replicate input_images field mapping (image-to-image on /v1/images/generations)",
+  "description": "Pins Replicate image-to-image on the native /v1/images/generations path. input_images was previously dropped on the generations path because the input_images -> model-specific field mapping (image_prompt / input_image / image / input_images) was only applied on the edits path, so a request carrying input_images to a kontext model generated from the prompt alone and returned a 200 with a default 1024x1024 square image. The case sends a real landscape image (scones.jpg, 1280x853) with aspect_ratio \"match_input_image\" and asserts the output stays landscape, which proves the image reached the model rather than being silently dropped. Exhaustive per-model field mapping is covered by the Go table test TestReplicateImageGenerationInputImagesFieldMapping. A streaming variant is intentionally omitted: flux-kontext does not stream partial images, so Bifrost forwards no image bytes on the stream and there is nothing to assert on.",
+  "item": [
+    {
+      "name": "replicate/black-forest-labs/flux-kontext-pro input_images -> input_image (match_input_image)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Replicate image-to-image on the NATIVE /v1/images/generations path.",
+              "// Regression: input_images was silently dropped on the generations path (the",
+              "// input_images -> model-specific field mapping existed only on the edits path), so",
+              "// kontext never received its native \"input_image\" and Replicate generated from the",
+              "// prompt alone, returning a 200 with a default 1024x1024 SQUARE image.",
+              "//",
+              "// Fixture is a real landscape photo (scones.jpg, 1280x853) sent with aspect_ratio",
+              "// \"match_input_image\": if the image reaches the model the output keeps the landscape",
+              "// aspect ratio (width > height); if it was dropped the output is the default square.",
+              "// Asserting landscape is what catches the silent 200 that a status-only check cannot.",
+              "// Exhaustive per-model field mapping lives in the Go test",
+              "// TestReplicateImageGenerationInputImagesFieldMapping.",
+              "",
+              "",
+              "pm.test('images/generations returned success', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+              "});",
+              "",
+              "var body = pm.response.json();",
+              "pm.test('response carries an output image', function () {",
+              "  pm.expect(body.data && body.data.length, 'no data in response: ' + pm.response.text()).to.be.above(0);",
+              "});",
+              "if (!body.data || !body.data.length) { return; }",
+              "",
+              "// PNG dimensions live in the IHDR chunk: width at byte 16, height at byte 20.",
+              "function pngDims(buf) {",
+              "  if (!buf || buf.length < 24) { return null; }",
+              "  if (buf[0] !== 0x89 || buf[1] !== 0x50 || buf[2] !== 0x4E || buf[3] !== 0x47) { return null; }",
+              "  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };",
+              "}",
+              "function toBuffer(stream) {",
+              "  if (Buffer.isBuffer(stream)) { return stream; }",
+              "  if (stream && stream.type === 'Buffer' && Array.isArray(stream.data)) { return Buffer.from(stream.data); }",
+              "  return Buffer.from(stream);",
+              "}",
+              "function assertImageUsed(buf) {",
+              "  var dims = pngDims(buf);",
+              "  if (!dims) {",
+              "    // Not a decodable PNG despite output_format=png - degrade to 'image present' so a",
+              "    // format surprise does not false-fail, but surface it.",
+              "    console.log('WARN: output was not a decodable PNG; skipped dimension check');",
+              "    return;",
+              "  }",
+              "  pm.test('output keeps input landscape aspect ratio => image was used (not dropped to square)', function () {",
+              "    pm.expect(dims.width, 'expected landscape output (input 1280x853), got ' + dims.width + 'x' + dims.height).to.be.above(dims.height);",
+              "  });",
+              "}",
+              "",
+              "var first = body.data[0];",
+              "if (first.b64_json) {",
+              "  assertImageUsed(Buffer.from(first.b64_json, 'base64'));",
+              "} else if (first.url) {",
+              "  pm.sendRequest({ url: first.url, method: 'GET' }, function (err, res) {",
+              "    if (err) { console.log('WARN: could not download output image: ' + err); return; }",
+              "    assertImageUsed(toBuffer(res.stream));",
+              "  });",
+              "} else {",
+              "  pm.expect.fail('response image had neither url nor b64_json: ' + pm.response.text());",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"replicate/black-forest-labs/flux-kontext-pro\",\n  \"prompt\": \"add a soft warm glow to the scene\",\n  \"aspect_ratio\": \"match_input_image\",\n  \"output_format\": \"png\",\n  \"input_images\": [\n    \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    }
+  ]
+}

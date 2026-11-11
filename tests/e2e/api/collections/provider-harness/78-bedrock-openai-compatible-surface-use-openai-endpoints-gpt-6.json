@@ -1,0 +1,332 @@
+{
+  "name": "78. Bedrock OpenAI-compatible surface (use_openai_endpoints / gpt-6 path / region prefix)",
+  "description": "Pins the Bedrock OpenAI-compatible routing added in df47e2173, 0eaf82d19 and 473af3607.\n\nMantle answers a frontier model on exactly one of its two base paths and 400s on the other, so a new closed generation that nothing names falls through to the bare \"v1\" path gpt-oss uses. gpt-6-astra did exactly that. The base path now comes from schemas.ResolveBedrockMantleBasePath (datasheet bedrock_mantle_base_path, family list as fallback).\n\nThe \"{region}/model\" form is Bifrost addressing, not part of the AWS identifier: it selects the host and signing scope and must be stripped before the wire. The Converse and native-Anthropic paths always did; the OpenAI-compatible ones handed request.Model straight to the shared handler and AWS 404d it.\n\nResponses on bedrock-runtime can now be served from /openai/v1/responses instead of Converse, behind the key-level use_openai_endpoints opt-in. Converse has no previous_response_id, so a stateful client loses prior-turn context and any tool continuation fails. The opt-in never overrides capability: Claude and application inference profiles stay on Converse.\n\nCases 4 and 5 require the bedrock_openai_ep provider in tests/integrations/python/config.json (same credentials, use_openai_endpoints: true).",
+  "item": [
+    {
+      "name": "bedrock_mantle/us-west-2/openai.gpt-6-astra /v1/chat/completions routes to openai/v1 with the region prefix stripped - bedrock-openai-surface",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock_mantle/us-west-2/openai.gpt-6-astra\",\"max_tokens\":24,\"messages\":[{\"role\":\"user\",\"content\":\"Say OK\"}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.text() || '';",
+              "// Two distinct regressions answer here, both with a 4xx, so 400/404 must NOT be skipped:",
+              "//   wrong base path -> 400 \"model `openai.gpt-6-astra` isn't supported on this route\"",
+              "//   prefix left on   -> 404 \"The model 'us-west-2/openai.gpt-6-astra' does not exist\"",
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+              "pm.test('gpt-6 reaches mantle on openai/v1 with a bare model id', function () {",
+              "  pm.expect(body, 'mantle rejected the base path').to.not.include(\"isn't supported on this route\");",
+              "  // Quoted error phrasing, not the bare id: routing_info.model,",
+              "  // original_model_requested and resolved_model_used all echo the prefixed",
+              "  // form on a healthy 200, so a bare substring check could never pass.",
+              "  pm.expect(body, 'prefixed id was rejected upstream').to.not.include(\"The model 'us-west-2/openai.gpt-6-astra'\");",
+              "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.choices, 'expected choices in the response').to.be.an('array').that.is.not.empty;",
+              "  var wire = ((j.extra_fields || {}).raw_request || {}).model;",
+              "  pm.expect(wire, 'raw_request missing - is send_back_raw_request honoured?').to.be.a('string');",
+              "  pm.expect(wire, 'region prefix reached the wire: ' + wire).to.equal('openai.gpt-6-astra');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "bedrock_mantle/us-west-2/openai.gpt-6-astra /v1/responses keeps xhigh reasoning effort - bedrock-openai-surface",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock_mantle/us-west-2/openai.gpt-6-astra\",\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"xhigh\"},\"input\":\"Say OK\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.text() || '';",
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+              "pm.test('xhigh survives to the wire instead of being normalised to high', function () {",
+              "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  var raw = JSON.stringify((j.extra_fields || {}).raw_request || {});",
+              "  pm.expect(raw, 'raw_request missing - is send_back_raw_request honoured?').to.not.equal('{}');",
+              "  // Before gpt-6 joined acceptsXHighEffort the ladder lacked the tier and the",
+              "  // requested effort was silently clamped to the next one down.",
+              "  pm.expect(raw, 'effort was downgraded: ' + raw).to.include('\"xhigh\"');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "bedrock/us.openai.gpt-5.6-terra /v1/responses stays on Converse without the opt-in - bedrock-openai-surface",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock/us.openai.gpt-5.6-terra\",\"max_output_tokens\":64,\"input\":\"Say OK\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.text() || '';",
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+              "pm.test('default bedrock key serves Responses from Converse', function () {",
+              "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  // Converse returns the AWS request id; the OpenAI surface mints resp_*.",
+              "  pm.expect(String(j.id || ''), 'diverted without use_openai_endpoints: ' + j.id).to.not.match(/^resp_/);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "bedrock_openai_ep/us.openai.gpt-5.6-terra /v1/responses diverts to the OpenAI surface when opted in - bedrock-openai-surface",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock_openai_ep/us.openai.gpt-5.6-terra\",\"max_output_tokens\":64,\"input\":\"Say OK\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.text() || '';",
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+              "pm.test('use_openai_endpoints routes Responses to /openai/v1/responses', function () {",
+              "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  // resp_* is what makes previous_response_id continuations possible at all.",
+              "  pm.expect(String(j.id || ''), 'still on Converse: ' + j.id).to.match(/^resp_/);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "bedrock_openai_ep/us.anthropic.claude-sonnet-4-6 /v1/responses keeps claude on Converse despite the opt-in - bedrock-openai-surface",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock_openai_ep/us.anthropic.claude-sonnet-4-6\",\"max_output_tokens\":64,\"input\":\"Say OK\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.text() || '';",
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+              "pm.test('opting in cannot force a surface the model does not serve', function () {",
+              "  // AWS 404s every non-OpenAI family on /openai/v1 (\"doesn't support this API\"),",
+              "  // so a diverted Claude request would fail outright rather than degrade.",
+              "  pm.expect(body, 'claude was diverted to the OpenAI surface').to.not.include(\"doesn't support this API\");",
+              "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(String(j.id || ''), 'claude diverted: ' + j.id).to.not.match(/^resp_/);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "bedrock/openai.gpt-5.6-terra /v1/responses translates cache_control into a prompt cache breakpoint - bedrock-openai-surface",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock/openai.gpt-5.6-terra\",\"max_output_tokens\":48,\"input\":[{\"type\":\"message\",\"role\":\"system\",\"content\":[{\"type\":\"input_text\",\"text\":\"You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. \",\"cache_control\":{\"type\":\"ephemeral\"}}]},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Say OK.\"}]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.text() || '';",
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+              "pm.test('bedrock reaches the gpt-5.6 breakpoint path instead of dropping the marker', function () {",
+              "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  var raw = JSON.stringify((j.extra_fields || {}).raw_request || {});",
+              "  pm.expect(raw, 'raw_request missing - is send_back_raw_request honoured?').to.not.equal('{}');",
+              "  // schemas.Bedrock was absent from responsesUsesPromptCacheBreakpoints, so the",
+              "  // serializer stripped cache_control and left implicit caching in place.",
+              "  pm.expect(raw, 'cache_control was dropped: ' + raw).to.include('prompt_cache_breakpoint');",
+              "  pm.expect(raw, 'explicit mode must not be forced (#8334): ' + raw).to.not.include('prompt_cache_options');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

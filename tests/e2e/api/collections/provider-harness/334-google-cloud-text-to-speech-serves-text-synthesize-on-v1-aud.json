@@ -1,0 +1,1001 @@
+{
+  "name": "334. Google Cloud Text-to-Speech serves text:synthesize on /v1/audio/speech (google cloud tts) [SERIAL]",
+  "description": "TXE-6541, contract C3, C4, C5, C6, C12. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. google-cloud-tts is the built-in Google Cloud Text-to-Speech provider with one named key and max_retries 0, as Tokun's reconciler writes it. The fixture answers /pp/google-cloud-tts/v1/text:synthesize by the voice name: a WaveNet voice gets the sample response of Google's quickstart (audioContent in base64), a name ending in -ZZ Google's INVALID_ARGUMENT error with status 400, -Quota a 429 RESOURCE_EXHAUSTED, -Silent a 200 with no audioContent. A voice whose name carries another family than the model (en-US-Chirp3-HD-Achernar under wavenet) and an SSML <voice name> element of another family, and a voice object sent as a vendor-specific extra param (extra_params.voice on /openai/v1/audio/speech), are refused with 400 before any upstream call: text:synthesize has no model field, so the voice name alone decides which family Google serves and bills. The rows pin: the unified fields arrive as the text:synthesize body and the client gets the decoded audio bytes from exactly one upstream call; a field outside the unified structure is merged into audioConfig; a field or value the API cannot take is refused with 400 caller_unsupported_parameter before any upstream call; a vendor error keeps its status and carries error_type, from one upstream call; a 200 with no audio is 502 provider_empty_result. The rows read back the bytes that reached the fixture from /__wire, which keeps no header: the x-goog-api-key header is pinned by the Go test. Run the whole folder in order.",
+  "item": [
+    {
+      "name": "google-cloud-tts/wavenet /v1/audio/speech sends the text:synthesize body and returns the decoded audio from one upstream call (google cloud tts)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-google-cloud-tts-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"google-cloud-tts/wavenet\",\"input\":\"Android is a mobile operating system developed by Google, based on the Linux kernel and designed primarily for touchscreen mobile devices such as smartphones and tablets.\",\"voice\":\"en-GB-Wavenet-A\",\"language_code\":\"en-gb\",\"response_format\":\"mp3\",\"speed\":1.25}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('google cloud tts setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function synthesizeCalls(calls) { return calls.filter(function (c) { return c.path === '/pp/google-cloud-tts/v1/text:synthesize'; }); }",
+              "function routed() { pm.test('the response names the provider and the key that served', function () { var h = JSON.stringify(pm.response.headers.toObject()); pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), h).to.equal('google-cloud-tts'); pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), h).to.equal('tk-key-google-cloud-tts-fixture'); }); }",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.test('the body is the decoded audio, not the base64 text', function () { pm.expect(Buffer.from(pm.response.stream).toString('base64')).to.equal('//NExAASCCIIAAhEAGAAEMW4kAYPnwwIKw/BBTpwTvB+IAxIfghU'); });",
+              "routed();",
+              "wire(function (calls) { var sent = synthesizeCalls(calls); pm.test('exactly one upstream call carries the mapped text:synthesize body', function () { pm.expect(sent, JSON.stringify(calls)).to.have.length(1); pm.expect(JSON.parse(sent[0].body), sent[0].body).to.deep.equal({ input: { text: \"Android is a mobile operating system developed by Google, based on the Linux kernel and designed primarily for touchscreen mobile devices such as smartphones and tablets.\" }, voice: { languageCode: 'en-gb', name: 'en-GB-Wavenet-A' }, audioConfig: { audioEncoding: 'MP3', speakingRate: 1.25 } }); pm.expect(sent[0].query, JSON.stringify(sent[0])).to.equal(''); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "google-cloud-tts/wavenet /v1/audio/speech sends an SSML document as input.ssml and wav as LINEAR16 (google cloud tts)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-google-cloud-tts-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"google-cloud-tts/wavenet\",\"input\":\"<speak>Hello <break time=\\\"300ms\\\"/> world</speak>\",\"voice\":\"en-US-Wavenet-D\",\"language_code\":\"en-US\",\"response_format\":\"wav\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('google cloud tts setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function synthesizeCalls(calls) { return calls.filter(function (c) { return c.path === '/pp/google-cloud-tts/v1/text:synthesize'; }); }",
+              "function routed() { pm.test('the response names the provider and the key that served', function () { var h = JSON.stringify(pm.response.headers.toObject()); pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), h).to.equal('google-cloud-tts'); pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), h).to.equal('tk-key-google-cloud-tts-fixture'); }); }",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "wire(function (calls) { var sent = synthesizeCalls(calls); pm.test('one upstream call carries input.ssml and LINEAR16', function () { pm.expect(sent, JSON.stringify(calls)).to.have.length(1); pm.expect(JSON.parse(sent[0].body), sent[0].body).to.deep.equal({ input: { ssml: '<speak>Hello <break time=\"300ms\"/> world</speak>' }, voice: { languageCode: 'en-US', name: 'en-US-Wavenet-D' }, audioConfig: { audioEncoding: 'LINEAR16' } }); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "google-cloud-tts/wavenet /v1/audio/speech with x-bf-passthrough-extra-params: true merges audioConfig.pitch next to the mapped encoding (google cloud tts)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-google-cloud-tts-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"google-cloud-tts/wavenet\",\"input\":\"Hello.\",\"voice\":\"en-US-Wavenet-D\",\"language_code\":\"en-US\",\"response_format\":\"opus\",\"audioConfig\":{\"pitch\":-2,\"sampleRateHertz\":24000}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('google cloud tts setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function synthesizeCalls(calls) { return calls.filter(function (c) { return c.path === '/pp/google-cloud-tts/v1/text:synthesize'; }); }",
+              "function routed() { pm.test('the response names the provider and the key that served', function () { var h = JSON.stringify(pm.response.headers.toObject()); pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), h).to.equal('google-cloud-tts'); pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), h).to.equal('tk-key-google-cloud-tts-fixture'); }); }",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "wire(function (calls) { var sent = synthesizeCalls(calls); pm.test('one upstream call carries the vendor fields inside audioConfig', function () { pm.expect(sent, JSON.stringify(calls)).to.have.length(1); pm.expect(JSON.parse(sent[0].body).audioConfig, sent[0].body).to.deep.equal({ audioEncoding: 'OGG_OPUS', pitch: -2, sampleRateHertz: 24000 }); }); pm.test('language_code reaches the vendor once, as voice.languageCode', function () { var sentBody = JSON.parse(sent[0].body); pm.expect(sentBody, sent[0].body).to.not.have.property('language_code'); pm.expect(sentBody.voice, sent[0].body).to.deep.equal({ languageCode: 'en-US', name: 'en-US-Wavenet-D' }); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] google-cloud-tts/wavenet /v1/audio/speech with instructions is refused before any upstream call (google cloud tts)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-google-cloud-tts-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"google-cloud-tts/wavenet\",\"input\":\"Hello.\",\"voice\":\"en-US-Wavenet-D\",\"language_code\":\"en-US\",\"instructions\":\"Speak slowly.\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('google cloud tts setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function synthesizeCalls(calls) { return calls.filter(function (c) { return c.path === '/pp/google-cloud-tts/v1/text:synthesize'; }); }",
+              "function routed() { pm.test('the response names the provider and the key that served', function () { var h = JSON.stringify(pm.response.headers.toObject()); pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), h).to.equal('google-cloud-tts'); pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), h).to.equal('tk-key-google-cloud-tts-fixture'); }); }",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter and error.param names the field', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); pm.expect(body.error && body.error.param, pm.response.text()).to.equal('instructions'); });",
+              "wire(function (calls) { pm.test('no request reached the vendor', function () { pm.expect(synthesizeCalls(calls), JSON.stringify(calls)).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] google-cloud-tts/wavenet /v1/audio/speech with response_format aac is refused, not sent as another encoding (google cloud tts)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-google-cloud-tts-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"google-cloud-tts/wavenet\",\"input\":\"Hello.\",\"voice\":\"en-US-Wavenet-D\",\"language_code\":\"en-US\",\"response_format\":\"aac\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('google cloud tts setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function synthesizeCalls(calls) { return calls.filter(function (c) { return c.path === '/pp/google-cloud-tts/v1/text:synthesize'; }); }",
+              "function routed() { pm.test('the response names the provider and the key that served', function () { var h = JSON.stringify(pm.response.headers.toObject()); pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), h).to.equal('google-cloud-tts'); pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), h).to.equal('tk-key-google-cloud-tts-fixture'); }); }",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter and error.param names the field', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); pm.expect(body.error && body.error.param, pm.response.text()).to.equal('response_format'); });",
+              "wire(function (calls) { pm.test('no request reached the vendor', function () { pm.expect(synthesizeCalls(calls), JSON.stringify(calls)).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] google-cloud-tts/wavenet /v1/audio/speech with speed 3 is refused, not clamped to 2 (google cloud tts)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-google-cloud-tts-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"google-cloud-tts/wavenet\",\"input\":\"Hello.\",\"voice\":\"en-US-Wavenet-D\",\"language_code\":\"en-US\",\"speed\":3}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('google cloud tts setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function synthesizeCalls(calls) { return calls.filter(function (c) { return c.path === '/pp/google-cloud-tts/v1/text:synthesize'; }); }",
+              "function routed() { pm.test('the response names the provider and the key that served', function () { var h = JSON.stringify(pm.response.headers.toObject()); pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), h).to.equal('google-cloud-tts'); pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), h).to.equal('tk-key-google-cloud-tts-fixture'); }); }",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter and error.param names the field', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); pm.expect(body.error && body.error.param, pm.response.text()).to.equal('speed'); });",
+              "wire(function (calls) { pm.test('no request reached the vendor', function () { pm.expect(synthesizeCalls(calls), JSON.stringify(calls)).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] google-cloud-tts/wavenet /v1/audio/speech with stream_format sse is refused: text:synthesize has no stream (google cloud tts)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-google-cloud-tts-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"google-cloud-tts/wavenet\",\"input\":\"Hello.\",\"voice\":\"en-US-Wavenet-D\",\"language_code\":\"en-US\",\"stream_format\":\"sse\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('google cloud tts setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function synthesizeCalls(calls) { return calls.filter(function (c) { return c.path === '/pp/google-cloud-tts/v1/text:synthesize'; }); }",
+              "function routed() { pm.test('the response names the provider and the key that served', function () { var h = JSON.stringify(pm.response.headers.toObject()); pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), h).to.equal('google-cloud-tts'); pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), h).to.equal('tk-key-google-cloud-tts-fixture'); }); }",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter and error.param names the field', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); pm.expect(body.error && body.error.param, pm.response.text()).to.equal('stream_format'); });",
+              "wire(function (calls) { pm.test('no request reached the vendor', function () { pm.expect(synthesizeCalls(calls), JSON.stringify(calls)).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] google-cloud-tts/wavenet /v1/audio/speech with a Chirp3-HD voice is refused: the voice is not of the model's family (google cloud tts)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-google-cloud-tts-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"google-cloud-tts/wavenet\",\"input\":\"Hello.\",\"voice\":\"en-US-Chirp3-HD-Achernar\",\"language_code\":\"en-US\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('google cloud tts setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function synthesizeCalls(calls) { return calls.filter(function (c) { return c.path === '/pp/google-cloud-tts/v1/text:synthesize'; }); }",
+              "function routed() { pm.test('the response names the provider and the key that served', function () { var h = JSON.stringify(pm.response.headers.toObject()); pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), h).to.equal('google-cloud-tts'); pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), h).to.equal('tk-key-google-cloud-tts-fixture'); }); }",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter and error.param names the field', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); pm.expect(body.error && body.error.param, pm.response.text()).to.equal('voice'); });",
+              "wire(function (calls) { pm.test('no request reached the vendor', function () { pm.expect(synthesizeCalls(calls), JSON.stringify(calls)).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] google-cloud-tts/wavenet /v1/audio/speech with an SSML voice element of another family is refused before any upstream call (google cloud tts)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-google-cloud-tts-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"google-cloud-tts/wavenet\",\"input\":\"<speak>Hello <voice name=\\\"en-US-Studio-O\\\">from a Studio voice</voice></speak>\",\"voice\":\"en-US-Wavenet-D\",\"language_code\":\"en-US\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('google cloud tts setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function synthesizeCalls(calls) { return calls.filter(function (c) { return c.path === '/pp/google-cloud-tts/v1/text:synthesize'; }); }",
+              "function routed() { pm.test('the response names the provider and the key that served', function () { var h = JSON.stringify(pm.response.headers.toObject()); pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), h).to.equal('google-cloud-tts'); pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), h).to.equal('tk-key-google-cloud-tts-fixture'); }); }",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter and error.param names the field', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); pm.expect(body.error && body.error.param, pm.response.text()).to.equal('input'); });",
+              "wire(function (calls) { pm.test('no request reached the vendor', function () { pm.expect(synthesizeCalls(calls), JSON.stringify(calls)).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] google-cloud-tts/wavenet /openai/v1/audio/speech with extra_params.voice is refused: extra params cannot replace the checked voice (google cloud tts)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-google-cloud-tts-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"google-cloud-tts/wavenet\",\"input\":\"Hello.\",\"voice\":\"en-US-Wavenet-D\",\"extra_params\":{\"voice\":{\"name\":\"en-US-Chirp3-HD-Achernar\"}}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('google cloud tts setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function synthesizeCalls(calls) { return calls.filter(function (c) { return c.path === '/pp/google-cloud-tts/v1/text:synthesize'; }); }",
+              "function routed() { pm.test('the response names the provider and the key that served', function () { var h = JSON.stringify(pm.response.headers.toObject()); pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), h).to.equal('google-cloud-tts'); pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), h).to.equal('tk-key-google-cloud-tts-fixture'); }); }",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter and error.param names the field', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); pm.expect(body.error && body.error.param, pm.response.text()).to.equal('voice'); });",
+              "wire(function (calls) { pm.test('no request reached the vendor', function () { pm.expect(synthesizeCalls(calls), JSON.stringify(calls)).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] google-cloud-tts/wavenet /v1/audio/speech keeps the vendor 400 and carries error_type, from one upstream call (google cloud tts)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-google-cloud-tts-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"google-cloud-tts/wavenet\",\"input\":\"Hello.\",\"voice\":\"en-GB-Wavenet-ZZ\",\"language_code\":\"en-GB\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('google cloud tts setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function synthesizeCalls(calls) { return calls.filter(function (c) { return c.path === '/pp/google-cloud-tts/v1/text:synthesize'; }); }",
+              "function routed() { pm.test('the response names the provider and the key that served', function () { var h = JSON.stringify(pm.response.headers.toObject()); pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), h).to.equal('google-cloud-tts'); pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), h).to.equal('tk-key-google-cloud-tts-fixture'); }); }",
+              "var body = pm.response.json();",
+              "pm.test('the client gets the vendor status 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); pm.expect(body.status_code, pm.response.text()).to.equal(400); });",
+              "pm.test('the error carries the vendor message, status name and code', function () { pm.expect(body.error.message, pm.response.text()).to.equal(\"Voice 'en-GB-Wavenet-ZZ' does not exist. Is it misspelled?\"); pm.expect(body.error.type, pm.response.text()).to.equal('INVALID_ARGUMENT'); pm.expect(body.error.code, pm.response.text()).to.equal('400'); });",
+              "pm.test('error_type is caller_invalid_request and it is not a Bifrost error', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('caller_invalid_request'); pm.expect(body.is_bifrost_error, pm.response.text()).to.equal(false); });",
+              "routed();",
+              "wire(function (calls) { pm.test('exactly one upstream call: no retry, no key switch', function () { pm.expect(synthesizeCalls(calls), JSON.stringify(calls)).to.have.length(1); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-429] google-cloud-tts/wavenet /v1/audio/speech keeps the vendor 429 as provider_rate_limited, from one upstream call (google cloud tts)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-google-cloud-tts-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"google-cloud-tts/wavenet\",\"input\":\"Hello.\",\"voice\":\"en-GB-Wavenet-Quota\",\"language_code\":\"en-GB\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('google cloud tts setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function synthesizeCalls(calls) { return calls.filter(function (c) { return c.path === '/pp/google-cloud-tts/v1/text:synthesize'; }); }",
+              "function routed() { pm.test('the response names the provider and the key that served', function () { var h = JSON.stringify(pm.response.headers.toObject()); pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), h).to.equal('google-cloud-tts'); pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), h).to.equal('tk-key-google-cloud-tts-fixture'); }); }",
+              "var body = pm.response.json();",
+              "pm.test('the client gets the vendor status 429', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(429); });",
+              "pm.test('error_type is provider_rate_limited and error.type is the vendor status name', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('provider_rate_limited'); pm.expect(body.error.type, pm.response.text()).to.equal('RESOURCE_EXHAUSTED'); });",
+              "wire(function (calls) { pm.test('exactly one upstream call: the named key is not retried', function () { pm.expect(synthesizeCalls(calls), JSON.stringify(calls)).to.have.length(1); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-502] google-cloud-tts/wavenet /v1/audio/speech answers a vendor 200 with no audio as provider_empty_result (google cloud tts)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-google-cloud-tts-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"google-cloud-tts/wavenet\",\"input\":\"Hello.\",\"voice\":\"en-GB-Wavenet-Silent\",\"language_code\":\"en-GB\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('google cloud tts setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function synthesizeCalls(calls) { return calls.filter(function (c) { return c.path === '/pp/google-cloud-tts/v1/text:synthesize'; }); }",
+              "function routed() { pm.test('the response names the provider and the key that served', function () { var h = JSON.stringify(pm.response.headers.toObject()); pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), h).to.equal('google-cloud-tts'); pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), h).to.equal('tk-key-google-cloud-tts-fixture'); }); }",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 502, not a caller error', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(502); });",
+              "pm.test('error_type is provider_empty_result', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('provider_empty_result'); });",
+              "wire(function (calls) { pm.test('exactly one upstream call', function () { pm.expect(synthesizeCalls(calls), JSON.stringify(calls)).to.have.length(1); }); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

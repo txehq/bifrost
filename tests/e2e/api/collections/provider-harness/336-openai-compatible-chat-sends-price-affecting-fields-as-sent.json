@@ -1,0 +1,654 @@
+{
+  "name": "336. OpenAI-compatible chat sends price-affecting fields as sent or refuses them, and the encrypted-reasoning retry has a switch (compatible chat fields)",
+  "description": "Local fixture regression for TXE-6527 (Bifrost–Tokun contract C3, C4 and C6), no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json (moonshot and deepseek base_url -> the fixture's /pp/oc, which records every request body; the harness's default setup token), and run with providerErrorFixture=1; every case is skipped otherwise. 336.2 and 336.3 send max_completion_tokens 5 and read the body the vendor received: moonshot gets max_completion_tokens 5 with prompt_cache_key and prompt_cache_options.ttl, deepseek gets max_tokens 5. 336.4 and 336.6 send a service_tier outside the tier list of the fixture's oc-tiered capability record, non-streamed and streamed: 400 caller_unsupported_parameter naming service_tier, with no request at the fixture; 336.5 sends a listed tier with max_completion_tokens 5 and the vendor receives both. The gateway config sets no compat option, so 336.4 to 336.6 run with the compat plugin's parameter drop on (its default) against a model that has a capability record: the plugin drops neither field (TXE-7026). 336.7 is Azure OpenAI's documented blocked-prompt answer: the 400 and its content_filter code are kept and error_type is caller_content_filtered. 336.8 replays a reasoning item whose id does not match its encrypted token with the switch at its default: the fixture refuses it once and the stripped second call succeeds, two upstream calls. 336.9 to 336.11 read the client config, save it back with disable_encrypted_reasoning_retry on (the full object, as the dashboard saves it) and replay again: the vendor's 400 comes back after exactly one upstream call. 336.12 turns the switch back off; if a case between 336.10 and 336.12 stops the run, restart the fixture gateway. 336.9 to 336.12 share h336ClientConfig and must run in order. Red before the change: the vendor received max_completion_tokens 16 and no prompt-cache field, the unsupported tier was dropped and the request answered 200, the Azure error carried no content-filter class, and no switch existed.",
+  "item": [
+    {
+      "name": "336.1 fixture counters and recorded requests reset",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('counters cleared', function () { pm.expect(j.data[0].reset, pm.response.text()).to.equal(true); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__reset"
+      }
+    },
+    {
+      "name": "336.2 moonshot kimi chat reaches the vendor with max_completion_tokens 5 and both prompt-cache fields (compatible chat fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/oc/v1/chat/completions' && JSON.parse(c.body).model === 'oc-plain'; });",
+              "  pm.test('one request reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(1); });",
+              "  var sent = JSON.parse(calls[0].body);",
+              "  pm.test('max_completion_tokens is the 5 the caller sent, not 16', function () { pm.expect(sent.max_completion_tokens, calls[0].body).to.equal(5); });",
+              "  pm.test('prompt_cache_key reached the vendor', function () { pm.expect(sent.prompt_cache_key, calls[0].body).to.equal('tenant-42'); });",
+              "  pm.test('prompt_cache_options.ttl reached the vendor', function () { pm.expect(sent.prompt_cache_options && sent.prompt_cache_options.ttl, calls[0].body).to.equal('1h'); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"moonshot/oc-plain\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_completion_tokens\": 5,\n  \"prompt_cache_key\": \"tenant-42\",\n  \"prompt_cache_options\": {\n    \"ttl\": \"1h\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "336.3 deepseek chat reaches the vendor with max_tokens 5 (compatible chat fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/oc/chat/completions' && JSON.parse(c.body).model === 'oc-plain'; });",
+              "  pm.test('one request reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(1); });",
+              "  pm.test('max_tokens is the 5 the caller sent, not 16', function () { pm.expect(JSON.parse(calls[0].body).max_tokens, calls[0].body).to.equal(5); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"deepseek/oc-plain\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_completion_tokens\": 5\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "336.4 [EXPECT-400] moonshot kimi chat with a service_tier the model does not list is refused before any upstream call (compatible chat fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('status is 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(j.extra_fields && j.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names service_tier', function () { pm.expect(j.error && j.error.param, pm.response.text()).to.equal('service_tier'); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/oc/v1/chat/completions' && JSON.parse(c.body).model === 'oc-tiered'; });",
+              "  pm.test('no request reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"moonshot/oc-tiered\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"service_tier\": \"flex\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "336.5 moonshot kimi chat on a model with a capability record reaches the vendor with its listed service_tier and max_completion_tokens under the default compat plugin (compatible chat fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.test('the compat plugin reports neither price-affecting field as dropped', function () { var d = (pm.response.json().extra_fields || {}).dropped_compat_plugin_params || []; pm.expect(d, pm.response.text()).to.not.include('service_tier'); pm.expect(d, pm.response.text()).to.not.include('max_completion_tokens'); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/oc/v1/chat/completions' && JSON.parse(c.body).model === 'oc-tiered'; });",
+              "  pm.test('one request reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(1); });",
+              "  pm.test('service_tier is the tier the caller sent', function () { pm.expect(JSON.parse(calls[0].body).service_tier, calls[0].body).to.equal('priority'); });",
+              "  pm.test('max_completion_tokens is the 5 the caller sent', function () { pm.expect(JSON.parse(calls[0].body).max_completion_tokens, calls[0].body).to.equal(5); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"moonshot/oc-tiered\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"service_tier\": \"priority\",\n  \"max_completion_tokens\": 5\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "336.6 [EXPECT-400] moonshot kimi chat stream with an unlisted service_tier is refused before the stream opens (compatible chat fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('status is 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(j.extra_fields && j.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names service_tier', function () { pm.expect(j.error && j.error.param, pm.response.text()).to.equal('service_tier'); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/oc/v1/chat/completions' && JSON.parse(c.body).model === 'oc-tiered'; });",
+              "  pm.test('only the listed-tier request of 336.5 reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(1); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"moonshot/oc-tiered\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"service_tier\": \"flex\",\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "336.7 [EXPECT-400] azure openai chat blocked by the content filter keeps its 400 and code and is caller_content_filtered (compatible chat fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('the vendor status is kept', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('the vendor code is kept', function () { pm.expect(j.error && j.error.code, pm.response.text()).to.equal('content_filter'); });",
+              "pm.test('error_type is caller_content_filtered', function () { pm.expect(j.extra_fields && j.extra_fields.error_type, pm.response.text()).to.equal('caller_content_filtered'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"azure/azure-content-filter\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "336.8 openai gpt-5-pro responses replay of unverifiable encrypted reasoning heals on a second upstream call while the switch is off (encrypted reasoning retry switch)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the stripped retry succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports its hit counts', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var h = res.json().data[0].hits;",
+              "  pm.test('the vendor refused the replay once', function () { pm.expect(h['replay-id-mismatch'], res.text()).to.equal(1); });",
+              "  pm.test('two upstream calls: the replay and the stripped retry', function () { pm.expect(h['gpt-5-pro'], res.text()).to.equal(2); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-5-pro\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    },\n    {\n      \"id\": \"rs_minted_elsewhere\",\n      \"type\": \"reasoning\",\n      \"summary\": [\n        {\n          \"type\": \"summary_text\",\n          \"text\": \"thought it through\"\n        }\n      ],\n      \"encrypted_content\": \"enc-token-fixture\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"go on\"\n    }\n  ],\n  \"max_output_tokens\": 16\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "336.9 openai fixture gateway client config is read for the switch save (encrypted reasoning retry switch)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('the client config is readable', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(200); pm.expect(j.client_config, pm.response.text().slice(0, 400)).to.be.an('object'); });",
+              "pm.test('the switch is off by default', function () { pm.expect(j.client_config.disable_encrypted_reasoning_retry, pm.response.text().slice(0, 400)).to.equal(false); });",
+              "pm.collectionVariables.set('h336ClientConfig', JSON.stringify(j.client_config));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        }
+      }
+    },
+    {
+      "name": "336.10 openai fixture gateway saves disable_encrypted_reasoning_retry on (encrypted reasoning retry switch)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var saved = pm.collectionVariables.get('h336ClientConfig');",
+              "  if (!saved) { throw new Error('336.9 must run first: it stores the client config this save sends back'); }",
+              "  var clientConfig = JSON.parse(saved);",
+              "  clientConfig.disable_encrypted_reasoning_retry = true;",
+              "  pm.request.body.raw = JSON.stringify({ client_config: clientConfig });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the save is accepted', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.sendRequest({ url: pm.variables.replaceIn('{{baseUrl}}') + '/api/config', method: 'GET', header: { 'X-Bifrost-Setup-Token': 'bifrost-e2e-setup-token' } }, function (err, res) {",
+              "  pm.test('disable_encrypted_reasoning_retry reads back true', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.json().client_config.disable_encrypted_reasoning_retry, res.text().slice(0, 400)).to.equal(true); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        }
+      }
+    },
+    {
+      "name": "336.11 [EXPECT-400] openai gpt-5-pro responses replay returns the vendor 400 after exactly one upstream call while the switch is on (encrypted reasoning retry switch)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err) { if (err) { throw err; } });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('the vendor status is returned', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('the vendor code is returned', function () { pm.expect(j.error && j.error.code, pm.response.text()).to.equal('invalid_encrypted_content'); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports its hit counts', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var h = res.json().data[0].hits;",
+              "  pm.test('exactly one upstream call', function () { pm.expect(h['gpt-5-pro'], res.text()).to.equal(1); });",
+              "  pm.test('the vendor refused the replay once', function () { pm.expect(h['replay-id-mismatch'], res.text()).to.equal(1); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-5-pro\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    },\n    {\n      \"id\": \"rs_minted_elsewhere\",\n      \"type\": \"reasoning\",\n      \"summary\": [\n        {\n          \"type\": \"summary_text\",\n          \"text\": \"thought it through\"\n        }\n      ],\n      \"encrypted_content\": \"enc-token-fixture\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"go on\"\n    }\n  ],\n  \"max_output_tokens\": 16\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "336.12 openai fixture gateway saves disable_encrypted_reasoning_retry off again (encrypted reasoning retry switch)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var saved = pm.collectionVariables.get('h336ClientConfig');",
+              "  if (!saved) { throw new Error('336.9 must run first: it stores the client config this save sends back'); }",
+              "  var clientConfig = JSON.parse(saved);",
+              "  clientConfig.disable_encrypted_reasoning_retry = false;",
+              "  pm.request.body.raw = JSON.stringify({ client_config: clientConfig });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the save is accepted', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.sendRequest({ url: pm.variables.replaceIn('{{baseUrl}}') + '/api/config', method: 'GET', header: { 'X-Bifrost-Setup-Token': 'bifrost-e2e-setup-token' } }, function (err, res) {",
+              "  pm.test('disable_encrypted_reasoning_retry reads back false', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.json().client_config.disable_encrypted_reasoning_retry, res.text().slice(0, 400)).to.equal(false); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        }
+      }
+    }
+  ]
+}

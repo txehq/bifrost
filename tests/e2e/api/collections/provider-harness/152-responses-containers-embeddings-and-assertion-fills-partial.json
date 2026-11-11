@@ -1,0 +1,914 @@
+{
+  "name": "152. Responses, containers, embeddings and assertion fills (partial row fills)",
+  "description": "Variants the audit named for rows that were only partly covered: OpenAI MCP forward (plus an [EXPECT-4XX] unreachable-server probe), Responses tool_choice web_search_preview, a combined text+image+file input, include reasoning.encrypted_content, a real custom tool, an ordered Containers lifecycle (152.7a-d share h152ContainerId; /v1/containers bodies are carved out of the generic shape check), Bedrock job list maxResults, Titan G1 and Cohere v3 enum probes, and Gemini assertions for stopSequences, penalties on the wire, code execution output parts, URL context, plus the Azure transcription deployment route. Titan G1 is [PREVIEW]: the model may not be enabled in the account. Deliberately not here: passthrough computer_use (beta-header injection on the passthrough path is unconfirmed), client-sent anthropic_beta body field, Gemini logprobs (model support unconfirmed) and the native Gemini Files upload.",
+  "item": [
+    {
+      "name": "152.1 openai/gpt-4o-mini responses mcp tool is forwarded and lists the server tools (mcp tool)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Use the deepwiki tool to ask what the facebook/react repo is about, one sentence.\",\n  \"tools\": [\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"deepwiki\",\n      \"server_url\": \"https://mcp.deepwiki.com/mcp\",\n      \"require_approval\": \"never\",\n      \"allowed_tools\": [\n        \"ask_question\"\n      ]\n    }\n  ],\n  \"max_output_tokens\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var items = j.output || [];",
+              "pm.test('output contains an mcp_list_tools item for the deepwiki server', function () { pm.expect(items.some(function (o) { return o.type === 'mcp_list_tools' && o.server_label === 'deepwiki'; }), pm.response.text().slice(0, 800)).to.equal(true); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "152.2 [EXPECT-4XX] openai/gpt-4o-mini responses mcp tool with an unreachable server reaches OpenAI (mcp tool)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Use the tool.\",\n  \"tools\": [\n    {\n      \"type\": \"mcp\",\n      \"server_label\": \"nowhere\",\n      \"server_url\": \"https://does-not-exist-h150.invalid/mcp\",\n      \"require_approval\": \"never\"\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('OpenAI reports the MCP server problem', function () { var t = pm.response.text(); pm.expect(t, 'rejection does not mention the mcp server; tool may have been dropped: ' + t).to.match(/mcp|server|tool|connect/i); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "152.3 openai/gpt-4o responses tool_choice web_search_preview forces a web_search_call (responses tool choice)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o\",\n  \"input\": \"What is the capital of Australia?\",\n  \"tools\": [\n    {\n      \"type\": \"web_search_preview\"\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"web_search_preview\"\n  },\n  \"max_output_tokens\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var items = j.output || [];",
+              "pm.test('output contains a web_search_call item', function () { pm.expect(items.some(function (o) { return o.type === 'web_search_call'; }), pm.response.text().slice(0, 800)).to.equal(true); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "152.4 openai/gpt-4o-mini responses combines input_text, input_image and input_file in one request (multimodal input items)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Two attachments follow. In one sentence: name the colour of the image, then say what the document is.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAJ0lEQVR42u3NsQkAAAjAsP7/tF7hIASyp6lTCQQCgUAgEAgEgi/BAjLD/C5w/SM9AAAAAElFTkSuQmCC\"\n        },\n        {\n          \"type\": \"input_file\",\n          \"file_url\": \"https://www.berkshirehathaway.com/letters/2024ltr.pdf\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var items = j.output || [];",
+              "var text = items.map(function (o) { return (o.content || []).map(function (c) { return c.text || ''; }).join(''); }).join('');",
+              "pm.test('model answered about both attachments', function () { pm.expect(text.length, pm.response.text().slice(0, 600)).to.be.above(10); });",
+              "pm.test('input tokens reflect image plus document', function () { pm.expect(j.usage && j.usage.input_tokens, pm.response.text().slice(0, 400)).to.be.above(500); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "152.5 openai/gpt-5-mini responses include reasoning.encrypted_content returns an encrypted reasoning item (include array)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"input\": \"What is 17 * 23?\",\n  \"reasoning\": {\n    \"effort\": \"low\"\n  },\n  \"store\": false,\n  \"include\": [\n    \"reasoning.encrypted_content\"\n  ],\n  \"max_output_tokens\": 512\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var items = j.output || [];",
+              "pm.test('a reasoning item carries encrypted_content', function () { var r = items.filter(function (o) { return o.type === 'reasoning'; })[0]; pm.expect(r, 'no reasoning item: ' + pm.response.text().slice(0, 600)).to.be.an('object'); pm.expect(r.encrypted_content, 'include was not honoured').to.be.a('string').and.not.empty; });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "152.6 openai/gpt-5-mini responses custom tool returns a custom_tool_call (custom tool)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"input\": \"Use the code_exec tool to run: print(\\\"hello\\\")\",\n  \"tools\": [\n    {\n      \"type\": \"custom\",\n      \"name\": \"code_exec\",\n      \"description\": \"Executes arbitrary python code\",\n      \"format\": {\n        \"type\": \"text\"\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"custom\",\n    \"name\": \"code_exec\"\n  },\n  \"max_output_tokens\": 2048\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var items = j.output || [];",
+              "pm.test('output contains a custom_tool_call for code_exec', function () { var c = items.filter(function (o) { return o.type === 'custom_tool_call'; })[0]; pm.expect(c, 'no custom_tool_call: ' + pm.response.text().slice(0, 800)).to.be.an('object'); pm.expect(c.name).to.equal('code_exec'); pm.expect(c.input, 'custom tool input missing').to.be.a('string'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "152.7a openai containers create returns a container id (containers lifecycle)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"provider\": \"openai\",\n  \"name\": \"bf-harness-h150\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/containers",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "containers"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('create returns a cntr_ id', function () { pm.expect(j.id, pm.response.text()).to.match(/^cntr_/); });",
+              "pm.collectionVariables.set('h152ContainerId', j.id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "152.7b openai containers retrieve returns the created container (containers lifecycle)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/containers/{{h152ContainerId}}?provider=openai",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "containers",
+            "{{h152ContainerId}}?provider=openai"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('retrieve returns the same container', function () { pm.expect(j.id, pm.response.text()).to.equal(pm.collectionVariables.get('h152ContainerId')); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "152.7c openai containers list includes the created container (containers lifecycle)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/containers?provider=openai&limit=100&order=desc",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "containers?provider=openai&limit=100&order=desc"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var want = pm.collectionVariables.get('h152ContainerId');",
+              "// OpenAI's container list shows a new container a moment after create, so re-list before failing. Bounded: six reads a second apart.",
+              "function listed(j) { return !!j && Array.isArray(j.data) && j.data.some(function (c) { return c && c.id === want; }); }",
+              "function check(attempt, j, txt) {",
+              "  if (listed(j) || attempt >= 6) {",
+              "    pm.test('list includes the created container', function () { pm.expect(j && j.data, (txt || '').slice(0, 400)).to.be.an('array'); pm.expect(j.data.map(function (c) { return c.id; }), 'after ' + attempt + ' re-list(s): ' + (txt || '').slice(0, 400)).to.include(want); });",
+              "    return;",
+              "  }",
+              "  setTimeout(function () {",
+              "    pm.sendRequest({ url: pm.variables.get('baseUrl') + '/v1/containers?provider=openai&limit=100&order=desc', method: 'GET' }, function (err, res) {",
+              "      var body = null; try { body = err ? null : res.json(); } catch (e) { body = null; }",
+              "      check(attempt + 1, body, err ? String(err) : res.text());",
+              "    });",
+              "  }, 1000);",
+              "}",
+              "var first = null; try { first = pm.response.json(); } catch (e) { first = null; }",
+              "check(0, first, pm.response.text());"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "152.7d openai containers delete removes the container (containers lifecycle)",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/containers/{{h152ContainerId}}?provider=openai",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "containers",
+            "{{h152ContainerId}}?provider=openai"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('delete acknowledges the container id', function () { pm.expect(j.id, pm.response.text()).to.equal(pm.collectionVariables.get('h152ContainerId')); pm.expect(j.deleted, pm.response.text()).to.equal(true); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "152.8 bedrock model-invocation-jobs list honours maxResults=1 (async invocation jobs)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model-invocation-jobs?maxResults=1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model-invocation-jobs?maxResults=1"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('list returns at most one summary', function () { pm.expect(j.invocationJobSummaries, pm.response.text().slice(0, 400)).to.be.an('array'); pm.expect(j.invocationJobSummaries.length, 'maxResults ignored').to.be.at.most(1); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "152.9a [PREVIEW] bedrock titan-embed-text-v1 baseline returns a 1536-dim vector (titan g1)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v1\",\n  \"input\": \"titan g1 baseline\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('g1 baseline vector is 1536-dim', function () { var v = j.data && j.data[0] && j.data[0].embedding; pm.expect(v, pm.response.text().slice(0, 300)).to.be.an('array'); pm.expect(v.length).to.equal(1536); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "152.9b [PREVIEW] [EXPECT-4XX] bedrock titan-embed-text-v1 rejects dimensions (titan g1)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v1\",\n  \"input\": \"titan g1 dimensions probe\",\n  \"dimensions\": 256\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('rejection names the unsupported parameter', function () { var t = pm.response.text(); pm.expect(t, 'rejection does not mention dimensions/validation: ' + t).to.match(/dimension|validation|extraneous|invalid/i); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "152.10a bedrock cohere.embed-english-v3 truncate END is accepted and returns 1024 dims (cohere v3)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/cohere.embed-english-v3\",\n  \"input\": \"cohere v3 truncate probe\",\n  \"input_type\": \"search_document\",\n  \"truncate\": \"END\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('v3 vector is 1024-dim', function () { var v = j.data && j.data[0] && j.data[0].embedding; pm.expect(v, pm.response.text().slice(0, 300)).to.be.an('array'); pm.expect(v.length).to.equal(1024); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "152.10b [EXPECT-4XX] bedrock cohere.embed-english-v3 rejects an unknown truncate value MIDDLE (cohere v3)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/cohere.embed-english-v3\",\n  \"input\": \"cohere v3 truncate enum probe\",\n  \"input_type\": \"search_document\",\n  \"truncate\": \"MIDDLE\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('AWS names the bad truncate value', function () { var t = pm.response.text(); pm.expect(t, 'rejection does not mention truncate/validation: ' + t).to.match(/truncate|validation|invalid|enum/i); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "152.11 gemini-2.5-flash native stopSequences truncates before the stop token (gemini stop sequences)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Count in lowercase words: one, two, three, four, five\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"stopSequences\": [\n      \"three\"\n    ],\n    \"maxOutputTokens\": 64,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var cand = (j.candidates && j.candidates[0]) || {};",
+              "var text = ((cand.content && cand.content.parts) || []).map(function (p) { return p.text || ''; }).join('').toLowerCase();",
+              "pm.test('output stops before the stop sequence', function () { pm.expect(text, 'stop sequence leaked: ' + pm.response.text().slice(0, 500)).to.not.include('three'); pm.expect(cand.finishReason, pm.response.text().slice(0, 500)).to.equal('STOP'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "152.12 gemini/gemini-2.5-flash chat presence and frequency penalty reach generationConfig (gemini penalties)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"presence_penalty\": 0.5,\n  \"frequency_penalty\": 0.5\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var __b = pm.response.json() || {};",
+              "var rr = (__b.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('raw_request captured', function () { pm.expect(rr, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object'); });",
+              "if (rr) {",
+              "  var gc = rr.generationConfig || {};",
+              "  // compat should_drop_params is on by default and drops penalties the model catalog does not list for the model.",
+              "  var dropped = (__b.extra_fields || {}).dropped_compat_plugin_params || [];",
+              "  pm.test('penalties are on the Gemini wire, or reported as dropped by compat', function () {",
+              "    if (dropped.indexOf('presence_penalty') !== -1 || dropped.indexOf('frequency_penalty') !== -1) {",
+              "      pm.expect(dropped, 'only one penalty reported dropped: ' + JSON.stringify(dropped)).to.include.members(['presence_penalty', 'frequency_penalty']);",
+              "      pm.expect(gc.presencePenalty, 'reported dropped but on the wire: ' + JSON.stringify(rr).slice(0, 600)).to.equal(undefined);",
+              "      pm.expect(gc.frequencyPenalty, 'reported dropped but on the wire: ' + JSON.stringify(rr).slice(0, 600)).to.equal(undefined);",
+              "      return;",
+              "    }",
+              "    pm.expect(gc.presencePenalty, JSON.stringify(rr).slice(0, 600)).to.equal(0.5);",
+              "    pm.expect(gc.frequencyPenalty, JSON.stringify(rr).slice(0, 600)).to.equal(0.5);",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "152.13 gemini-2.5-flash native codeExecution returns executableCode and codeExecutionResult parts (code execution outputs)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Compute the 50th Fibonacci number with code and state it.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"codeExecution\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 1024\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var ps = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];",
+              "pm.test('code ran and returned the result', function () {",
+              "  var code = ps.filter(function (p) { return p.executableCode; })[0];",
+              "  var res = ps.filter(function (p) { return p.codeExecutionResult; })[0];",
+              "  pm.expect(code, 'no executableCode part: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+              "  pm.expect(res, 'no codeExecutionResult part: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+              "  pm.expect(res.codeExecutionResult.outcome).to.equal('OUTCOME_OK');",
+              "  pm.expect(res.codeExecutionResult.output, 'wrong F(50)').to.include('12586269025');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "152.14 gemini-2.5-flash native urlContext retrieves the page (url context)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"In one sentence, what is https://www.wikipedia.org/ about?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"urlContext\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 1024\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini-2.5-flash:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var cand = (j.candidates && j.candidates[0]) || {};",
+              "pm.test('urlContextMetadata reports a successful retrieval', function () {",
+              "  var md = (cand.urlContextMetadata && cand.urlContextMetadata.urlMetadata) || [];",
+              "  pm.expect(md.length, 'no urlContextMetadata: ' + pm.response.text().slice(0, 800)).to.be.above(0);",
+              "  pm.expect(String(md[0].urlRetrievalStatus), pm.response.text().slice(0, 800)).to.match(/SUCCESS/);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "152.14b gemini-2.5-flash native urlContext streamGenerateContent reports urlContextMetadata in a chunk (url context)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-goog-api-key",
+            "value": "{{genaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"In one sentence, what is https://www.wikipedia.org/ about?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"urlContext\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 1024\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini-2.5-flash:streamGenerateContent"
+          ],
+          "query": [
+            {
+              "key": "alt",
+              "value": "sse"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('stream returns 200', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 800)).to.equal(200);",
+              "});",
+              "var text = pm.response.text();",
+              "var md = [];",
+              "text.split(/\\r?\\n/).forEach(function (line) {",
+              "  if (line.indexOf('data:') !== 0) { return; }",
+              "  var payload = line.slice(5).trim();",
+              "  if (!payload || payload === '[DONE]') { return; }",
+              "  var chunk; try { chunk = JSON.parse(payload); } catch (e) { return; }",
+              "  (chunk.candidates || []).forEach(function (c) {",
+              "    if (c && c.urlContextMetadata && c.urlContextMetadata.urlMetadata) { md = md.concat(c.urlContextMetadata.urlMetadata); }",
+              "  });",
+              "});",
+              "pm.test('some streamed chunk carries urlContextMetadata with a successful retrieval', function () {",
+              "  pm.expect(md.length, 'no urlContextMetadata in any chunk: ' + text.slice(0, 800)).to.be.above(0);",
+              "  pm.expect(String(md[0].urlRetrievalStatus), text.slice(0, 800)).to.match(/SUCCESS/);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "152.15 azure gpt-4o-transcribe deployment transcriptions route returns text (azure whisper)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('deployments transcription route returned text', function () { pm.expect(j.text, pm.response.text().slice(0, 300)).to.be.a('string').and.not.empty; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "api-key",
+            "value": "{{openaiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.mp3",
+              "type": "file"
+            },
+            {
+              "key": "model",
+              "value": "gpt-4o-transcribe",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/openai/deployments/gpt-4o-transcribe/audio/transcriptions?api-version=2025-04-01-preview",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "openai",
+            "deployments",
+            "gpt-4o-transcribe",
+            "audio",
+            "transcriptions"
+          ],
+          "query": [
+            {
+              "key": "api-version",
+              "value": "2025-04-01-preview"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,359 @@
+{
+  "name": "145. Anthropic Messages param and header pins (anthropic param pins)",
+  "description": "Anthropic backlog rows that were sent but never asserted: stream_options via /v1/chat, the prompt-caching beta header, Opus 4.8 sampling stripped from the wire (with a haiku control that keeps temperature), service_tier standard_only, plus [PREVIEW] web_fetch_20260209 and mcp_toolset. Wire assertions read extra_fields.raw_request via x-bf-send-back-raw-request. The extended-thinking-2025-01-15 and output-300k headers are deliberately not here: neither header name/model pairing is confirmed to be accepted upstream.",
+  "item": [
+    {
+      "name": "145.1 anthropic/claude-haiku-4-5 stream_options include_usage yields a usage chunk (stream_options)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi.\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"max_tokens\": 16\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text(), usage = null, done = false, chunks = 0;",
+              "raw.split('\\n').forEach(function (l) {",
+              "  if (l.indexOf('data:') !== 0) { return; }",
+              "  var d = l.slice(5).trim();",
+              "  if (d === '[DONE]') { done = true; return; }",
+              "  try { var e = JSON.parse(d); chunks++; if (e.usage && e.usage.prompt_tokens > 0) { usage = e.usage; } } catch (x) {}",
+              "});",
+              "pm.test('stream carries chunks and terminates with [DONE]', function () { pm.expect(chunks, raw.slice(0, 400)).to.be.above(1); pm.expect(done, 'no [DONE]: ' + raw.slice(-300)).to.equal(true); });",
+              "pm.test('include_usage produced a usage chunk with token counts', function () {",
+              "  pm.expect(usage, 'no usage chunk: ' + raw.slice(-500)).to.be.an('object');",
+              "  pm.expect(usage.completion_tokens, JSON.stringify(usage)).to.be.above(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "145.2 anthropic/claude-haiku-4-5 prompt-caching-2024-07-31 header accepted with cache_control (prompt caching beta)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "anthropic-beta",
+            "value": "prompt-caching-2024-07-31"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"You answer tersely.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('message returned with usage cache counters', function () {",
+              "  pm.expect(j.type, pm.response.text()).to.equal('message');",
+              "  pm.expect(j.usage, pm.response.text()).to.be.an('object');",
+              "  pm.expect(j.usage.input_tokens, pm.response.text()).to.be.above(0);",
+              "  pm.expect(j.usage, 'cache counters missing: ' + pm.response.text()).to.have.property('cache_creation_input_tokens');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "145.3 anthropic/claude-opus-4-8 sampling params are stripped from the wire (sampling normalization)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-opus-4-8\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"temperature\": 0.7,\n  \"top_p\": 0.9\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var __b = pm.response.json() || {};",
+              "var rr = (__b.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('raw_request captured', function () { pm.expect(rr, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object'); });",
+              "if (rr) {",
+              "  pm.test('temperature and top_p never reach Anthropic for Opus 4.8', function () {",
+              "    pm.expect(rr, JSON.stringify(rr).slice(0, 600)).to.not.have.property('temperature');",
+              "    pm.expect(rr, JSON.stringify(rr).slice(0, 600)).to.not.have.property('top_p');",
+              "    pm.expect(rr, JSON.stringify(rr).slice(0, 600)).to.not.have.property('top_k');",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "145.4 anthropic/claude-haiku-4-5 control keeps temperature on the wire (sampling normalization)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"temperature\": 0.7\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var __b = pm.response.json() || {};",
+              "var rr = (__b.extra_fields || {}).raw_request;",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('raw_request captured', function () { pm.expect(rr, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object'); });",
+              "if (rr) {",
+              "  pm.test('temperature is forwarded for a model that accepts it', function () {",
+              "    pm.expect(rr.temperature, JSON.stringify(rr).slice(0, 600)).to.equal(0.7);",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "145.5 anthropic/claude-haiku-4-5 service_tier standard_only reports standard usage tier (service tier)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"service_tier\": \"standard_only\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('usage.service_tier is standard', function () {",
+              "  pm.expect(j.usage && j.usage.service_tier, 'service_tier not reported as standard: ' + pm.response.text()).to.equal('standard');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "145.6 [PREVIEW] anthropic/claude-haiku-4-5 web_fetch_20260209 server tool (web fetch)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 512,\n  \"tools\": [\n    {\n      \"type\": \"web_fetch_20260209\",\n      \"name\": \"web_fetch\",\n      \"max_uses\": 1\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Fetch https://example.com and tell me its page title.\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('model invoked the web_fetch server tool', function () {",
+              "  var used = (j.content || []).some(function (b) { return b.type === 'server_tool_use' && b.name === 'web_fetch'; });",
+              "  pm.expect(used, 'no server_tool_use web_fetch block: ' + pm.response.text().slice(0, 800)).to.equal(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "145.7 [PREVIEW] anthropic/claude-haiku-4-5 mcp_toolset references an mcp_servers entry (mcp toolset)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-api-key",
+            "value": "{{anthropicKey}}"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 256,\n  \"mcp_servers\": [\n    {\n      \"type\": \"url\",\n      \"url\": \"https://mcp.deepwiki.com/mcp\",\n      \"name\": \"deepwiki\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"mcp_toolset\",\n      \"mcp_server_name\": \"deepwiki\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"List the tools you have from deepwiki, names only.\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('request accepted and a message came back', function () { pm.expect(j.type, pm.response.text().slice(0, 600)).to.equal('message'); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

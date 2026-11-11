@@ -34,10 +34,12 @@ run_case() {
   local config="${5:-{\"providers\":{\}\}}"
   local default_hosts="${6:-{\}}"
   local root="$WORK/$name"
-  mkdir -p "$root/.github/workflows/scripts" "$root/tests/e2e/api/collections" \
+  mkdir -p "$root/.github/workflows/scripts" "$root/tests/e2e/api/collections/provider-harness" \
     "$root/tests/integrations/python" "$root/core/providers"
   cp "$SCRIPT_DIR/check-egress-allowlist.sh" "$root/.github/workflows/scripts/"
-  printf '%s\n' "$collection" > "$root/tests/e2e/api/collections/provider-harness.json"
+  # The check scans every JSON file in the per-folder directory (TXE-7136); one file
+  # holding a whole small collection exercises the same scan.
+  printf '%s\n' "$collection" > "$root/tests/e2e/api/collections/provider-harness/fixture.json"
   printf '%s\n' "$config" > "$root/tests/integrations/python/config.json"
   printf '%s\n' "$default_hosts" > "$root/.github/workflows/provider-default-hosts.json"
   cat > "$root/.github/workflows/harness.yml" <<'YAML'
@@ -184,7 +186,11 @@ while IFS= read -r input; do
   case "$input" in
     .github/workflows/*) continue ;; # covered by the ".github/workflows/**" trigger
   esac
-  if grep -qF -- "- \"$input\"" "$lint_workflow"; then
+  # An input that is a directory (the per-folder harness, TXE-7136) is read file by file,
+  # so the trigger must name everything under it.
+  trigger="$input"
+  [[ -d "$repo_root/$input" ]] && trigger="$input/**"
+  if grep -qF -- "- \"$trigger\"" "$lint_workflow"; then
     echo "ok   trigger-covers-$input"
   else
     echo "FAIL trigger-covers-$input: workflow-lint.yml is not triggered by a change to $input, which check-egress-allowlist.sh reads"

@@ -1,0 +1,1423 @@
+{
+  "name": "335. Gemini API speech and transcription: content blocks, undeliverable fields, the output-token bound, full usage, truncated streams (gemini speech contract) [SERIAL]",
+  "description": "TXE-6539 regression, contract C3, C4, C5, C6, C10. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. The gemini provider there points at the fixture's /pp/gemini, which answers the models pp-tts-ok, pp-tts-blocked, pp-tts-truncated and pp-stt-ok in the generateContent shape; no Gemini TTS response has been recorded for these rows. The rows cover every inbound route the change reaches: /v1/audio/speech buffered and streamed, the OpenAI drop-in speech and transcription routes, /v1/audio/transcriptions, and the native GenAI generateContent and streamGenerateContent. Every row names the key with x-bf-api-key and reads back the bytes that reached the fixture from /__wire, so it also pins one upstream call per request (none for a refused request). Before the change a blocked prompt was an empty audio and a 400 with no error_type, speed, instructions, language_code, language and response_format were dropped silently, max_output_tokens was not a field, an empty response_format answered bare PCM, the done frame carried three token counts, and a stream that ended without finishReason ended on speech.audio.done. Run the whole folder in order.",
+  "item": [
+    {
+      "name": "335.1 gemini/pp-tts-ok /v1/audio/speech stream_format sse with max_output_tokens: the bound reaches generationConfig.maxOutputTokens and speech.audio.done carries every usage detail, from one upstream call (gemini speech contract)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"gemini/pp-tts-ok\",\"input\":\"Say hello.\",\"voice\":\"Kore\",\"stream_format\":\"sse\",\"max_output_tokens\":1024}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var raw = pm.response.text() || '';",
+              "// geminiCalls: the requests that reached the fixture's Gemini upstream, bytes as they arrived.",
+              "function geminiCalls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/gemini/models/') === 0; })); }); }",
+              "pm.test('the client gets 200 with an SSE stream', function () { pm.expect(pm.response.code, raw).to.equal(200); pm.expect(pm.response.headers.get('content-type') || '', raw).to.include('text/event-stream'); });",
+              "var frames = raw.split(/\\n\\n/).map(function (f) { var m = /^data: (\\{.*\\})$/m.exec(f); return m ? JSON.parse(m[1]) : null; }).filter(Boolean);",
+              "var done = frames[frames.length - 1] || {};",
+              "pm.test('two audio deltas, then speech.audio.done as the final frame', function () { pm.expect(frames.map(function (f) { return f.type; }), raw).to.eql(['speech.audio.delta', 'speech.audio.delta', 'speech.audio.done']); });",
+              "pm.test('usage is the vendor\\'s: output_tokens without the thought tokens, total_tokens with them', function () { pm.expect(done.usage, raw).to.be.an('object'); pm.expect(done.usage.input_tokens, raw).to.equal(7); pm.expect(done.usage.output_tokens, raw).to.equal(50); pm.expect(done.usage.total_tokens, raw).to.equal(69); });",
+              "pm.test('usage.output_token_details carries candidatesTokensDetails and thoughtsTokenCount', function () { pm.expect(done.usage.output_token_details, raw).to.eql({ audio_tokens: 50, reasoning_tokens: 12 }); pm.expect(done.usage.input_token_details, raw).to.eql({ text_tokens: 7 }); });",
+              "geminiCalls(function (calls) { pm.test('exactly one upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.path; }))).to.have.length(1); pm.expect(calls[0].path, calls[0].path).to.equal('/pp/gemini/models/pp-tts-ok:streamGenerateContent'); }); });",
+              "geminiCalls(function (calls) { pm.test('the bound is sent as generationConfig.maxOutputTokens, not under its unified name', function () { var sent = JSON.parse(calls[0].body); pm.expect(sent.generationConfig.maxOutputTokens, calls[0].body).to.equal(1024); pm.expect(sent.generationConfig.responseModalities, calls[0].body).to.eql(['AUDIO']); pm.expect(calls[0].body, calls[0].body).to.match(/voiceName.{1,5}Kore/); pm.expect(sent.max_output_tokens, calls[0].body).to.equal(undefined); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "335.2 gemini/pp-tts-ok /v1/audio/speech with no response_format answers WAV, from one upstream call on the named key (gemini speech contract)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"gemini/pp-tts-ok\",\"input\":\"Say hello.\",\"voice\":\"Kore\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var raw = pm.response.text() || '';",
+              "// geminiCalls: the requests that reached the fixture's Gemini upstream, bytes as they arrived.",
+              "function geminiCalls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/gemini/models/') === 0; })); }); }",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, raw).to.equal(200); });",
+              "pm.test('the audio is a WAV file, not bare PCM', function () { pm.expect(raw.slice(0, 4), 'first bytes: ' + JSON.stringify(raw.slice(0, 16))).to.equal('RIFF'); pm.expect(raw.slice(8, 12), 'first bytes: ' + JSON.stringify(raw.slice(0, 16))).to.equal('WAVE'); });",
+              "pm.test('the named key served the request', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), JSON.stringify(pm.response.headers.toObject())).to.equal('local-error-fixture'); });",
+              "geminiCalls(function (calls) { pm.test('exactly one upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.path; }))).to.have.length(1); pm.expect(calls[0].path, calls[0].path).to.equal('/pp/gemini/models/pp-tts-ok:generateContent'); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 335.3 gemini/pp-tts-blocked /v1/audio/speech a prompt Gemini blocks with a 200 returns 400 caller_content_filtered with the raw blockReason (gemini speech contract)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"gemini/pp-tts-blocked\",\"input\":\"Say hello.\",\"voice\":\"Kore\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var raw = pm.response.text() || '';",
+              "// geminiCalls: the requests that reached the fixture's Gemini upstream, bytes as they arrived.",
+              "function geminiCalls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/gemini/models/') === 0; })); }); }",
+              "pm.test('the vendor\\'s 200 block is a 400', function () { pm.expect(pm.response.code, raw).to.equal(400); });",
+              "pm.test('a JSON error, not an SSE stream with an error frame', function () { var ct = pm.response.headers.get('content-type') || ''; pm.expect(ct, ct + ': ' + raw).to.include('application/json'); pm.expect(raw, raw).to.not.match(/^data:/m); });",
+              "pm.test('error_type is caller_content_filtered with the vendor\\'s blockReason verbatim', function () { var j = pm.response.json(); pm.expect(j.extra_fields && j.extra_fields.error_type, raw).to.equal('caller_content_filtered'); pm.expect(j.error && j.error.code, raw).to.equal('SAFETY'); pm.expect(j.error.message, raw).to.include('blocked due to safety'); pm.expect(j.is_bifrost_error, raw).to.not.equal(true); });",
+              "geminiCalls(function (calls) { pm.test('exactly one upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.path; }))).to.have.length(1); pm.expect(calls[0].path, calls[0].path).to.equal('/pp/gemini/models/pp-tts-blocked:generateContent'); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 335.4 gemini/pp-tts-blocked /v1/audio/speech stream_format sse a blocked prompt returns 400 caller_content_filtered, no 200 and no done frame (gemini speech contract)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"gemini/pp-tts-blocked\",\"input\":\"Say hello.\",\"voice\":\"Kore\",\"stream_format\":\"sse\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var raw = pm.response.text() || '';",
+              "// geminiCalls: the requests that reached the fixture's Gemini upstream, bytes as they arrived.",
+              "function geminiCalls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/gemini/models/') === 0; })); }); }",
+              "pm.test('the vendor\\'s 200 block is a 400', function () { pm.expect(pm.response.code, raw).to.equal(400); });",
+              "pm.test('a JSON error, not an SSE stream with an error frame', function () { var ct = pm.response.headers.get('content-type') || ''; pm.expect(ct, ct + ': ' + raw).to.include('application/json'); pm.expect(raw, raw).to.not.match(/^data:/m); });",
+              "pm.test('error_type is caller_content_filtered with the vendor\\'s blockReason verbatim', function () { var j = pm.response.json(); pm.expect(j.extra_fields && j.extra_fields.error_type, raw).to.equal('caller_content_filtered'); pm.expect(j.error && j.error.code, raw).to.equal('SAFETY'); pm.expect(j.error.message, raw).to.include('blocked due to safety'); pm.expect(j.is_bifrost_error, raw).to.not.equal(true); });",
+              "geminiCalls(function (calls) { pm.test('exactly one upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.path; }))).to.have.length(1); pm.expect(calls[0].path, calls[0].path).to.equal('/pp/gemini/models/pp-tts-blocked:streamGenerateContent'); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "335.5 gemini/pp-tts-truncated /v1/audio/speech stream_format sse an upstream stream that ends without finishReason ends on an error frame, never on speech.audio.done (gemini speech contract)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"gemini/pp-tts-truncated\",\"input\":\"Say hello.\",\"voice\":\"Kore\",\"stream_format\":\"sse\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var raw = pm.response.text() || '';",
+              "// geminiCalls: the requests that reached the fixture's Gemini upstream, bytes as they arrived.",
+              "function geminiCalls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/gemini/models/') === 0; })); }); }",
+              "pm.test('the stream had started: 200 and the audio delta that arrived', function () { pm.expect(pm.response.code, raw).to.equal(200); pm.expect(raw, raw).to.include('speech.audio.delta'); });",
+              "pm.test('no speech.audio.done: a truncated stream must not look complete', function () { pm.expect(raw, raw).to.not.include('speech.audio.done'); });",
+              "pm.test('the stream ends on an error frame classed as the vendor\\'s failure', function () { var frames = raw.split(/\\n\\n/).map(function (f) { var m = /^data: (\\{.*\\})$/m.exec(f); return m ? JSON.parse(m[1]) : null; }).filter(Boolean); var last = frames[frames.length - 1] || {}; pm.expect(last.error, raw).to.be.an('object'); pm.expect(last.is_bifrost_error, raw).to.not.equal(true); pm.expect(String(last.extra_fields && last.extra_fields.error_type), raw).to.match(/^provider_/); });",
+              "geminiCalls(function (calls) { pm.test('exactly one upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.path; }))).to.have.length(1); pm.expect(calls[0].path, calls[0].path).to.equal('/pp/gemini/models/pp-tts-truncated:streamGenerateContent'); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 335.6 gemini/pp-tts-ok /v1/audio/speech speed is refused naming the field, with no upstream call (gemini speech contract)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"gemini/pp-tts-ok\",\"input\":\"Say hello.\",\"voice\":\"Kore\",\"speed\":1.5}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var raw = pm.response.text() || '';",
+              "// geminiCalls: the requests that reached the fixture's Gemini upstream, bytes as they arrived.",
+              "function geminiCalls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/gemini/models/') === 0; })); }); }",
+              "pm.test('400, not a dropped field', function () { pm.expect(pm.response.code, raw).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter and error.param names speed', function () { var j = pm.response.json(); pm.expect(j.extra_fields && j.extra_fields.error_type, raw).to.equal('caller_unsupported_parameter'); pm.expect(j.error && j.error.param, raw).to.equal('speed'); });",
+              "geminiCalls(function (calls) { pm.test('the refused request made no upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.path; }))).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 335.7 gemini/pp-tts-ok /v1/audio/speech stream_format sse instructions is refused naming the field, with no upstream call (gemini speech contract)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"gemini/pp-tts-ok\",\"input\":\"Say hello.\",\"voice\":\"Kore\",\"stream_format\":\"sse\",\"instructions\":\"Speak slowly.\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var raw = pm.response.text() || '';",
+              "// geminiCalls: the requests that reached the fixture's Gemini upstream, bytes as they arrived.",
+              "function geminiCalls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/gemini/models/') === 0; })); }); }",
+              "pm.test('400, not a dropped field', function () { pm.expect(pm.response.code, raw).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter and error.param names instructions', function () { var j = pm.response.json(); pm.expect(j.extra_fields && j.extra_fields.error_type, raw).to.equal('caller_unsupported_parameter'); pm.expect(j.error && j.error.param, raw).to.equal('instructions'); });",
+              "geminiCalls(function (calls) { pm.test('the refused request made no upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.path; }))).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 335.8 gemini/pp-tts-ok /openai/v1/audio/speech language_code is refused naming the field on the OpenAI drop-in route, with no upstream call (gemini speech contract)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"gemini/pp-tts-ok\",\"input\":\"Say hello.\",\"voice\":\"Kore\",\"language_code\":\"en-US\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var raw = pm.response.text() || '';",
+              "// geminiCalls: the requests that reached the fixture's Gemini upstream, bytes as they arrived.",
+              "function geminiCalls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/gemini/models/') === 0; })); }); }",
+              "pm.test('400, not a dropped field', function () { pm.expect(pm.response.code, raw).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter and error.param names language_code', function () { var j = pm.response.json(); pm.expect(j.extra_fields && j.extra_fields.error_type, raw).to.equal('caller_unsupported_parameter'); pm.expect(j.error && j.error.param, raw).to.equal('language_code'); });",
+              "geminiCalls(function (calls) { pm.test('the refused request made no upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.path; }))).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 335.9 gemini/pp-tts-ok /v1/audio/speech response_format mp3 is refused naming the field, with no upstream call (gemini speech contract)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"gemini/pp-tts-ok\",\"input\":\"Say hello.\",\"voice\":\"Kore\",\"response_format\":\"mp3\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var raw = pm.response.text() || '';",
+              "// geminiCalls: the requests that reached the fixture's Gemini upstream, bytes as they arrived.",
+              "function geminiCalls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/gemini/models/') === 0; })); }); }",
+              "pm.test('400, not a dropped field', function () { pm.expect(pm.response.code, raw).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter and error.param names response_format', function () { var j = pm.response.json(); pm.expect(j.extra_fields && j.extra_fields.error_type, raw).to.equal('caller_unsupported_parameter'); pm.expect(j.error && j.error.param, raw).to.equal('response_format'); });",
+              "geminiCalls(function (calls) { pm.test('the refused request made no upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.path; }))).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "335.10 gemini/pp-stt-ok /v1/audio/transcriptions prompt and response_format json reach Gemini in one upstream call (gemini speech contract)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "gemini/pp-stt-ok",
+              "type": "text"
+            },
+            {
+              "key": "prompt",
+              "value": "Transcribe the call.",
+              "type": "text"
+            },
+            {
+              "key": "response_format",
+              "value": "json",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.mp3",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var raw = pm.response.text() || '';",
+              "// geminiCalls: the requests that reached the fixture's Gemini upstream, bytes as they arrived.",
+              "function geminiCalls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/gemini/models/') === 0; })); }); }",
+              "pm.test('the client gets 200 with the transcript and the vendor\\'s usage', function () { pm.expect(pm.response.code, raw).to.equal(200); var j = pm.response.json(); pm.expect(j.text, raw).to.equal('hello from the fixture'); pm.expect(j.usage.input_tokens, raw).to.equal(40); pm.expect(j.usage.output_tokens, raw).to.equal(5); pm.expect(j.usage.input_token_details, raw).to.eql({ text_tokens: 8, audio_tokens: 32 }); });",
+              "geminiCalls(function (calls) { pm.test('exactly one upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.path; }))).to.have.length(1); pm.expect(calls[0].path, calls[0].path).to.equal('/pp/gemini/models/pp-stt-ok:generateContent'); }); });",
+              "geminiCalls(function (calls) { pm.test('the caller\\'s prompt is the text part, with the audio beside it', function () { var sent = JSON.parse(calls[0].body); var parts = sent.contents[0].parts; pm.expect(parts[0].text, calls[0].body.slice(0, 300)).to.equal('Transcribe the call.'); pm.expect(parts[1].inlineData.data.length, 'no audio part').to.be.above(1000); pm.expect(sent.response_format, calls[0].body.slice(0, 300)).to.equal(undefined); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 335.11 gemini/pp-stt-ok /v1/audio/transcriptions language is refused naming the field, with no upstream call (gemini speech contract)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "gemini/pp-stt-ok",
+              "type": "text"
+            },
+            {
+              "key": "language",
+              "value": "en",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.mp3",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var raw = pm.response.text() || '';",
+              "// geminiCalls: the requests that reached the fixture's Gemini upstream, bytes as they arrived.",
+              "function geminiCalls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/gemini/models/') === 0; })); }); }",
+              "pm.test('400, not a dropped field', function () { pm.expect(pm.response.code, raw).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter and error.param names language', function () { var j = pm.response.json(); pm.expect(j.extra_fields && j.extra_fields.error_type, raw).to.equal('caller_unsupported_parameter'); pm.expect(j.error && j.error.param, raw).to.equal('language'); });",
+              "geminiCalls(function (calls) { pm.test('the refused request made no upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.path; }))).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 335.12 gemini/pp-stt-ok /v1/audio/transcriptions response_format srt is refused naming the field, with no upstream call (gemini speech contract)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "gemini/pp-stt-ok",
+              "type": "text"
+            },
+            {
+              "key": "response_format",
+              "value": "srt",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.mp3",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var raw = pm.response.text() || '';",
+              "// geminiCalls: the requests that reached the fixture's Gemini upstream, bytes as they arrived.",
+              "function geminiCalls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/gemini/models/') === 0; })); }); }",
+              "pm.test('400, not a dropped field', function () { pm.expect(pm.response.code, raw).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter and error.param names response_format', function () { var j = pm.response.json(); pm.expect(j.extra_fields && j.extra_fields.error_type, raw).to.equal('caller_unsupported_parameter'); pm.expect(j.error && j.error.param, raw).to.equal('response_format'); });",
+              "geminiCalls(function (calls) { pm.test('the refused request made no upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.path; }))).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "335.13 gemini /genai/v1beta/models/pp-tts-ok:generateContent the native route keeps generationConfig.maxOutputTokens, answers the bare PCM and returns the output token details as usageMetadata (gemini speech contract)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Say hello.\"}]}],\"generationConfig\":{\"responseModalities\":[\"AUDIO\"],\"maxOutputTokens\":2048,\"speechConfig\":{\"voiceConfig\":{\"prebuiltVoiceConfig\":{\"voiceName\":\"Kore\"}}}}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/pp-tts-ok:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "pp-tts-ok:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var raw = pm.response.text() || '';",
+              "// geminiCalls: the requests that reached the fixture's Gemini upstream, bytes as they arrived.",
+              "function geminiCalls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/gemini/models/') === 0; })); }); }",
+              "pm.test('the client gets 200 in the GenAI shape with the bare PCM Gemini sent, not a WAV file', function () { pm.expect(pm.response.code, raw).to.equal(200); var blob = pm.response.json().candidates[0].content.parts[0].inlineData; pm.expect(blob.data, raw.slice(0, 400)).to.equal('AAECAwQF'); pm.expect(blob.mimeType, raw.slice(0, 400)).to.equal('audio/L16;codec=pcm;rate=24000'); });",
+              "pm.test('usageMetadata keeps candidatesTokensDetails and thoughtsTokenCount', function () { var u = pm.response.json().usageMetadata; pm.expect(u, raw.slice(-600)).to.be.an('object'); pm.expect(u.candidatesTokenCount, raw.slice(-600)).to.equal(50); pm.expect(u.thoughtsTokenCount, raw.slice(-600)).to.equal(12); pm.expect(u.candidatesTokensDetails, raw.slice(-600)).to.eql([{ modality: 'AUDIO', tokenCount: 50 }]); });",
+              "geminiCalls(function (calls) { pm.test('exactly one upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.path; }))).to.have.length(1); pm.expect(calls[0].path, calls[0].path).to.equal('/pp/gemini/models/pp-tts-ok:generateContent'); }); });",
+              "geminiCalls(function (calls) { pm.test('generationConfig.maxOutputTokens reached Gemini unchanged', function () { var sent = JSON.parse(calls[0].body); pm.expect(sent.generationConfig.maxOutputTokens, calls[0].body).to.equal(2048); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "335.14 gemini/pp-stt-ok /openai/v1/audio/transcriptions prompt and response_format json reach Gemini in one upstream call on the OpenAI drop-in route (gemini speech contract)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "gemini/pp-stt-ok",
+              "type": "text"
+            },
+            {
+              "key": "prompt",
+              "value": "Transcribe the call.",
+              "type": "text"
+            },
+            {
+              "key": "response_format",
+              "value": "json",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.mp3",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var raw = pm.response.text() || '';",
+              "// geminiCalls: the requests that reached the fixture's Gemini upstream, bytes as they arrived.",
+              "function geminiCalls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/gemini/models/') === 0; })); }); }",
+              "pm.test('the client gets 200 with the transcript and the vendor\\'s usage', function () { pm.expect(pm.response.code, raw).to.equal(200); var j = pm.response.json(); pm.expect(j.text, raw).to.equal('hello from the fixture'); pm.expect(j.usage.input_tokens, raw).to.equal(40); pm.expect(j.usage.output_tokens, raw).to.equal(5); pm.expect(j.usage.input_token_details, raw).to.eql({ text_tokens: 8, audio_tokens: 32 }); });",
+              "geminiCalls(function (calls) { pm.test('exactly one upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.path; }))).to.have.length(1); pm.expect(calls[0].path, calls[0].path).to.equal('/pp/gemini/models/pp-stt-ok:generateContent'); }); });",
+              "geminiCalls(function (calls) { pm.test('the caller\\'s prompt is the text part, with the audio beside it', function () { var sent = JSON.parse(calls[0].body); var parts = sent.contents[0].parts; pm.expect(parts[0].text, calls[0].body.slice(0, 300)).to.equal('Transcribe the call.'); pm.expect(parts[1].inlineData.data.length, 'no audio part').to.be.above(1000); pm.expect(sent.response_format, calls[0].body.slice(0, 300)).to.equal(undefined); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 335.15 gemini/pp-stt-ok /openai/v1/audio/transcriptions language is refused naming the field on the OpenAI drop-in route, with no upstream call (gemini speech contract)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "gemini/pp-stt-ok",
+              "type": "text"
+            },
+            {
+              "key": "language",
+              "value": "en",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.mp3",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var raw = pm.response.text() || '';",
+              "// geminiCalls: the requests that reached the fixture's Gemini upstream, bytes as they arrived.",
+              "function geminiCalls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/gemini/models/') === 0; })); }); }",
+              "pm.test('400, not a dropped field', function () { pm.expect(pm.response.code, raw).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter and error.param names language', function () { var j = pm.response.json(); pm.expect(j.extra_fields && j.extra_fields.error_type, raw).to.equal('caller_unsupported_parameter'); pm.expect(j.error && j.error.param, raw).to.equal('language'); });",
+              "geminiCalls(function (calls) { pm.test('the refused request made no upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.path; }))).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "335.16 gemini /genai/v1beta/models/pp-tts-ok:streamGenerateContent the native stream sends the bare PCM and ends on finishReason STOP with the output token details, from one upstream call (gemini speech contract)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Say hello.\"}]}],\"generationConfig\":{\"responseModalities\":[\"AUDIO\"],\"maxOutputTokens\":2048,\"speechConfig\":{\"voiceConfig\":{\"prebuiltVoiceConfig\":{\"voiceName\":\"Kore\"}}}}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/pp-tts-ok:streamGenerateContent?alt=sse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "pp-tts-ok:streamGenerateContent"
+          ],
+          "query": [
+            {
+              "key": "alt",
+              "value": "sse"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var raw = pm.response.text() || '';",
+              "// geminiCalls: the requests that reached the fixture's Gemini upstream, bytes as they arrived.",
+              "function geminiCalls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/gemini/models/') === 0; })); }); }",
+              "pm.test('the client gets 200 with an SSE stream', function () { pm.expect(pm.response.code, raw).to.equal(200); pm.expect(pm.response.headers.get('content-type') || '', raw).to.include('text/event-stream'); });",
+              "var frames = raw.split(/\\n\\n/).map(function (f) { var m = /^data: (\\{.*\\})$/m.exec(f); return m ? JSON.parse(m[1]) : null; }).filter(Boolean);",
+              "pm.test('the audio chunks are the bare PCM Gemini sent', function () { var blob = frames[0].candidates[0].content.parts[0].inlineData; pm.expect(blob.data, raw).to.equal('AAECAwQF'); pm.expect(blob.mimeType, raw).to.equal('audio/L16;codec=pcm;rate=24000'); });",
+              "pm.test('the final frame carries finishReason STOP and every usage detail', function () { var last = frames[frames.length - 1] || {}; pm.expect(last.candidates && last.candidates[0].finishReason, raw).to.equal('STOP'); var u = last.usageMetadata; pm.expect(u, raw).to.be.an('object'); pm.expect(u.candidatesTokenCount, raw).to.equal(50); pm.expect(u.thoughtsTokenCount, raw).to.equal(12); pm.expect(u.candidatesTokensDetails, raw).to.eql([{ modality: 'AUDIO', tokenCount: 50 }]); });",
+              "geminiCalls(function (calls) { pm.test('exactly one upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.path; }))).to.have.length(1); pm.expect(calls[0].path, calls[0].path).to.equal('/pp/gemini/models/pp-tts-ok:streamGenerateContent'); }); });",
+              "geminiCalls(function (calls) { pm.test('generationConfig.maxOutputTokens reached Gemini unchanged', function () { var sent = JSON.parse(calls[0].body); pm.expect(sent.generationConfig.maxOutputTokens, calls[0].body).to.equal(2048); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 335.17 gemini /genai/v1beta/models/pp-tts-blocked:streamGenerateContent a blocked prompt on the native stream returns 400 with the vendor's message, no stream (gemini speech contract)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Say hello.\"}]}],\"generationConfig\":{\"responseModalities\":[\"AUDIO\"],\"maxOutputTokens\":2048,\"speechConfig\":{\"voiceConfig\":{\"prebuiltVoiceConfig\":{\"voiceName\":\"Kore\"}}}}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/pp-tts-blocked:streamGenerateContent?alt=sse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "pp-tts-blocked:streamGenerateContent"
+          ],
+          "query": [
+            {
+              "key": "alt",
+              "value": "sse"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var raw = pm.response.text() || '';",
+              "// geminiCalls: the requests that reached the fixture's Gemini upstream, bytes as they arrived.",
+              "function geminiCalls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/gemini/models/') === 0; })); }); }",
+              "pm.test('the vendor\\'s 200 block is a 400', function () { pm.expect(pm.response.code, raw).to.equal(400); });",
+              "pm.test('a JSON error in the GenAI shape, not an SSE stream', function () { pm.expect(raw, raw).to.not.match(/^data:/m); var j = pm.response.json(); pm.expect(j.error, raw).to.be.an('object'); pm.expect(j.error.code, raw).to.equal(400); pm.expect(j.error.message, raw).to.include('blocked due to safety'); });",
+              "geminiCalls(function (calls) { pm.test('exactly one upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.path; }))).to.have.length(1); pm.expect(calls[0].path, calls[0].path).to.equal('/pp/gemini/models/pp-tts-blocked:streamGenerateContent'); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "335.18 gemini /genai/v1beta/models/pp-tts-truncated:streamGenerateContent a native stream that ends without finishReason ends on an error frame, never on finishReason STOP (gemini speech contract)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Say hello.\"}]}],\"generationConfig\":{\"responseModalities\":[\"AUDIO\"],\"maxOutputTokens\":2048,\"speechConfig\":{\"voiceConfig\":{\"prebuiltVoiceConfig\":{\"voiceName\":\"Kore\"}}}}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/pp-tts-truncated:streamGenerateContent?alt=sse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "pp-tts-truncated:streamGenerateContent"
+          ],
+          "query": [
+            {
+              "key": "alt",
+              "value": "sse"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var raw = pm.response.text() || '';",
+              "// geminiCalls: the requests that reached the fixture's Gemini upstream, bytes as they arrived.",
+              "function geminiCalls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/gemini/models/') === 0; })); }); }",
+              "pm.test('the stream had started: 200 and the audio chunk that arrived', function () { pm.expect(pm.response.code, raw).to.equal(200); pm.expect(raw, raw).to.include('AAECAwQF'); });",
+              "var frames = raw.split(/\\n\\n/).map(function (f) { var m = /^data: (\\{.*\\})$/m.exec(f); return m ? JSON.parse(m[1]) : null; }).filter(Boolean);",
+              "pm.test('no frame claims a finish: a truncated stream must not look complete', function () { pm.expect(raw, raw).to.not.include('finishReason'); });",
+              "pm.test('the stream ends on an error frame for the vendor\\'s failure', function () { var last = frames[frames.length - 1] || {}; pm.expect(last.error, raw).to.be.an('object'); pm.expect(last.error.code, raw).to.equal(502); pm.expect(last.candidates, raw).to.equal(undefined); });",
+              "geminiCalls(function (calls) { pm.test('exactly one upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.path; }))).to.have.length(1); pm.expect(calls[0].path, calls[0].path).to.equal('/pp/gemini/models/pp-tts-truncated:streamGenerateContent'); }); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

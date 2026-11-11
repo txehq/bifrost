@@ -1,0 +1,156 @@
+{
+  "name": "38. OpenAI Encrypted Reasoning Item ID Round-Trip via Anthropic Surface (#5186 / PR #5192)",
+  "description": "Regression coverage for #5186 (PR #5192 addresses it upstream; this harness pins the black-box symptom, not any specific internal fix): OpenAI's Responses API cryptographically binds a reasoning item's encrypted_content to the id it was issued with. Anthropic's wire format has no id field on thinking/redacted_thinking content blocks, so when Bifrost's /anthropic/v1/messages surface converts an OpenAI reasoning item for the client it drops the real id, and when the client echoes the block back on a follow-up turn Bifrost previously minted a fresh random id while forwarding the original (still real) encrypted_content - a mismatch OpenAI rejects with \"The encrypted content for item rs_... could not be verified. Reason: Encrypted content item_id did not match the target item id.\" All three cases force reasoning.encrypted_content via include so the repro is deterministic rather than relying on undocumented spontaneous attachment. Case 1 pins the streaming emission; case 2 pins the non-streaming baseline and captures the replay content into a collection variable; case 3 replays the redacted_thinking block on a follow-up turn, which 400s pre-fix.",
+  "item": [
+    {
+      "name": "openai/gpt-5 /anthropic/v1/messages streaming carries encrypted reasoning as redacted_thinking block - #5186",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Streaming reasoning carries a thinking/redacted_thinking content block - #5186', function () {",
+              "  pm.expect(pm.response.code, 'stream request failed: ' + pm.response.text()).to.be.below(400);",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'expected SSE frames').to.include('data:');",
+              "  pm.expect(body, 'expected a thinking or redacted_thinking content block').to.match(/\"type\":\\s*\"(redacted_)?thinking\"/);",
+              "  pm.expect(body, 'expected the stream to complete').to.include('message_stop');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-5\",\"max_tokens\":4096,\"stream\":true,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":2048},\"include\":[\"reasoning.encrypted_content\"],\"messages\":[{\"role\":\"user\",\"content\":\"Think hard: which two of Alpha, Beta, Gamma, Delta are adjacent Greek letters whose English spellings share no vowels? Just name them.\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai/gpt-5 /anthropic/v1/messages non-streaming preserves encrypted reasoning + captures replay content - #5186",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Non-streaming response succeeds and returns content - #5186', function () {",
+              "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.content, 'expected content array').to.be.an('array').that.is.not.empty;",
+              "});",
+              "pm.test('Non-streaming response carries encrypted reasoning as redacted_thinking - #5186', function () {",
+              "  var content = pm.response.json().content || [];",
+              "  var redacted = content.filter(function (c) { return c.type === 'redacted_thinking' && c.data; });",
+              "  pm.expect(redacted, 'expected a redacted_thinking block with non-empty data, got: ' + JSON.stringify(content.map(function (c) { return c.type; }))).to.not.be.empty;",
+              "});",
+              "// Capture the replay content for the next request only when a redacted_thinking",
+              "// block with non-empty data is actually present, so the replay case skips",
+              "// instead of false-failing when the model didn't produce encrypted content.",
+              "pm.collectionVariables.unset('openaiReasoningReplayContent5186');",
+              "try {",
+              "  var body = pm.response.json();",
+              "  var redacted = (body.content || []).filter(function (c) { return c.type === 'redacted_thinking' && c.data; });",
+              "  if (redacted.length) {",
+              "    pm.collectionVariables.set('openaiReasoningReplayContent5186', JSON.stringify(body.content));",
+              "  }",
+              "} catch (e) {}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-5\",\"max_tokens\":4096,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":2048},\"include\":[\"reasoning.encrypted_content\"],\"messages\":[{\"role\":\"user\",\"content\":\"Think hard: which two of Alpha, Beta, Gamma, Delta are adjacent Greek letters whose English spellings share no vowels? Just name them.\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "openai/gpt-5 /anthropic/v1/messages replay of encrypted reasoning accepted (no item_id mismatch) - #5186",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Skip when the capture step did not run or found no redacted_thinking block:",
+              "// the body placeholder stays unresolved, so there is nothing to replay.",
+              "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+              "pm.test('Replayed encrypted reasoning accepted without item_id mismatch - #5186', function () {",
+              "  var body = pm.response.text() || '';",
+              "  pm.expect(body, 'OpenAI rejected the replayed reasoning item (regression of #5186)').to.not.include('did not match the target item id');",
+              "  pm.expect(body, 'OpenAI rejected the replayed reasoning item (regression of #5186)').to.not.include('could not be verified');",
+              "  pm.expect(pm.response.code, 'replay request failed: ' + body).to.be.below(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.content, 'expected content array').to.be.an('array').that.is.not.empty;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-5\",\"max_tokens\":4096,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":2048},\"include\":[\"reasoning.encrypted_content\"],\"messages\":[{\"role\":\"user\",\"content\":\"Think hard: which two of Alpha, Beta, Gamma, Delta are adjacent Greek letters whose English spellings share no vowels? Just name them.\"},{\"role\":\"assistant\",\"content\":{{openaiReasoningReplayContent5186}}},{\"role\":\"user\",\"content\":\"Good. Now say which pair of the two you didn't pick and give one reason it doesn't qualify.\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    }
+  ]
+}

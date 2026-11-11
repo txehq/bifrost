@@ -555,7 +555,7 @@ is itself the evidence. Do not touch any non-test source file at this stage.
 
 Every fix whose behavior a client can observe on the wire -- under `core/`, `framework/`,
 `transports/bifrost-http/`, or `plugins/` -- adds a regression case to
-`tests/e2e/api/collections/provider-harness.json`, following the conventions in
+`tests/e2e/api/collections/provider-harness/` (one file per folder), following the conventions in
 `.claude/skills/harness-test-writer/SKILL.md` (folder naming, PROVIDER_KEYWORDS-compatible
 case names, infra guard on 401/403/429/5xx, minimal cheap request bodies). This applies to
 every issue type -- bug, feature, refactor -- not only bugs.
@@ -564,7 +564,7 @@ every issue type -- bug, feature, refactor -- not only bugs.
   green after -- the same discipline as the Go test in Step 5f.
 - Validate structurally while developing; no live paid run is needed at this stage:
   ```bash
-  node tests/e2e/api/runners/augment-provider-harness.mjs --source tests/e2e/api/collections/provider-harness.json --out tmp/harness-augmented.json
+  node tests/e2e/api/runners/augment-provider-harness.mjs --source tests/e2e/api/collections/provider-harness --out tmp/harness-augmented.json
   node tests/e2e/api/runners/filter-collection.mjs --source tmp/harness-augmented.json --out tmp/filtered.json --feature "<keyword>"
   ```
 - Insert surgically (a script that splices the new object in, never a whole-file
@@ -842,7 +842,7 @@ Once all approved changes are applied:
    Resolve the exact request count for the chosen scope (the same filter the recipe applies) and
    put the command, the scope, and that count in the report you hand over:
    ```bash
-   node tests/e2e/api/runners/augment-provider-harness.mjs --source tests/e2e/api/collections/provider-harness.json --out tmp/harness-augmented.json
+   node tests/e2e/api/runners/augment-provider-harness.mjs --source tests/e2e/api/collections/provider-harness --out tmp/harness-augmented.json
    # PROVIDER/FEATURE scope: one pass
    node tests/e2e/api/runners/filter-collection.mjs --source tmp/harness-augmented.json --out tmp/harness-preflight.json --provider <provider> --feature "<keyword>"
    # SMOKE=1: the recipe runs a parallel main pass plus a deferred cache-parity pass, so count both
