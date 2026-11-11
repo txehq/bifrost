@@ -230,6 +230,7 @@ var nestedPriceFields = func() []NestedPriceField {
 			NestedPriceField{provider, "parameters.aspectRatio", "aspect_ratio", video},
 			NestedPriceField{provider, "parameters.durationSeconds", "seconds", video},
 			NestedPriceField{provider, "parameters.generateAudio", "audio", video},
+			NestedPriceField{provider, "parameters.resolution", "resolution", video},
 		)
 	}
 	fields = append(fields,
