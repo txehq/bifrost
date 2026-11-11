@@ -318985,7 +318985,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "pm.sendRequest({ url: (pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('bigmodel batch setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
                   "    pm.expect(res.code).to.equal(200);",
@@ -318999,7 +318999,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var ROOT = '/pp/bigmodel/api/paas/v4';",
                   "var KEY = 'tk-key-bigmodel-b';",
                   "// wire: the calls that reached the fixture's bigmodel upstream, in order, each with its method, path, body and the",
@@ -319074,7 +319074,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "pm.sendRequest({ url: (pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('bigmodel batch setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
                   "    pm.expect(res.code).to.equal(200);",
@@ -319088,7 +319088,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var ROOT = '/pp/bigmodel/api/paas/v4';",
                   "var KEY = 'tk-key-bigmodel-b';",
                   "// wire: the calls that reached the fixture's bigmodel upstream, in order, each with its method, path, body and the",
@@ -319149,7 +319149,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "pm.sendRequest({ url: (pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('bigmodel batch setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
                   "    pm.expect(res.code).to.equal(200);",
@@ -319163,7 +319163,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var ROOT = '/pp/bigmodel/api/paas/v4';",
                   "var KEY = 'tk-key-bigmodel-b';",
                   "// wire: the calls that reached the fixture's bigmodel upstream, in order, each with its method, path, body and the",
@@ -319228,7 +319228,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "pm.sendRequest({ url: (pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('bigmodel batch setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
                   "    pm.expect(res.code).to.equal(200);",
@@ -319242,7 +319242,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var ROOT = '/pp/bigmodel/api/paas/v4';",
                   "var KEY = 'tk-key-bigmodel-b';",
                   "// wire: the calls that reached the fixture's bigmodel upstream, in order, each with its method, path, body and the",
@@ -319319,7 +319319,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "pm.sendRequest({ url: (pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('bigmodel batch setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
                   "    pm.expect(res.code).to.equal(200);",
@@ -319333,7 +319333,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var ROOT = '/pp/bigmodel/api/paas/v4';",
                   "var KEY = 'tk-key-bigmodel-b';",
                   "// wire: the calls that reached the fixture's bigmodel upstream, in order, each with its method, path, body and the",
@@ -319401,7 +319401,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "pm.sendRequest({ url: (pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('bigmodel batch setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
                   "    pm.expect(res.code).to.equal(200);",
@@ -319415,7 +319415,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var ROOT = '/pp/bigmodel/api/paas/v4';",
                   "var KEY = 'tk-key-bigmodel-b';",
                   "// wire: the calls that reached the fixture's bigmodel upstream, in order, each with its method, path, body and the",
