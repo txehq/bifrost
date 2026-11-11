@@ -690,6 +690,130 @@ func TestDashScopeVideoDownload(t *testing.T) {
 	})
 }
 
+// TestDashScopeVideoList pins the list against DashScope's documented page of tasks: the
+// filters reach DashScope by their own names, limit is page_size, and next is the following
+// page number until DashScope's total_page is reached.
+func TestDashScopeVideoList(t *testing.T) {
+	const firstPage = `{"request_id":"13b2e2f1-0000-4000-8000-000000000001","data":[` +
+		`{"api_key_id":"1","caller_parent_id":"p","caller_uid":"u","gmt_create":1762755532331,"start_time":1762755539290,"end_time":1762755819407,"region":"ap-southeast-1","request_id":"q1","status":"SUCCEEDED","task_id":"task-a","user_api_unique_key":"apikey:v1:video:generation:wan2.6-t2v","model_name":"wan2.6-t2v"},` +
+		`{"api_key_id":"1","gmt_create":1762755600000,"start_time":1762755601000,"region":"ap-southeast-1","request_id":"q2","status":"RUNNING","task_id":"task-b","model_name":"wan3.0-i2v"}` +
+		`],"total":3,"total_page":2,"page_no":1,"page_size":2}`
+	const lastPage = `{"request_id":"13b2e2f1-0000-4000-8000-000000000002","data":[` +
+		`{"gmt_create":1762755700000,"end_time":1762755710000,"status":"FAILED","task_id":"task-c","model_name":"wan2.7-t2v"}` +
+		`],"total":3,"total_page":2,"page_no":2,"page_size":2}`
+	list := func(t *testing.T, body string, request *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError, []recordedRequest) {
+		t.Helper()
+		provider, mock := newMockDashScope(t, map[string]mockResponse{"GET " + dashScopeTasksPath: {http.StatusOK, body}})
+		ctx := videoTestContext(t)
+		ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, true)
+		request.Provider = schemas.DashScope
+		resp, bifrostErr := provider.VideoList(ctx, videoTestKey(), request)
+		return resp, bifrostErr, mock.recorded()
+	}
+
+	t.Run("the first page carries the filters and names the next page", func(t *testing.T) {
+		resp, bifrostErr, requests := list(t, firstPage, &schemas.BifrostVideoListRequest{
+			Limit: schemas.Ptr(2),
+			Filters: map[string][]string{
+				"start_time": {"20261110000000"}, "end_time": {"20261110235959"},
+				"model_name": {"wan2.6-t2v"}, "status": {"SUCCEEDED"}, "page_size": {"50"},
+			},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("VideoList: %+v", bifrostErr.Error)
+		}
+		if len(requests) != 1 || requests[0].Method != http.MethodGet || requests[0].Path != dashScopeTasksPath || requests[0].Async != "" || requests[0].Body != "" {
+			t.Fatalf("requests = %+v, want exactly one bodyless GET %s", requests, dashScopeTasksPath)
+		}
+		// limit wins over a page_size filter; page_no is not invented when the caller sent none.
+		if want := "end_time=20261110235959&model_name=wan2.6-t2v&page_size=2&start_time=20261110000000&status=SUCCEEDED"; requests[0].Query != want {
+			t.Errorf("query = %q, want %q", requests[0].Query, want)
+		}
+		if resp.Object != "list" || len(resp.Data) != 2 {
+			t.Fatalf("list = %+v, want two entries", resp)
+		}
+		first, second := resp.Data[0], resp.Data[1]
+		if first.ID != "task-a:dashscope" || first.Object != "video" || first.Model != "wan2.6-t2v" || first.Status != schemas.VideoStatusCompleted || first.CreatedAt != 1762755532 {
+			t.Errorf("first entry = %+v", first)
+		}
+		if first.CompletedAt == nil || *first.CompletedAt != 1762755819 {
+			t.Errorf("first completed_at = %v, want DashScope's end_time in seconds", first.CompletedAt)
+		}
+		if second.ID != "task-b:dashscope" || second.Status != schemas.VideoStatusInProgress || second.CompletedAt != nil {
+			t.Errorf("second entry = %+v, want a running task with no completed_at", second)
+		}
+		if resp.FirstID == nil || *resp.FirstID != "task-a:dashscope" || resp.LastID == nil || *resp.LastID != "task-b:dashscope" {
+			t.Errorf("first_id, last_id = %v, %v", resp.FirstID, resp.LastID)
+		}
+		if resp.HasMore == nil || !*resp.HasMore || resp.Next == nil || *resp.Next != "2" {
+			t.Errorf("has_more, next = %v, %v; want true and page 2", resp.HasMore, resp.Next)
+		}
+		if resp.ExtraFields.RawResponse == nil {
+			t.Error("raw_response is empty though the caller asked for it")
+		}
+	})
+
+	t.Run("the last page has no next", func(t *testing.T) {
+		resp, bifrostErr, requests := list(t, lastPage, &schemas.BifrostVideoListRequest{Filters: map[string][]string{"page_no": {"2"}}})
+		if bifrostErr != nil {
+			t.Fatalf("VideoList: %+v", bifrostErr.Error)
+		}
+		if requests[0].Query != "page_no=2" {
+			t.Errorf("query = %q, want page_no=2 alone", requests[0].Query)
+		}
+		if len(resp.Data) != 1 || resp.Data[0].Status != schemas.VideoStatusFailed || resp.Data[0].CompletedAt == nil {
+			t.Errorf("entries = %+v, want one failed task with its end time", resp.Data)
+		}
+		if resp.HasMore == nil || *resp.HasMore || resp.Next != nil {
+			t.Errorf("has_more, next = %v, %v; want false and none", resp.HasMore, resp.Next)
+		}
+	})
+
+	t.Run("an empty page is a list with no entries and no next", func(t *testing.T) {
+		resp, bifrostErr, _ := list(t, `{"request_id":"r","data":[],"total":0,"total_page":0,"page_no":1,"page_size":10}`, &schemas.BifrostVideoListRequest{})
+		if bifrostErr != nil {
+			t.Fatalf("VideoList: %+v", bifrostErr.Error)
+		}
+		if resp.Data == nil || len(resp.Data) != 0 || resp.FirstID != nil || resp.HasMore == nil || *resp.HasMore || resp.Next != nil {
+			t.Errorf("list = %+v, want an empty data array and has_more false", resp)
+		}
+	})
+
+	t.Run("a status DashScope adds later is in_progress, not a terminal state", func(t *testing.T) {
+		resp, bifrostErr, _ := list(t, `{"data":[{"task_id":"task-n","status":"SUSPENDED","gmt_create":1762755700000,"end_time":1762755710000}],"total":1,"total_page":1,"page_no":1,"page_size":10}`, &schemas.BifrostVideoListRequest{})
+		if bifrostErr != nil {
+			t.Fatalf("VideoList: %+v", bifrostErr.Error)
+		}
+		if resp.Data[0].Status != schemas.VideoStatusInProgress || resp.Data[0].CompletedAt != nil {
+			t.Errorf("entry = %+v", resp.Data[0])
+		}
+	})
+
+	for name, request := range map[string]*schemas.BifrostVideoListRequest{
+		"an after cursor":           {After: schemas.Ptr("task-b")},
+		"an order":                  {Order: schemas.Ptr("desc")},
+		"a page_no that is no page": {Filters: map[string][]string{"page_no": {"0"}}},
+	} {
+		t.Run(name+" is refused with no upstream call", func(t *testing.T) {
+			_, bifrostErr, requests := list(t, firstPage, request)
+			if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+				t.Fatalf("got %+v, want a 400", bifrostErr)
+			}
+			if len(requests) != 0 {
+				t.Errorf("upstream calls = %d, want 0", len(requests))
+			}
+		})
+	}
+
+	t.Run("DashScope's error is passed on", func(t *testing.T) {
+		provider, _ := newMockDashScope(t, map[string]mockResponse{"GET " + dashScopeTasksPath: {http.StatusBadRequest, `{"code":"InvalidParameter","message":"start_time is invalid","request_id":"r"}`}})
+		_, bifrostErr := provider.VideoList(videoTestContext(t), videoTestKey(), &schemas.BifrostVideoListRequest{Provider: schemas.DashScope, Filters: map[string][]string{"start_time": {"yesterday"}}})
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest || !strings.Contains(bifrostErr.Error.Message, "start_time") {
+			t.Fatalf("got %+v, want DashScope's 400 with its message", bifrostErr)
+		}
+	})
+}
+
 // BenchmarkDashScopeVideoGenerationRequest measures the request-path cost this provider adds
 // to a video create: the conversion to the Wan 3.0 body and its JSON encoding.
 func BenchmarkDashScopeVideoGenerationRequest(b *testing.B) {
@@ -726,6 +850,24 @@ func BenchmarkDashScopeVideoTaskResponse(b *testing.B) {
 		}
 		if _, bifrostErr := ToBifrostVideoGenerationResponse(&task); bifrostErr != nil {
 			b.Fatal(bifrostErr.Error.Message)
+		}
+	}
+}
+
+// BenchmarkDashScopeVideoListResponse measures the response-path cost of a video list: decoding
+// a page of two tasks and mapping each to a list entry.
+func BenchmarkDashScopeVideoListResponse(b *testing.B) {
+	body := []byte(`{"request_id":"r","data":[{"api_key_id":"1","gmt_create":1762755532331,"start_time":1762755539290,"end_time":1762755819407,"region":"ap-southeast-1","status":"SUCCEEDED","task_id":"task-a","model_name":"wan2.6-t2v"},{"api_key_id":"1","gmt_create":1762755600000,"start_time":1762755601000,"region":"ap-southeast-1","status":"RUNNING","task_id":"task-b","model_name":"wan3.0-i2v"}],"total":3,"total_page":2,"page_no":1,"page_size":2}`)
+	b.ReportAllocs()
+	for b.Loop() {
+		var page DashScopeTaskListResponse
+		if err := schemas.Unmarshal(body, &page); err != nil {
+			b.Fatal(err)
+		}
+		for i := range page.Data {
+			if obj := ToBifrostVideoObject(&page.Data[i], schemas.DashScope); obj.ID == "" {
+				b.Fatal("empty id")
+			}
 		}
 	}
 }

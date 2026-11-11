@@ -86,3 +86,29 @@ type DashScopeVideoUsage struct {
 	InputVideoDuration  *float64 `json:"input_video_duration,omitempty"`
 	OutputVideoDuration *float64 `json:"output_video_duration,omitempty"`
 }
+
+// DashScopeTaskListResponse is the body of GET /api/v1/tasks: one page of the account's
+// asynchronous tasks, with the page it is and how many pages there are.
+type DashScopeTaskListResponse struct {
+	RequestID string                  `json:"request_id,omitempty"`
+	Data      []DashScopeTaskListItem `json:"data"`
+	Total     int                     `json:"total"`
+	TotalPage int                     `json:"total_page"`
+	PageNo    int                     `json:"page_no"`
+	PageSize  int                     `json:"page_size"`
+	// Code and Message are set when DashScope answers a 2xx with an error object.
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// DashScopeTaskListItem is one listed task. The times are Unix milliseconds, unlike the
+// strings of a task query. The rest of the entry (api_key_id, caller ids, region) stays
+// readable in the raw response.
+type DashScopeTaskListItem struct {
+	TaskID    string `json:"task_id,omitempty"`
+	Status    string `json:"status,omitempty"`
+	ModelName string `json:"model_name,omitempty"`
+	GmtCreate int64  `json:"gmt_create,omitempty"`
+	StartTime int64  `json:"start_time,omitempty"`
+	EndTime   int64  `json:"end_time,omitempty"`
+}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -590,11 +591,106 @@ func (provider *DashScopeProvider) VideoDownload(ctx *schemas.BifrostContext, ke
 	if err != nil {
 		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("failed to download video", err), latency)
 	}
-	bifrostResp := &schemas.BifrostVideoDownloadResponse{
-		VideoID:     request.ID,
-		Content:     body,
-		ContentType: providerUtils.VideoContentTypeOr(contentType, "video/mp4"),
+	return providerUtils.NewVideoContentResponse(request, request.ID, body, providerUtils.VideoContentTypeOr(contentType, "video/mp4"), latency), nil
+}
+
+// ToBifrostVideoObject converts a listed DashScope task to a video list entry. A status the
+// table does not know is in_progress, as on a task query: Bifrost does not report a terminal
+// state it cannot name.
+func ToBifrostVideoObject(task *DashScopeTaskListItem, providerName schemas.ModelProvider) schemas.VideoObject {
+	status, ok := dashScopeVideoStatuses.Lookup(task.Status)
+	if !ok {
+		status = schemas.VideoStatusInProgress
+	}
+	obj := schemas.VideoObject{
+		ID:        providerUtils.AddVideoIDProviderSuffix(task.TaskID, providerName),
+		Object:    "video",
+		Model:     task.ModelName,
+		Status:    status,
+		CreatedAt: task.GmtCreate / 1000,
+	}
+	if status.IsTerminal() && task.EndTime > 0 {
+		obj.CompletedAt = schemas.Ptr(task.EndTime / 1000)
+	}
+	return obj
+}
+
+// VideoList lists the account's asynchronous tasks: GET /api/v1/tasks. DashScope pages by
+// number: the caller names the page in DashScope's own page_no filter and the response's next
+// is the page number to ask for after it, read from DashScope's page_no and total_page. limit
+// is sent as page_size. DashScope's other filters (start_time, end_time, model_name, status)
+// travel unchanged like every vendor filter (contract C7 / BF15). after and order have no
+// DashScope counterpart and are refused, not ignored: an ignored after makes a paging client
+// loop on one page.
+//
+// DashScope's list is of every asynchronous task of the account in the last 24 hours, image
+// tasks included; model_name narrows it. Bifrost returns what DashScope lists.
+func (provider *DashScopeProvider) VideoList(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
+	if request.After != nil && *request.After != "" {
+		return nil, providerUtils.NewBifrostBadRequestError("dashscope video list pages by number and does not support an after cursor; send page_no")
+	}
+	if request.Order != nil && *request.Order != "" {
+		return nil, providerUtils.NewBifrostBadRequestError("dashscope video list has no order parameter")
+	}
+	values := url.Values{}
+	if request.Limit != nil && *request.Limit > 0 {
+		values.Set("page_size", strconv.Itoa(*request.Limit))
+	}
+	providerUtils.AddVideoListFilters(values, request.Filters)
+	pageNo := 1
+	if raw := values.Get("page_no"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 {
+			return nil, providerUtils.NewBifrostBadRequestError("page_no must be a positive integer")
+		}
+		pageNo = parsed
+	}
+
+	pathAndQuery := dashScopeTasksPath
+	if query := values.Encode(); query != "" {
+		pathAndQuery += "?" + query
+	}
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	body, latency, bifrostErr := provider.doRequest(ctx, key, schemas.VideoListRequest, http.MethodGet, pathAndQuery, nil, false, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	var listResp DashScopeTaskListResponse
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &listResp, nil, false, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
+	}
+	if listResp.Data == nil && listResp.Code != "" {
+		errorObject := &DashScopeTaskResponse{Code: listResp.Code, Message: listResp.Message}
+		return nil, providerUtils.EnrichError(ctx, dashScopeErrorObjectError(errorObject), nil, body, false, sendBackRawResponse, latency)
+	}
+
+	providerName := provider.GetProviderKey()
+	bifrostResp := &schemas.BifrostVideoListResponse{
+		Object: "list",
+		Data:   make([]schemas.VideoObject, 0, len(listResp.Data)),
+	}
+	for i := range listResp.Data {
+		bifrostResp.Data = append(bifrostResp.Data, ToBifrostVideoObject(&listResp.Data[i], providerName))
+	}
+	if n := len(bifrostResp.Data); n > 0 {
+		bifrostResp.FirstID = schemas.Ptr(bifrostResp.Data[0].ID)
+		bifrostResp.LastID = schemas.Ptr(bifrostResp.Data[n-1].ID)
+	}
+	// The page DashScope says it answered wins over the one asked for; an empty page is
+	// always the last.
+	if listResp.PageNo > 0 {
+		pageNo = listResp.PageNo
+	}
+	hasMore := len(listResp.Data) > 0 && pageNo < listResp.TotalPage
+	bifrostResp.HasMore = schemas.Ptr(hasMore)
+	if hasMore {
+		bifrostResp.Next = schemas.Ptr(strconv.Itoa(pageNo + 1))
 	}
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	if sendBackRawResponse {
+		bifrostResp.ExtraFields.RawResponse = rawResponse
+	}
 	return bifrostResp, nil
 }

@@ -79,6 +79,7 @@ var dashScopeImplementedOperations = map[string]bool{
 	"VideoGeneration": true,
 	"VideoRetrieve":   true,
 	"VideoDownload":   true,
+	"VideoList":       true,
 }
 
 // TestDashScopeOperationsAreUnsupported pins that every operation the provider does not
