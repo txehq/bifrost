@@ -9,13 +9,15 @@ import { fileURLToPath } from "node:url";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "..", "provider-error-fixture.mjs");
 
-// startFixture boots the fixture on a random port, its stall proxy on the next one and its media tunnel on
-// the one after (post.mediaTunnelPort), and resolves once it listens. The returned post sends one chat completion and, when the fixture does not answer, fails with
+// startFixture boots the fixture on a random port, its stall proxy on the next one, its media tunnel on
+// the one after (post.mediaTunnelPort) and its TLS listener on the one after that, and resolves once it
+// listens. Every listener gets its own port: one left on its default collides with any other fixture
+// running on the host, and the fixture then exits before it listens. The returned post sends one chat completion and, when the fixture does not answer, fails with
 // what it printed on its way out; post.port and post.stallPort name the two listeners.
 async function startFixture(t) {
   const port = 20000 + Math.floor(Math.random() * 20000);
   const child = spawn(process.execPath, [FIXTURE], {
-    env: { ...process.env, PROVIDER_ERROR_FIXTURE_PORT: String(port), PROVIDER_ERROR_FIXTURE_STALL_PORT: String(port + 1), PROVIDER_ERROR_FIXTURE_MEDIA_TUNNEL_PORT: String(port + 2) },
+    env: { ...process.env, PROVIDER_ERROR_FIXTURE_PORT: String(port), PROVIDER_ERROR_FIXTURE_STALL_PORT: String(port + 1), PROVIDER_ERROR_FIXTURE_MEDIA_TUNNEL_PORT: String(port + 2), PROVIDER_ERROR_FIXTURE_TLS_PORT: String(port + 3) },
     stdio: ["ignore", "pipe", "pipe"],
   });
   t.after(() => child.kill());
