@@ -1799,3 +1799,21 @@ func TestBedrockCohereInternalEmbeddingGetsTheDocumentedInputType(t *testing.T) 
 	assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
 	assert.Equal(t, 2, calls, "a caller's request without a task is refused before any upstream call")
 }
+
+// Request path cost of the Bedrock Cohere embedding conversion (TXE-7080): one text
+// input whose input_type the caller names, the common shape.
+func BenchmarkToBedrockCohereEmbeddingRequest(b *testing.B) {
+	text := "alpha kestrel harbor"
+	req := &schemas.BifrostEmbeddingRequest{
+		Provider: schemas.Bedrock,
+		Model:    "cohere.embed-v4:0",
+		Input:    []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
+		Params:   &schemas.EmbeddingParameters{TaskType: schemas.Ptr("search_query"), ExtraParams: map[string]interface{}{"input_type": "search_query"}},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := ToBedrockCohereEmbeddingRequest(req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
