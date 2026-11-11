@@ -329857,6 +329857,250 @@
           ]
         }
       ]
+    },
+    {
+      "name": "495. A multipart /openai/v1/videos request delivers every field or refuses it (fork openai video multipart)",
+      "description": "TXE-7126, contract C4. The multipart branch of the OpenAI video parser kept only seconds, size, negative_prompt, seed and video_uri, and dropped every other form field without an error. These rows send multipart creates to the fixture's BytePlus and read the body it received from /__wire. Run with providerErrorFixture=1 against a gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json; no row reaches a real vendor.",
+      "item": [
+        {
+          "name": "495.1 byteplus multipart POST /openai/v1/videos delivers resolution, aspect_ratio, last_frame, callback_url, expires_after_seconds and a vendor field (fork openai video multipart)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The vendor here is the local fixture. Against a real vendor this row would create a billed task.",
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('the multipart create is accepted', function () { pm.expect(pm.response.code, text.slice(0, 600)).to.eql(200); });",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+                  "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+                  "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/byteplus/api/v3/contents/generations/tasks' && String(c.body).indexOf('txe-7126-multipart') !== -1; });",
+                  "  pm.test('the request reached BytePlus', function () { pm.expect(calls.length, 'no captured create').to.be.above(0); });",
+                  "  if (!calls.length) { return; }",
+                  "  var raw = calls[calls.length - 1].body;",
+                  "  var sent = JSON.parse(raw);",
+                  "  pm.test('every form field arrived in BytePlus own field', function () {",
+                  "    pm.expect(sent, raw).to.include({ duration: 5, resolution: '1080p', ratio: '9:16', callback_url: 'https://hooks.example.test/v/495', execution_expires_after: 7200, watermark: false });",
+                  "    var lastFrame = (sent.content || []).filter(function (item) { return item.role === 'last_frame'; });",
+                  "    pm.expect(lastFrame.length, raw).to.eql(1);",
+                  "    pm.expect(lastFrame[0].image_url.url, raw).to.eql('https://img.example.test/last.png');",
+                  "    ['aspect_ratio', 'seconds', 'last_frame', 'expires_after_seconds'].forEach(function (unified) { pm.expect(sent, raw).to.not.have.property(unified); });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "byteplus/dreamina-seedance-2-5-260628",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "a paper boat txe-7126-multipart",
+                  "type": "text"
+                },
+                {
+                  "key": "seconds",
+                  "value": "5",
+                  "type": "text"
+                },
+                {
+                  "key": "resolution",
+                  "value": "1080p",
+                  "type": "text"
+                },
+                {
+                  "key": "aspect_ratio",
+                  "value": "9:16",
+                  "type": "text"
+                },
+                {
+                  "key": "last_frame",
+                  "value": "https://img.example.test/last.png",
+                  "type": "text"
+                },
+                {
+                  "key": "callback_url",
+                  "value": "https://hooks.example.test/v/495",
+                  "type": "text"
+                },
+                {
+                  "key": "expires_after_seconds",
+                  "value": "7200",
+                  "type": "text"
+                },
+                {
+                  "key": "watermark",
+                  "value": "false",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "videos"
+              ]
+            }
+          }
+        },
+        {
+          "name": "495.2 [EXPECT-400] byteplus multipart POST /openai/v1/videos refuses a vendor field without x-bf-passthrough-extra-params instead of dropping it (fork openai video multipart)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The vendor here is the local fixture. Against a real vendor this row would create a billed task.",
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "pm.test('refused with 400 caller_unsupported_parameter naming watermark', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text().slice(0, 600)).to.eql(400);",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, pm.response.text().slice(0, 600)).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(j.error && j.error.param, pm.response.text().slice(0, 600)).to.eql('watermark');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "byteplus/dreamina-seedance-2-5-260628",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "a paper boat",
+                  "type": "text"
+                },
+                {
+                  "key": "watermark",
+                  "value": "false",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "videos"
+              ]
+            }
+          }
+        },
+        {
+          "name": "495.3 [EXPECT-400] byteplus multipart POST /openai/v1/videos refuses client_reference_id, which BytePlus has no field for (fork openai video multipart)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The vendor here is the local fixture. Against a real vendor this row would create a billed task.",
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "pm.test('refused with 400 caller_unsupported_parameter naming client_reference_id', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text().slice(0, 600)).to.eql(400);",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, pm.response.text().slice(0, 600)).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(j.error && j.error.param, pm.response.text().slice(0, 600)).to.eql('client_reference_id');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "byteplus/dreamina-seedance-2-5-260628",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "a paper boat",
+                  "type": "text"
+                },
+                {
+                  "key": "client_reference_id",
+                  "value": "mine-495",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "videos"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
