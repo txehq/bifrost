@@ -569,7 +569,60 @@
       ]
     },
     {
-      "name": "443.12 xai chat and Responses on the wire: max_turns reached /v1/responses and no refused request reached xAI (xai chat contract)",
+      "name": "443.12 [EXPECT-400] xai/grok-4.5 POST /v1/batches refuses an inline chat line with prompt_cache_key, naming the line (xai chat contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-4.5\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\",\n  \"requests\": [\n    {\n      \"custom_id\": \"line-0\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"grok-4.5\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"hi\"\n          }\n        ]\n      }\n    },\n    {\n      \"custom_id\": \"line-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"grok-4.5\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"hi\"\n          }\n        ],\n        \"prompt_cache_key\": \"conversation-1\"\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a batch line with prompt_cache_key is refused as on the sync route, with the line in error.param', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('requests[1].body.prompt_cache_key');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "443.13 xai chat and Responses on the wire: max_turns reached /v1/responses and no refused request reached xAI (xai chat contract)",
       "request": {
         "method": "GET",
         "header": [],
@@ -603,6 +656,10 @@
               "  var chats = on('/pp/xai/v1/chat/completions');",
               "  pm.expect(chats.length, JSON.stringify(chats)).to.eql(3);",
               "  chats.forEach(function (b) { pm.expect(b, JSON.stringify(b)).to.not.have.any.keys('prompt_cache_key', 'prompt_cache_retention', 'prompt_cache_options'); });",
+              "});",
+              "pm.test('the refused batch made no call to xAI', function () {",
+              "  var batches = calls.filter(function (c) { return /\\/batches/.test(c.path); });",
+              "  pm.expect(batches.length, JSON.stringify(batches)).to.eql(0);",
               "});"
             ]
           }

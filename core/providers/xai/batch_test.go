@@ -248,7 +248,8 @@ func TestBatchLineExtraParamsFollowPassthrough(t *testing.T) {
 
 // A line the sync route would refuse is refused with the sync route's error, its param
 // the line's path to the field: a service_tier outside the model's catalog list
-// (openai.ChatServiceTierError, TXE-6527) and an extra param only the gateway may set
+// (TXE-6527), a prompt-cache field the model cannot take (TXE-7043), both through
+// openai.ChatRequestRefusal, and an extra param only the gateway may set
 // (the shared merge, TXE-7031). Before, the line's tier went to xAI as sent and the
 // merge's refusal lost its error_type and param.
 func TestBatchLineRefusalsMatchTheSyncRoute(t *testing.T) {
@@ -273,6 +274,8 @@ func TestBatchLineRefusalsMatchTheSyncRoute(t *testing.T) {
 		param     string
 	}{
 		{"service_tier outside the catalog", line(map[string]any{"service_tier": "flex"}), schemas.ErrorTypeCallerUnsupportedParameter, "requests[1].body.service_tier"},
+		{"prompt_cache_key the model cannot take", line(map[string]any{"prompt_cache_key": "conversation-1"}), schemas.ErrorTypeCallerUnsupportedParameter, "requests[1].body.prompt_cache_key"},
+		{"prompt_cache_retention the model cannot take", line(map[string]any{"prompt_cache_retention": "24h"}), schemas.ErrorTypeCallerUnsupportedParameter, "requests[1].body.prompt_cache_retention"},
 		{"extra param naming the deployment", line(map[string]any{"deployment": "other"}), schemas.ErrorTypeCallerInvalidRequest, "requests[1].body.deployment"},
 	}
 	for _, tc := range cases {

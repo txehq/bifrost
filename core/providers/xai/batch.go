@@ -368,8 +368,9 @@ func batchLineBodyError(i int, err error) *schemas.BifrostError {
 
 // toXAIBatchChatBody runs one chat line through the sync route's conversion: the shared
 // line decoder (schemas.BatchRequestItem.ToBifrostChatRequest: messages, chat parameters,
-// every unmodelled field as an extra param), the sync handler's service_tier refusal
-// (openai.ChatServiceTierError), the OpenAI converter with provider xai, and the sync
+// every unmodelled field as an extra param), the sync handler's refusals
+// (openai.ChatRequestRefusal: a service tier or a prompt-cache field the model cannot
+// take), the OpenAI converter with provider xai, and the sync
 // encoder, which merges the extra params only when passthrough is enabled, as the sync
 // route does. The line runs as the batch's model (see ToXAIBatchRequests).
 func toXAIBatchChatBody(ctx *schemas.BifrostContext, item schemas.BatchRequestItem, model string) (json.RawMessage, error) {
@@ -377,8 +378,8 @@ func toXAIBatchChatBody(ctx *schemas.BifrostContext, item schemas.BatchRequestIt
 	if err != nil {
 		return nil, err
 	}
-	if tierErr := openai.ChatServiceTierError(ctx, bifrostReq); tierErr != nil {
-		return nil, providerUtils.ConverterBifrostError(tierErr)
+	if refusal := openai.ChatRequestRefusal(ctx, bifrostReq); refusal != nil {
+		return nil, providerUtils.ConverterBifrostError(refusal)
 	}
 	xaiReq := openai.ToOpenAIChatRequest(ctx, bifrostReq)
 	if xaiReq == nil {

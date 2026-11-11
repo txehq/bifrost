@@ -15,6 +15,10 @@ package openai
 
 import (
 	"context"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -298,5 +302,39 @@ func BenchmarkChatRequestRefusal(b *testing.B) {
 				_ = ChatRequestRefusal(ctx, req)
 			}
 		})
+	}
+}
+
+// TestChatRefusalsGoThroughOneEntry keeps ChatRequestRefusal the one check before a chat
+// body is sent: a provider that calls ChatServiceTierError itself skips every refusal added
+// after it. The xAI batch conversion did, and its lines kept a prompt-cache field the sync
+// route refuses (TXE-7043, review finding). It fails on any non-test file under
+// core/providers that calls ChatServiceTierError, other than ChatRequestRefusal's own.
+func TestChatRefusalsGoThroughOneEntry(t *testing.T) {
+	err := filepath.WalkDir("..", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			code, _, _ := strings.Cut(line, "//")
+			if !strings.Contains(code, "ChatServiceTierError(") || strings.HasPrefix(code, "func ChatServiceTierError(") {
+				continue
+			}
+			if filepath.Base(path) == "chat.go" && filepath.Base(filepath.Dir(path)) == "openai" && strings.Contains(code, "if tierErr := ChatServiceTierError(ctx, bifrostReq)") {
+				continue // ChatRequestRefusal itself
+			}
+			t.Errorf("%s:%d calls ChatServiceTierError directly; call ChatRequestRefusal so every refusal applies: %s", path, i+1, strings.TrimSpace(line))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
