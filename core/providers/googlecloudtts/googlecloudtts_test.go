@@ -547,6 +547,34 @@ func TestSpeechRefusesAudioEncodingAsExtraParam(t *testing.T) {
 	}
 }
 
+// An extra param that would replace a field the request set is refused by the merge as the
+// caller's mistake, and stays a 400 naming the param rather than becoming a 500.
+func TestSpeechKeepsTheMergeRefusalACallerError(t *testing.T) {
+	provider, captured := newMockCloudTTS(t, jsonResponse(http.StatusOK, sampleResponseBody))
+	ctx := testContext(t)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	_, bifrostErr := provider.Speech(ctx, testKey(), speechRequest("hi", &schemas.SpeechParameters{
+		VoiceConfig: voice("en-US-Wavenet-D"),
+		Speed:       schemas.Ptr(1.0),
+		ExtraParams: map[string]any{"audioConfig": map[string]any{"speakingRate": 1.5}},
+	}))
+	if bifrostErr == nil || bifrostErr.Error == nil {
+		t.Fatal("Speech returned no error for an extra param that replaces speed")
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %v, want 400", bifrostErr.StatusCode)
+	}
+	if bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerInvalidRequest {
+		t.Errorf("error_type = %q, want %q", bifrostErr.ExtraFields.ErrorType, schemas.ErrorTypeCallerInvalidRequest)
+	}
+	if bifrostErr.Error.Param != "audioConfig.speakingRate" {
+		t.Errorf("param = %v, want audioConfig.speakingRate", bifrostErr.Error.Param)
+	}
+	if n := len(captured()); n != 0 {
+		t.Errorf("made %d upstream calls for a refused request, want 0", n)
+	}
+}
+
 // The body is built from the unified request even when the caller asks for its own body to be
 // sent as it is: a body the checks did not see could name any voice.
 func TestSpeechNeverSendsTheCallersRawBody(t *testing.T) {

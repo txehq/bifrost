@@ -127,6 +127,11 @@ func (provider *GoogleCloudTTSProvider) Speech(ctx *schemas.BifrostContext, key 
 	mergeExtraParams, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool)
 	jsonData, err := providerUtils.MarshalConvertedRequestBody(ToGoogleCloudTTSSpeechRequest(request), mergeExtraParams)
 	if err != nil {
+		// An extra param naming a field the request already sets is the caller's mistake and
+		// carries its own 400 and param; anything else is a marshalling fault of ours.
+		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+			return nil, badRequest
+		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 	}
 	req.SetBody(jsonData)
