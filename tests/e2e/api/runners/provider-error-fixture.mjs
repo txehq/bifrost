@@ -787,8 +787,33 @@ const seedanceTask = (id) => {
 // fixture, so an OpenAI-shaped provider under /pp/storage stands in for the id form: its upload answers with a gs://
 // id, unique per upload so a row kept from an earlier run never names this run's file, and its chat completes. The
 // gateway's ownership check is the same code whatever provider recorded the id.
+//
+// Its batches stand in for a provider's tasks (folder 494, TXE-7119): a create answers with an id, a retrieve
+// answers for a batch created here, and the list holds every batch created here and one this fixture names that no
+// gateway request ever created (STORAGE_BATCH_MADE_ELSEWHERE), as a batch made outside the gateway would appear.
 let storageUploads = 0;
+let storageBatches = 0;
+const storageBatchIds = new Set();
+const STORAGE_BATCH_MADE_ELSEWHERE = "batch_storage_made_elsewhere";
+const storageBatchObject = (id) => ({
+	id, object: "batch", endpoint: "/v1/chat/completions", input_file_id: "gs://bifrost-fixture-bucket/uploads/input.jsonl", completion_window: "24h",
+	status: "validating", created_at: 1, request_counts: { total: 1, completed: 0, failed: 0 },
+});
+const storageBatchList = () => {
+	const data = [...storageBatchIds, STORAGE_BATCH_MADE_ELSEWHERE].map(storageBatchObject);
+	return { status: 200, body: JSON.stringify({ object: "list", data, first_id: data[0].id, last_id: data[data.length - 1].id, has_more: false }) };
+};
+const storageBatchRetrieve = (id) => {
+	if (!storageBatchIds.has(id)) return { status: 404, body: JSON.stringify({ error: { message: `no storage fixture batch ${id}` } }) };
+	return { status: 200, body: JSON.stringify(storageBatchObject(id)) };
+};
 const storageAnswer = (path, body) => {
+	if (path === "/pp/storage/v1/batches") {
+		storageBatches += 1;
+		const id = `batch_storage_${Date.now()}_${storageBatches}`;
+		storageBatchIds.add(id);
+		return { status: 200, body: JSON.stringify(storageBatchObject(id)) };
+	}
 	if (path === "/pp/storage/v1/files") {
 		storageUploads += 1;
 		const id = `gs://bifrost-fixture-bucket/uploads/${Date.now()}-${storageUploads}.jsonl`;
@@ -1491,6 +1516,15 @@ const handleRequest = (req, res) => {
 		return send(200, { "Content-Type": "video/mp4" }, "internal");
 	}
 	// MiniMax video query is a GET; the task id "base-resp-<code>" selects the base_resp code (TXE-6588).
+	if (req.method === "GET" && path === "/pp/storage/v1/batches") {
+		const answer = storageBatchList();
+		return send(answer.status, {}, answer.body);
+	}
+	const storageBatch = /^\/pp\/storage\/v1\/batches\/([^/]+)$/.exec(path);
+	if (req.method === "GET" && storageBatch) {
+		const answer = storageBatchRetrieve(decodeURIComponent(storageBatch[1]));
+		return send(answer.status, {}, answer.body);
+	}
 	if (req.method === "GET" && path.startsWith("/pp/minimax/v2/query/video_generation/")) {
 		wireCalls.push({ path, query: new URL(req.url, "http://localhost").search, body: "" });
 		const answer = miniMaxBaseRespAnswer(decodeURIComponent(path.slice("/pp/minimax/v2/query/video_generation/".length)));
