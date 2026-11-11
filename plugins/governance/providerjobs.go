@@ -506,8 +506,8 @@ var passthroughVideoDerivations = [...]string{"remix", "edits", "extensions"}
 
 // passthroughCreatesTask reports whether a passthrough request creates a batch or a video: a
 // POST whose path, as it will be sent, ends on a task collection, on a task-creating model
-// operation, or on a route under videos that derives a new video, or whose body names a video
-// task (Runware).
+// operation, or on a route under videos that derives a new video. Runware, which names the
+// operation in the body, is read by runwareBodyCreatesTask.
 func passthroughCreatesTask(r *schemas.BifrostPassthroughRequest) bool {
 	if !strings.EqualFold(r.Method, "POST") {
 		return false
@@ -521,28 +521,30 @@ func passthroughCreatesTask(r *schemas.BifrostPassthroughRequest) bool {
 	if slices.Contains(passthroughTaskOperations[:], operation) {
 		return true
 	}
-	if slices.Contains(passthroughVideoDerivations[:], last) && slices.Contains(segments[:len(segments)-1], "videos") {
-		return true
-	}
-	return passthroughBodyCreatesVideoTask(r.Body)
+	return slices.Contains(passthroughVideoDerivations[:], last) && slices.Contains(segments[:len(segments)-1], "videos")
 }
 
-// runwareVideoTaskType is the taskType of a Runware video task. Runware has one endpoint and
-// names the operation in the body: a POST of [{"taskType": "videoInference", ...}] creates a
-// video task, whatever the path.
-const runwareVideoTaskType = "videoInference"
+// runwareTaskTypes are the Runware task types that always run as a task polled afterwards, and
+// runwareAsyncDelivery the delivery method that makes any other type one (the typed video
+// routes send upscale and removeBackground that way). Runware has one endpoint and names the
+// operation in the body: a POST of [{"taskType": "videoInference", ...}] creates a task
+// whatever the path, and the typed video routes then retrieve it by its task UUID.
+var runwareTaskTypes = [...]string{"videoInference", "3dInference"}
 
-// passthroughBodyCreatesVideoTask reports whether a raw body holds a task entry that creates a
-// video by naming it in the body rather than in the path. A body that does not mention the
-// task type is not parsed; one that mentions it and does not parse is treated as creating one,
-// since the provider may read what this decoder cannot.
-func passthroughBodyCreatesVideoTask(body []byte) bool {
-	if !bytes.Contains(body, []byte(runwareVideoTaskType)) && !bytes.Contains(body, unicodeEscape) {
+const runwareAsyncDelivery = "async"
+
+// runwareBodyCreatesTask reports whether a POST body sent to Runware holds an entry that
+// creates a polled task: one of runwareTaskTypes, or any entry delivered asynchronously. It is
+// asked only for providers built on Runware, so no other provider's passthrough pays for the
+// parse. A body that does not parse is treated as creating one, since the provider may read
+// what this decoder cannot.
+func runwareBodyCreatesTask(method string, body []byte) bool {
+	if !strings.EqualFold(method, "POST") || len(body) == 0 {
 		return false
 	}
 	var decoded any
 	if err := schemas.Unmarshal(body, &decoded); err != nil {
-		return bytes.Contains(body, []byte(runwareVideoTaskType))
+		return true
 	}
 	var creates func(value any, depth int) bool
 	creates = func(value any, depth int) bool {
@@ -551,7 +553,10 @@ func passthroughBodyCreatesVideoTask(body []byte) bool {
 		}
 		switch v := value.(type) {
 		case map[string]any:
-			if taskType, _ := v["taskType"].(string); taskType == runwareVideoTaskType {
+			if taskType, _ := v["taskType"].(string); slices.Contains(runwareTaskTypes[:], taskType) {
+				return true
+			}
+			if delivery, _ := v["deliveryMethod"].(string); delivery == runwareAsyncDelivery {
 				return true
 			}
 			for _, item := range v {
@@ -1290,7 +1295,7 @@ func (p *GovernancePlugin) enforceProviderObjectOwnership(ctx *schemas.BifrostCo
 	}
 	// A task created through a passthrough route would have no creator on record and be out of
 	// its own creator's reach (see passthroughCreatesTask).
-	if r := req.PassthroughRequest; r != nil && passthroughCreatesTask(r) {
+	if r := req.PassthroughRequest; r != nil && (passthroughCreatesTask(r) || (configuredBaseProvider(p.inMemoryStore, r.Provider) == schemas.Runware && runwareBodyCreatesTask(r.Method, r.Body))) {
 		ctx.SetValue(governanceRejectedContextKey, true)
 		return &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
 			Type:       bifrost.Ptr(string(DecisionAccessBlocked)),

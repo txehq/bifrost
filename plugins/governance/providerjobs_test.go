@@ -875,7 +875,7 @@ func (s *recordingObjectStore) UpsertProviderObject(ctx context.Context, object 
 func TestPreLLMHookBindsObjectsReferencedInsideRequests(t *testing.T) {
 	store := newProviderObjectConfigStore(t)
 	vk := buildVKForMCPStamping(nil)
-	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("gemini", []string{"*"}), buildProviderConfig("vertex", []string{"*"}), buildProviderConfig("bedrock", []string{"*"}))
+	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("gemini", []string{"*"}), buildProviderConfig("vertex", []string{"*"}), buildProviderConfig("bedrock", []string{"*"}), buildProviderConfig("runware", []string{"*"}))
 	plugin := newAccessTestPlugin(t, vk, nil)
 	plugin.configStore = store
 	own := "vk-mcp-stamp"
@@ -1303,9 +1303,13 @@ func TestPreLLMHookBindsObjectsReferencedInsideRequests(t *testing.T) {
 			"gemini video": pass(schemas.Gemini, "POST", "/v1beta/models/veo-3.1-generate-preview:predictLongRunning", `{"instances":[{"prompt":"p"}]}`),
 			"vertex batch": pass(schemas.Vertex, "POST", "/v1/projects/p/locations/us-central1/batchPredictionJobs", `{"displayName":"b"}`),
 			// Runware names the operation in the body, not the path.
-			"runware video":          pass(schemas.OpenAI, "POST", "/v1", `[{"taskType":"videoInference","taskUUID":"u","positivePrompt":"p"}]`),
-			"runware video, escaped": pass(schemas.OpenAI, "POST", "/v1", `[{"taskType":"video\u0049nference","taskUUID":"u"}]`),
-			"runware video, nested":  pass(schemas.OpenAI, "POST", "/v1", `{"tasks":[{"taskType":"imageInference"},{"taskType":"videoInference"}]}`),
+			"runware video":            pass(schemas.Runware, "POST", "/v1", `[{"taskType":"videoInference","taskUUID":"u","positivePrompt":"p"}]`),
+			"runware video, escaped":   pass(schemas.Runware, "POST", "/v1", `[{"taskType":"video\u0049nference","taskUUID":"u"}]`),
+			"runware video, nested":    pass(schemas.Runware, "POST", "/v1", `{"tasks":[{"taskType":"imageInference"},{"taskType":"videoInference"}]}`),
+			"runware 3d":               pass(schemas.Runware, "POST", "/v1", `[{"taskType":"3dInference","taskUUID":"u"}]`),
+			"runware async upscale":    pass(schemas.Runware, "POST", "/v1", `[{"taskType":"upscale","taskUUID":"u","deliveryMethod":"async"}]`),
+			"runware async background": pass(schemas.Runware, "POST", "/v1", `[{"taskType":"removeBackground","taskUUID":"u","deliveryMethod":"async"}]`),
+			"runware unreadable body":  pass(schemas.Runware, "POST", "/v1", `[{"taskType":"videoInference",}]`),
 		} {
 			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), create)
 			require.NoError(t, err)
@@ -1325,8 +1329,10 @@ func TestPreLLMHookBindsObjectsReferencedInsideRequests(t *testing.T) {
 		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.OpenAI, "POST", "/v1/images/edits", `{"model":"m","prompt":"p"}`), "an image edit is no video derivation")
 		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.Gemini, "POST", "/v1beta/models/gemini-2.5-flash:generateContent", `{"contents":[]}`), "a Gemini generateContent creates no task")
 		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.Vertex, "POST", "/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-flash:predict", `{"instances":[]}`), "a Vertex predict creates no task")
-		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.OpenAI, "POST", "/v1", `[{"taskType":"imageInference","taskUUID":"u","positivePrompt":"a videoInference poster"}]`), "a Runware image task that only mentions the word creates no video task")
-		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.OpenAI, "POST", "/v1", `[{"taskType":"getResponse","taskUUID":"u"}]`), "a Runware poll creates no task")
+		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.Runware, "POST", "/v1", `[{"taskType":"imageInference","taskUUID":"u","positivePrompt":"a videoInference poster, async"}]`), "a Runware image task that only mentions the words creates no polled task")
+		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.Runware, "POST", "/v1", `[{"taskType":"upscale","taskUUID":"u","deliveryMethod":"sync"}]`), "a synchronous Runware upscale creates no polled task")
+		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.Runware, "POST", "/v1", `[{"taskType":"getResponse","taskUUID":"u"}]`), "a Runware poll creates no task")
+		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.OpenAI, "POST", "/v1/chat/completions", `{"model":"m","messages":[{"role":"user","content":"videoInference, deliveryMethod async"}],"taskType":"videoInference"}`), "another provider's body is not read for Runware task types")
 		allowed(t, emptyCtx(), pass(schemas.OpenAI, "GET", "/v1/batches/batch-unknown", ""), "a request that presented no key is unrestricted")
 		// The Go SDK hands a path over as written, and the HTTP client resolves dot segments and
 		// repeated slashes before sending, so the path is checked as it will be sent.
@@ -1755,7 +1761,9 @@ func BenchmarkPreLLMHookProviderObjectChecks(b *testing.B) {
 		b.Fatal(err)
 	}
 	defer store.Close(context.Background())
-	plugin := newAccessTestPlugin(b, buildVKForMCPStamping(nil), nil)
+	benchKey := buildVKForMCPStamping(nil)
+	benchKey.ProviderConfigs = append(benchKey.ProviderConfigs, buildProviderConfig("runware", []string{"*"}))
+	plugin := newAccessTestPlugin(b, benchKey, nil)
 	plugin.configStore = store
 	enforced := false
 	plugin.objectOwnershipEnforcedFn = func() bool { return enforced }
@@ -1771,6 +1779,16 @@ func BenchmarkPreLLMHookProviderObjectChecks(b *testing.B) {
 		"passthrough_no_references": func() *schemas.BifrostRequest {
 			return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.OpenAI, Model: "gpt-4o", Method: "POST", Path: "/v1/chat/completions",
 				Body: []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`)}}
+		},
+		// A POST through passthrough goes through the task-create predicate: a path check for every
+		// provider, and a parse of the body for a provider built on Runware.
+		"passthrough_chat_escaped_body": func() *schemas.BifrostRequest {
+			return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.OpenAI, Method: "POST", Path: "/v1/chat/completions",
+				Body: []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"caf\u00e9, na\u00efve, \u65e5\u672c\u8a9e"}]}`)}}
+		},
+		"passthrough_runware_image": func() *schemas.BifrostRequest {
+			return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.Runware, Method: "POST", Path: "/v1",
+				Body: []byte(`[{"taskType":"imageInference","taskUUID":"u","positivePrompt":"a caf\u00e9 at dusk","model":"runware:101@1","width":1024,"height":1024}]`)}}
 		},
 		"passthrough_models_get": func() *schemas.BifrostRequest {
 			return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.OpenAI, Method: "GET", Path: "/v1/models/gpt-4o-mini"}}
@@ -1794,7 +1812,7 @@ func BenchmarkPreLLMHookProviderObjectChecks(b *testing.B) {
 	}
 	// "on" is the default and runs every check; "off" is client.enforce_vk_object_ownership: false.
 	for _, mode := range []string{"off", "on"} {
-		for _, name := range []string{"chat_no_references", "file_retrieve", "passthrough_no_references", "passthrough_models_get", "passthrough_tuning_list", "passthrough_responses_body", "video_create_no_draft", "video_create_draft"} {
+		for _, name := range []string{"chat_no_references", "file_retrieve", "passthrough_no_references", "passthrough_chat_escaped_body", "passthrough_runware_image", "passthrough_models_get", "passthrough_tuning_list", "passthrough_responses_body", "video_create_no_draft", "video_create_draft"} {
 			build := cases[name]
 			b.Run(mode+"/"+name, func(b *testing.B) {
 				enforced = mode == "on"
