@@ -61,6 +61,7 @@ var videoProviders = map[schemas.ModelProvider]struct{}{
 	schemas.Runware:   {},
 	schemas.MiniMax:   {},
 	schemas.BytePlus:  {},
+	schemas.Kling:     {},
 }
 
 // videoSettlementExemptions are the providers that implement video and are deliberately not
