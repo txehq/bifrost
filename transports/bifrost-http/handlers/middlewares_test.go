@@ -5573,7 +5573,7 @@ func TestTransportInterceptorsKeepRepeatedQueryParametersOnEveryRouteKind(t *tes
 		suffix string
 	}{
 		{name: "plugin changes nothing"},
-		{name: "plugin adds another parameter", mutate: func(req *schemas.HTTPRequest) { req.Query["injected"] = "yes" }, suffix: "&injected=yes"},
+		{name: "plugin adds another parameter", mutate: func(req *schemas.HTTPRequest) { req.SetQuery("injected", "yes") }, suffix: "&injected=yes"},
 	}
 	for _, route := range routes {
 		for phaseName, phase := range phases {
@@ -5668,7 +5668,7 @@ func TestRepeatedGatewayParameterReadsTheSameForPluginHandlerAndRoutingRule(t *t
 func TestTransportInterceptorPluginValueReplacesEveryRepeatedValue(t *testing.T) {
 	plugin := &repeatedQueryPlugin{
 		fakePreAuthPlugin: fakePreAuthPlugin{name: "pinner"},
-		mutate:            func(req *schemas.HTTPRequest) { req.Query["provider"] = "pinned" },
+		mutate:            func(req *schemas.HTTPRequest) { req.SetQuery("provider", "pinned") },
 	}
 	ctx := repeatedQueryTestCtx("GET", "/v1/batches?provider=a&status=x&provider=b&status=y")
 	var reached string
@@ -5677,6 +5677,42 @@ func TestTransportInterceptorPluginValueReplacesEveryRepeatedValue(t *testing.T)
 	})(ctx)
 	if want := "status=x&status=y&provider=pinned"; reached != want {
 		t.Fatalf("query string reached the handler as %q, want %q", reached, want)
+	}
+}
+
+// A plugin that pins a parameter to the value the caller sent first must not leave the
+// caller's other value on the request: tier=allowed&tier=other with a plugin calling
+// SetQuery("tier", "allowed") reaches the handler, and so the vendor, as tier=allowed
+// alone. The transport does this itself; the plugin does not read RepeatedQuery
+// (fork, TXE-7042).
+func TestTransportInterceptorPluginPinningTheFirstValueDropsTheOthers(t *testing.T) {
+	pins := map[string]func(req *schemas.HTTPRequest){
+		"the constant":      func(req *schemas.HTTPRequest) { req.SetQuery("tier", "allowed") },
+		"the value it read": func(req *schemas.HTTPRequest) { req.SetQuery("tier", req.Query["tier"]) },
+	}
+	for pinName, pin := range pins {
+		for _, phase := range []string{"pre-auth", "pre-hook"} {
+			t.Run(pinName+"/"+phase, func(t *testing.T) {
+				plugin := &repeatedQueryPlugin{fakePreAuthPlugin: fakePreAuthPlugin{name: "pinner"}, mutate: pin}
+				ctx := repeatedQueryTestCtx("GET", "/openai/v1/files?tier=allowed&tier=other&status=x&status=y")
+				middleware := TransportInterceptorMiddleware
+				if phase == "pre-auth" {
+					middleware = TransportPreAuthInterceptorMiddleware
+				}
+				var reached string
+				var tiers [][]byte
+				middleware(preAuthTestConfig(plugin))(func(ctx *fasthttp.RequestCtx) {
+					reached = string(ctx.QueryArgs().QueryString())
+					tiers = ctx.QueryArgs().PeekMulti("tier")
+				})(ctx)
+				if len(tiers) != 1 || string(tiers[0]) != "allowed" {
+					t.Fatalf("handler was reached with tier=%q, want only allowed (query string %q)", tiers, reached)
+				}
+				if want := "status=x&status=y&tier=allowed"; reached != want {
+					t.Fatalf("query string reached the handler as %q, want %q", reached, want)
+				}
+			})
+		}
 	}
 }
 
