@@ -261,7 +261,8 @@
           "value": "test-key",
           "models": [
             "sonar-search-usage",
-            "sonar-invalid-model"
+            "sonar-invalid-model",
+            "agent-usage"
           ],
           "weight": 1
         }

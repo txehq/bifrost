@@ -1516,6 +1516,32 @@ const klingEnvelope = (data) => JSON.stringify({ code: 0, message: "SUCCEED", re
 // clears them.
 const klingCalls = [];
 
+// Perplexity's native /v1/responses (the Agent API), TXE-6987 (contract C5, C10). Every model outside the Sonar
+// family is served there. Its usage is the published ResponsesUsage shape: tool_calls_details.<tool>.invocation,
+// and a cost object in US dollars whose total_cost includes the tool calls. agent-usage answers with it; streamed,
+// response.completed carries the same usage, after one of Perplexity's own response.reasoning.* events.
+const perplexityAgentUsage = {
+	input_tokens: 20, output_tokens: 60, total_tokens: 80,
+	input_tokens_details: { cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+	tool_calls_details: { web_search: { invocation: 2, cost_usd: 0.01 }, fetch_url: { invocation: 1, cost_usd: 0.0005 } },
+	cost: { currency: "USD", input_cost: 0.00004, output_cost: 0.0006, tool_calls_cost: 0.0105, tool_calls_cost_details: { web_search: 0.01, fetch_url: 0.0005 }, total_cost: 0.01114 },
+};
+const perplexityAgentResponse = (model, stream) => {
+	const response = {
+		id: "resp_pplx_agent_usage", object: "response", created_at: 1, status: "completed", model,
+		output: [{ id: "msg_pplx_agent_usage", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "hello", annotations: [] }] }],
+		usage: perplexityAgentUsage,
+	};
+	if (!stream) return { status: 200, body: JSON.stringify(response) };
+	const events = [
+		{ type: "response.created", sequence_number: 0, response: { ...response, status: "in_progress", output: [], usage: null } },
+		{ type: "response.reasoning.search_queries", sequence_number: 1, queries: ["hello"] },
+		{ type: "response.output_text.delta", sequence_number: 2, item_id: "msg_pplx_agent_usage", output_index: 0, content_index: 0, delta: "hello" },
+		{ type: "response.completed", sequence_number: 3, response },
+	];
+	return { status: 200, stream: events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join("") };
+};
+
 // Hit counters are keyed by the request body's model, so they must not inherit Object.prototype names.
 const hits = Object.create(null);
 // The exact bytes the last streamed answer for a model wrote, keyed by the request's model; GET /__sent?model=
@@ -2369,6 +2395,14 @@ const handleRequest = (req, res) => {
 		}
 		if (path === "/alpha/decisions") {
 			return send(200, {}, JSON.stringify(openRouterDecisionAnswer()));
+		}
+		if (path === "/v1/responses" && model === "agent-usage") {
+			const answer = perplexityAgentResponse(model, parsed.stream === true);
+			if (answer.stream !== undefined) {
+				res.writeHead(answer.status, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+				return res.end(answer.stream);
+			}
+			return send(answer.status, {}, answer.body);
 		}
 		if (path === "/v1/responses" && model === "pp-custom-legacy") {
 			wireCalls.push({ path, query: "", body: Buffer.concat(chunks).toString("utf8") });

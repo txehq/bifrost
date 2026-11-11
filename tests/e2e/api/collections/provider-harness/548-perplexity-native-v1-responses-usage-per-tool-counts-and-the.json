@@ -1,0 +1,389 @@
+{
+  "name": "548. Perplexity native /v1/responses usage: per-tool counts and the vendor's cost; vendor_cost on chat and Responses (perplexity vendor cost)",
+  "description": "TXE-6987, contract C5, C10. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, whose perplexity entry points at tests/e2e/api/runners/provider-error-fixture.mjs. Perplexity serves every model outside the Sonar family from its own /v1/responses (the Agent API), which Bifrost reaches through the shared Responses handler. The fixture answers /v1/responses for agent-usage in the published ResponsesUsage shape: tool_calls_details.<tool>.invocation and a cost object in US dollars (input_cost, output_cost, tool_calls_cost, total_cost); streamed, response.completed carries the same usage after one of Perplexity's own response.reasoning.* events. Before TXE-6987 the shared decode had no field for tool_calls_details, so the per-tool counts were dropped on this route, and no Perplexity usage carried vendor_cost. Rows 1-3 pin the native route (non-streamed, streamed, streamed on the OpenAI-compatible route): tool_usage.per_tool, tool_usage.web_search, cost with the vendor's total, and vendor_cost {amount: total_cost, unit: usd}. Rows 4-6 pin vendor_cost on the chat routes, where sonar-search-usage reports a flat cost whose total_cost is 0.03026. The usage shape is from Perplexity's published schema; no recorded native reply was available.",
+  "item": [
+    {
+      "name": "548.1perplexity /v1/responses (native) non-streamed perplexity/agent-usage usage carries per-tool counts, the vendor's cost total and vendor_cost (perplexity vendor cost)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+              "var response = pm.response.json();",
+              "var usage = response.usage;",
+              "var toolUsage = response.tool_usage;",
+              "// The Responses API carries tool_usage beside usage, not inside it, streamed or not.",
+              "pm.test('the token counts are the vendor\\'s', function () {",
+              "  pm.expect(usage && { input: usage.input_tokens, output: usage.output_tokens, total: usage.total_tokens }, 'usage: ' + JSON.stringify(usage)).to.eql({ input: 20, output: 60, total: 80 });",
+              "});",
+              "pm.test('tool_usage carries the web search count and every tool\\'s call count', function () {",
+              "  pm.expect(toolUsage, 'response: ' + JSON.stringify(response)).to.eql({ web_search: { num_requests: 2 }, per_tool: { web_search: { num_requests: 2 }, fetch_url: { num_requests: 1 } } });",
+              "});",
+              "pm.test('cost keeps the vendor\\'s total', function () {",
+              "  // The OpenAI-compatible routes send cost as a bare number, the native routes as an object.",
+              "  var cost = usage && usage.cost;",
+              "  pm.expect(typeof cost === 'number' ? cost : cost && cost.total_cost, 'usage: ' + JSON.stringify(usage)).to.equal(0.01114);",
+              "});",
+              "pm.test('vendor_cost is Perplexity\\'s total_cost in usd', function () {",
+              "  pm.expect(usage && usage.vendor_cost, 'usage: ' + JSON.stringify(usage)).to.eql({ amount: 0.01114, unit: 'usd' });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"perplexity/agent-usage\",\n  \"input\": \"hi\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "548.2perplexity /v1/responses (native) perplexity/agent-usage response.completed carries the non-streamed usage (perplexity vendor cost)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+              "var events = raw.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+              "var done = events.filter(function (e) { return e.type === 'response.completed'; }).pop();",
+              "pm.test('response.completed arrived', function () { pm.expect(done, raw).to.be.an('object'); });",
+              "pm.test('the text delta arrived', function () {",
+              "  pm.expect(events.filter(function (e) { return e.type === 'response.output_text.delta'; }).map(function (e) { return e.delta; }).join(''), raw).to.equal('hello');",
+              "});",
+              "var response = (done && done.response) || {};",
+              "var usage = response.usage;",
+              "var toolUsage = response.tool_usage;",
+              "// The Responses API carries tool_usage beside usage, not inside it, streamed or not.",
+              "pm.test('the token counts are the vendor\\'s', function () {",
+              "  pm.expect(usage && { input: usage.input_tokens, output: usage.output_tokens, total: usage.total_tokens }, 'usage: ' + JSON.stringify(usage)).to.eql({ input: 20, output: 60, total: 80 });",
+              "});",
+              "pm.test('tool_usage carries the web search count and every tool\\'s call count', function () {",
+              "  pm.expect(toolUsage, 'response: ' + JSON.stringify(response)).to.eql({ web_search: { num_requests: 2 }, per_tool: { web_search: { num_requests: 2 }, fetch_url: { num_requests: 1 } } });",
+              "});",
+              "pm.test('cost keeps the vendor\\'s total', function () {",
+              "  // The OpenAI-compatible routes send cost as a bare number, the native routes as an object.",
+              "  var cost = usage && usage.cost;",
+              "  pm.expect(typeof cost === 'number' ? cost : cost && cost.total_cost, 'usage: ' + JSON.stringify(usage)).to.equal(0.01114);",
+              "});",
+              "pm.test('vendor_cost is Perplexity\\'s total_cost in usd', function () {",
+              "  pm.expect(usage && usage.vendor_cost, 'usage: ' + JSON.stringify(usage)).to.eql({ amount: 0.01114, unit: 'usd' });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"perplexity/agent-usage\",\n  \"input\": \"hi\",\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "548.3perplexity /openai/v1/responses (native) perplexity/agent-usage response.completed carries the non-streamed usage (perplexity vendor cost)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+              "var events = raw.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+              "var done = events.filter(function (e) { return e.type === 'response.completed'; }).pop();",
+              "pm.test('response.completed arrived', function () { pm.expect(done, raw).to.be.an('object'); });",
+              "pm.test('the text delta arrived', function () {",
+              "  pm.expect(events.filter(function (e) { return e.type === 'response.output_text.delta'; }).map(function (e) { return e.delta; }).join(''), raw).to.equal('hello');",
+              "});",
+              "var response = (done && done.response) || {};",
+              "var usage = response.usage;",
+              "var toolUsage = response.tool_usage;",
+              "// The Responses API carries tool_usage beside usage, not inside it, streamed or not.",
+              "pm.test('the token counts are the vendor\\'s', function () {",
+              "  pm.expect(usage && { input: usage.input_tokens, output: usage.output_tokens, total: usage.total_tokens }, 'usage: ' + JSON.stringify(usage)).to.eql({ input: 20, output: 60, total: 80 });",
+              "});",
+              "pm.test('tool_usage carries the web search count and every tool\\'s call count', function () {",
+              "  pm.expect(toolUsage, 'response: ' + JSON.stringify(response)).to.eql({ web_search: { num_requests: 2 }, per_tool: { web_search: { num_requests: 2 }, fetch_url: { num_requests: 1 } } });",
+              "});",
+              "pm.test('cost keeps the vendor\\'s total', function () {",
+              "  // The OpenAI-compatible routes send cost as a bare number, the native routes as an object.",
+              "  var cost = usage && usage.cost;",
+              "  pm.expect(typeof cost === 'number' ? cost : cost && cost.total_cost, 'usage: ' + JSON.stringify(usage)).to.equal(0.01114);",
+              "});",
+              "pm.test('vendor_cost is Perplexity\\'s total_cost in usd', function () {",
+              "  pm.expect(usage && usage.vendor_cost, 'usage: ' + JSON.stringify(usage)).to.eql({ amount: 0.01114, unit: 'usd' });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"perplexity/agent-usage\",\n  \"input\": \"hi\",\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "548.4perplexity /v1/chat/completions non-streamed perplexity/sonar-search-usage usage carries vendor_cost (perplexity vendor cost)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+              "var usage = pm.response.json().usage;",
+              "pm.test('vendor_cost is Perplexity\\'s total_cost in usd', function () {",
+              "  pm.expect(usage && usage.vendor_cost, 'usage: ' + JSON.stringify(usage)).to.eql({ amount: 0.03026, unit: 'usd' });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"perplexity/sonar-search-usage\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "548.5perplexity /v1/chat/completions perplexity/sonar-search-usage the final frame carries vendor_cost (perplexity vendor cost)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+              "var frames = raw.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+              "var last = frames.filter(function (f) { return f.usage; }).pop();",
+              "pm.test('a frame carries the usage', function () { pm.expect(last, raw).to.be.an('object'); });",
+              "var usage = last && last.usage;",
+              "pm.test('vendor_cost is Perplexity\\'s total_cost in usd', function () {",
+              "  pm.expect(usage && usage.vendor_cost, 'usage: ' + JSON.stringify(usage)).to.eql({ amount: 0.03026, unit: 'usd' });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"perplexity/sonar-search-usage\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "548.6perplexity /openai/v1/chat/completions perplexity/sonar-search-usage the final frame carries vendor_cost (perplexity vendor cost)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+              "var frames = raw.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+              "var last = frames.filter(function (f) { return f.usage; }).pop();",
+              "pm.test('a frame carries the usage', function () { pm.expect(last, raw).to.be.an('object'); });",
+              "var usage = last && last.usage;",
+              "pm.test('vendor_cost is Perplexity\\'s total_cost in usd', function () {",
+              "  pm.expect(usage && usage.vendor_cost, 'usage: ' + JSON.stringify(usage)).to.eql({ amount: 0.03026, unit: 'usd' });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"perplexity/sonar-search-usage\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    }
+  ]
+}

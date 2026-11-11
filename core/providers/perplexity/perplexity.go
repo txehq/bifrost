@@ -293,11 +293,47 @@ func (provider *PerplexityProvider) Responses(ctx *schemas.BifrostContext, key s
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		schemas.Perplexity,
-		nil,
+		parseResponsesResponse,
 		nil,
 		nil,
 		provider.logger,
 	)
+}
+
+// parseResponsesResponse decodes a native /v1/responses reply as the shared handler does, then adds the
+// usage Perplexity reports in its own shape (fork, TXE-6987).
+func parseResponsesResponse(responseBody []byte, response *schemas.BifrostResponsesResponse, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (interface{}, interface{}, *schemas.BifrostError) {
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, requestBody, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return rawRequest, rawResponse, bifrostErr
+	}
+	var body PerplexityResponsesBody
+	if response.Usage != nil && sonic.Unmarshal(responseBody, &body) == nil {
+		body.Usage.applyTo(response.Usage)
+	}
+	return rawRequest, rawResponse, nil
+}
+
+// parseResponsesStreamEvent decodes one native /v1/responses stream event as the shared stream does, then
+// adds the usage Perplexity reports in its own shape, so response.completed carries what the
+// non-streamed reply does (fork, TXE-6987, contract C10).
+//
+// An event that does not parse is skipped with a warning, as the shared stream does: the handler hands
+// back a ping, which the stream converters drop, instead of an error, which would end the stream.
+func (provider *PerplexityProvider) parseResponsesStreamEvent(eventBody []byte, response *schemas.BifrostResponsesStreamResponse, _ []byte, _ bool, _ bool) (interface{}, interface{}, *schemas.BifrostError) {
+	if err := sonic.Unmarshal(eventBody, response); err != nil {
+		*response = schemas.BifrostResponsesStreamResponse{}
+		if err = schemas.UnmarshalResponsesStreamObjectDelta(eventBody, response); err != nil {
+			provider.logger.Warn("Failed to parse stream response: %v", err)
+			*response = schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypePing}
+			return nil, nil, nil
+		}
+	}
+	var event PerplexityResponsesEvent
+	if response.Response != nil && response.Response.Usage != nil && sonic.Unmarshal(eventBody, &event) == nil && event.Response != nil {
+		event.Response.Usage.applyTo(response.Response.Usage)
+	}
+	return nil, nil, nil
 }
 
 // ResponsesStream performs a streaming responses request to the Perplexity API.
@@ -327,7 +363,7 @@ func (provider *PerplexityProvider) ResponsesStream(ctx *schemas.BifrostContext,
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		schemas.Perplexity,
 		postHookRunner,
-		nil,
+		provider.parseResponsesStreamEvent,
 		nil,
 		nil,
 		nil,

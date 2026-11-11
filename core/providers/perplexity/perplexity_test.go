@@ -956,6 +956,9 @@ func TestChatCompletion_ReportsSearchContextSizeAndPerToolCounts(t *testing.T) {
 	if usage.Cost == nil || usage.Cost.TotalCost != 0.03026 {
 		t.Errorf("cost = %+v, want total 0.03026", usage.Cost)
 	}
+	if usage.VendorCost == nil || *usage.VendorCost != (schemas.VendorCost{Amount: 0.03026, Unit: schemas.VendorCostUnitUSD}) {
+		t.Errorf("vendor_cost = %+v, want Perplexity's total_cost 0.03026 usd", usage.VendorCost)
+	}
 
 	out, err := schemas.Marshal(usage)
 	if err != nil {
@@ -1104,8 +1107,206 @@ func TestResponsesStream_SonarFallbackKeepsSearchUsage(t *testing.T) {
 	if usage.Cost == nil || usage.Cost.TotalCost != 0.03026 || usage.Cost.OutputCostDetails == nil || usage.Cost.OutputCostDetails.SearchQueriesCost != 0.015 {
 		t.Errorf("cost = %+v, want total 0.03026 with search queries 0.015", usage.Cost)
 	}
+	if usage.VendorCost == nil || *usage.VendorCost != (schemas.VendorCost{Amount: 0.03026, Unit: schemas.VendorCostUnitUSD}) {
+		t.Errorf("vendor_cost = %+v, want Perplexity's total_cost 0.03026 usd", usage.VendorCost)
+	}
 	if usage.InputTokens != 12 || usage.OutputTokens != 40 || usage.TotalTokens != 52 {
 		t.Errorf("tokens = %d/%d/%d, want 12/40/52", usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
+	}
+}
+
+// TestChatCompletion_CostWithoutTotalHasNoVendorCost: vendor_cost is the total Perplexity reported, never
+// a sum of its categories, so a cost object without total_cost yields none (contract C5).
+func TestChatCompletion_CostWithoutTotalHasNoVendorCost(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":"pplx-1","object":"chat.completion","created":1,"model":"sonar",`+
+			`"choices":[{"index":0,"message":{"role":"assistant","content":"Hello"},"finish_reason":"stop"}],`+
+			`"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12,"cost":{"input_tokens_cost":0.001,"output_tokens_cost":0.002}}}`)
+	}))
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	response, bifrostErr := newTestProvider(t, server.URL).ChatCompletion(ctx, newTestKey(), perplexityChatRequest("sonar"))
+	if bifrostErr != nil {
+		t.Fatalf("chat completion failed: %+v", bifrostErr.Error)
+	}
+	if response.Usage.VendorCost != nil {
+		t.Errorf("vendor_cost = %+v, want none", response.Usage.VendorCost)
+	}
+	if response.Usage.Cost == nil || response.Usage.Cost.TotalCost != 0.003 {
+		t.Errorf("cost = %+v, want the categories summed to 0.003", response.Usage.Cost)
+	}
+}
+
+// perplexityNativeResponsesUsage is a usage object in the shape of the Agent API's ResponsesUsage
+// (docs.perplexity.ai/api-reference/agent-post, schemas ResponsesUsage, ResponsesCost, ToolCallDetails).
+// It is written from the published schema: no recorded reply was available (TXE-6987).
+const perplexityNativeResponsesUsage = `{"input_tokens":20,"output_tokens":60,"total_tokens":80,` +
+	`"input_tokens_details":{"cache_creation_input_tokens":0,"cache_read_input_tokens":0},` +
+	`"tool_calls_details":{"web_search":{"invocation":2,"cost_usd":0.01},"fetch_url":{"invocation":1,"cost_usd":0.0005}},` +
+	`"cost":{"currency":"USD","input_cost":0.00004,"output_cost":0.0006,"tool_calls_cost":0.0105,` +
+	`"tool_calls_cost_details":{"web_search":0.01,"fetch_url":0.0005},"total_cost":0.01114}}`
+
+func perplexityNativeResponsesBody(usage string) string {
+	return `{"id":"resp_1","object":"response","created_at":1,"model":"openai/gpt-5.4","status":"completed",` +
+		`"output":[{"id":"msg_1","type":"message","role":"assistant","status":"completed",` +
+		`"content":[{"type":"output_text","text":"Hello","annotations":[]}]}],"usage":` + usage + `}`
+}
+
+func perplexityNativeResponsesRequest() *schemas.BifrostResponsesRequest {
+	return &schemas.BifrostResponsesRequest{
+		Provider: schemas.Perplexity,
+		Model:    "openai/gpt-5.4",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+	}
+}
+
+// canonicalJSON is v as the gateway serializes it, with object keys sorted (per_tool is a map).
+func canonicalJSON(t *testing.T, v any) string {
+	t.Helper()
+	wire, err := schemas.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded any
+	if err := json.Unmarshal(wire, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	sorted, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(sorted)
+}
+
+// perplexityNativeResponsesNonStreamed returns the usage of a native /v1/responses reply served without streaming.
+func perplexityNativeResponsesNonStreamed(t *testing.T, usage string) *schemas.ResponsesResponseUsage {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("path = %s, want /v1/responses", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, perplexityNativeResponsesBody(usage))
+	}))
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	response, bifrostErr := newTestProvider(t, server.URL).Responses(ctx, newTestKey(), perplexityNativeResponsesRequest())
+	if bifrostErr != nil {
+		t.Fatalf("responses failed: %+v", bifrostErr.Error)
+	}
+	if response.Usage == nil {
+		t.Fatal("responses returned no usage")
+	}
+	return response.Usage
+}
+
+// TestResponses_NativeRouteReportsPerToolCountsAndVendorCost: on Perplexity's own /v1/responses the
+// unified usage carries the vendor's per-tool call counts, its web search count, its cost with the
+// vendor's total, and that total as vendor_cost in US dollars (TXE-6987, contract C5).
+func TestResponses_NativeRouteReportsPerToolCountsAndVendorCost(t *testing.T) {
+	usage := perplexityNativeResponsesNonStreamed(t, perplexityNativeResponsesUsage)
+
+	if usage.InputTokens != 20 || usage.OutputTokens != 60 || usage.TotalTokens != 80 {
+		t.Errorf("tokens = %d/%d/%d, want 20/60/80", usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
+	}
+	if usage.ToolUsage == nil {
+		t.Fatal("tool_usage is missing")
+	}
+	if usage.ToolUsage.WebSearch == nil || usage.ToolUsage.WebSearch.NumRequests != 2 {
+		t.Errorf("tool_usage.web_search = %+v, want num_requests 2", usage.ToolUsage.WebSearch)
+	}
+	if got := usage.ToolUsage.PerTool; len(got) != 2 || got["web_search"].NumRequests != 2 || got["fetch_url"].NumRequests != 1 {
+		t.Errorf("tool_usage.per_tool = %+v, want web_search 2, fetch_url 1", got)
+	}
+	if usage.Cost == nil || usage.Cost.TotalCost != 0.01114 || usage.Cost.InputCost != 0.00004 || usage.Cost.OutputCost != 0.0006 {
+		t.Errorf("cost = %+v, want input 0.00004, output 0.0006, total 0.01114", usage.Cost)
+	}
+	if usage.VendorCost == nil || *usage.VendorCost != (schemas.VendorCost{Amount: 0.01114, Unit: schemas.VendorCostUnitUSD}) {
+		t.Errorf("vendor_cost = %+v, want 0.01114 usd", usage.VendorCost)
+	}
+}
+
+// TestResponses_NativeRouteUnreportedUsageStaysEmpty: token counts alone yield no tool_usage and no
+// vendor_cost; a total in another currency is not copied; a reported zero total is kept (contract C5).
+func TestResponses_NativeRouteUnreportedUsageStaysEmpty(t *testing.T) {
+	tokens := `"input_tokens":5,"output_tokens":7,"total_tokens":12`
+	bare := perplexityNativeResponsesNonStreamed(t, `{`+tokens+`}`)
+	if bare.ToolUsage != nil || bare.VendorCost != nil || bare.Cost != nil {
+		t.Errorf("tool_usage = %+v, vendor_cost = %+v, cost = %+v, want none", bare.ToolUsage, bare.VendorCost, bare.Cost)
+	}
+
+	other := perplexityNativeResponsesNonStreamed(t, `{`+tokens+`,"cost":{"currency":"EUR","input_cost":1,"output_cost":1,"total_cost":2}}`)
+	if other.VendorCost != nil {
+		t.Errorf("vendor_cost = %+v for a EUR total, want none", other.VendorCost)
+	}
+
+	zero := perplexityNativeResponsesNonStreamed(t, `{`+tokens+`,"cost":{"currency":"USD","input_cost":0,"output_cost":0,"total_cost":0},"tool_calls_details":{"fetch_url":{"invocation":1}}}`)
+	if zero.VendorCost == nil || *zero.VendorCost != (schemas.VendorCost{Amount: 0, Unit: schemas.VendorCostUnitUSD}) {
+		t.Errorf("vendor_cost = %+v, want a reported zero", zero.VendorCost)
+	}
+	if zero.ToolUsage == nil || zero.ToolUsage.WebSearch != nil || zero.ToolUsage.PerTool["fetch_url"].NumRequests != 1 {
+		t.Errorf("tool_usage = %+v, want per_tool fetch_url 1 and no web_search", zero.ToolUsage)
+	}
+}
+
+// TestResponsesStream_NativeRouteCompletedUsageMatchesNonStreamed is contract C10 for the native route:
+// response.completed carries the same usage, field for field, as the reply served without streaming.
+// An event that is not JSON is skipped and does not end the stream, and Perplexity's own
+// response.reasoning.* events pass through.
+func TestResponsesStream_NativeRouteCompletedUsageMatchesNonStreamed(t *testing.T) {
+	want := canonicalJSON(t, perplexityNativeResponsesNonStreamed(t, perplexityNativeResponsesUsage))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, event := range []string{
+			`{"type":"response.created","sequence_number":0,"response":{"id":"resp_1","object":"response","created_at":1,"model":"openai/gpt-5.4","status":"in_progress","output":[]}}`,
+			`{"type":"response.reasoning.search_queries","sequence_number":1,"queries":["hello"]}`,
+			`{"type":"response.output_text.delta","sequence_number":2,`,
+			`{"type":"response.output_text.delta","sequence_number":3,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"Hello"}`,
+			`{"type":"response.completed","sequence_number":4,"response":` + perplexityNativeResponsesBody(perplexityNativeResponsesUsage) + `}`,
+		} {
+			_, _ = fmt.Fprint(w, "data: "+event+"\n\n")
+		}
+	}))
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	stream, bifrostErr := newTestProvider(t, server.URL).ResponsesStream(ctx, passthroughPostHook, nil, newTestKey(), perplexityNativeResponsesRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %+v", bifrostErr.Error)
+	}
+
+	var text strings.Builder
+	var completed *schemas.ResponsesResponseUsage
+	for chunk := range stream {
+		if chunk.BifrostError != nil {
+			t.Fatalf("stream returned an error: %+v", chunk.BifrostError.Error)
+		}
+		event := chunk.BifrostResponsesStreamResponse
+		if event == nil {
+			continue
+		}
+		if event.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && event.Delta != nil {
+			text.WriteString(*event.Delta)
+		}
+		if event.Type == schemas.ResponsesStreamResponseTypeCompleted && event.Response != nil {
+			completed = event.Response.Usage
+		}
+	}
+	if text.String() != "Hello" {
+		t.Errorf("streamed text = %q, want Hello", text.String())
+	}
+	if completed == nil {
+		t.Fatal("stream emitted no response.completed with usage")
+	}
+	if got := canonicalJSON(t, completed); got != want {
+		t.Fatalf("response.completed usage differs from non-streamed\n got: %s\nwant: %s", got, want)
 	}
 }
 
