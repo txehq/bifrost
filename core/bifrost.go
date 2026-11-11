@@ -8175,6 +8175,8 @@ func clearGenAIPassthroughForNonGoogleProvider(ctx *schemas.BifrostContext, base
 // is read from. A staged body that names another model than requestedModel is not
 // forwarded: it goes out unparsed, so a fallback to another model would ask the vendor for
 // the primary's model on a key admitted for the fallback's.
+// A staged body whose model is not known (the hook left no metadata, or delivers it after
+// the body) is not forwarded on a fallback attempt either: the check fails closed.
 func decideLargePayloadForAttempt(ctx *schemas.BifrostContext, baseProvider, providerKey schemas.ModelProvider, requestType schemas.RequestType, model, requestedModel string) *schemas.BifrostError {
 	staged, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
 	threshold, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseThreshold).(int64)
@@ -8183,9 +8185,16 @@ func decideLargePayloadForAttempt(ctx *schemas.BifrostContext, baseProvider, pro
 	}
 	eligibility := schemas.DecideLargePayloadEligibility(ctx, baseProvider, providerKey != baseProvider, requestType, model)
 	if staged && eligibility.RawRequest && requestType != schemas.PassthroughRequest && requestType != schemas.PassthroughStreamRequest {
-		if bodyModel := schemas.StagedLargePayloadModel(ctx, baseProvider); bodyModel != "" && bodyModel != requestedModel {
+		bodyModel, known := schemas.StagedLargePayloadModel(ctx, baseProvider)
+		fallbackIndex, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
+		switch {
+		case known && bodyModel != "" && bodyModel != requestedModel:
 			eligibility = schemas.LargePayloadEligibility{Reason: fmt.Sprintf(
 				"the request body names model %q and this attempt serves %q; a body forwarded unparsed is not rewritten to another model", bodyModel, requestedModel)}
+		case !known && fallbackIndex > 0:
+			// Nothing says which model the body names, so nothing shows it suits a fallback.
+			eligibility = schemas.LargePayloadEligibility{Reason: fmt.Sprintf(
+				"the model the request body names is not known and this is a fallback attempt serving %q; a body forwarded unparsed is not rewritten to another model", requestedModel)}
 		}
 	}
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadEligibility, eligibility)

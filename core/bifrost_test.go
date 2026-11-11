@@ -13891,6 +13891,37 @@ func TestStagedLargeRequestIsNotForwardedToAFallbackThatServesAnotherModel(t *te
 	}
 }
 
+// A staged body with no metadata names a model nobody has read. The primary attempt takes it
+// as the transport routed it; a fallback attempt does not, because nothing shows the body
+// names the fallback's model. A body whose metadata says it names no model (the genai routes
+// carry it in the URL) still goes to a fallback.
+func TestStagedLargeRequestOfUnknownModelIsNotForwardedToAFallback(t *testing.T) {
+	const body = `{"model":"gpt-5","messages":[{"role":"user","content":"hello"}]}`
+	stage := func(metadata *schemas.LargePayloadMetadata, fallbackIndex int) *schemas.BifrostContext {
+		ctx := routeCtx("openai")
+		stageLargeRequest(ctx, body, "")
+		ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, metadata)
+		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, fallbackIndex)
+		return ctx
+	}
+	decide := func(ctx *schemas.BifrostContext) *schemas.BifrostError {
+		return decideLargePayloadForAttempt(ctx, schemas.OpenAI, schemas.OpenAI, schemas.ChatCompletionRequest, "gpt-4o-mini", "gpt-4o-mini")
+	}
+	if refusal := decide(stage(nil, 0)); refusal != nil {
+		t.Fatalf("the primary attempt was refused: %s", refusal.Error.Message)
+	}
+	refusal := decide(stage(nil, 1))
+	if refusal == nil || refusal.StatusCode == nil || *refusal.StatusCode != 413 {
+		t.Fatalf("a fallback attempt with a body of unknown model: got %+v, want a 413 refusal", refusal)
+	}
+	if !strings.Contains(refusal.Error.Message, "is not known") || !strings.Contains(refusal.Error.Message, `"gpt-4o-mini"`) {
+		t.Errorf("the refusal does not say the body's model is unknown: %s", refusal.Error.Message)
+	}
+	if refusal := decide(stage(&schemas.LargePayloadMetadata{}, 1)); refusal != nil {
+		t.Fatalf("a fallback attempt with a body that names no model was refused: %s", refusal.Error.Message)
+	}
+}
+
 // With neither large-payload mode on, which is every request of a gateway with no hook
 // installed, the per-attempt decision does nothing and leaves nothing on the context.
 func TestDecideLargePayloadForAttemptIsInertWithoutAMode(t *testing.T) {

@@ -206,29 +206,32 @@ func DecideLargePayloadEligibility(ctx *BifrostContext, provider ModelProvider, 
 // StagedLargePayloadModel returns the model a staged large request body names, as it would go
 // on the wire to provider: the model the transport hook read from the body, less a known
 // provider prefix, which is the one thing the raw path rewrites. It is "" when no body is
-// staged or the body names no model (the genai routes carry it in the URL).
+// staged or the body names no model (the genai routes carry it in the URL). known is false
+// when a body is staged and nothing on the context says what it names: the transport hook
+// left no metadata, or delivers it only after the body has streamed. A caller then cannot
+// tell that the body suits another model, and treats it as one that does not.
 //
 // A staged body is forwarded unparsed, so it cannot be rewritten to another model. An attempt
 // that serves a different model than the body names (a fallback to another model) must not
 // forward it: the key and governance checks would have admitted one model and the vendor
 // would be asked for another. Core's per-attempt decision refuses that attempt (TXE-7082).
-func StagedLargePayloadModel(ctx *BifrostContext, provider ModelProvider) string {
+func StagedLargePayloadModel(ctx *BifrostContext, provider ModelProvider) (model string, known bool) {
 	if ctx == nil {
-		return ""
+		return "", true
 	}
 	if staged, _ := ctx.Value(BifrostContextKeyLargePayloadMode).(bool); !staged {
-		return ""
+		return "", true
 	}
 	metadata, _ := ctx.Value(BifrostContextKeyLargePayloadMetadata).(*LargePayloadMetadata)
 	if metadata == nil {
-		return ""
+		return "", false
 	}
 	raw := strings.TrimSpace(metadata.Model)
 	if raw == "" {
-		return ""
+		return "", true
 	}
-	_, model := ParseModelString(raw, provider)
-	return model
+	_, model = ParseModelString(raw, provider)
+	return model, true
 }
 
 // LargePayloadEligibilityFromContext returns the stamp of the current attempt, and the zero
