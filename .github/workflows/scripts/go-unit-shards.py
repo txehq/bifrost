@@ -48,6 +48,10 @@ EXCLUDED = {
     "core/internal/llmtests": "live-provider suite library, exercised through the provider packages",
     # Live gateway and provider tests (test-bifrost-http.sh excludes the same subtree).
     "transports/bifrost-http/tests": "live gateway tests, run by the release pipeline",
+    # Its cache tests embed through OpenAI (text-embedding-3-small) and synthesize with tts-1, so
+    # without a key 13 of them fail on "no keys found that support model". test-all-plugins.sh
+    # skips this plugin for the same reason when OPENAI_API_KEY is unset.
+    "plugins/semanticcache": "needs a live OpenAI key for embeddings and speech",
 }
 
 # Extra `go test` flags per module directory. transports runs -short like test-bifrost-http.sh.
@@ -58,26 +62,30 @@ MODULE_FLAGS = {"transports": ["-short"]}
 # Only the plan's balance depends on these numbers; a wrong one makes a shard slower, never
 # skips a test.
 WEIGHTS = {
-    "core/internal/mcptests": 120,
-    "core/providers/utils": 60,
-    "core": 40,
+    # PR #207's first run (cold cache), test execution only.
+    "framework/logstore": 351,
+    "framework/configstore": 284,
+    "core/internal/mcptests": 234,
+    "framework/queue": 211,
+    "transports/bifrost-http/handlers": 124,
+    "transports/bifrost-http/lib": 121,
+    "core/providers/utils": 97,
+    "core": 84,
+    "framework/plugins": 62,
+    "plugins/logging": 46,
     "core/network": 36,
+    "plugins/governance": 27,
     "core/mcp": 27,
-    "framework/logstore": 260,
-    "framework/configstore": 250,
-    "framework/queue": 120,
-    "framework/openapimcp": 45,
-    "framework/plugins": 20,
-    "framework/vectorstore": 26,
-    "framework/passthroughparse": 10,
-    "transports/bifrost-http/lib": 180,
-    "transports/bifrost-http/handlers": 170,
-    "transports/bifrost-http/integrations": 10,
-    "transports/bifrost-http/server": 10,
-    "plugins/logging": 27,
-    "plugins/governance": 18,
+    "framework/vectorstore": 23,
+    "core/providers/anthropic": 21,
+    "transports/bifrost-http/integrations": 20,
+    "transports/bifrost-http/server": 20,
+    "framework/postgresconn": 16,
+    "core/agent": 12,
+    "framework/openapimcp": 8,
+    "framework/configstore/tables": 7,
 }
-DEFAULT_WEIGHT = 4
+DEFAULT_WEIGHT = 5
 
 API_KEY = re.compile(r"(^API_KEY$|_API_KEY$|_API_KEY_)", re.I)
 

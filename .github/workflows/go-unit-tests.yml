@@ -15,7 +15,8 @@ name: Go unit tests (offline)
 #   credential variable (TXE-7053); the job uses no secret, and the script prints the number of
 #   *_API_KEY variables it sees (0) and refuses to run with one set.
 # - MCP: core/internal/mcptests and the bifrost-http MCP handler tests drive the STDIO servers
-#   in examples/mcps, built here by `make setup-mcp-tests` as in the release's test-core-unit.
+#   in examples/mcps, built here by `make setup-mcp-tests` as in the release's test-core-unit
+#   (in the background, while Go compiles).
 # - Services: framework and plugin suites use tests/docker-compose.yml (Postgres, ClickHouse,
 #   Redis, the vector stores). In CI an unreachable ClickHouse is a failure, not a skip, so
 #   every shard starts the stack in the background while Go compiles.
@@ -57,7 +58,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
@@ -116,8 +117,10 @@ jobs:
         with:
           node-version: "25"
 
-      - name: Build MCP test servers
-        run: make setup-mcp-tests
+      # In the background as well; the wait step below fails the job if the build failed.
+      - name: Build MCP test servers in the background
+        run: |
+          (make setup-mcp-tests; echo "exit $?" > "$RUNNER_TEMP/mcp.status") > "$RUNNER_TEMP/mcp.log" 2>&1 &
 
       # main.go's go:embed needs a nonempty ui directory; no UI build is needed for unit tests.
       - name: Stub the UI directory
@@ -125,8 +128,11 @@ jobs:
           mkdir -p transports/bifrost-http/ui
           [ -f transports/bifrost-http/ui/.gitkeep ] || echo placeholder > transports/bifrost-http/ui/.gitkeep
 
-      - name: Wait for the test services
+      - name: Wait for the MCP servers and the test services
         run: |
+          until [ -f "$RUNNER_TEMP/mcp.status" ]; do sleep 2; done
+          cat "$RUNNER_TEMP/mcp.log"
+          grep -qx "exit 0" "$RUNNER_TEMP/mcp.status" || { echo "::error::make setup-mcp-tests failed"; exit 1; }
           while kill -0 "$(cat "$RUNNER_TEMP/compose.pid")" 2>/dev/null; do sleep 2; done
           cat "$RUNNER_TEMP/compose.log"
           for _ in $(seq 1 60); do
