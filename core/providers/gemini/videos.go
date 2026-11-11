@@ -561,6 +561,11 @@ func veoReferenceImages(p *schemas.VideoGenerationParameters, extras veoExtras, 
 	// reference_images the typed field could not hold (not a list of strings) is still in the
 	// extra params.
 	if raw, ok := extras[param]; ok && raw != nil {
+		// An empty list names no reference image: the request is the same without it.
+		if list, isList := raw.([]any); isList && len(list) == 0 {
+			delete(extras, param)
+			return nil, nil
+		}
 		referenceImages, ok := videoReferenceImagesFromExtraParam(raw)
 		if !ok || len(referenceImages) == 0 {
 			return nil, unsupportedVideoParam(param, "reference_images must be a list of data URLs or URLs, or the vendor's reference image objects")
