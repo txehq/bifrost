@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -643,6 +644,57 @@ func AssertRoute(t *testing.T, s *Set, want Route, target string, err error) {
 			}
 		}
 	}
+}
+
+// OriginTunnel is a CONNECT proxy whose every tunnel ends at one origin server on loopback,
+// whatever address the tunnel was asked for. ForwardProxy answers a tunnelled request from a
+// recorder, so it holds the whole response before sending any of it; a test of a streamed
+// body needs the bytes to cross as the handler writes them, and a test of a large one needs
+// them not to be held here.
+type OriginTunnel struct {
+	// URL is the proxy's address, for a ProxyConfig.
+	URL      string
+	connects atomic.Int32
+}
+
+// Connects is the number of tunnels opened: one per connection the client dialed.
+func (o *OriginTunnel) Connects() int32 { return o.connects.Load() }
+
+// NewOriginTunnel starts an origin server on handler and an OriginTunnel in front of it. The
+// handler sees the address the client asked for in r.Host.
+func NewOriginTunnel(t testing.TB, handler http.HandlerFunc) *OriginTunnel {
+	t.Helper()
+	origin := httptest.NewServer(handler)
+	t.Cleanup(origin.Close)
+	originAddr := strings.TrimPrefix(origin.URL, "http://")
+	tunnel := &OriginTunnel{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			http.Error(w, "CONNECT only", http.StatusMethodNotAllowed)
+			return
+		}
+		upstream, err := net.Dial("tcp", originAddr)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer upstream.Close()
+		conn, buffered, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		tunnel.connects.Add(1)
+		_, _ = conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
+		go func() {
+			_, _ = io.Copy(upstream, io.MultiReader(buffered.Reader, conn))
+			_ = upstream.Close()
+		}()
+		_, _ = io.Copy(conn, upstream)
+	}))
+	t.Cleanup(server.Close)
+	tunnel.URL = server.URL
+	return tunnel
 }
 
 // ForwardProxy starts an HTTP proxy that serves handler for both proxy styles:

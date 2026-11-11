@@ -9,13 +9,15 @@ import { fileURLToPath } from "node:url";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "..", "provider-error-fixture.mjs");
 
-// startFixture boots the fixture on a random port, its stall proxy on the next one, and resolves once it
-// listens. The returned post sends one chat completion and, when the fixture does not answer, fails with
+// startFixture boots the fixture on a random port, its stall proxy on the next one, its media tunnel on
+// the one after (post.mediaTunnelPort) and its TLS listener on the one after that, and resolves once it
+// listens. Every listener gets its own port: one left on its default collides with any other fixture
+// running on the host, and the fixture then exits before it listens. The returned post sends one chat completion and, when the fixture does not answer, fails with
 // what it printed on its way out; post.port and post.stallPort name the two listeners.
 async function startFixture(t) {
   const port = 20000 + Math.floor(Math.random() * 20000);
   const child = spawn(process.execPath, [FIXTURE], {
-    env: { ...process.env, PROVIDER_ERROR_FIXTURE_PORT: String(port), PROVIDER_ERROR_FIXTURE_STALL_PORT: String(port + 1) },
+    env: { ...process.env, PROVIDER_ERROR_FIXTURE_PORT: String(port), PROVIDER_ERROR_FIXTURE_STALL_PORT: String(port + 1), PROVIDER_ERROR_FIXTURE_MEDIA_TUNNEL_PORT: String(port + 2), PROVIDER_ERROR_FIXTURE_TLS_PORT: String(port + 3) },
     stdio: ["ignore", "pipe", "pipe"],
   });
   t.after(() => child.kill());
@@ -41,6 +43,7 @@ async function startFixture(t) {
   };
   post.port = port;
   post.stallPort = port + 1;
+  post.mediaTunnelPort = port + 2;
   return post;
 }
 
@@ -101,6 +104,51 @@ test("the stall proxy holds a CONNECT unanswered and counts it", async (t) => {
   assert.equal(socket.destroyed, false, "the stall proxy must hold the connection open");
   const hits = await (await fetch(`http://127.0.0.1:${post.port}/__hits`)).json();
   assert.equal(hits.data[0].hits.__stall_proxy_connects, 1);
+});
+
+// The media tunnel answers a CONNECT to any address and joins it to the fixture itself, so a gateway whose
+// SSRF-hardened fetcher was given a public-looking address reaches the fixture's file through the
+// provider's proxy (TXE-7036). The address asked for is counted, and reaches the fixture as the Host.
+test("the media tunnel joins a CONNECT for any address to the fixture and counts it", async (t) => {
+  const post = await startFixture(t);
+  const socket = net.connect(post.mediaTunnelPort, "127.0.0.1");
+  t.after(() => socket.destroy());
+  await new Promise((resolve, reject) => {
+    socket.once("connect", resolve);
+    socket.once("error", reject);
+  });
+  let answered = "";
+  socket.on("data", (c) => (answered += c.toString("latin1")));
+  const until = async (marker) => {
+    for (let i = 0; i < 100 && !answered.includes(marker); i++) await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.ok(answered.includes(marker), `expected ${JSON.stringify(marker)} in ${JSON.stringify(answered)}`);
+  };
+  socket.write("CONNECT 203.0.113.10:80 HTTP/1.1\r\nHost: 203.0.113.10:80\r\n\r\n");
+  await until("200 Connection established\r\n\r\n");
+  answered = "";
+  socket.write("GET /__hits HTTP/1.1\r\nHost: 203.0.113.10\r\nConnection: close\r\n\r\n");
+  await until('"__media_tunnel_connects@203.0.113.10:80":1');
+  assert.match(answered, /^HTTP\/1\.1 200 /);
+});
+
+// Folder 482: a finished BytePlus or MiniMax task names its file by URL. The gapped file is named at a
+// public-looking address the gateway can only reach through the media tunnel; the loopback task names the
+// fixture's own address, which the gateway's SSRF check must refuse.
+test("media tasks name the gapped file at a public address and the internal one on loopback", async (t) => {
+  const post = await startFixture(t);
+  const get = async (path) => (await fetch(`http://127.0.0.1:${post.port}${path}`)).json();
+  const ark = await get("/pp/byteplus/api/v3/contents/generations/tasks/fixture-media-gapped");
+  assert.equal(ark.status, "succeeded");
+  assert.equal(ark.content.video_url, "http://203.0.113.10/pp/media/gapped.mp4?X-Fixture-Signature=signed");
+  const minimax = await get("/pp/minimax/v2/query/video_generation/fixture-media-loopback");
+  assert.equal(minimax.task.status, "succeeded");
+  assert.equal(minimax.task.content.url, `http://127.0.0.1:${post.port}/pp/media/internal.mp4?X-Fixture-Signature=signed`);
+  const file = await fetch(`http://127.0.0.1:${post.port}/pp/media/gapped.mp4`);
+  assert.equal((await file.arrayBuffer()).byteLength, 2 * 256 * 1024);
+  const hits = (await get("/__hits")).data[0].hits;
+  assert.equal(hits["media.task@byteplus"], 1);
+  assert.equal(hits["media.task@minimax"], 1);
+  assert.equal(hits[`media.gapped@127.0.0.1:${post.port}`], 1);
 });
 
 test("a turns model calls the tool, then answers once the result comes back", async (t) => {

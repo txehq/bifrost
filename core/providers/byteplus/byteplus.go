@@ -420,21 +420,22 @@ func (provider *BytePlusProvider) VideoDownload(ctx *schemas.BifrostContext, key
 
 	// Fork: the URL comes from Ark's task response, so it is fetched through the SSRF-hardened media
 	// fetcher (public addresses only, checked at dial time and on every redirect, the provider's
-	// proxy honored, 256 MiB cap, 5 minute bound) rather than the provider client, whose dialer
-	// admits loopback. No credentials are sent; errors name the URL without its signed query.
+	// proxy honored) rather than the provider client, whose dialer admits loopback. No BaseURL is
+	// given: Ark's files are on a storage host, never the API's. No credentials are sent; errors
+	// name the URL without its signed query. A streamed request is forwarded as the file arrives,
+	// with no size cap (TXE-7036); any other is held, within the fetcher's 256 MiB cap.
 	videoURL := *task.Videos[0].URL
-	start := time.Now()
-	contentType, body, err := providerUtils.FetchMediaURL(ctx, videoURL)
-	latency := time.Since(start)
-	if err != nil {
-		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("failed to download video", err), latency)
-	}
-	// Fork: /v1/videos/{id}/content serves these bytes on the gateway's own origin, so only a
-	// video/* type is passed on; anything else becomes the type the task's output format implies.
-	// The media fetcher buffers the file (its SSRF checks sit on a buffering client), so a
-	// streamed request is served from memory here, within the fetcher's 256 MiB cap.
-	contentType = providerUtils.VideoContentTypeOr(contentType, seedanceVideoContentType(videoURL))
-	return providerUtils.NewVideoContentResponse(request, request.ID, body, contentType, latency), nil
+	return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
+		VendorURL:                videoURL,
+		Stream:                   request.Stream,
+		VideoID:                  request.ID,
+		StreamIdleTimeoutSeconds: provider.networkConfig.StreamIdleTimeoutInSeconds,
+		// /v1/videos/{id}/content serves these bytes on the gateway's own origin, so only a
+		// video/* type is passed on; anything else becomes the type the task's output format implies.
+		ContentType: func(upstream string) string {
+			return providerUtils.VideoContentTypeOr(upstream, seedanceVideoContentType(videoURL))
+		},
+	})
 }
 
 // VideoDelete cancels a queued Seedance task or deletes the record of a finished one.

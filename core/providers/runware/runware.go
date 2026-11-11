@@ -542,7 +542,11 @@ func (provider *RunwareProvider) VideoDownload(ctx *schemas.BifrostContext, key 
 	req.Header.SetMethod(http.MethodGet)
 
 	return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
-		Request:                  req,
+		Request: req,
+		// Fork: the task response names this address, so it is fetched through the
+		// SSRF-hardened media fetcher unless it is on the provider's own origin (TXE-7036).
+		VendorURL:                videoURL,
+		BaseURL:                  provider.networkConfig.BaseURL,
 		Client:                   provider.client,
 		StreamingClient:          provider.streamingClient,
 		Stream:                   request.Stream,

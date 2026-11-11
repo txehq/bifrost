@@ -19,6 +19,17 @@ const tlsPort = Number(process.env.PROVIDER_ERROR_FIXTURE_TLS_PORT || "8793");
 // How long a stalled connection is held before the fixture drops it, longer than any first-token deadline
 // a case arms and shorter than a proxy handshake timeout, so a gateway that waits for the proxy still fails.
 const STALL_HOLD_MS = 15000;
+// The media tunnel (TXE-7036): an HTTP proxy that answers every CONNECT and joins the tunnel to this
+// fixture's own port, whatever address the CONNECT names. The SSRF-hardened media fetcher refuses a
+// loopback URL, so a vendor answer names its file at a public-looking address (203.0.113.0/24, RFC 5737)
+// and the provider's proxy_config points here: the gateway checks the address, asks this proxy for a tunnel
+// to it, and the request arrives at the fixture with that address in its Host header. Each tunnel is
+// counted under "__media_tunnel_connects@<host:port>" in /__hits, so a case can prove the download left
+// through the provider's proxy, to the address the vendor named.
+const mediaTunnelPort = Number(process.env.PROVIDER_ERROR_FIXTURE_MEDIA_TUNNEL_PORT || "8788");
+// The address a fixture task names its file at: TEST-NET-3 (RFC 5737), public to the gateway's SSRF check and
+// routed nowhere, so the file is reachable through the media tunnel only.
+const MEDIA_PUBLIC_HOST = "203.0.113.10";
 
 // Per-model behaviour for POST /v1/chat/completions. The model name in the request
 // body selects the response, so one fixture serves every case. A model may carry a
@@ -1390,6 +1401,39 @@ const handleRequest = (req, res) => {
 		req.on("end", () => deepgramAnswer(req, res, Buffer.concat(body)));
 		return undefined;
 	}
+	// Folder 482 (TXE-7036): a finished BytePlus or MiniMax task names its file by URL, and the gateway fetches
+	// that URL through the SSRF-hardened media fetcher. Task ids ending in "media-gapped" name the gapped file at
+	// a public-looking address, which the gateway reaches through the media tunnel (the providers' proxy_config);
+	// ids ending in "media-loopback" name a file on this fixture's own loopback address, which the gateway must
+	// refuse without asking for it. Each file request is counted as "media.<file>@<Host header>".
+	const mediaTask = /^\/pp\/(byteplus\/api\/v3\/contents\/generations\/tasks|minimax\/v2\/query\/video_generation)\/[^/]*media-(gapped|loopback)$/.exec(path);
+	if (req.method === "GET" && mediaTask) {
+		const id = decodeURIComponent(path.slice(path.lastIndexOf("/") + 1));
+		const fileURL = mediaTask[2] === "gapped"
+			? `http://${MEDIA_PUBLIC_HOST}/pp/media/gapped.mp4?X-Fixture-Signature=signed`
+			: `http://127.0.0.1:${port}/pp/media/internal.mp4?X-Fixture-Signature=signed`;
+		countHit(`media.task@${mediaTask[1].split("/")[0]}`);
+		if (mediaTask[1].startsWith("byteplus")) {
+			return send(200, {}, JSON.stringify({ id, model: "seedance-1-0-pro-fast-251015", status: "succeeded", content: { video_url: fileURL }, resolution: "720p", ratio: "16:9", duration: 5 }));
+		}
+		return send(200, {}, JSON.stringify({ task: { id, model: "MiniMax-H3", status: "succeeded", content: { url: fileURL }, resolution: "768P", ratio: "16:9", duration: 6 } }));
+	}
+	if (req.method === "GET" && path === "/pp/media/gapped.mp4") {
+		countHit(`media.gapped@${req.headers.host}`);
+		videoGapSends.length = 0;
+		res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": 2 * VIDEO_HALF.length });
+		videoGapSends.push(performance.now());
+		res.write(VIDEO_HALF);
+		setTimeout(() => {
+			videoGapSends.push(performance.now());
+			res.end(VIDEO_HALF);
+		}, VIDEO_GAP_MS);
+		return undefined;
+	}
+	if (req.method === "GET" && path === "/pp/media/internal.mp4") {
+		countHit(`media.internal@${req.headers.host}`);
+		return send(200, { "Content-Type": "video/mp4" }, "internal");
+	}
 	// MiniMax video query is a GET; the task id "base-resp-<code>" selects the base_resp code (TXE-6588).
 	if (req.method === "GET" && path.startsWith("/pp/minimax/v2/query/video_generation/")) {
 		wireCalls.push({ path, query: new URL(req.url, "http://localhost").search, body: "" });
@@ -1867,6 +1911,37 @@ const throwawayCertificate = () => {
 // the next non-idempotent request fail with "the server closed connection before returning the first
 // response byte", which is the fixture's doing, not the gateway's.
 server.keepAliveTimeout = 0;
+
+const mediaTunnel = net.createServer((socket) => {
+	let head = Buffer.alloc(0);
+	const onData = (c) => {
+		head = Buffer.concat([head, c]);
+		const end = head.indexOf("\r\n\r\n");
+		if (end === -1) return;
+		socket.off("data", onData);
+		const match = /^CONNECT (\S+) HTTP\/1\.[01]\r\n/.exec(head.subarray(0, end + 2).toString("latin1"));
+		if (!match) return socket.end("HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n");
+		countHit(`__media_tunnel_connects@${match[1]}`);
+		const upstream = net.connect(port, "127.0.0.1", () => {
+			socket.write("HTTP/1.1 200 Connection established\r\n\r\n");
+			const rest = head.subarray(end + 4);
+			if (rest.length) upstream.write(rest);
+			socket.pipe(upstream);
+			upstream.pipe(socket);
+		});
+		upstream.on("error", () => socket.destroy());
+		socket.on("close", () => upstream.destroy());
+		upstream.on("close", () => socket.destroy());
+	};
+	socket.on("data", onData);
+	socket.on("error", () => {});
+});
+
+// The media tunnel listens before the fixture announces itself, so it is up by the "listening" line.
+mediaTunnel.listen(mediaTunnelPort, "127.0.0.1", () => {
+	console.log(`provider-error-fixture media tunnel on http://127.0.0.1:${mediaTunnelPort}`);
+});
+
 stallProxy.listen(stallPort, "127.0.0.1", () => {
 	server.listen(port, "127.0.0.1", () => {
 		console.log(`provider-error-fixture stall proxy on http://127.0.0.1:${stallPort}`);

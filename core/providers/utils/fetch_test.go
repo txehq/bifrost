@@ -2,14 +2,17 @@ package utils
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -124,6 +127,30 @@ func TestSanitizeFetchError(t *testing.T) {
 // unconditionally and has no test seam, so an httptest server is unreachable by design
 // (same constraint documented in core/providers/openai/chatfileurl_test.go). The scheme
 // and parse guards run before any dial, and the dial rejection itself is reachable.
+// guardedFetches is every entry point of the SSRF-hardened fetcher: the inline fetch, the
+// buffered media fetch and the streamed one (fork, TXE-7036). The tests of a property all
+// three must keep run it against each, so a variant cannot lose one unnoticed. The streamed
+// fetch is read to its end, so a refusal that only shows in the body still fails it.
+var guardedFetches = map[string]func(ctx context.Context, resourceURL string) error{
+	"FetchAndEncodeURL": func(ctx context.Context, resourceURL string) error {
+		_, _, err := FetchAndEncodeURL(ctx, resourceURL)
+		return err
+	},
+	"FetchMediaURL": func(ctx context.Context, resourceURL string) error {
+		_, _, err := FetchMediaURL(ctx, resourceURL)
+		return err
+	},
+	"FetchMediaStream": func(ctx context.Context, resourceURL string) error {
+		stream, err := FetchMediaStream(ctx, resourceURL, MediaStreamOptions{})
+		if err != nil {
+			return err
+		}
+		defer stream.Body.Close()
+		_, err = io.Copy(io.Discard, stream.Body)
+		return err
+	},
+}
+
 func TestFetchAndEncodeURL_ErrorsAreRedacted(t *testing.T) {
 	secrets := []string{"X-Amz-Signature", "deadbeefcafe", "hunter2"}
 
@@ -143,21 +170,16 @@ func TestFetchAndEncodeURL_ErrorsAreRedacted(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, err := FetchAndEncodeURL(t.Context(), tt.url)
-			if err == nil {
-				t.Fatal("expected an error")
-			}
-			// Fork: FetchMediaURL takes the same guarded path.
-			_, _, mediaErr := FetchMediaURL(t.Context(), tt.url)
-			if mediaErr == nil {
-				t.Fatal("FetchMediaURL: expected an error")
-			}
-			for _, secret := range secrets {
-				if strings.Contains(err.Error(), secret) {
-					t.Errorf("error leaks %q: %s", secret, err.Error())
+			// Fork: the media fetch, buffered and streamed, takes the same guarded path.
+			for variant, fetch := range guardedFetches {
+				err := fetch(t.Context(), tt.url)
+				if err == nil {
+					t.Fatalf("%s: expected an error", variant)
 				}
-				if strings.Contains(mediaErr.Error(), secret) {
-					t.Errorf("FetchMediaURL error leaks %q: %s", secret, mediaErr.Error())
+				for _, secret := range secrets {
+					if strings.Contains(err.Error(), secret) {
+						t.Errorf("%s: error leaks %q: %s", variant, secret, err.Error())
+					}
 				}
 			}
 		})
@@ -190,6 +212,9 @@ func TestFetchAndEncodeURL_UsesProviderProxy(t *testing.T) {
 			_, _ = w.Write([]byte("PNGDATA"))
 		case "/redirect":
 			http.Redirect(w, r, "http://10.0.0.5/secret", http.StatusFound)
+		case "/redirect-scheme":
+			w.Header().Set("Location", "file:///etc/passwd")
+			w.WriteHeader(http.StatusFound)
 		default:
 			http.NotFound(w, r)
 		}
@@ -223,30 +248,45 @@ func TestFetchAndEncodeURL_UsesProviderProxy(t *testing.T) {
 
 	t.Run("private target is refused before reaching the proxy", func(t *testing.T) {
 		secretHits.Store(0)
-		_, _, err := FetchAndEncodeURL(proxyCtx(t), "http://10.0.0.5/secret")
-		if err == nil || !strings.Contains(err.Error(), "non-public address") {
-			t.Fatalf("expected a non-public address error, got %v", err)
-		}
-		if secretHits.Load() != 0 {
-			t.Fatalf("private target reached the proxy %d times", secretHits.Load())
+		for variant, fetch := range guardedFetches {
+			err := fetch(proxyCtx(t), "http://10.0.0.5/secret")
+			if err == nil || !strings.Contains(err.Error(), "non-public address") {
+				t.Fatalf("%s: expected a non-public address error, got %v", variant, err)
+			}
+			if secretHits.Load() != 0 {
+				t.Fatalf("%s: private target reached the proxy %d times", variant, secretHits.Load())
+			}
 		}
 	})
 
 	t.Run("redirect to a private target is refused", func(t *testing.T) {
 		secretHits.Store(0)
-		_, _, err := FetchAndEncodeURL(proxyCtx(t), "http://203.0.113.10/redirect")
-		if err == nil || !strings.Contains(err.Error(), "non-public address") {
-			t.Fatalf("expected a non-public address error, got %v", err)
+		for variant, fetch := range guardedFetches {
+			err := fetch(proxyCtx(t), "http://203.0.113.10/redirect")
+			if err == nil || !strings.Contains(err.Error(), "non-public address") {
+				t.Fatalf("%s: expected a non-public address error, got %v", variant, err)
+			}
+			if secretHits.Load() != 0 {
+				t.Fatalf("%s: redirected private target reached the proxy %d times", variant, secretHits.Load())
+			}
 		}
-		if secretHits.Load() != 0 {
-			t.Fatalf("redirected private target reached the proxy %d times", secretHits.Load())
+	})
+
+	t.Run("redirect to another scheme is refused", func(t *testing.T) {
+		for variant, fetch := range guardedFetches {
+			err := fetch(proxyCtx(t), "http://203.0.113.10/redirect-scheme")
+			if err == nil || !strings.Contains(err.Error(), "unsupported scheme") {
+				t.Fatalf("%s: expected an unsupported scheme error, got %v", variant, err)
+			}
 		}
 	})
 
 	t.Run("no proxy in context keeps the direct SSRF dialer", func(t *testing.T) {
-		_, _, err := FetchAndEncodeURL(t.Context(), proxy.URL+"/img.png")
-		if err == nil || !strings.Contains(err.Error(), "non-public address") {
-			t.Fatalf("expected the loopback proxy address itself to be refused as a direct target, got %v", err)
+		for variant, fetch := range guardedFetches {
+			err := fetch(t.Context(), proxy.URL+"/img.png")
+			if err == nil || !strings.Contains(err.Error(), "non-public address") {
+				t.Fatalf("%s: expected the loopback proxy address itself to be refused as a direct target, got %v", variant, err)
+			}
 		}
 	})
 }
@@ -324,12 +364,14 @@ func TestFetchAndEncodeURL_ProxiedHostnameTargetNeedsLocalDNS(t *testing.T) {
 		URL:  schemas.NewSecretVar(proxy.URL),
 	})
 
-	_, _, err := FetchAndEncodeURL(ctx, "http://only-the-proxy-resolves.invalid/img.png")
-	if err == nil || !strings.Contains(err.Error(), "DNS lookup failed") {
-		t.Fatalf("expected a local DNS failure, got %v", err)
-	}
-	if hits.Load() != 0 {
-		t.Fatalf("an unchecked target reached the proxy %d times", hits.Load())
+	for variant, fetch := range guardedFetches {
+		err := fetch(ctx, "http://only-the-proxy-resolves.invalid/img.png")
+		if err == nil || !strings.Contains(err.Error(), "DNS lookup failed") {
+			t.Fatalf("%s: expected a local DNS failure, got %v", variant, err)
+		}
+		if hits.Load() != 0 {
+			t.Fatalf("%s: an unchecked target reached the proxy %d times", variant, hits.Load())
+		}
 	}
 }
 
@@ -363,13 +405,18 @@ func TestFetchAndEncodeURL_ProxiedTunnelIsBoundToTheCheckedAddress(t *testing.T)
 		URL:  schemas.NewSecretVar(proxy.URL),
 	})
 
-	if _, _, err := FetchAndEncodeURL(ctx, "http://pinned.example/img.png"); err != nil {
-		t.Fatalf("fetch through proxy failed: %v", err)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(targets) != 1 || targets[0] != "203.0.113.10" {
-		t.Fatalf("proxy was asked for %v, want exactly the checked address [203.0.113.10]", targets)
+	for variant, fetch := range guardedFetches {
+		mu.Lock()
+		targets = nil
+		mu.Unlock()
+		if err := fetch(ctx, "http://pinned.example/img.png"); err != nil {
+			t.Fatalf("%s: fetch through proxy failed: %v", variant, err)
+		}
+		mu.Lock()
+		if len(targets) != 1 || targets[0] != "203.0.113.10" {
+			t.Fatalf("%s: proxy was asked for %v, want exactly the checked address [203.0.113.10]", variant, targets)
+		}
+		mu.Unlock()
 	}
 }
 
@@ -403,6 +450,24 @@ func TestFetchAndEncodeURL_EnvironmentProxyFollowsTheRequestScheme(t *testing.T)
 	}
 	if seen := secure.Seen(); len(seen) != 1 || seen[0].Target != "203.0.113.10:8443" {
 		t.Fatalf("HTTPS_PROXY saw %+v, want one CONNECT to 203.0.113.10:8443", seen)
+	}
+
+	// Fork: the streamed media fetch chooses its proxy the same way and keeps no record either.
+	if stream, err := FetchMediaStream(ctx, "https://secure.example:8443/clip.mp4", MediaStreamOptions{}); err == nil {
+		_ = stream.Body.Close()
+	}
+	if seen := plain.Seen(); len(seen) != 0 {
+		t.Fatalf("HTTP_PROXY carried the streamed https fetch: %+v", seen)
+	}
+	if seen := secure.Seen(); len(seen) != 2 || seen[1].Target != "203.0.113.10:8443" {
+		t.Fatalf("HTTPS_PROXY saw %+v, want a second CONNECT to 203.0.113.10:8443", seen)
+	}
+	streamClient, err := fetchClientForLimits(ctx, mediaStreamLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := streamClient.Transport.(*fasthttpRoundTripper).schemes.size(); n != 0 {
+		t.Fatalf("the streamed fetch client still holds %d scheme entries after the fetch", n)
 	}
 
 	client, err := fetchClientFor(ctx)
@@ -493,10 +558,15 @@ func TestFetchAndEncodeURL_PreservesPathBytes(t *testing.T) {
 			mu.Lock()
 			seen = nil
 			mu.Unlock()
-			if _, _, err := FetchAndEncodeURL(proxyCtx(t), resource); err != nil {
+			for variant, fetch := range guardedFetches {
 				mu.Lock()
-				defer mu.Unlock()
-				t.Fatalf("fetch failed: %v; upstream saw request URIs %v", err, seen)
+				seen = nil
+				mu.Unlock()
+				if err := fetch(proxyCtx(t), resource); err != nil {
+					mu.Lock()
+					defer mu.Unlock()
+					t.Fatalf("%s: fetch failed: %v; upstream saw request URIs %v", variant, err, seen)
+				}
 			}
 		})
 	}
@@ -650,6 +720,373 @@ func BenchmarkFetchMediaURL(b *testing.B) {
 			for b.Loop() {
 				if _, body, err := FetchMediaURL(ctx, "http://203.0.113.10/clip.mp4"); err != nil || len(body) != size {
 					b.Fatalf("len=%d err=%v", len(body), err)
+				}
+			}
+		})
+	}
+}
+
+// mediaStreamProxyCtx is a context whose provider proxy is the given proxy, so a streamed
+// fetch of a public-looking address reaches the test's handler on loopback.
+func mediaStreamProxyCtx(t testing.TB, proxyURL string, timeout time.Duration) context.Context {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	t.Cleanup(cancel)
+	return context.WithValue(ctx, schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{
+		Type: schemas.HTTPProxy,
+		URL:  schemas.NewSecretVar(proxyURL),
+	})
+}
+
+// TestFetchMediaStreamStreamsPastTheBufferedCap pins the first acceptance criterion of
+// TXE-7036: a file larger than the buffered media fetch's 256 MiB cap is forwarded, and it is
+// never held. The allocation bound is the one TestFetchVideoContentStreamsPastTheOldCap puts
+// on the provider-client download.
+func TestFetchMediaStreamStreamsPastTheBufferedCap(t *testing.T) {
+	fileBytes := int(mediaFetchLimits.maxBytes) + 8<<20
+	proxy := proxytest.NewOriginTunnel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4; codecs=avc1")
+		w.Header().Set("Content-Length", strconv.Itoa(fileBytes))
+		chunk := make([]byte, 1<<20)
+		for written := 0; written < fileBytes; written += len(chunk) {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	})
+	ctx := mediaStreamProxyCtx(t, proxy.URL, 2*time.Minute)
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	stream, err := FetchMediaStream(ctx, "http://203.0.113.10/large.mp4?X-Amz-Signature=abc", MediaStreamOptions{})
+	if err != nil {
+		t.Fatalf("FetchMediaStream: %v", err)
+	}
+	drained, err := io.CopyBuffer(io.Discard, stream.Body, make([]byte, 64<<10))
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if err := stream.Body.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	runtime.ReadMemStats(&after)
+
+	if drained != int64(fileBytes) || stream.ContentLength != int64(fileBytes) {
+		t.Fatalf("drained %d bytes, content length %d, want %d", drained, stream.ContentLength, fileBytes)
+	}
+	if stream.ContentType != "video/mp4" {
+		t.Fatalf("content type %q, want video/mp4", stream.ContentType)
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 32<<20 {
+		t.Fatalf("forwarding a %d MiB file allocated %d MiB; the body is being buffered", fileBytes>>20, allocated>>20)
+	}
+
+	// The buffered fetch still refuses the same file: the cap is dropped for the stream only.
+	if _, _, err := FetchMediaURL(ctx, "http://203.0.113.10/large.mp4"); err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("buffered media fetch of %d bytes should exceed its limit, got %v", fileBytes, err)
+	}
+}
+
+// TestFetchMediaStreamDeliversBytesBeforeTheVendorFinishes proves the body is a live stream:
+// the vendor sends half the file and waits for the caller to have read it before sending the
+// rest. A fetch that buffered would never return.
+func TestFetchMediaStreamDeliversBytesBeforeTheVendorFinishes(t *testing.T) {
+	firstHalfRead := make(chan struct{})
+	proxy := proxytest.NewOriginTunnel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("FIRST-HALF|"))
+		w.(http.Flusher).Flush()
+		select {
+		case <-firstHalfRead:
+		case <-time.After(10 * time.Second):
+			return
+		}
+		_, _ = w.Write([]byte("SECOND-HALF"))
+	})
+	stream, err := FetchMediaStream(mediaStreamProxyCtx(t, proxy.URL, 20*time.Second), "http://203.0.113.10/clip.mp4", MediaStreamOptions{})
+	if err != nil {
+		t.Fatalf("FetchMediaStream: %v", err)
+	}
+	defer stream.Body.Close()
+	if stream.ContentLength != -1 {
+		t.Fatalf("content length %d for a chunked file, want -1", stream.ContentLength)
+	}
+	first := make([]byte, len("FIRST-HALF|"))
+	if _, err := io.ReadFull(stream.Body, first); err != nil || string(first) != "FIRST-HALF|" {
+		t.Fatalf("first half: %q, %v", first, err)
+	}
+	close(firstHalfRead)
+	rest, err := io.ReadAll(stream.Body)
+	if err != nil || string(rest) != "SECOND-HALF" {
+		t.Fatalf("second half: %q, %v", rest, err)
+	}
+}
+
+// TestFetchMediaStreamBoundsAStalledVendor pins what replaces the buffered fetch's bound on
+// the whole request: a vendor that stops sending fails the read after the idle timeout, a
+// context that ends fails it at once, and a reader that is merely slow is not timed out.
+func TestFetchMediaStreamBoundsAStalledVendor(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	proxy := proxytest.NewOriginTunnel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("HEAD|"))
+		w.(http.Flusher).Flush()
+		if r.URL.Path == "/complete.mp4" {
+			_, _ = w.Write([]byte("TAIL"))
+			return
+		}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	})
+
+	t.Run("idle timeout", func(t *testing.T) {
+		stream, err := FetchMediaStream(mediaStreamProxyCtx(t, proxy.URL, 20*time.Second), "http://203.0.113.10/stalled.mp4", MediaStreamOptions{IdleTimeout: 200 * time.Millisecond})
+		if err != nil {
+			t.Fatalf("FetchMediaStream: %v", err)
+		}
+		defer stream.Body.Close()
+		start := time.Now()
+		got, err := io.ReadAll(stream.Body)
+		if !errors.Is(err, ErrStreamIdleTimeout) || string(got) != "HEAD|" {
+			t.Fatalf("read %q, %v; want HEAD| and ErrStreamIdleTimeout", got, err)
+		}
+		if waited := time.Since(start); waited > 5*time.Second {
+			t.Fatalf("the stalled read took %s to fail", waited)
+		}
+	})
+
+	t.Run("context ended", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(mediaStreamProxyCtx(t, proxy.URL, 20*time.Second))
+		defer cancel()
+		stream, err := FetchMediaStream(ctx, "http://203.0.113.10/stalled.mp4", MediaStreamOptions{IdleTimeout: time.Minute})
+		if err != nil {
+			t.Fatalf("FetchMediaStream: %v", err)
+		}
+		defer stream.Body.Close()
+		head := make([]byte, len("HEAD|"))
+		if _, err := io.ReadFull(stream.Body, head); err != nil {
+			t.Fatalf("head: %v", err)
+		}
+		time.AfterFunc(100*time.Millisecond, cancel)
+		start := time.Now()
+		if _, err := stream.Body.Read(head); !errors.Is(err, context.Canceled) {
+			t.Fatalf("read after cancel: %v, want context.Canceled", err)
+		}
+		if waited := time.Since(start); waited > 5*time.Second {
+			t.Fatalf("the cancelled read took %s to fail", waited)
+		}
+	})
+
+	t.Run("a slow reader is not a stalled vendor", func(t *testing.T) {
+		stream, err := FetchMediaStream(mediaStreamProxyCtx(t, proxy.URL, 20*time.Second), "http://203.0.113.10/complete.mp4", MediaStreamOptions{IdleTimeout: 150 * time.Millisecond})
+		if err != nil {
+			t.Fatalf("FetchMediaStream: %v", err)
+		}
+		defer stream.Body.Close()
+		head := make([]byte, len("HEAD|"))
+		if _, err := io.ReadFull(stream.Body, head); err != nil {
+			t.Fatalf("head: %v", err)
+		}
+		time.Sleep(450 * time.Millisecond)
+		rest, err := io.ReadAll(stream.Body)
+		if err != nil || string(rest) != "TAIL" {
+			t.Fatalf("after a pause longer than the idle timeout: %q, %v", rest, err)
+		}
+	})
+}
+
+// TestFetchMediaStreamStatusEncodingAndCredentials covers what the stream does with the
+// vendor's answer and the caller's credential: a refusal is a typed status error whose body
+// is not waited for, a gzip body is decoded, another encoding is refused, and a header the
+// caller supplied reaches the host the URL names and no host a redirect leads to.
+func TestFetchMediaStreamStatusEncodingAndCredentials(t *testing.T) {
+	type seenRequest struct{ host, path, apiKey, auth, referer string }
+	var mu sync.Mutex
+	var seen []seenRequest
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	proxy := proxytest.NewOriginTunnel(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, seenRequest{r.Host, r.URL.Path, r.Header.Get("x-goog-api-key"), r.Header.Get("Authorization"), r.Header.Get("Referer")})
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/gone.mp4":
+			// The refusal's headers arrive and its body never ends.
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte("AccessDenied"))
+			w.(http.Flusher).Flush()
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		case "/gzip.mp4":
+			w.Header().Set("Content-Type", "video/mp4")
+			w.Header().Set("Content-Encoding", "gzip")
+			gz := gzip.NewWriter(w)
+			_, _ = gz.Write([]byte("MP4DATA"))
+			_ = gz.Close()
+		case "/br.mp4":
+			w.Header().Set("Content-Encoding", "br")
+			_, _ = w.Write([]byte("not really brotli"))
+		case "/same-host":
+			http.Redirect(w, r, "/clip.mp4", http.StatusFound)
+		case "/other-host":
+			http.Redirect(w, r, "http://203.0.113.20/clip.mp4", http.StatusFound)
+		case "/clip.mp4":
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte("MP4DATA"))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	ctx := func(t *testing.T) context.Context { return mediaStreamProxyCtx(t, proxy.URL, 5*time.Second) }
+
+	t.Run("refusal", func(t *testing.T) {
+		start := time.Now()
+		_, err := FetchMediaStream(ctx(t), "http://203.0.113.10/gone.mp4?sig=deadbeefcafe", MediaStreamOptions{})
+		var statusErr *MediaFetchStatusError
+		if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusForbidden {
+			t.Fatalf("got %v, want a MediaFetchStatusError for 403", err)
+		}
+		if strings.Contains(err.Error(), "deadbeefcafe") {
+			t.Fatalf("the status error leaks the signed query: %v", err)
+		}
+		if waited := time.Since(start); waited > 2*time.Second {
+			t.Fatalf("the refusal took %s: its unending body was waited for", waited)
+		}
+	})
+
+	t.Run("gzip is decoded", func(t *testing.T) {
+		stream, err := FetchMediaStream(ctx(t), "http://203.0.113.10/gzip.mp4", MediaStreamOptions{})
+		if err != nil {
+			t.Fatalf("FetchMediaStream: %v", err)
+		}
+		defer stream.Body.Close()
+		got, err := io.ReadAll(stream.Body)
+		if err != nil || string(got) != "MP4DATA" || stream.ContentLength != -1 {
+			t.Fatalf("got %q, %v, content length %d; want MP4DATA and no length", got, err, stream.ContentLength)
+		}
+	})
+
+	t.Run("another encoding is refused", func(t *testing.T) {
+		if _, err := FetchMediaStream(ctx(t), "http://203.0.113.10/br.mp4", MediaStreamOptions{}); err == nil || !strings.Contains(err.Error(), "Content-Encoding") {
+			t.Fatalf("got %v, want an unsupported Content-Encoding error", err)
+		}
+	})
+
+	header := http.Header{"x-goog-api-key": {"vendor-key"}, "Authorization": {"Bearer vendor-token"}}
+	fetchers := map[string]func(ctx context.Context, resourceURL string) (string, error){
+		"stream": func(ctx context.Context, resourceURL string) (string, error) {
+			stream, err := FetchMediaStream(ctx, resourceURL, MediaStreamOptions{Header: header})
+			if err != nil {
+				return "", err
+			}
+			defer stream.Body.Close()
+			got, err := io.ReadAll(stream.Body)
+			return string(got), err
+		},
+		"buffered": func(ctx context.Context, resourceURL string) (string, error) {
+			_, got, err := FetchMediaURLWithHeader(ctx, resourceURL, header)
+			return string(got), err
+		},
+	}
+	for variant, fetch := range fetchers {
+		for path, wantOnLastHop := range map[string]string{"/same-host": "vendor-key", "/other-host": ""} {
+			t.Run("credential "+variant+path, func(t *testing.T) {
+				mu.Lock()
+				seen = nil
+				mu.Unlock()
+				// The query is a credential too (Vertex sends its key as ?key=): net/http would
+				// hand it to the redirect hop as the Referer.
+				got, err := fetch(ctx(t), "http://203.0.113.10"+path+"?key=vendor-query-key")
+				if err != nil || got != "MP4DATA" {
+					t.Fatalf("got %q, %v", got, err)
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if len(seen) != 2 {
+					t.Fatalf("saw %d requests, want the first hop and the redirect: %+v", len(seen), seen)
+				}
+				if seen[1].referer != "" {
+					t.Fatalf("redirect hop to %s was sent Referer %q, which carries the first URL's query", seen[1].host, seen[1].referer)
+				}
+				if seen[0].apiKey != "vendor-key" || seen[0].auth != "Bearer vendor-token" {
+					t.Fatalf("the host the URL names did not get the credential: %+v", seen[0])
+				}
+				if seen[1].apiKey != wantOnLastHop || (wantOnLastHop == "") != (seen[1].auth == "") {
+					t.Fatalf("redirect hop to %s carried key %q and authorization %q", seen[1].host, seen[1].apiKey, seen[1].auth)
+				}
+			})
+		}
+	}
+}
+
+// TestFetchMediaStreamReturnsItsConnections: a file read to its end gives its connection back
+// to the pool, so the next download reuses it, and one abandoned half-read does not poison
+// the pool for the download after it.
+func TestFetchMediaStreamReturnsItsConnections(t *testing.T) {
+	proxy := proxytest.NewOriginTunnel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write(bytes.Repeat([]byte("v"), 256<<10))
+	})
+	ctx := mediaStreamProxyCtx(t, proxy.URL, 20*time.Second)
+	fetch := func(readAll bool) {
+		t.Helper()
+		stream, err := FetchMediaStream(ctx, "http://203.0.113.10/clip.mp4", MediaStreamOptions{})
+		if err != nil {
+			t.Fatalf("FetchMediaStream: %v", err)
+		}
+		if readAll {
+			if n, err := io.Copy(io.Discard, stream.Body); err != nil || n != 256<<10 {
+				t.Fatalf("read %d bytes, %v", n, err)
+			}
+		} else if _, err := io.ReadFull(stream.Body, make([]byte, 16)); err != nil {
+			t.Fatalf("partial read: %v", err)
+		}
+		if err := stream.Body.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+	}
+	fetch(true)
+	before := proxy.Connects()
+	fetch(true)
+	if got := proxy.Connects(); got != before {
+		t.Fatalf("a second download opened %d new connections; the first one's was not pooled", got-before)
+	}
+	fetch(false)
+	fetch(true)
+	fetch(true)
+}
+
+// BenchmarkFetchMediaStream is the streamed media download through a proxy (fork, TXE-7036):
+// what a forwarded file costs, to set against BenchmarkFetchMediaURL holding the same file.
+func BenchmarkFetchMediaStream(b *testing.B) {
+	for _, size := range []int{1 << 20, 16 << 20} {
+		b.Run(strconv.Itoa(size>>20)+"MiB", func(b *testing.B) {
+			body := bytes.Repeat([]byte("v"), size)
+			proxy := proxytest.NewOriginTunnel(b, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "video/mp4")
+				_, _ = w.Write(body)
+			})
+			ctx := context.WithValue(b.Context(), schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{
+				Type: schemas.HTTPProxy,
+				URL:  schemas.NewSecretVar(proxy.URL),
+			})
+			buf := make([]byte, 64<<10)
+			b.SetBytes(int64(size))
+			b.ReportAllocs()
+			for b.Loop() {
+				stream, err := FetchMediaStream(ctx, "http://203.0.113.10/clip.mp4", MediaStreamOptions{})
+				if err != nil {
+					b.Fatal(err)
+				}
+				n, err := io.CopyBuffer(io.Discard, stream.Body, buf)
+				_ = stream.Body.Close()
+				if err != nil || n != int64(size) {
+					b.Fatalf("read %d bytes, %v", n, err)
 				}
 			}
 		})

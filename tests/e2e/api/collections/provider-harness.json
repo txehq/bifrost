@@ -327010,6 +327010,329 @@
           }
         }
       ]
+    },
+    {
+      "name": "482. BytePlus and MiniMax /content stream the file a task names, through the SSRF-checked media fetcher (media fetcher stream)",
+      "description": "Local fixture regression for TXE-7036, no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs and an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, whose byteplus and minimax providers have the fixture as base URL and the fixture's media tunnel as proxy_config, and run with providerErrorFixture=1; every case is skipped otherwise. A finished BytePlus or MiniMax task names its file by URL, and the gateway fetches that URL through the SSRF-hardened media fetcher, which refuses a loopback address. The fixture's task fixture-media-gapped therefore names its file at http://203.0.113.10 (TEST-NET-3: public to the check, routed nowhere), which the gateway reaches only through the provider's proxy: the media tunnel joins the CONNECT to the fixture, which sends a 512 KiB file in two halves 1.5 seconds apart. 482.2 and 482.3 download through GET /v1/videos/{id}/content by way of the fixture's download probe, which reports when the first byte reached it against when the fixture wrote the second half. 482.4 and 482.5 ask for the task fixture-media-loopback, whose file is on the fixture's own loopback address: the gateway must refuse it without asking for the file. 482.6 reads the counters: each task was queried once per download, the gapped file was asked for once per provider with the public address as its Host, a tunnel to that address was opened, and the loopback file was never asked for. Before the change both providers read the file whole before answering (FetchMediaURL), so the first byte of a download could only follow the file host's last. The Go tests cover the 256 MiB cap, redirects, credentials and the other five providers, which no fixture route stands in for.",
+      "item": [
+        {
+          "name": "482.1 fixture hit counters reset before the byteplus and minimax content rows (media fetcher stream)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('counters cleared', function () { pm.expect(j.data[0].reset, pm.response.text()).to.equal(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{providerErrorFixtureUrl}}/__reset",
+              "host": [
+                "{{providerErrorFixtureUrl}}"
+              ],
+              "path": [
+                "__reset"
+              ]
+            }
+          }
+        },
+        {
+          "name": "482.2 byteplus /v1/videos/{id}/content forwards the file its task names while the file host is still sending it (media fetcher stream)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "// The probe calls the gateway itself, so it carries the gateway credential the harness would have sent.",
+                  "var auth = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header');",
+                  "var headers = {};",
+                  "if (auth) { headers.Authorization = auth; }",
+                  "pm.variables.set('mediaProbeHeaders', JSON.stringify(headers));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'probe failed: ' + pm.response.text()).to.equal(200);",
+                  "var r = pm.response.json().data[0];",
+                  "pm.test('/v1/videos/{id}/content answered 200 with the whole video/mp4 file', function () {",
+                  "  pm.expect(r.status, JSON.stringify(r)).to.equal(200);",
+                  "  pm.expect(r.content_type, JSON.stringify(r)).to.equal('video/mp4');",
+                  "  pm.expect(r.bytes, JSON.stringify(r)).to.equal(2 * 256 * 1024);",
+                  "  pm.expect(r.sends.length, 'the fixture wrote the file in ' + r.sends.length + ' halves: ' + JSON.stringify(r)).to.equal(2);",
+                  "});",
+                  "pm.test('the first bytes reach the caller before the file host has sent the second half: the file is not held whole', function () {",
+                  "  pm.expect(r.first_byte_ms, 'the first byte arrived at ' + r.first_byte_ms + 'ms, after the file host wrote the second half at ' + r.sends[1] + 'ms: ' + JSON.stringify(r)).to.be.below(r.sends[1]);",
+                  "});",
+                  "pm.test('the file host\\'s pause is kept between the first byte and the last', function () {",
+                  "  pm.expect(r.end_ms - r.first_byte_ms, JSON.stringify(r)).to.be.at.least(r.gap_ms / 2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"base_url\": \"{{baseUrl}}\",\n  \"path\": \"/v1/videos/fixture-media-gapped:byteplus/content\",\n  \"headers\": {{mediaProbeHeaders}}\n}"
+            },
+            "url": {
+              "raw": "{{providerErrorFixtureUrl}}/__probe/download",
+              "host": [
+                "{{providerErrorFixtureUrl}}"
+              ],
+              "path": [
+                "__probe",
+                "download"
+              ]
+            }
+          }
+        },
+        {
+          "name": "482.3 minimax /v1/videos/{id}/content forwards the file its task names while the file host is still sending it (media fetcher stream)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "// The probe calls the gateway itself, so it carries the gateway credential the harness would have sent.",
+                  "var auth = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header');",
+                  "var headers = {};",
+                  "if (auth) { headers.Authorization = auth; }",
+                  "pm.variables.set('mediaProbeHeaders', JSON.stringify(headers));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'probe failed: ' + pm.response.text()).to.equal(200);",
+                  "var r = pm.response.json().data[0];",
+                  "pm.test('/v1/videos/{id}/content answered 200 with the whole video/mp4 file', function () {",
+                  "  pm.expect(r.status, JSON.stringify(r)).to.equal(200);",
+                  "  pm.expect(r.content_type, JSON.stringify(r)).to.equal('video/mp4');",
+                  "  pm.expect(r.bytes, JSON.stringify(r)).to.equal(2 * 256 * 1024);",
+                  "  pm.expect(r.sends.length, 'the fixture wrote the file in ' + r.sends.length + ' halves: ' + JSON.stringify(r)).to.equal(2);",
+                  "});",
+                  "pm.test('the first bytes reach the caller before the file host has sent the second half: the file is not held whole', function () {",
+                  "  pm.expect(r.first_byte_ms, 'the first byte arrived at ' + r.first_byte_ms + 'ms, after the file host wrote the second half at ' + r.sends[1] + 'ms: ' + JSON.stringify(r)).to.be.below(r.sends[1]);",
+                  "});",
+                  "pm.test('the file host\\'s pause is kept between the first byte and the last', function () {",
+                  "  pm.expect(r.end_ms - r.first_byte_ms, JSON.stringify(r)).to.be.at.least(r.gap_ms / 2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"base_url\": \"{{baseUrl}}\",\n  \"path\": \"/v1/videos/fixture-media-gapped:minimax/content\",\n  \"headers\": {{mediaProbeHeaders}}\n}"
+            },
+            "url": {
+              "raw": "{{providerErrorFixtureUrl}}/__probe/download",
+              "host": [
+                "{{providerErrorFixtureUrl}}"
+              ],
+              "path": [
+                "__probe",
+                "download"
+              ]
+            }
+          }
+        },
+        {
+          "name": "482.4 byteplus /v1/videos/{id}/content refuses a file its task names on a loopback address [EXPECT-500] (media fetcher stream)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a task that names a loopback file is refused, and the error does not carry the signed query', function () {",
+                  "  pm.expect(pm.response.code, 'the loopback file was served: ' + pm.response.text().slice(0, 200)).to.equal(500);",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body, body).to.include('failed to download video');",
+                  "  pm.expect(body, body).to.include('non-public address');",
+                  "  pm.expect(body, body).to.not.include('X-Fixture-Signature');",
+                  "  pm.expect(body, body).to.not.include('signed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/fixture-media-loopback:byteplus/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "fixture-media-loopback:byteplus",
+                "content"
+              ]
+            }
+          }
+        },
+        {
+          "name": "482.5 minimax /v1/videos/{id}/content refuses a file its task names on a loopback address [EXPECT-500] (media fetcher stream)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a task that names a loopback file is refused, and the error does not carry the signed query', function () {",
+                  "  pm.expect(pm.response.code, 'the loopback file was served: ' + pm.response.text().slice(0, 200)).to.equal(500);",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body, body).to.include('failed to download video');",
+                  "  pm.expect(body, body).to.include('non-public address');",
+                  "  pm.expect(body, body).to.not.include('X-Fixture-Signature');",
+                  "  pm.expect(body, body).to.not.include('signed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/fixture-media-loopback:minimax/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "fixture-media-loopback:minimax",
+                "content"
+              ]
+            }
+          }
+        },
+        {
+          "name": "482.6 fixture counters for the byteplus and minimax content rows: one public file request each through the media tunnel, none to loopback (media fetcher stream)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var hits = pm.response.json().data[0].hits;",
+                  "var text = JSON.stringify(hits);",
+                  "pm.test('each download queried its task once and asked for the gapped file once, at the address the task named', function () {",
+                  "  pm.expect(hits['media.task@byteplus'], text).to.equal(2);",
+                  "  pm.expect(hits['media.task@minimax'], text).to.equal(2);",
+                  "  pm.expect(hits['media.gapped@203.0.113.10'], text).to.equal(2);",
+                  "});",
+                  "pm.test('the file left through the provider\\'s proxy, by a tunnel to the checked address', function () {",
+                  "  pm.expect(hits['__media_tunnel_connects@203.0.113.10:80'] || 0, text).to.be.at.least(1);",
+                  "});",
+                  "pm.test('the loopback file was never asked for', function () {",
+                  "  pm.expect(Object.keys(hits).filter(function (k) { return k.indexOf('media.internal') === 0; }), text).to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{providerErrorFixtureUrl}}/__hits",
+              "host": [
+                "{{providerErrorFixtureUrl}}"
+              ],
+              "path": [
+                "__hits"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

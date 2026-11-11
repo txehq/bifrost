@@ -1172,6 +1172,37 @@ func directForLocalTargets(proxyDial fasthttp.DialFunc, timeout time.Duration) f
 type fasthttpRoundTripper struct {
 	client  *fasthttp.Client
 	schemes *dialSchemes // non-nil: hold each request's scheme under its dial address
+	// stream hands a 2xx response's body over as it arrives instead of buffering it (fork,
+	// TXE-7036: the media fetcher's streamed downloads). The client must have
+	// StreamResponseBody set and run on the context transport, which bounds the wait for
+	// the headers and then lifts the socket deadline. The caller bounds the body (an idle
+	// timeout, its context) and must Close it. Any other status carries no body: a
+	// redirect's or a refusal's is not read, so a host that stalls after its headers
+	// cannot hold the caller there.
+	stream bool
+}
+
+// roundTripStreamBody is the body of a streamed fasthttpRoundTripper response. Close
+// releases the fasthttp response; a body not read to its end closes its connection
+// instead of pooling it, which also unblocks a Read parked on the socket.
+type roundTripStreamBody struct {
+	resp   *fasthttp.Response
+	stream io.Reader
+	once   sync.Once
+}
+
+func (b *roundTripStreamBody) Read(p []byte) (int, error) { return b.stream.Read(p) }
+
+func (b *roundTripStreamBody) Close() error {
+	b.once.Do(func() {
+		if closer, ok := b.stream.(fasthttp.ReadCloserWithError); ok {
+			_ = closer.CloseWithError(nil)
+		} else if closer, ok := b.stream.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		fasthttp.ReleaseResponse(b.resp)
+	})
+	return nil
 }
 
 // dialSchemes records the scheme of each in-flight request under the address
@@ -1257,6 +1288,7 @@ func (rt *fasthttpRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 
 	freq := fasthttp.AcquireRequest()
 	fresp := fasthttp.AcquireResponse()
+	fresp.StreamBody = rt.stream
 	release := func() {
 		fasthttp.ReleaseRequest(freq)
 		fasthttp.ReleaseResponse(fresp)
@@ -1305,7 +1337,15 @@ func (rt *fasthttpRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 		}()
 		return nil, ctx.Err()
 	}
-	defer release()
+	// A streamed 2xx body keeps the response until it is closed.
+	handedOver := false
+	defer func() {
+		if handedOver {
+			fasthttp.ReleaseRequest(freq)
+			return
+		}
+		release()
+	}()
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
@@ -1325,6 +1365,20 @@ func (rt *fasthttpRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 	}
 	for name, value := range fresp.Header.All() {
 		resp.Header.Add(string(name), string(value))
+	}
+	if rt.stream {
+		bodyStream := fresp.BodyStream()
+		if statusCode < 200 || statusCode > 299 || bodyStream == nil {
+			resp.Body = http.NoBody
+			return resp, nil
+		}
+		resp.ContentLength = -1
+		if length := fresp.Header.ContentLength(); length >= 0 {
+			resp.ContentLength = int64(length)
+		}
+		resp.Body = &roundTripStreamBody{resp: fresp, stream: bodyStream}
+		handedOver = true
+		return resp, nil
 	}
 	respBody := append([]byte(nil), fresp.Body()...)
 	resp.Body = io.NopCloser(bytes.NewReader(respBody))
