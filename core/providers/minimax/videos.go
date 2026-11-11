@@ -820,9 +820,16 @@ func (provider *MiniMaxProvider) VideoList(ctx *schemas.BifrostContext, key sche
 		return nil, providerUtils.NewBifrostBadRequestError("minimax video list has no order parameter")
 	}
 	values := url.Values{}
-	values.Set("page_num", "1")
 	if request != nil && request.Limit != nil && *request.Limit > 0 {
 		values.Set("page_size", strconv.Itoa(*request.Limit))
+	}
+	// MiniMax's own list query (page_num, page_size, filter.*) is forwarded as the caller
+	// sent it; limit keeps page_size. page_num defaults to the first page.
+	if request != nil {
+		providerUtils.AddVideoListFilters(values, request.Filters)
+	}
+	if !values.Has("page_num") {
+		values.Set("page_num", "1")
 	}
 
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
@@ -864,8 +871,7 @@ func (provider *MiniMaxProvider) VideoList(ctx *schemas.BifrostContext, key sche
 		bifrostResp.FirstID = schemas.Ptr(bifrostResp.Data[0].ID)
 		bifrostResp.LastID = schemas.Ptr(bifrostResp.Data[n-1].ID)
 	}
-	// Only page 1 is reachable (an after cursor is refused above), so there is never a next page to offer.
-	bifrostResp.HasMore = schemas.Ptr(false)
+	bifrostResp.HasMore = schemas.Ptr(miniMaxVideoListHasMore(values, len(listResp.Items), listResp.Total))
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
 	if sendBackRawResponse {
 		bifrostResp.ExtraFields.RawResponse = rawResponse
@@ -882,3 +888,18 @@ type MiniMaxVideoTaskListResponse struct {
 
 var _ schemas.VideoCanceller = (*MiniMaxProvider)(nil)
 var _ schemas.UnifiedFieldDeclarer = (*MiniMaxProvider)(nil)
+
+// miniMaxVideoListHasMore reports whether tasks lie beyond the page MiniMax answered: the pages
+// up to page_num hold at most page_num*page_size tasks (page_size is the page's own length when
+// the caller sent none), and MiniMax's total counts them all.
+func miniMaxVideoListHasMore(query url.Values, returned, total int) bool {
+	pageNum, err := strconv.Atoi(query.Get("page_num"))
+	if err != nil || pageNum < 1 {
+		return false
+	}
+	pageSize, err := strconv.Atoi(query.Get("page_size"))
+	if err != nil || pageSize < 1 {
+		pageSize = returned
+	}
+	return (pageNum-1)*pageSize+returned < total
+}

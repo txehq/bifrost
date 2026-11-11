@@ -297190,6 +297190,198 @@
               }
             }
           ]
+        },
+        {
+          "name": "414.20 reset the fixture's call log before the OpenAI SDK route rows (fork minimax video contract)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{providerErrorFixtureUrl}}/__reset"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the fixture reset its call log', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.json().data[0].reset).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.21 minimax_video/MiniMax-H3 POST /openai/v1/videos (OpenAI SDK route) creates a v2 task with the unified fields, callback_url and extra_params (fork minimax video contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax_video/MiniMax-H3\",\n  \"prompt\": \"a paper boat\",\n  \"seconds\": \"6\",\n  \"resolution\": \"768P\",\n  \"aspect_ratio\": \"9:16\",\n  \"callback_url\": \"https://hooks.example.test/v/task_414_sdk\",\n  \"extra_params\": {\n    \"extra\": {\n      \"prompt_expansion_mode\": \"quality\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "videos"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the OpenAI SDK route creates the v2 task', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(String(j.id), pm.response.text()).to.include('mm-queued');",
+                  "  pm.expect(j.status, pm.response.text()).to.eql('queued');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.22 minimax_video/MiniMax-Hailuo-2.3 POST /openai/v1/videos (OpenAI SDK route) creates a v1 task with last_frame and a vendor field under extra_params (fork minimax video contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax_video/MiniMax-Hailuo-2.3\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"seconds\": \"10\",\n  \"resolution\": \"768P\",\n  \"last_frame\": \"https://example.com/last.png\",\n  \"callback_url\": \"https://hooks.example.test/v/task_414_sdk_v1\",\n  \"extra_params\": {\n    \"prompt_optimizer\": false\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "videos"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the OpenAI SDK route creates the v1 task under a v1- id', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(String(pm.response.json().id), pm.response.text()).to.include('v1-106916112212032');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "414.23 fixture call log proves the OpenAI SDK route sent MiniMax's own v2 and v1 fields (fork minimax video contract)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{providerErrorFixtureUrl}}/__mmv"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var calls = pm.response.json().data[0].calls;",
+                  "pm.test('one create per row, in order', function () {",
+                  "  pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['POST /mmv/v2/video_generation', 'POST /mmv/v1/video_generation']);",
+                  "});",
+                  "pm.test('the v2 body carries MiniMax field names and the extra from extra_params', function () {",
+                  "  var b = JSON.parse(calls[0].body);",
+                  "  pm.expect(b, calls[0].body).to.include({ model: 'MiniMax-H3', duration: 6, resolution: '768P', ratio: '9:16', callback_url: 'https://hooks.example.test/v/task_414_sdk' });",
+                  "  pm.expect(b.extra, calls[0].body).to.eql({ prompt_expansion_mode: 'quality' });",
+                  "  pm.expect(b, calls[0].body).to.not.have.property('aspect_ratio');",
+                  "  pm.expect(b, calls[0].body).to.not.have.property('seconds');",
+                  "});",
+                  "pm.test('the v1 body carries the flat v1 fields and prompt_optimizer from extra_params', function () {",
+                  "  var b = JSON.parse(calls[1].body);",
+                  "  pm.expect(b, calls[1].body).to.include({ model: 'MiniMax-Hailuo-2.3', prompt: 'a paper boat on a pond', last_frame_image: 'https://example.com/last.png', duration: 10, resolution: '768P', callback_url: 'https://hooks.example.test/v/task_414_sdk_v1', prompt_optimizer: false });",
+                  "  pm.expect(b, calls[1].body).to.not.have.property('last_frame');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },

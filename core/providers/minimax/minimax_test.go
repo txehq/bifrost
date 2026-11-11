@@ -852,8 +852,33 @@ func TestMiniMaxVideoList(t *testing.T) {
 	if reqs := captured(); len(reqs) != 1 || reqs[0].query != "page_num=1&page_size=20" {
 		t.Errorf("upstream = %+v", reqs)
 	}
+	if resp.HasMore == nil || *resp.HasMore {
+		t.Errorf("has_more = %v, want false: both of the 2 tasks are on page 1", resp.HasMore)
+	}
 	if _, e := provider.VideoList(testContext(t), testKey(), &schemas.BifrostVideoListRequest{Provider: schemas.MiniMax, After: schemas.Ptr("1:minimax")}); e == nil || *e.StatusCode != http.StatusBadRequest {
 		t.Errorf("after cursor: want 400, got %+v", e)
+	}
+}
+
+// MiniMax's own list query reaches MiniMax as sent (never a silent page 1), limit keeps
+// page_size, and has_more follows MiniMax's total.
+func TestMiniMaxVideoListForwardsFilters(t *testing.T) {
+	provider, captured := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+		"GET /v2/query/video_generation": jsonResponse(http.StatusOK, `{"items":[{"id":"3","model":"MiniMax-H3","status":"queued","created_at":120}],"total":5}`),
+	})
+	resp, bifrostErr := provider.VideoList(testContext(t), testKey(), &schemas.BifrostVideoListRequest{
+		Provider: schemas.MiniMax,
+		Limit:    schemas.Ptr(1),
+		Filters:  map[string][]string{"page_num": {"3"}, "page_size": {"50"}, "filter.status": {"queued"}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("VideoList: %+v", bifrostErr.Error)
+	}
+	if reqs := captured(); len(reqs) != 1 || reqs[0].query != "filter.status=queued&page_num=3&page_size=1" {
+		t.Errorf("upstream = %+v, want page 3 of size 1 with the status filter", reqs)
+	}
+	if resp.HasMore == nil || !*resp.HasMore {
+		t.Errorf("has_more = %v, want true: page 3 of size 1 ends at task 3 of 5", resp.HasMore)
 	}
 }
 
