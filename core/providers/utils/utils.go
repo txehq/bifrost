@@ -2061,6 +2061,36 @@ var resourcePathPlaceholderNames = func() []string {
 	return names
 }()
 
+// ResourcePathOverrideError is a request_path_overrides entry that is not a valid template
+// for its request type. Error carries the stored override, for whoever writes the provider.
+// PublicMessage leaves it out, for an error returned to the caller of a request: the
+// override is the operator's configuration and may be a full URL with credentials or a
+// token in its query.
+type ResourcePathOverrideError struct {
+	RequestType schemas.RequestType
+	Reason      string
+	Override    string
+}
+
+func (e *ResourcePathOverrideError) Error() string {
+	return fmt.Sprintf("request_path_overrides.%s %s, got %q", e.RequestType, e.Reason, e.Override)
+}
+
+// PublicMessage is Error without the stored override.
+func (e *ResourcePathOverrideError) PublicMessage() string {
+	return fmt.Sprintf("request_path_overrides.%s %s", e.RequestType, e.Reason)
+}
+
+// ResourcePathErrorForCaller is the message of a resource path error that may be returned
+// to the caller of a request: it never carries the stored override.
+func ResourcePathErrorForCaller(err error) string {
+	var overrideErr *ResourcePathOverrideError
+	if errors.As(err, &overrideErr) {
+		return overrideErr.PublicMessage()
+	}
+	return err.Error()
+}
+
 // ValidateResourcePathOverride checks a non-blank request_path_overrides entry for a request
 // type listed in ResourcePathPlaceholders: it must carry each of that type's placeholders, and
 // a placeholder may stand only in the path. An id is the caller's, so a placeholder in the
@@ -2084,14 +2114,14 @@ func parseResourcePathOverride(requestType schemas.RequestType, override string)
 	}
 	for _, placeholder := range placeholders {
 		if !strings.Contains(override, placeholder) {
-			return false, false, fmt.Errorf("request_path_overrides.%s must contain %s where the id goes (for example %q), got %q", requestType, placeholder, "/v1/resources/"+strings.Join(placeholders, "/"), override)
+			return false, false, &ResourcePathOverrideError{RequestType: requestType, Reason: fmt.Sprintf("must contain %s where the id goes (for example %q)", placeholder, "/v1/resources/"+strings.Join(placeholders, "/")), Override: override}
 		}
 	}
 	placeholder := strings.Join(placeholders, " and ")
 	// The id is escaped as a path segment, so the path is the only place it may go: in a
 	// query an id holding "&" or "=" would read as further parameters.
 	if queryStart := strings.IndexAny(override, "?#"); queryStart >= 0 && strings.ContainsAny(override[queryStart:], "{}") {
-		return false, false, fmt.Errorf("request_path_overrides.%s may carry %s only in the path, not in a query or fragment, got %q", requestType, placeholder, override)
+		return false, false, &ResourcePathOverrideError{RequestType: requestType, Reason: fmt.Sprintf("may carry %s only in the path, not in a query or fragment", placeholder), Override: override}
 	}
 	if !IsAbsoluteRequestURL(override) {
 		return false, true, nil
@@ -2104,7 +2134,7 @@ func parseResourcePathOverride(requestType schemas.RequestType, override string)
 		}
 	}
 	if strings.ContainsAny(override[:authorityEnd], "{}") {
-		return false, false, fmt.Errorf("request_path_overrides.%s may carry %s only in the path of a full URL, not in its scheme or host, got %q", requestType, placeholder, override)
+		return false, false, &ResourcePathOverrideError{RequestType: requestType, Reason: fmt.Sprintf("may carry %s only in the path of a full URL, not in its scheme or host", placeholder), Override: override}
 	}
 	return true, true, nil
 }

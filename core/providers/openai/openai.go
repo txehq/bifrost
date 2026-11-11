@@ -130,7 +130,7 @@ func (provider *OpenAIProvider) buildResourceURL(prefix string, escapedID string
 	}
 	path, isCompleteURL, err := providerUtils.GetResourceRequestPath(prefix+escapedID+suffix, provider.customProviderConfig, escapedID, requestTypes...)
 	if err != nil {
-		return "", providerUtils.NewConfigurationError(err.Error())
+		return "", providerUtils.NewConfigurationError(providerUtils.ResourcePathErrorForCaller(err))
 	}
 	if isCompleteURL {
 		return path, nil
@@ -156,7 +156,7 @@ func (provider *OpenAIProvider) buildResourceURLForIDs(ctx *schemas.BifrostConte
 	}
 	path, isCompleteURL, err := providerUtils.GetResourceRequestPathForIDs(defaultPath, provider.customProviderConfig, requestType, escapedIDs...)
 	if err != nil {
-		return "", providerUtils.NewConfigurationError(err.Error())
+		return "", providerUtils.NewConfigurationError(providerUtils.ResourcePathErrorForCaller(err))
 	}
 	if isCompleteURL {
 		return path, nil

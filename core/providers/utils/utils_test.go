@@ -563,6 +563,16 @@ func TestValidateResourcePathOverride(t *testing.T) {
 			t.Errorf("%s: a blank override was refused: %v", requestType, err)
 		}
 	}
+	// The error for whoever writes the provider names the stored override; the message for
+	// the caller of a request does not, since a full URL override may carry a secret.
+	const secretOverride = "https://user:s3cret@vendor.example/files?token=abc"
+	err := ValidateResourcePathOverride(schemas.FileContentRequest, secretOverride)
+	if err == nil || !strings.Contains(err.Error(), secretOverride) {
+		t.Errorf("the write-time error must name the override, got %v", err)
+	}
+	if msg := ResourcePathErrorForCaller(err); strings.Contains(msg, "s3cret") || strings.Contains(msg, "token=abc") || !strings.Contains(msg, "request_path_overrides.file_content") || !strings.Contains(msg, "{file_id}") {
+		t.Errorf("the caller's message must name the request type and placeholder and not the override, got %q", msg)
+	}
 	if err := ValidateResourcePathOverride(schemas.BatchCreateRequest, "/api/paas/v4/batches"); err != nil {
 		t.Errorf("batch_create names no resource and was refused: %v", err)
 	}

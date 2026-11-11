@@ -967,6 +967,7 @@ func TestResourceCallsHonourPathOverrides(t *testing.T) {
 			require.NotNil(t, bifrostErr.Error)
 			assert.Contains(t, bifrostErr.Error.Message, "request_path_overrides."+string(requestType))
 			assert.Contains(t, bifrostErr.Error.Message, providerUtils.ResourcePathPlaceholders[requestType][0])
+			assert.NotContains(t, bifrostErr.Error.Message, "/api/v3/things", "the stored override stays out of an error returned to the caller")
 			assert.Empty(t, v.takeCalls(), "no upstream call for a template that lost the id")
 		})
 	}
