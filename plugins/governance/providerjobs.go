@@ -43,10 +43,7 @@ type providerObjectRef struct {
 	indirect  bool // named inside a request that creates or runs something else, not addressed by id
 	// passthroughList is a list through a passthrough route: its raw page cannot be narrowed.
 	passthroughList bool
-	// unreadable marks a request part of which could not be read for the files it names (see
-	// requestFileIDs). It names no object; the request is refused, since letting it through
-	// would let through whatever the unread part names.
-	unreadable bool
+	unreadable      bool // names no object: the request's files could not all be read (requestFileIDs), so it is refused
 }
 
 // governanceAutoContainerContextKey marks a request whose code_interpreter tool asked the provider
@@ -663,7 +660,18 @@ func mayNameRecordedFile(body []byte) bool {
 // written.
 func jsonObjectRefs(provider schemas.ModelProvider, body any) []providerObjectRef {
 	var refs []providerObjectRef
+	full := false
 	add := func(kind, id string) {
+		if full {
+			return
+		}
+		// Each reference is an ownership lookup; a body naming more than the bound is refused
+		// rather than looked up (see maxFileReferences).
+		if len(refs) >= maxFileReferences {
+			full = true
+			refs = append(refs, providerObjectRef{kind: kind, provider: string(provider), indirect: true, unreadable: true})
+			return
+		}
 		if ref, ok := objectRef(kind, provider, strings.TrimSpace(id)); ok {
 			ref.indirect = true
 			refs = append(refs, ref)
@@ -1131,7 +1139,7 @@ func (p *GovernancePlugin) enforceProviderObjectOwnership(ctx *schemas.BifrostCo
 			return &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
 				Type:       bifrost.Ptr(string(DecisionAccessBlocked)),
 				StatusCode: bifrost.Ptr(400),
-				Error:      &schemas.ErrorField{Message: fmt.Sprintf("the request's provider-specific fields could not be read (raw JSON that does not parse, or data nested more than %d levels deep), so the files it names cannot be verified for this virtual key", openValueDepth)},
+				Error:      &schemas.ErrorField{Message: fmt.Sprintf("the files this request names cannot be verified for this virtual key: it names more than %d files, or its provider-specific fields could not be read (raw JSON that does not parse, or data nested more than %d levels deep)", maxFileReferences, openValueDepth)},
 			}}
 		}
 		if shortCircuit := p.refuseForeignProviderObject(ctx, req, ref, vkID); shortCircuit != nil {

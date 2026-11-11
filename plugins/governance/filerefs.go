@@ -308,14 +308,21 @@ func buildFileRefPlans(root reflect.Type) *fileRefPlan {
 }
 
 // fileIDCollector gathers the file ids a request names, each once, in the order found.
+//
+// unreadable is set when the request cannot be verified from the ids gathered: untyped data
+// nested past openValueDepth, raw JSON that does not parse, or more than maxFileReferences
+// distinct files. What was not read, or not kept, may name another key's file.
 type fileIDCollector struct {
-	ids  []string
-	seen map[string]struct{}
-	// unreadable is set when part of the request could not be read: untyped data nested past
-	// openValueDepth, or raw JSON that does not parse. The unread part may name a file, so the
-	// request cannot be verified.
-	unreadable bool
+	ids        []string
+	seen       map[string]struct{}
+	unreadable bool // the ids are not the whole answer; the request is refused
 }
+
+// maxFileReferences bounds the distinct files one request may name. Each is one ownership
+// lookup against the config store before the provider is called, so without a bound a single
+// request listing thousands of made-up URIs would run thousands of queries. No provider takes
+// anywhere near this many files in one request.
+const maxFileReferences = 128
 
 func (c *fileIDCollector) add(id string) {
 	id = strings.TrimSpace(id)
@@ -323,6 +330,10 @@ func (c *fileIDCollector) add(id string) {
 		return
 	}
 	if _, dup := c.seen[id]; dup {
+		return
+	}
+	if len(c.ids) >= maxFileReferences {
+		c.unreadable = true
 		return
 	}
 	if c.seen == nil {
@@ -346,8 +357,9 @@ func (c *fileIDCollector) addReference(kind fileRefKind, value string) {
 // requestFileIDs returns the uploaded files a request names anywhere in it, under the id each
 // is recorded under: every field of fileReferenceFields on whatever request type is set, and
 // every reference inside its extra params. It is the one extraction every inference request
-// goes through. unreadable is true when part of the request could not be read, in which case
-// the list is not the whole answer and the request must not be let through on it.
+// goes through. unreadable is true when part of the request could not be read or it names more
+// than maxFileReferences files, in which case the list is not the whole answer and the request
+// must not be let through on it.
 func requestFileIDs(req *schemas.BifrostRequest) (ids []string, unreadable bool) {
 	if req == nil {
 		return nil, false

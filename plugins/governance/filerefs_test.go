@@ -512,6 +512,36 @@ func TestFileReferencesCannotHideInOpenFields(t *testing.T) {
 		}
 	})
 
+	t.Run("more files than the bound refuses the request", func(t *testing.T) {
+		list := func(n int) []any {
+			uris := make([]any, 0, n)
+			for i := 0; i < n; i++ {
+				uris = append(uris, fmt.Sprintf("s3://vk-guard-bucket/uploads/%d.pdf", i))
+			}
+			return uris
+		}
+		if ids, unreadable := requestFileIDs(chatWith(map[string]interface{}{"vendor_field": list(maxFileReferences)})); unreadable || len(ids) != maxFileReferences {
+			t.Errorf("%d files: got %d ids, unreadable %v", maxFileReferences, len(ids), unreadable)
+		}
+		ids, unreadable := requestFileIDs(chatWith(map[string]interface{}{"vendor_field": list(10000)}))
+		if !unreadable || len(ids) > maxFileReferences {
+			t.Errorf("10000 files: %d ids would each be looked up, unreadable %v", len(ids), unreadable)
+		}
+		// A raw body (passthrough, an inline batch item) is bounded the same way.
+		bodyRefs := jsonObjectRefs(schemas.Bedrock, map[string]any{"documents": list(10000)})
+		if len(bodyRefs) > maxFileReferences+1 || !bodyRefs[len(bodyRefs)-1].unreadable {
+			t.Errorf("a raw body naming 10000 files yields %d references and no refusal", len(bodyRefs))
+		}
+		// The same file repeated is one lookup, however often it is named.
+		repeated := make([]any, 10000)
+		for i := range repeated {
+			repeated[i] = uri
+		}
+		if ids, unreadable := requestFileIDs(chatWith(map[string]interface{}{"vendor_field": repeated})); unreadable || len(ids) != 1 {
+			t.Errorf("one file named 10000 times: got %d ids, unreadable %v", len(ids), unreadable)
+		}
+	})
+
 	t.Run("data nested past the bound refuses the request", func(t *testing.T) {
 		nest := func(levels int) any {
 			var value any = uri
