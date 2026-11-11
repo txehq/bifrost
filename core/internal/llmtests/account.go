@@ -209,6 +209,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Wafer,
 		schemas.MiniMax,
 		schemas.BytePlus,
+		schemas.GoogleCloudTTS,
 		schemas.Databricks,
 		schemas.Cloudflare,
 		schemas.GithubCopilot,
@@ -476,6 +477,14 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.GoogleCloudTTS:
+		return []schemas.Key{
+			{
+				Value:  *schemas.NewSecretVar("env.GOOGLE_CLOUD_TTS_API_KEY"),
+				Models: []string{"*"},
+				Weight: 1.0,
 			},
 		}, nil
 	case schemas.Perplexity:
@@ -927,6 +936,17 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				MaxRetries:                     10, // Elevenlabs can be variable
 				RetryBackoffInitial:            1 * time.Second,
 				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.GoogleCloudTTS:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     0, // one upstream call per speech request
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: Concurrency,

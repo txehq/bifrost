@@ -41,6 +41,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.DeepSeek,
 	schemas.Elevenlabs,
 	schemas.Gemini,
+	schemas.GoogleCloudTTS,
 	schemas.Groq,
 	schemas.HuggingFace,
 	schemas.MiniMax,

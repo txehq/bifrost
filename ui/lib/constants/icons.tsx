@@ -969,6 +969,27 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	"google-cloud-tts": ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 24 24"
+				fill="none"
+				shapeRendering="geometricPrecision"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>Google Cloud Text-to-Speech</title>
+				<rect x="2" y="9" width="3" height="6" rx="1.5" fill="#4285F4" />
+				<rect x="7" y="5" width="3" height="14" rx="1.5" fill="#EA4335" />
+				<rect x="12" y="2" width="3" height="20" rx="1.5" fill="#FBBC04" />
+				<rect x="17" y="7" width="3" height="10" rx="1.5" fill="#34A853" />
+			</svg>
+		);
+	},
 	databricks: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 

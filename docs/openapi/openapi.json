@@ -114585,7 +114585,8 @@
           "byteplus",
           "tencent",
           "dashscope",
-          "bfl"
+          "bfl",
+          "google-cloud-tts"
         ]
       },
       "Fallback": {

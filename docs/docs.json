@@ -173,6 +173,7 @@
                   "providers/supported-providers/fireworks",
                   "providers/supported-providers/gemini",
                   "providers/supported-providers/glm",
+                  "providers/supported-providers/google-cloud-tts",
                   "providers/supported-providers/github-copilot",
                   "providers/supported-providers/groq",
                   "providers/supported-providers/huggingface",

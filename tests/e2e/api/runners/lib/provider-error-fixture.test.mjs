@@ -483,3 +483,20 @@ test("the vendor chat sites answer with each vendor's documented usage shape", a
     assert.deepEqual(sheet[model].service_tiers, ["default", "priority"], model);
   }
 });
+
+test("Cloud Text-to-Speech answers text:synthesize by the voice name", async (t) => {
+  const post = await startFixture(t);
+  const synthesize = (name) => post({ input: { text: "hi" }, voice: { languageCode: "en-GB", name }, audioConfig: { audioEncoding: "MP3" } }, "/pp/google-cloud-tts/v1/text:synthesize");
+  const ok = await synthesize("en-GB-Wavenet-A");
+  assert.equal(ok.status, 200);
+  assert.equal((await ok.json()).audioContent, "//NExAASCCIIAAhEAGAAEMW4kAYPnwwIKw/BBTpwTvB+IAxIfghU");
+  const unknown = await synthesize("en-GB-Wavenet-ZZ");
+  assert.equal(unknown.status, 400);
+  assert.equal((await unknown.json()).error.status, "INVALID_ARGUMENT");
+  const quota = await synthesize("en-GB-Wavenet-Quota");
+  assert.equal(quota.status, 429);
+  assert.equal((await quota.json()).error.status, "RESOURCE_EXHAUSTED");
+  const silent = await synthesize("en-GB-Wavenet-Silent");
+  assert.equal(silent.status, 200);
+  assert.deepEqual(await silent.json(), {});
+});

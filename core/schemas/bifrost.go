@@ -99,6 +99,9 @@ const (
 	Tencent       ModelProvider = "tencent" // Tencent Cloud TokenHub: Hy image generation (fork)
 	DashScope     ModelProvider = "dashscope"
 	BFL           ModelProvider = "bfl"
+	// GoogleCloudTTS is Google Cloud Text-to-Speech (text:synthesize), a different API
+	// from Gemini and Vertex speech.
+	GoogleCloudTTS ModelProvider = "google-cloud-tts"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -168,6 +171,7 @@ var StandardProviders = []ModelProvider{
 	Tencent,
 	DashScope,
 	BFL,
+	GoogleCloudTTS,
 }
 
 // RequestType represents the type of request being made to a provider.

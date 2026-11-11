@@ -727,6 +727,9 @@
         "bfl": {
           "$ref": "#/$defs/provider"
         },
+        "google-cloud-tts": {
+          "$ref": "#/$defs/provider"
+        },
         "cloudflare": {
           "$ref": "#/$defs/provider_with_cloudflare_config"
         },
@@ -12927,7 +12930,8 @@
             "tencent",
             "typesafe",
             "dashscope",
-            "bfl"
+            "bfl",
+            "google-cloud-tts"
           ],
           "description": "Base provider type to extend"
         },

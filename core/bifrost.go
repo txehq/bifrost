@@ -38,6 +38,7 @@ import (
 	"github.com/capsohq/bifrost/core/providers/gemini"
 	"github.com/capsohq/bifrost/core/providers/githubcopilot"
 	"github.com/capsohq/bifrost/core/providers/glm"
+	"github.com/capsohq/bifrost/core/providers/googlecloudtts"
 	"github.com/capsohq/bifrost/core/providers/groq"
 	"github.com/capsohq/bifrost/core/providers/huggingface"
 	"github.com/capsohq/bifrost/core/providers/minimax"
@@ -5254,6 +5255,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return cloudflare.NewCloudflareProvider(config, bifrost.logger)
 	case schemas.Gemini:
 		return gemini.NewGeminiProvider(config, bifrost.logger), nil
+	case schemas.GoogleCloudTTS:
+		return googlecloudtts.NewGoogleCloudTTSProvider(config, bifrost.logger)
 	case schemas.GLM:
 		return glm.NewGLMProvider(config, bifrost.logger)
 	case schemas.OpenRouter:
