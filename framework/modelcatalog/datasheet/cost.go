@@ -723,7 +723,7 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		schemas.ImageGenerationTaskRequest, schemas.ImageEditTaskRequest:
 		cost = computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality, input.tier)
 	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest, schemas.VideoEditRequest:
-		cost = computeVideoCost(pricing, input.usage, input.videoSeconds, input.videoSize, input.videoCount, input.tier)
+		cost = computeVideoCost(pricing, input.usage, input.videoSeconds, input.videoSize, "", input.videoCount, input.tier)
 	case schemas.OCRRequest:
 		cost = computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
 	case schemas.ContainerCreateRequest:
@@ -1791,7 +1791,7 @@ func imageQualityRate(pricing *configstoreTables.TableModelPricing, quality stri
 
 // computeVideoCost handles video generation requests.
 // Input and output are calculated independently — tokens first, then per-second fallback.
-func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, videoSize string, videoCount int, tier serviceTier) *schemas.BifrostCost {
+func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, videoSize string, videoResolution string, videoCount int, tier serviceTier) *schemas.BifrostCost {
 	tierTokens := inputTierTokens(usage)
 
 	// Input: text prompt tokens first, then per-second fallback
@@ -1812,7 +1812,7 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 		// Seconds is one clip's duration, and a single job can return several clips
 		// (Veo's sampleCount). Count is 0 on a job that has not produced its outputs
 		// yet, which still owes one clip's worth rather than nothing.
-		outputCost = float64(*videoSeconds) * videoOutputPerSecondRate(pricing, videoSize) * float64(max(1, videoCount))
+		outputCost = float64(*videoSeconds) * videoOutputPerSecondRate(pricing, videoSize, videoResolution) * float64(max(1, videoCount))
 	}
 
 	return newInputOutputCost(inputCost, outputCost)
@@ -1828,8 +1828,13 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 // Bands match exactly on the short edge rather than at-or-above: an unlisted resolution
 // falls back to the unbanded rate instead of rounding up into a more expensive band, so a
 // 480p clip is never billed at the 720p rate.
-func videoOutputPerSecondRate(pricing *configstoreTables.TableModelPricing, size string) float64 {
-	switch videoResolutionBand(size) {
+//
+// The band comes from size when it is a "WxH" size, and otherwise from the resolution
+// tier ("720p", "1080P", "4k"). Models that take a tier instead of a size (Wan 2.7 and
+// 3.0, Seedance) send no size at all, so without the tier their clip could only be
+// billed at the unbanded rate (TXE-7122).
+func videoOutputPerSecondRate(pricing *configstoreTables.TableModelPricing, size string, resolution string) float64 {
+	switch videoResolutionBand(size, resolution) {
 	case 480:
 		if pricing.OutputCostPerVideoPerSecond480p != nil {
 			return *pricing.OutputCostPerVideoPerSecond480p
@@ -1862,13 +1867,37 @@ func videoOutputPerSecondRate(pricing *configstoreTables.TableModelPricing, size
 
 // videoResolutionBand returns the short edge of a "WxH" size, which is the number
 // providers name their resolution tiers after ("1920x1080" and "1080x1920" are both
-// 1080p). Returns 0 when the size is absent or malformed.
-func videoResolutionBand(size string) int {
+// 1080p). When the size is absent or malformed it reads the resolution tier instead
+// (videoResolutionTierBand). Returns 0 when neither names a resolution.
+//
+// A size wins over a tier because it is concrete pixels, and because the merged
+// dimensions hold the size a terminal response reported, which is what was produced.
+func videoResolutionBand(size string, resolution string) int {
 	width, height := parseImageDimensions(size)
 	if width <= 0 || height <= 0 {
-		return 0
+		return videoResolutionTierBand(resolution)
 	}
 	return min(width, height)
+}
+
+// videoResolutionTierBand returns the short edge a resolution tier names: "720p" and
+// "720P" are 720, "4k" and "2160p" are 2160. It returns 0 for anything else, including a
+// tier with no single short edge ("2K" means different sizes to different vendors), so
+// an unknown tier falls back to the unbanded rate rather than being guessed into a band.
+func videoResolutionTierBand(resolution string) int {
+	tier := strings.ToLower(strings.TrimSpace(resolution))
+	if tier == "4k" {
+		return 2160
+	}
+	digits, ok := strings.CutSuffix(tier, "p")
+	if !ok {
+		return 0
+	}
+	edge, err := strconv.Atoi(digits)
+	if err != nil || edge <= 0 {
+		return 0
+	}
+	return edge
 }
 
 // computeLiveCost bills GPT Live voice duration: session seconds × input_cost_per_second.

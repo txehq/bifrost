@@ -422,11 +422,11 @@ func computeImageCostTotal(pricing *configstoreTables.TableModelPricing, imageUs
 }
 
 func computeVideoCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, tier serviceTier) float64 {
-	return bcTotal(computeVideoCost(pricing, usage, videoSeconds, "", 0, tier))
+	return bcTotal(computeVideoCost(pricing, usage, videoSeconds, "", "", 0, tier))
 }
 
 func computeVideoCostTotalSized(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, videoSize string, videoCount int, tier serviceTier) float64 {
-	return bcTotal(computeVideoCost(pricing, usage, videoSeconds, videoSize, videoCount, tier))
+	return bcTotal(computeVideoCost(pricing, usage, videoSeconds, videoSize, "", videoCount, tier))
 }
 
 func computeContainerCreationCostTotal(pricing *configstoreTables.TableModelPricing) float64 {
@@ -2382,6 +2382,84 @@ func TestComputeVideoCost_ResolutionBands(t *testing.T) {
 			assert.InDelta(t, tc.want, cost, 1e-12)
 		})
 	}
+}
+
+// TXE-7122: a model that takes a resolution tier instead of a size (Wan 2.7 and 3.0,
+// Seedance) is banded by the tier. A size still wins, and a tier with no single short
+// edge falls back to the unbanded rate rather than being guessed into a band.
+func TestComputeVideoCost_ResolutionTierBands(t *testing.T) {
+	p := sizedVideoPricing()
+	p.OutputCostPerVideoPerSecond = bifrost.Ptr(0.05) // unbanded, unlike every band
+	seconds := 8
+
+	for _, tc := range []struct {
+		name       string
+		size       string
+		resolution string
+		want       float64
+	}{
+		{"480p", "", "480p", 8 * 0.10},
+		{"720P upper case, as DashScope spells it", "", "720P", 8 * 0.30},
+		{"1080p", "", "1080p", 8 * 0.70},
+		{"padded", "", " 1080p ", 8 * 0.70},
+		{"4k", "", "4k", 8 * 0.60},
+		{"4K", "", "4K", 8 * 0.60},
+		{"2160p", "", "2160p", 8 * 0.60},
+		{"unlisted tier falls back", "", "360p", 8 * 0.05},
+		{"2K names no single short edge", "", "2K", 8 * 0.05},
+		{"not a tier", "", "high", 8 * 0.05},
+		{"zero", "", "0p", 8 * 0.05},
+		{"size wins over the tier", "1280x720", "1080p", 8 * 0.30},
+		{"a malformed size yields to the tier", "1280*720", "1080p", 8 * 0.70},
+		{"neither", "", "", 8 * 0.05},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cost := bcTotal(computeVideoCost(&p, nil, &seconds, tc.size, tc.resolution, 1, serviceTier{}))
+			assert.InDelta(t, tc.want, cost, 1e-12)
+		})
+	}
+}
+
+// The settlement path: dimensions holding only a tier select its band.
+func TestCalculateVideoCostDetails_UsesResolutionTierWhenNoSize(t *testing.T) {
+	store := newVideoDimensionTestStore(t)
+	seconds := 8
+	dims := VideoPricingDimensions{
+		Model:       "sora-2-pro",
+		RequestType: schemas.VideoGenerationRequest,
+		Seconds:     &seconds,
+		Resolution:  "480p",
+	}
+	details := store.CalculateVideoCostDetails(dims, schemas.OpenAI, nil)
+	require.True(t, details.Priced)
+	assert.InDelta(t, 8*0.10, details.Cost, 1e-12)
+}
+
+// The response's resolution fields win where it reports them, like size; the
+// conditioning inputs are request facts a response can only add to.
+func TestVideoPricingDimensions_MergedWithCarriesResolutionFields(t *testing.T) {
+	mp4, webm := "mp4", "webm"
+	captured := VideoPricingDimensions{
+		Resolution:      "1080p",
+		AspectRatio:     "16:9",
+		OutputFormat:    &mp4,
+		InputReference:  true,
+		LastFrame:       true,
+		ReferenceImages: 2,
+		Extra:           map[string]any{"watermark": false},
+	}
+	silent := captured.MergedWith(VideoPricingDimensions{})
+	assert.Equal(t, captured, silent)
+
+	observed := captured.MergedWith(VideoPricingDimensions{Resolution: "720p", AspectRatio: "9:16", OutputFormat: &webm, Extra: map[string]any{"seed": 7}})
+	assert.Equal(t, "720p", observed.Resolution)
+	assert.Equal(t, "9:16", observed.AspectRatio)
+	assert.Equal(t, "webm", *observed.OutputFormat)
+	assert.True(t, observed.InputReference)
+	assert.True(t, observed.LastFrame)
+	assert.Equal(t, 2, observed.ReferenceImages)
+	assert.Equal(t, map[string]any{"watermark": false, "seed": 7}, observed.Extra)
+	assert.Equal(t, map[string]any{"watermark": false}, captured.Extra, "merging must not write into the captured map")
 }
 
 // A pricing row carrying no banded rates must price exactly as it did before the

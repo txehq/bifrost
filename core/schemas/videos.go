@@ -718,6 +718,10 @@ type VideoAccountingDebug struct {
 	// after merging the terminal response over the request captured at submission.
 	Seconds *int   `json:"seconds,omitempty"`
 	Size    string `json:"size,omitempty"`
+	// Resolution is the resolution tier ("720p") the rate band was read from when no
+	// size names one: Wan 2.7 and 3.0 and Seedance take a tier, not a size. Without it
+	// a repricing pass would bill such a job at the unbanded rate (TXE-7122).
+	Resolution string `json:"resolution,omitempty"`
 	// OutputCount is how many clips the job returned; the per-second rate is
 	// multiplied by it.
 	OutputCount int `json:"output_count,omitempty"`
