@@ -554,6 +554,58 @@ Rows 403.10 and 403.11 are the async route: 403.10 submits a url-only job to
 transcript, the duration usage and exactly one call in `/__wire`. Run them together and in order, as the
 folder does.
 
+## Repeated query parameters
+
+Folder 481 pins what happens to a query parameter sent more than once, against the same local fixture and
+with no live provider calls. With a transport plugin loaded the gateway used to copy the query string into
+a map with one value per name and write it back, so `include=a&include=b` reached the vendor as
+`include=b&include=b` and a repeated `after`, `order` or `provider` was read as its last value. The fixture
+answers OpenAI's Responses lifecycle reads, `GET /v1/responses/{id}` and
+`GET /v1/responses/{id}/input_items`, and keeps each call in `GET /__wire` with the query string as it
+arrived. The three rows send parameters twice and read back what the vendor received: every `include`
+value in the order sent, on the inference route and on the `/openai` integration route; the first `after`
+and `order`; and the first `provider`, which serves the request.
+
+Start the fixture and the isolated gateway as in the provider error fixture section above, then run:
+
+```bash
+node tests/e2e/api/runners/provider-harness-folders.mjs build
+newman run tmp/provider-harness.json \
+  --folder "481. A query parameter sent more than once keeps every value through the transport plugins (repeated query) [SERIAL]" \
+  --working-dir . \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1 \
+  --env-var providerErrorFixtureUrl=http://127.0.0.1:8791
+```
+
+Every row is skipped unless `providerErrorFixture=1`.
+
+## Passthrough routes forward the query the transport plugins left
+
+Folder 489 (TXE-7087) uses the same fixture and gateway. The passthrough routes, the native Anthropic
+Messages forward and the Claude Code OAuth forward used to send the vendor the query string as the caller
+sent it, even after a transport plugin had changed a parameter, so a value a plugin pinned left with the
+caller's value. They now forward the query the plugins left: re-encoded when a plugin changed it, the
+caller's bytes when none did. No plugin shipped with the gateway changes a query parameter, so the five
+rows pin the second half on the wire: `order=desc&include=b%20c&include=a&flag&limit=5` reaches the
+fixture byte for byte through `/openai_passthrough`, `/anthropic_passthrough`, `/genai_passthrough`, the
+native Messages forward to xAI and the OAuth forward. The first half is pinned in Go, over every
+passthrough route: `TestPassthroughRoutesForwardThePluginsQuery` and
+`TestForwardedQueryReachesTheVendorAsThePluginLeftIt` in `transports/bifrost-http/handlers`. Bedrock, Azure
+and the ChatGPT route have no row: the fixture config points none of them at the fixture for these paths.
+
+```bash
+node tests/e2e/api/runners/provider-harness-folders.mjs build
+newman run tmp/provider-harness.json \
+  --folder "489. Passthrough routes forward the query string the transport plugins left: the caller's bytes when no plugin changed it (passthrough query) [SERIAL]" \
+  --working-dir . \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1 \
+  --env-var providerErrorFixtureUrl=http://127.0.0.1:8791
+```
+
+Every row is skipped unless `providerErrorFixture=1`.
+
 ## Fork deployment switches: provider job accounting off and passthrough heartbeat off
 
 Folder 329 (TXE-6519) uses the same fixture and the same isolated gateway as folder 154. The

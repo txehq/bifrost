@@ -2813,12 +2813,9 @@ func extractResponsesLifecycleFromPath(_ lib.HandlerStore) PreRequestCallback {
 		case *schemas.BifrostResponsesRetrieveRequest:
 			r.ResponseID = idStr
 			r.Provider = provider
-			ctx.QueryArgs().VisitAll(func(key, value []byte) {
-				switch string(key) {
-				case "include":
-					r.Include = append(r.Include, string(value))
-				}
-			})
+			for _, value := range ctx.QueryArgs().PeekMulti("include") {
+				r.Include = append(r.Include, string(value))
+			}
 			if raw := ctx.QueryArgs().Peek("starting_after"); len(raw) > 0 {
 				n, err := strconv.Atoi(string(raw))
 				if err != nil {
@@ -2849,16 +2846,13 @@ func extractResponsesLifecycleFromPath(_ lib.HandlerStore) PreRequestCallback {
 		case *schemas.BifrostResponsesInputItemsRequest:
 			r.ResponseID = idStr
 			r.Provider = provider
-			ctx.QueryArgs().VisitAll(func(key, value []byte) {
-				switch string(key) {
-				case "after":
-					r.After = string(value)
-				case "include":
-					r.Include = append(r.Include, string(value))
-				case "order":
-					r.Order = string(value)
-				}
-			})
+			// after and order take the first value, the one a plugin and a routing rule
+			// read; the loop this replaced kept the last (fork, TXE-7042).
+			r.After = string(ctx.QueryArgs().Peek("after"))
+			r.Order = string(ctx.QueryArgs().Peek("order"))
+			for _, value := range ctx.QueryArgs().PeekMulti("include") {
+				r.Include = append(r.Include, string(value))
+			}
 			if raw := ctx.QueryArgs().Peek("limit"); len(raw) > 0 {
 				n, err := strconv.Atoi(string(raw))
 				if err != nil {

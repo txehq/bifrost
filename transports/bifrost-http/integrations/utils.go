@@ -105,8 +105,9 @@ func extractHeadersFromRequest(ctx *fasthttp.RequestCtx) map[string][]string {
 	return headers
 }
 
-// extractExactPath returns the request path *after* the integration prefix,
-// preserving the original query string exactly as sent by the client.
+// extractExactPath returns the request path *after* the integration prefix, with the
+// query string the transport plugins left (lib.ForwardedQueryString): exactly as sent by
+// the client unless a plugin changed a parameter.
 //
 // Example:
 //
@@ -124,30 +125,14 @@ func extractExactPath(ctx *fasthttp.RequestCtx) string {
 		}
 	}
 
-	// Raw query string as sent by client (unparsed, preserves ordering/duplicates/encoding).
-	q := ctx.URI().QueryString() // e.g. "model=gpt-4o&stream=true"
-
-	if len(q) == 0 {
+	// The query the transport plugins left: the caller's bytes when no plugin changed a
+	// parameter, so ordering, duplicates and encoding are preserved (fork, TXE-7087).
+	q := lib.ForwardedQueryString(ctx) // e.g. "model=gpt-4o&stream=true"
+	if q == "" {
 		// No query → just return the (possibly trimmed) path.
 		return string(path)
 	}
-
-	// --- Build "<path>?<query>" efficiently and safely ---
-	//
-	// Why not do: return string(path) + "?" + string(q) ?
-	//   - That allocates multiple temporary strings and may copy data more than necessary.
-	//
-	// Why not append into 'path' directly?
-	//   - 'path' may alias fasthttp’s internal buffers; mutating/expanding it could corrupt request state.
-	//
-	// We instead allocate a new buffer with exact capacity and copy into it,
-	// staying in []byte until the final string conversion (1 allocation for the new slice).
-	out := make([]byte, 0, len(path)+1+len(q)) // pre-size: path + "?" + query
-	out = append(out, path...)                 // copy path bytes
-	out = append(out, '?')                     // separator
-	out = append(out, q...)                    // copy raw query bytes
-
-	return string(out)
+	return string(path) + "?" + q
 }
 
 // sendStreamError sends an error response for a streaming request that failed before streaming started.

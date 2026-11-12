@@ -867,10 +867,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	queryArgs := ctx.Request.URI().QueryArgs()
 	if queryArgs.Len() > 0 {
 		allQuery := make(map[string]string, queryArgs.Len())
-		queryArgs.All()(func(key, value []byte) bool {
-			allQuery[strings.ToLower(string(key))] = string(value)
-			return true
-		})
+		CopyQueryFirstValues(queryArgs, allQuery, true)
 		bifrostCtx.SetValue(schemas.BifrostContextKeyRequestQuery, allQuery)
 	}
 
@@ -952,10 +949,8 @@ func BuildHTTPRequestFromFastHTTP(ctx *fasthttp.RequestCtx) *schemas.HTTPRequest
 		req.Headers[string(key)] = string(value)
 	}
 
-	// Copy query params
-	for key, value := range ctx.Request.URI().QueryArgs().All() {
-		req.Query[string(key)] = string(value)
-	}
+	// Copy query params: the first value of each name, and every value of a repeated one.
+	req.RepeatedQuery = CopyQueryFirstValues(ctx.Request.URI().QueryArgs(), req.Query, false)
 
 	// Copy path parameters from user values
 	ctx.VisitUserValuesAll(func(key, value any) {

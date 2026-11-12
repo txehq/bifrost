@@ -299,7 +299,7 @@ func createAnthropicMessagesNativePassthrough(pathPrefix string) NativePassthrou
 			Model:       model,
 			Method:      string(httpCtx.Method()),
 			Path:        path,
-			RawQuery:    string(httpCtx.URI().QueryString()),
+			RawQuery:    lib.ForwardedQueryString(httpCtx),
 			Body:        body,
 			SafeHeaders: safeHeaders,
 		}, true, nil
