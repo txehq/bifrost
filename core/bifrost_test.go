@@ -11829,6 +11829,16 @@ func guardModel(provider schemas.ModelProvider) string {
 	return guardAllowedModel
 }
 
+// guardOperationModel is the model one operation is sent with: guardModel, except where a
+// provider serves the operation only for another model family. DashScope reads the family from
+// the name, and its sync image operations take Qwen-Image, not Wan.
+func guardOperationModel(provider schemas.ModelProvider, operation string) string {
+	if provider == schemas.DashScope && strings.HasPrefix(operation, "image") {
+		return "qwen-image-" + guardAllowedModel
+	}
+	return guardModel(provider)
+}
+
 // guardSpeechVoice is the voice a speech request names. Google Cloud Text-to-Speech takes
 // only a voice named <language>-<REGION>-<family>-<variant> whose family is the model.
 func guardSpeechVoice(provider schemas.ModelProvider, model string) string {
@@ -12098,7 +12108,7 @@ func TestExtraParamsNeverReplaceTheModelOrInputOnAnyProvider(t *testing.T) {
 					// The upstream's answer is no provider's response shape, and a few
 					// providers do not survive that. What they sent is already recorded.
 					defer func() { _ = recover() }()
-					bifrostErr = op.run(ctx, provider, key, guardModel(providerKey))
+					bifrostErr = op.run(ctx, provider, key, guardOperationModel(providerKey, op.name))
 				}()
 				return bifrostErr, upstream.take()
 			}
@@ -12762,7 +12772,8 @@ var nestedPriceProbeModels = map[schemas.ModelProvider][]string{
 	schemas.Vertex:  {"imagen-4.0-generate-001", "veo-3.1-generate-preview", "gemini-omni-1.1-flash-preview"},
 	schemas.Bedrock: {"amazon.titan-embed-image-v1", "amazon.nova-2-multimodal-embeddings-v1:0"},
 	// Wan 2.6 and earlier take parameters.size; Wan 2.7 and 3.0 (guardModel) take resolution and ratio.
-	schemas.DashScope: {"wan2.6-t2v"},
+	// Qwen-Image takes n and size inside parameters on the sync image endpoint.
+	schemas.DashScope: {"wan2.6-t2v", "qwen-image-" + guardAllowedModel},
 }
 
 // nestedPriceProbe is one request type sent bare and then once per price-affecting field.

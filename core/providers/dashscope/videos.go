@@ -62,14 +62,6 @@ var dashScopeVideoGenerationFields = []string{
 	"seconds", "size", "audio", "aspect_ratio", "resolution", "last_frame", "reference_images",
 }
 
-// SupportedUnifiedFields declares the unified fields video create delivers (contract C4, BF4).
-func (provider *DashScopeProvider) SupportedUnifiedFields(requestType schemas.RequestType) ([]string, bool) {
-	if requestType == schemas.VideoGenerationRequest {
-		return dashScopeVideoGenerationFields, true
-	}
-	return nil, false
-}
-
 // wanFamily is the request shape a Wan model takes on the video-synthesis endpoint.
 type wanFamily int
 

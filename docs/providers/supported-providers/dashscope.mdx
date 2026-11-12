@@ -1,6 +1,6 @@
 ---
 title: "Alibaba DashScope"
-description: "Alibaba Cloud Model Studio's native DashScope API: Wan video tasks, Singapore and workspace base addresses, auth and error mapping"
+description: "Alibaba Cloud Model Studio's native DashScope API: Wan video tasks, Qwen-Image and Z-Image generation and edit, Singapore and workspace base addresses, auth and error mapping"
 icon: "d"
 ---
 
@@ -9,7 +9,7 @@ icon: "d"
 The `dashscope` provider is Alibaba Cloud Model Studio's native DashScope API, which serves Wan video, Qwen-Image and Z-Image images, Qwen3-TTS speech and Qwen3-ASR transcription. Qwen chat stays on the [`qwen`](/providers/supported-providers/qwen) provider, which speaks DashScope's OpenAI-compatible mode.
 
 <Note>
-Wan video is implemented: create, query, list, cancel and download. Every other operation returns `UnsupportedOperationError` (HTTP 400, `error.code` `unsupported_operation`) without calling DashScope. Image, speech and transcription are added operation by operation in later releases.
+Wan video is implemented: create, query, list, cancel and download. Image generation and edit with Qwen-Image and Z-Image are served. Every other operation returns `UnsupportedOperationError` (HTTP 400, `error.code` `unsupported_operation`) without calling DashScope. Wan images, speech and transcription are added operation by operation in later releases.
 </Note>
 
 ### Supported Operations
@@ -18,7 +18,9 @@ Wan video is implemented: create, query, list, cancel and download. Every other 
 |-----------|---------------|-----------|------|
 | Video create, query, list, cancel, download (Wan) | ✅ | - | `workspace_base_url` |
 | Video delete, remix, edit | ❌ | - | - |
-| Image generation and edit (Qwen-Image, Z-Image) | ❌ (planned) | ❌ | `base_url` |
+| Image generation (Qwen-Image, Z-Image) | ✅ | ❌ | `base_url` |
+| Image edit (Qwen-Image) | ✅ | ❌ | `base_url` |
+| Wan images (task-based) | ❌ (planned, on the image task routes) | - | `base_url` |
 | Speech (Qwen3-TTS) | ❌ (planned) | ❌ (planned) | `base_url` |
 | Transcription (Qwen3-ASR) | ❌ (planned) | ❌ | `base_url` |
 | Chat, Responses, Text Completions | ❌ (use `qwen`) | ❌ | - |
@@ -171,6 +173,48 @@ curl "http://localhost:8080/v1/videos?provider=dashscope&limit=20&model_name=wan
 ```
 
 Each entry carries `id` (with the `:dashscope` suffix), `model`, `status` by the table above, `created_at` (DashScope's `gmt_create`) and, for a finished task, `completed_at` (`end_time`). DashScope's list has no prompt, size or link: query the task for those. The list is of every asynchronous task of the account in DashScope's 24-hour window, image tasks included; `model_name` narrows it.
+
+## Image generation and edit
+
+`POST /v1/images/generations` and `POST /v1/images/edits` with a `qwen-image-*` or `z-image-*` model call DashScope's synchronous endpoint, `POST {base_url}/api/v1/services/aigc/multimodal-generation/generation`, once. The request becomes one user message: the input images in order, then the prompt.
+
+```bash
+curl -X POST http://localhost:8080/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "dashscope/qwen-image-2.0-pro",
+    "prompt": "a lighthouse at dusk",
+    "n": 2,
+    "size": "1536x1024",
+    "negative_prompt": "low quality",
+    "prompt_extend": true,
+    "watermark": false
+  }'
+```
+
+| Request field | DashScope field | Notes |
+|---------------|-----------------|-------|
+| `prompt` | `input.messages[0].content[].text` | |
+| `input_images` (generation), `images` (edit) | `input.messages[0].content[].image` | A link is sent unchanged. Bytes are sent as a base64 data URI. `input_images` entries must be an `http(s)` link or a data URI. |
+| `n` | `parameters.n` | Z-Image generates one image: `n` other than 1 is refused, and `n` is not sent. |
+| `size` | `parameters.size` | `1536x1024` is sent as `1536*1024`. A value that is not width and height in pixels (`auto`, `2K`) is refused. DashScope enforces each model's range. |
+| `seed` | `parameters.seed` | |
+| `negative_prompt` | `parameters.negative_prompt` | Not sent to Z-Image, which documents no such parameter. |
+| `prompt_extend`, `watermark` | `parameters.prompt_extend`, `parameters.watermark` | Booleans. |
+| `response_format` | - | DashScope returns links only: any value other than `url` is refused. |
+| Any other field, with `x-bf-passthrough-extra-params: true` | `parameters.<field>` | DashScope reads generation switches only inside `parameters`. |
+
+A field that cannot be delivered is refused with HTTP 400 and `extra_fields.error_type` `caller_unsupported_parameter`, with the field in `error.param`, before DashScope is called:
+
+- `resolution`. Alibaba documents no resolution parameter for Qwen-Image: the 2.0, 2.1 and 3.0 series take `size` as width and height from `512*512` to `2048*2048`. Send the `size` you want.
+- `quality`, `aspect_ratio`, `output_format`, `background`, `mask` and the other unified image fields DashScope has no parameter for.
+- `callback_url`, `client_reference_id`, `expires_after_seconds` and `output_storage_uri`. The synchronous endpoint has no task to control.
+
+A Wan image model (`wan*`) is task-based and is refused on these two routes with HTTP 400 `caller_invalid_request`. A model that is neither `qwen-image-*`, `z-image-*` nor `wan*` is refused with `caller_model_unknown`.
+
+### Response
+
+Each link in `output.choices[].message.content[].image` becomes one `data[]` item with `url`. DashScope keeps a result link for 24 hours; the response does not carry an expiry field yet. `usage.output_images` is DashScope's `usage.image_count`, and `size` is its reported `width` and `height`. Z-Image also reports `input_tokens`, `output_tokens`, `total_tokens` and `output_tokens_details.reasoning_tokens` when `prompt_extend` rewrote the prompt, and the rewritten prompt is returned as `revised_prompt`. A 200 with no image is an error: `provider_empty_result` (HTTP 502), or DashScope's own code when the body carries one.
 
 ## Authentication
 

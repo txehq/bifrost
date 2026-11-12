@@ -933,6 +933,27 @@ const xaiTranscript = {
 	channels: [{ index: 0, language: "en", text: "The balance is $167,983.15." }],
 };
 
+// DashScope's synchronous image endpoint, TXE-6607. The model in the body picks the answer; bodies follow the samples
+// of Alibaba's Qwen-Image and Z-Image API references. qwen-image-2.0 returns as many links as parameters.n asks for.
+const dashScopeImagePath = "/pp/dashscope/api/v1/services/aigc/multimodal-generation/generation";
+const dashScopeImageAnswer = (body) => {
+	const link = (i) => ({ image: `https://dashscope-result-sh.oss-cn-shanghai.aliyuncs.com/fixture/${i}.png?Expires=1` });
+	const ok = (content, usage) => ({ status: 200, body: JSON.stringify({ output: { choices: [{ finish_reason: "stop", message: { role: "assistant", content } }] }, usage, request_id: "fixture-dashscope-image" }) });
+	switch (body.model) {
+		case "z-image-turbo":
+			return ok([link(1), { text: "a lighthouse at dusk, warm light, 35mm" }, { reasoning_content: "the user wants a lighthouse" }],
+				{ width: 1024, height: 1536, image_count: 1, input_tokens: 120, output_tokens: 310, total_tokens: 430, output_tokens_details: { reasoning_tokens: 250 } });
+		case "qwen-image-moderated":
+			return { status: 400, body: JSON.stringify({ request_id: "fixture-dashscope-moderated", code: "DataInspectionFailed", message: "Input data may contain inappropriate content." }) };
+		case "qwen-image-empty":
+			return { status: 200, body: JSON.stringify({ output: { choices: [] }, request_id: "fixture-dashscope-empty" }) };
+		default: {
+			const n = (body.parameters && body.parameters.n) || 1;
+			return ok(Array.from({ length: n }, (_, i) => link(i + 1)), { width: 1536, height: 1024, image_count: n });
+		}
+	}
+};
+
 const wireAnswer = (path, body, bytes) => {
 	if (isBedrockConversePath(path)) return bedrockConverseAnswer(path);
 	if (path.startsWith("/pp/storage/")) return storageAnswer(path, body);
@@ -1591,8 +1612,8 @@ const handleRequest = (req, res) => {
 	if (req.method === "GET" && path === "/__wire") {
 		return send(200, {}, JSON.stringify({ data: [{ calls: wireCalls }] }));
 	}
-	// DashScope's native Wan video API, TXE-6432 (folder 423). The gateway's dashscope provider has both of its
-	// bases at /pp/dashscope. Every request is kept in /__wire with its method and its X-DashScope-Async header (no
+	// DashScope's native API: Wan video, TXE-6432 (folder 423), and the synchronous image endpoint, TXE-6607
+	// (folder 425). The gateway's dashscope provider has both of its bases at /pp/dashscope. Every request is kept in /__wire with its method and its X-DashScope-Async header (no
 	// other header, so no key reaches a report). A create answers a PENDING task. The task id of a query or a
 	// cancel picks the answer (see dashScopeTasks): only ds-pending can be cancelled, as at DashScope, which
 	// answers 400 UnsupportedOperation for a task in any other state. GET /api/v1/tasks is the task list.
@@ -1601,7 +1622,15 @@ const handleRequest = (req, res) => {
 		req.on("data", (c) => body.push(c));
 		req.on("end", () => {
 			const url = new URL(req.url, "http://localhost");
-			wireCalls.push({ method: req.method, path, query: url.search, body: Buffer.concat(body).toString("utf8"), async: req.headers["x-dashscope-async"] || "" });
+			const bytes = Buffer.concat(body).toString("utf8");
+			wireCalls.push({ method: req.method, path, query: url.search, body: bytes, async: req.headers["x-dashscope-async"] || "" });
+			// The synchronous image endpoint (TXE-6607, folder 425) answers by the model in the body.
+			if (req.method === "POST" && path === dashScopeImagePath) {
+				let parsed = {};
+				try { parsed = JSON.parse(bytes) || {}; } catch {}
+				const image = dashScopeImageAnswer(parsed);
+				return send(image.status, {}, image.body);
+			}
 			const answer = dashScopeAnswer(req.method, path.slice("/pp/dashscope".length), url.search);
 			send(answer.status, {}, JSON.stringify(answer.body));
 		});

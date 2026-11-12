@@ -1,0 +1,1036 @@
+{
+  "name": "425. DashScope Qwen-Image and Z-Image sync generation and edit meet the contract (dashscope images) [SERIAL]",
+  "description": "TXE-6607, contract C3, C4, C5, C6, C7. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. The dashscope provider there points at the fixture, whose multimodal-generation answer is picked by the model in the body: qwen-image-2.0 (as many links as parameters.n, usage.image_count), z-image-turbo (one link, the rewritten prompt, token counts with reasoning_tokens), qwen-image-moderated (HTTP 400 DataInspectionFailed), qwen-image-empty (a 200 with no choices). Before the change every dashscope image request answered 400 unsupported_operation. The rows pin: the documented body (input.messages with the input images first and the text last, parameters with size as width*height, prompt_extend and watermark from the caller's extra fields); usage.output_images from usage.image_count; a link input image sent unchanged and bytes sent as a base64 data URI; the four task control fields, resolution (Alibaba documents no resolution parameter for Qwen-Image), response_format b64_json and Z-Image n=2 refused with 400 caller_unsupported_parameter before any upstream call; a Wan model refused on the sync routes (Wan is task-based and waits for the image task routes); a moderation 400 as caller_content_filtered; an empty 200 as provider_empty_result. The rows read back the bytes that reached the fixture from /__wire. Run the whole folder in order.",
+  "item": [
+    {
+      "name": "dashscope/qwen-image-2.0 /v1/images/generations n=2 size 1536x1024 with x-bf-api-key: one upstream call carrying the documented multimodal-generation body, two links and usage.output_images 2 back (dashscope images)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('dashscope images setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture's DashScope image endpoint, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/pp/dashscope/api/v1/services/aigc/multimodal-generation/generation'; })); }); }",
+              "var text = pm.response.text();",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+              "pm.test('data carries the two links DashScope returned, in order', function () {",
+              "  pm.expect(body.data, text).to.be.an('array').with.length(2);",
+              "  pm.expect(body.data[0].url, text).to.match(/\\/fixture\\/1\\.png\\?Expires=1$/);",
+              "  pm.expect(body.data[1].url, text).to.match(/\\/fixture\\/2\\.png\\?Expires=1$/);",
+              "  pm.expect(body.data[0].b64_json, text).to.equal(undefined);",
+              "});",
+              "pm.test('usage.output_images is the image_count DashScope reported, with no token counts', function () {",
+              "  pm.expect(body.usage && body.usage.output_images, text).to.equal(2);",
+              "  pm.expect(body.usage.total_tokens, text).to.equal(undefined);",
+              "});",
+              "pm.test('size is the width and height DashScope reported', function () { pm.expect(body.size, text).to.equal('1536x1024'); });",
+              "wire(function (calls) {",
+              "  pm.test('exactly one request reached DashScope', function () { pm.expect(calls.length, JSON.stringify(calls)).to.equal(1); });",
+              "  pm.test('the body is the documented shape: input.messages and parameters, size as width*height', function () {",
+              "    pm.expect(JSON.parse(calls[0].body), calls[0].body).to.eql({ model: 'qwen-image-2.0', input: { messages: [{ role: 'user', content: [{ text: 'a lighthouse at dusk' }] }] }, parameters: { n: 2, size: '1536*1024', negative_prompt: 'low quality', seed: 42, prompt_extend: true, watermark: false } });",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"dashscope/qwen-image-2.0\",\"prompt\":\"a lighthouse at dusk\",\"n\":2,\"size\":\"1536x1024\",\"seed\":42,\"negative_prompt\":\"low quality\",\"prompt_extend\":true,\"watermark\":false}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "dashscope/z-image-turbo /v1/images/generations: n=1 and negative_prompt are not sent, the rewritten prompt, token counts and reasoning_tokens come back (dashscope images)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('dashscope images setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture's DashScope image endpoint, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/pp/dashscope/api/v1/services/aigc/multimodal-generation/generation'; })); }); }",
+              "var text = pm.response.text();",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+              "pm.test('one link with the prompt DashScope rewrote', function () {",
+              "  pm.expect(body.data, text).to.be.an('array').with.length(1);",
+              "  pm.expect(body.data[0].url, text).to.match(/^https:\\/\\//);",
+              "  pm.expect(body.data[0].revised_prompt, text).to.equal('a lighthouse at dusk, warm light, 35mm');",
+              "});",
+              "pm.test('usage carries what DashScope reported', function () {",
+              "  var u = body.usage || {};",
+              "  pm.expect(u.output_images, text).to.equal(1);",
+              "  pm.expect(u.input_tokens, text).to.equal(120);",
+              "  pm.expect(u.output_tokens, text).to.equal(310);",
+              "  pm.expect(u.total_tokens, text).to.equal(430);",
+              "  pm.expect(u.output_tokens_details && u.output_tokens_details.reasoning_tokens, text).to.equal(250);",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('exactly one request reached DashScope', function () { pm.expect(calls.length, JSON.stringify(calls)).to.equal(1); });",
+              "  pm.test('parameters carry size only: Z-Image documents neither n nor negative_prompt', function () {",
+              "    pm.expect(JSON.parse(calls[0].body), calls[0].body).to.eql({ model: 'z-image-turbo', input: { messages: [{ role: 'user', content: [{ text: 'a lighthouse at dusk' }] }] }, parameters: { size: '1024*1536' } });",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"dashscope/z-image-turbo\",\"prompt\":\"a lighthouse at dusk\",\"n\":1,\"size\":\"1024x1536\",\"negative_prompt\":\"blurry\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "dashscope/qwen-image-2.0 /v1/images/edits JSON with a link and a base64 image: the link is sent unchanged, the bytes as a data URI, the instruction last (dashscope images)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('dashscope images setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture's DashScope image endpoint, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/pp/dashscope/api/v1/services/aigc/multimodal-generation/generation'; })); }); }",
+              "var text = pm.response.text();",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+              "pm.test('one link and usage.output_images 1', function () {",
+              "  pm.expect(body.data, text).to.be.an('array').with.length(1);",
+              "  pm.expect(body.usage && body.usage.output_images, text).to.equal(1);",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('exactly one request reached DashScope', function () { pm.expect(calls.length, JSON.stringify(calls)).to.equal(1); });",
+              "  pm.test('input images keep their order: link unchanged, bytes as a base64 data URI, then the text', function () {",
+              "    pm.expect(JSON.parse(calls[0].body), calls[0].body).to.eql({ model: 'qwen-image-2.0', input: { messages: [{ role: 'user', content: [{ image: 'https://example.com/lighthouse.png?sig=a%2Fb' }, { image: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==' }, { text: 'make the sky purple' }] }] }, parameters: { n: 1 } });",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"dashscope/qwen-image-2.0\",\"prompt\":\"make the sky purple\",\"images\":[\"https://example.com/lighthouse.png?sig=a%2Fb\",{\"image\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}],\"n\":1}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] dashscope/qwen-image-2.0 /v1/images/generations callback_url on a sync model is refused with caller_unsupported_parameter and no upstream call (dashscope images)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('dashscope images setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture's DashScope image endpoint, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/pp/dashscope/api/v1/services/aigc/multimodal-generation/generation'; })); }); }",
+              "var text = pm.response.text();",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, text).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, text).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names callback_url', function () { pm.expect(body.error && body.error.param, text).to.equal('callback_url'); });",
+              "wire(function (calls) { pm.test('no request reached DashScope', function () { pm.expect(calls.length, JSON.stringify(calls)).to.equal(0); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"dashscope/qwen-image-2.0\",\"prompt\":\"a lighthouse at dusk\",\"callback_url\":\"https://hooks.example.test/v/task-1\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] dashscope/qwen-image-2.0 /v1/images/generations client_reference_id on a sync model is refused with caller_unsupported_parameter and no upstream call (dashscope images)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('dashscope images setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture's DashScope image endpoint, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/pp/dashscope/api/v1/services/aigc/multimodal-generation/generation'; })); }); }",
+              "var text = pm.response.text();",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, text).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, text).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names client_reference_id', function () { pm.expect(body.error && body.error.param, text).to.equal('client_reference_id'); });",
+              "wire(function (calls) { pm.test('no request reached DashScope', function () { pm.expect(calls.length, JSON.stringify(calls)).to.equal(0); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"dashscope/qwen-image-2.0\",\"prompt\":\"a lighthouse at dusk\",\"client_reference_id\":\"task-1\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] dashscope/z-image-turbo /v1/images/generations expires_after_seconds on a sync model is refused with caller_unsupported_parameter and no upstream call (dashscope images)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('dashscope images setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture's DashScope image endpoint, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/pp/dashscope/api/v1/services/aigc/multimodal-generation/generation'; })); }); }",
+              "var text = pm.response.text();",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, text).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, text).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names expires_after_seconds', function () { pm.expect(body.error && body.error.param, text).to.equal('expires_after_seconds'); });",
+              "wire(function (calls) { pm.test('no request reached DashScope', function () { pm.expect(calls.length, JSON.stringify(calls)).to.equal(0); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"dashscope/z-image-turbo\",\"prompt\":\"a lighthouse at dusk\",\"expires_after_seconds\":3600}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] dashscope/qwen-image-2.0 /v1/images/generations output_storage_uri on a sync model is refused with caller_unsupported_parameter and no upstream call (dashscope images)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('dashscope images setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture's DashScope image endpoint, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/pp/dashscope/api/v1/services/aigc/multimodal-generation/generation'; })); }); }",
+              "var text = pm.response.text();",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, text).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, text).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names output_storage_uri', function () { pm.expect(body.error && body.error.param, text).to.equal('output_storage_uri'); });",
+              "wire(function (calls) { pm.test('no request reached DashScope', function () { pm.expect(calls.length, JSON.stringify(calls)).to.equal(0); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"dashscope/qwen-image-2.0\",\"prompt\":\"a lighthouse at dusk\",\"output_storage_uri\":\"oss://bucket/task-1\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] dashscope/qwen-image-2.0 /v1/images/edits callback_url on a sync model is refused with caller_unsupported_parameter and no upstream call (dashscope images)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('dashscope images setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture's DashScope image endpoint, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/pp/dashscope/api/v1/services/aigc/multimodal-generation/generation'; })); }); }",
+              "var text = pm.response.text();",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, text).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, text).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names callback_url', function () { pm.expect(body.error && body.error.param, text).to.equal('callback_url'); });",
+              "wire(function (calls) { pm.test('no request reached DashScope', function () { pm.expect(calls.length, JSON.stringify(calls)).to.equal(0); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"dashscope/qwen-image-2.0\",\"prompt\":\"make the sky purple\",\"images\":[\"https://example.com/lighthouse.png\"],\"callback_url\":\"https://hooks.example.test/v/task-1\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] dashscope/qwen-image-3.0-pro /v1/images/generations resolution 2K is refused: Alibaba documents no resolution parameter for Qwen-Image, no upstream call (dashscope images)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('dashscope images setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture's DashScope image endpoint, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/pp/dashscope/api/v1/services/aigc/multimodal-generation/generation'; })); }); }",
+              "var text = pm.response.text();",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, text).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, text).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names resolution', function () { pm.expect(body.error && body.error.param, text).to.equal('resolution'); });",
+              "wire(function (calls) { pm.test('no request reached DashScope', function () { pm.expect(calls.length, JSON.stringify(calls)).to.equal(0); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"dashscope/qwen-image-3.0-pro\",\"prompt\":\"a lighthouse at dusk\",\"resolution\":\"2K\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] dashscope/qwen-image-2.0 /v1/images/generations response_format b64_json is refused: DashScope returns links only, no upstream call (dashscope images)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('dashscope images setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture's DashScope image endpoint, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/pp/dashscope/api/v1/services/aigc/multimodal-generation/generation'; })); }); }",
+              "var text = pm.response.text();",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, text).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, text).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names response_format', function () { pm.expect(body.error && body.error.param, text).to.equal('response_format'); });",
+              "wire(function (calls) { pm.test('no request reached DashScope', function () { pm.expect(calls.length, JSON.stringify(calls)).to.equal(0); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"dashscope/qwen-image-2.0\",\"prompt\":\"a lighthouse at dusk\",\"response_format\":\"b64_json\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] dashscope/z-image-turbo /v1/images/generations n=2 is refused: Z-Image generates one image, no upstream call (dashscope images)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('dashscope images setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture's DashScope image endpoint, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/pp/dashscope/api/v1/services/aigc/multimodal-generation/generation'; })); }); }",
+              "var text = pm.response.text();",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, text).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, text).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names n', function () { pm.expect(body.error && body.error.param, text).to.equal('n'); });",
+              "wire(function (calls) { pm.test('no request reached DashScope', function () { pm.expect(calls.length, JSON.stringify(calls)).to.equal(0); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"dashscope/z-image-turbo\",\"prompt\":\"a lighthouse at dusk\",\"n\":2}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] dashscope/wan2.6-t2i /v1/images/generations a task-based Wan model is refused on the sync route with no upstream call (dashscope images)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('dashscope images setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture's DashScope image endpoint, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/pp/dashscope/api/v1/services/aigc/multimodal-generation/generation'; })); }); }",
+              "var text = pm.response.text();",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, text).to.equal(400); });",
+              "pm.test('error_type is caller_invalid_request', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, text).to.equal('caller_invalid_request'); });",
+              "pm.test('error.param names model', function () { pm.expect(body.error && body.error.param, text).to.equal('model'); });",
+              "wire(function (calls) { pm.test('no request reached DashScope', function () { pm.expect(calls.length, JSON.stringify(calls)).to.equal(0); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"dashscope/wan2.6-t2i\",\"prompt\":\"a lighthouse at dusk\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] dashscope/qwen-image-moderated /v1/images/generations a DataInspectionFailed 400 keeps its status and code and is caller_content_filtered (dashscope images)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('dashscope images setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture's DashScope image endpoint, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/pp/dashscope/api/v1/services/aigc/multimodal-generation/generation'; })); }); }",
+              "var text = pm.response.text();",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, text).to.equal(400); });",
+              "pm.test('error_type is caller_content_filtered', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, text).to.equal('caller_content_filtered'); });",
+              "pm.test('error.code is the vendor code verbatim', function () { pm.expect(body.error && body.error.code, text).to.equal('DataInspectionFailed'); });",
+              "wire(function (calls) { pm.test('exactly one request reached DashScope', function () { pm.expect(calls.length, JSON.stringify(calls)).to.equal(1); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"dashscope/qwen-image-moderated\",\"prompt\":\"a lighthouse at dusk\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-502] dashscope/qwen-image-empty /v1/images/generations a 200 with no image and no error is provider_empty_result (dashscope images)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('dashscope images setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture's DashScope image endpoint, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === '/pp/dashscope/api/v1/services/aigc/multimodal-generation/generation'; })); }); }",
+              "var text = pm.response.text();",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 502', function () { pm.expect(pm.response.code, text).to.equal(502); });",
+              "pm.test('error_type is provider_empty_result', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, text).to.equal('provider_empty_result'); });",
+              "wire(function (calls) { pm.test('exactly one request reached DashScope', function () { pm.expect(calls.length, JSON.stringify(calls)).to.equal(1); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"dashscope/qwen-image-empty\",\"prompt\":\"a lighthouse at dusk\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    }
+  ]
+}

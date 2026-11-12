@@ -1,6 +1,6 @@
 {
   "name": "316. DashScope provider registered, every operation unsupported (dashscope provider)",
-  "description": "The dashscope provider is Alibaba Model Studio's native DashScope API (Wan video, Qwen-Image, Qwen3-TTS, Qwen3-ASR); chat stays on qwen. This folder pins the registration only: the profile configures dashscope with a Singapore base_url and a workspace_base_url, the provider loads with both, and every operation answers 400 unsupported_operation until its own ticket adds it. A 400 unsupported_operation cannot come from DashScope, so these rows also prove no upstream call answered: an upstream call with the harness key would come back 401 or 2xx instead. Any non-empty DASHSCOPE_API_KEY works here, because nothing is sent upstream; without one the key is filtered out and the rows fail with no key for the model. Wan video has its converter since TXE-6432 (folder 423 pins it against the local fixture): the video row here sends a Wan 2.6 size outside the documented tiers, which the converter refuses with 400 caller_unsupported_parameter naming size before any upstream call, so the row still needs no real key.",
+  "description": "The dashscope provider is Alibaba Model Studio's native DashScope API (Wan video, Qwen-Image, Qwen3-TTS, Qwen3-ASR); chat stays on qwen. This folder pins the registration only: the profile configures dashscope with a Singapore base_url and a workspace_base_url, the provider loads with both, and every operation answers 400 unsupported_operation until its own ticket adds it. A 400 unsupported_operation cannot come from DashScope, so these rows also prove no upstream call answered: an upstream call with the harness key would come back 401 or 2xx instead. Any non-empty DASHSCOPE_API_KEY works here, because nothing is sent upstream; without one the key is filtered out and the rows fail with no key for the model. Wan video has its converter since TXE-6432 (folder 423 pins it against the local fixture): the video row here sends a Wan 2.6 size outside the documented tiers, which the converter refuses with 400 caller_unsupported_parameter naming size before any upstream call, so the row still needs no real key. Image generation and edit are served since TXE-6607 and pinned by folder 425.",
   "item": [
     {
       "name": "GET /api/providers/dashscope - provider loads with the Singapore base and the workspace base",
@@ -77,51 +77,6 @@
           "path": [
             "v1",
             "videos"
-          ]
-        }
-      }
-    },
-    {
-      "name": "[EXPECT-400] /v1/images/generations - Qwen-Image generation answers unsupported with no upstream call - dashscope/qwen-image-plus",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('image_generation is refused as unsupported by dashscope', function () {",
-              "  var text = pm.response.text();",
-              "  pm.expect(pm.response.code, 'want 400 unsupported_operation, got: ' + text).to.eql(400);",
-              "  var body = pm.response.json();",
-              "  pm.expect(body.error && body.error.code, text).to.eql('unsupported_operation');",
-              "  pm.expect(body.error.message, text).to.include('image_generation');",
-              "  pm.expect(body.error.message, text).to.include('dashscope');",
-              "});"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"model\": \"dashscope/qwen-image-plus\",\n  \"prompt\": \"A lighthouse at dusk\",\n  \"n\": 1\n}"
-        },
-        "url": {
-          "raw": "{{baseUrl}}/v1/images/generations",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "v1",
-            "images",
-            "generations"
           ]
         }
       }
