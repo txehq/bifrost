@@ -653,6 +653,51 @@ func SafeExtractBoolPointer(value interface{}) (*bool, bool) {
 	return nil, false
 }
 
+// QueryExtraParamBool reads the provider-specific boolean parameter name from the
+// ExtraParams of a request the HTTP transport fills from the query string
+// (GET /v1/models, GET /v1/files). A query string carries text, so the value arrives as
+// "true" or "false", or as a list of them when the name was sent more than once; a Go
+// caller may set a bool (fork, TXE-7102).
+//
+// set is false when the name is missing or empty. Anything that is not one boolean, a
+// value other than true or false or a name sent several times, is refused with 400
+// caller_unsupported_parameter naming the parameter, never read as absent.
+//
+// Read a boolean parameter of such a request with this function and never with a bool
+// type assertion, which reads "true" from a query string as absent.
+// TestQueryFedExtraParamsAreNotReadWithATypedAssertion fails on such a read.
+func QueryExtraParamBool(extra map[string]interface{}, name string) (value bool, set bool, bifrostErr *BifrostError) {
+	var text string
+	switch v := extra[name].(type) {
+	case nil:
+		return false, false, nil
+	case bool:
+		return v, true, nil
+	case string:
+		text = v
+	case []string:
+		switch len(v) {
+		case 0:
+			return false, false, nil
+		case 1:
+			text = v[0]
+		default:
+			return false, false, NewUnsupportedParameterError(name, fmt.Sprintf("parameter %q was sent %d times; this provider takes it once", name, len(v)))
+		}
+	default:
+		return false, false, NewUnsupportedParameterError(name, fmt.Sprintf("parameter %q must be true or false", name))
+	}
+	switch text {
+	case "":
+		return false, false, nil
+	case "true":
+		return true, true, nil
+	case "false":
+		return false, true, nil
+	}
+	return false, false, NewUnsupportedParameterError(name, fmt.Sprintf("parameter %q must be true or false, got %q", name, text))
+}
+
 // SafeExtractFromMap safely extracts a value from a map[string]interface{} with type checking
 func SafeExtractFromMap(m map[string]interface{}, key string) (interface{}, bool) {
 	if m == nil {

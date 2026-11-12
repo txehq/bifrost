@@ -538,6 +538,17 @@ test("compatible chat requests are recorded, and the azure content filter answer
   assert.equal(sheet["oc-tiered"].provider, "moonshot");
 });
 
+// Folder 488 (TXE-7086): Cohere's model list is recorded with the query string as it arrived.
+test("cohere model list reads are recorded with their query string", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}`;
+  const listed = await fetch(`${base}/pp/cohere/v1/models?endpoint=chat&page_size=1000`);
+  assert.equal(listed.status, 200);
+  assert.deepEqual(await listed.json(), { models: [] });
+  const { calls } = (await (await fetch(`${base}/__wire`)).json()).data[0];
+  assert.deepEqual(calls.map((c) => [c.method, c.path, c.query]), [["GET", "/pp/cohere/v1/models", "?endpoint=chat&page_size=1000"]]);
+});
+
 // Folder 429 (TXE-7044): gpt-image-drop is read and recorded, then loses its connection unanswered.
 test("gpt-image-drop is recorded on the wire and its connection dropped without a response", async (t) => {
   const post = await startFixture(t);
