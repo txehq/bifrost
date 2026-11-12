@@ -3,9 +3,10 @@
 // transcription. Chat stays on the qwen provider, which speaks DashScope's
 // OpenAI-compatible mode.
 //
-// This file registers the provider. Each operation answers the unsupported-operation
-// error until the ticket that adds it lands, so a configured provider never calls
-// upstream for an operation it cannot convert.
+// This file registers the provider. Wan video (create, query, cancel, download) is in
+// videos.go. Every other operation answers the unsupported-operation error until the ticket
+// that adds it lands, so a configured provider never calls upstream for an operation it
+// cannot convert.
 package dashscope
 
 import (
@@ -93,6 +94,49 @@ func (provider *DashScopeProvider) baseURLFor(requestType schemas.RequestType) s
 func (provider *DashScopeProvider) setRequestHeaders(ctx context.Context, req *fasthttp.Request, key schemas.Key) {
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	setAuthHeader(req, key)
+}
+
+// doDashScopeRequest sends one request to DashScope and returns a copy of the body of a 2xx response.
+// requestType picks the base (see baseURLFor). A create request is the only one with a body,
+// and the only one that carries X-DashScope-Async: enable, without which the video endpoint
+// refuses the call.
+func (provider *DashScopeProvider) doDashScopeRequest(ctx *schemas.BifrostContext, key schemas.Key, requestType schemas.RequestType, method, pathAndQuery string, jsonData []byte, sendBackRawRequest, sendBackRawResponse bool) ([]byte, time.Duration, *schemas.BifrostError) {
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	provider.setRequestHeaders(ctx, req, key)
+	req.SetRequestURI(provider.baseURLFor(requestType) + pathAndQuery)
+	req.Header.SetMethod(method)
+	if requestType == schemas.VideoGenerationRequest {
+		req.Header.Set("X-DashScope-Async", "enable")
+	}
+	if jsonData != nil {
+		req.Header.SetContentType("application/json")
+		req.SetBody(jsonData)
+	}
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, latency, bifrostErr
+	}
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
+	if resp.StatusCode() < fasthttp.StatusOK || resp.StatusCode() >= fasthttp.StatusMultipleChoices {
+		var errBody []byte
+		if decoded, err := providerUtils.CheckAndDecodeBody(resp); err == nil {
+			errBody = append([]byte(nil), decoded...)
+		}
+		return nil, latency, providerUtils.EnrichError(ctx, parseDashScopeError(resp), jsonData, errBody, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		rawErrBody := append([]byte(nil), resp.Body()...)
+		return nil, latency, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+	return append([]byte(nil), body...), latency, nil
 }
 
 // ListModels is not supported by the DashScope provider yet.
@@ -210,34 +254,14 @@ func (provider *DashScopeProvider) ImageVariation(_ *schemas.BifrostContext, _ s
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
 }
 
-// VideoGeneration is not supported by the DashScope provider yet.
-func (provider *DashScopeProvider) VideoGeneration(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoGenerationRequest, provider.GetProviderKey())
-}
-
 // VideoEdit is not supported by the DashScope provider yet.
 func (provider *DashScopeProvider) VideoEdit(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoEditRequest) (*schemas.BifrostVideoEditResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoEditRequest, provider.GetProviderKey())
 }
 
-// VideoRetrieve is not supported by the DashScope provider yet.
-func (provider *DashScopeProvider) VideoRetrieve(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRetrieveRequest, provider.GetProviderKey())
-}
-
-// VideoDownload is not supported by the DashScope provider yet.
-func (provider *DashScopeProvider) VideoDownload(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoDownloadRequest, provider.GetProviderKey())
-}
-
 // VideoDelete is not supported by the DashScope provider yet.
 func (provider *DashScopeProvider) VideoDelete(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoDeleteRequest) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoDeleteRequest, provider.GetProviderKey())
-}
-
-// VideoList is not supported by the DashScope provider yet.
-func (provider *DashScopeProvider) VideoList(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
 }
 
 // VideoRemix is not supported by the DashScope provider yet.

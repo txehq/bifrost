@@ -45,12 +45,13 @@ func parseDashScopeError(resp *fasthttp.Response) *schemas.BifrostError {
 //   - InternalError* and ServiceUnavailable are the vendor's own failures.
 //   - DataInspectionFailed (data_inspection_failed in compatible mode) is DashScope's
 //     content moderation refusing the caller's input or output, whatever its status
-//     (contract C6, BF9).
+//     (contract C6, BF9). IPInfringementSuspect is the same refusal for content that
+//     moderation suspects of infringing intellectual property.
 //
 // "" leaves the error to ClassifyErrorType's status rules.
 func dashScopeErrorType(code string) schemas.ErrorType {
 	switch {
-	case code == "DataInspectionFailed", code == "data_inspection_failed":
+	case code == "DataInspectionFailed", code == "data_inspection_failed", code == "IPInfringementSuspect":
 		return schemas.ErrorTypeCallerContentFiltered
 	case code == "Arrearage", code == "AllocationQuota.FreeTierOnly":
 		return schemas.ErrorTypeProviderBilling

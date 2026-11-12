@@ -1,6 +1,6 @@
 ---
 title: "Alibaba DashScope"
-description: "Alibaba Cloud Model Studio's native DashScope API: provider registration, Singapore and workspace base addresses, auth and error mapping"
+description: "Alibaba Cloud Model Studio's native DashScope API: Wan video tasks, Singapore and workspace base addresses, auth and error mapping"
 icon: "d"
 ---
 
@@ -9,14 +9,15 @@ icon: "d"
 The `dashscope` provider is Alibaba Cloud Model Studio's native DashScope API, which serves Wan video, Qwen-Image and Z-Image images, Qwen3-TTS speech and Qwen3-ASR transcription. Qwen chat stays on the [`qwen`](/providers/supported-providers/qwen) provider, which speaks DashScope's OpenAI-compatible mode.
 
 <Note>
-This release registers the provider only. Every operation returns `UnsupportedOperationError` (HTTP 400, `error.code` `unsupported_operation`) without calling DashScope. Video, image, speech and transcription are added operation by operation in later releases.
+Wan video is implemented: create, query, list, cancel and download. Every other operation returns `UnsupportedOperationError` (HTTP 400, `error.code` `unsupported_operation`) without calling DashScope. Image, speech and transcription are added operation by operation in later releases.
 </Note>
 
 ### Supported Operations
 
 | Operation | Non-Streaming | Streaming | Base |
 |-----------|---------------|-----------|------|
-| Video (Wan) | ❌ (planned) | - | `workspace_base_url` |
+| Video create, query, list, cancel, download (Wan) | ✅ | - | `workspace_base_url` |
+| Video delete, remix, edit | ❌ | - | - |
 | Image generation and edit (Qwen-Image, Z-Image) | ❌ (planned) | ❌ | `base_url` |
 | Speech (Qwen3-TTS) | ❌ (planned) | ❌ (planned) | `base_url` |
 | Transcription (Qwen3-ASR) | ❌ (planned) | ❌ | `base_url` |
@@ -44,7 +45,7 @@ curl -X POST http://localhost:8080/api/providers \
       {
         "name": "dashscope-key-1",
         "value": "env.DASHSCOPE_API_KEY",
-        "models": ["wan2.6-t2v", "qwen-image-plus", "qwen3-tts-flash"],
+        "models": ["wan3.0-video", "wan2.7-t2v", "wan2.6-t2v"],
         "weight": 1.0
       }
     ],
@@ -82,6 +83,95 @@ curl -X POST http://localhost:8080/api/providers \
 </Tab>
 </Tabs>
 
+## Wan video
+
+A Wan video is an asynchronous task. Each route makes one call to DashScope: Bifrost does not retry, poll or store the task.
+
+| Route | DashScope call |
+|-------|----------------|
+| `POST /v1/videos` | `POST /api/v1/services/aigc/video-generation/video-synthesis` with `X-DashScope-Async: enable` |
+| `GET /v1/videos/{id}` | `GET /api/v1/tasks/{task_id}` |
+| `POST /v1/videos/{id}/cancel` | `POST /api/v1/tasks/{task_id}/cancel` |
+| `GET /v1/videos/{id}/content` | `GET /api/v1/tasks/{task_id}`, then the task's `video_url` without the key |
+
+### Request fields
+
+The request shape depends on the model family, which Bifrost reads from the model name. A model outside these families (for example HappyHorse) returns 400 with `error_type` `caller_model_unknown` and is not sent.
+
+| Unified field | Wan 3.0 (`wan3.0-*`) | Wan 2.7 (`wan2.7-*`) | Wan 2.6 and earlier (`wan2.6-*`, `wan2.5-*`, `wan2.2-*`, `wan2.1-*`) |
+|---------------|----------------------|----------------------|----------------------------------------------------------------------|
+| `prompt` | `input.prompt` | `input.prompt` | `input.prompt` |
+| `negative_prompt` | `input.negative_prompt` | `input.negative_prompt` | `input.negative_prompt` |
+| `input_reference` (first frame) | `input.media[]` `first_frame` | `input.media[]` `first_frame` | `input.img_url` |
+| `last_frame` | `input.media[]` `last_frame` | `input.media[]` `last_frame` | 400 |
+| `reference_images` | `input.media[]` `reference_image`, in order | 400 | 400 |
+| `resolution` (`720P`, `1080P`, ...) | `parameters.resolution` | `parameters.resolution` | `parameters.resolution` with a first frame; 400 without one |
+| `aspect_ratio` | `parameters.ratio` | `parameters.ratio` for text-to-video; 400 with a first frame | 400 |
+| `size` (`1280x720`) | 400 | 400 | `parameters.size` as `1280*720` for text-to-video; 400 with a first frame |
+| `seconds` | `parameters.duration` | `parameters.duration` | `parameters.duration` |
+| `audio` | `parameters.audio` | `parameters.audio` | `parameters.audio` |
+| `seed` | `parameters.seed` | `parameters.seed` | `parameters.seed` |
+
+- "400" is `error_type` `caller_unsupported_parameter` with the field in `error.param`, returned before any call to DashScope. Bifrost never drops a field, replaces it or moves a value into range.
+- With `x-bf-passthrough-extra-params: true`, an extra param named `input` or `parameters` is merged into the object of that name in DashScope's body. A key Bifrost writes there itself (`input.prompt`, `negative_prompt`, `img_url`, `media`; `parameters.size`, `resolution`, `ratio`, `duration`, `audio`, `seed`, `watermark`, `prompt_extend`) is refused with 400 `caller_unsupported_parameter` naming it, for example `parameters.size`: send the request's own field. Any other nested key travels to DashScope.
+- `resolution` is sent in upper case (`720p` becomes `720P`). `seconds` must be a whole number; `5.5` is a 400.
+- `size` for Wan 2.6 and earlier must be one of DashScope's documented sizes: `832x480`, `480x832`, `624x624`, `1280x720`, `720x1280`, `960x960`, `1088x832`, `832x1088`, `1920x1080`, `1080x1920`, `1440x1440`, `1632x1248`, `1248x1632`. Which of them one model offers is checked by DashScope. Write it as `WxH` with a lower-case `x`; `1280*720` and `1280X720` are a 400.
+- `output_format`, `video_uri` and the four task control fields (`callback_url`, `client_reference_id`, `expires_after_seconds`, `output_storage_uri`) are a 400: DashScope has no parameter for them.
+- `watermark` and `prompt_extend` (booleans) go to `parameters`. On Wan 3.0, `reference_videos` and `reference_audios` (arrays of URLs) go to `input.media[]` as `reference_video` and `reference_audio`. Each address is an `http` or `https` URL, or a `data:video/` (`data:audio/`) URL; any other scheme, `oss://` included, is a 400.
+- With `x-bf-passthrough-extra-params: true`, any other top-level field is merged into the body sent to DashScope, objects recursively. For example `"parameters": {"shot_type": "multi"}` or `"input": {"audio_url": "https://..."}`.
+
+```bash
+curl -X POST http://localhost:8080/v1/videos \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "dashscope/wan3.0-video",
+    "prompt": "A kitten running on a rooftop under the moonlight",
+    "seconds": "5",
+    "resolution": "720P",
+    "aspect_ratio": "16:9"
+  }'
+```
+
+### Task object
+
+| Task object field | DashScope field |
+|-------------------|-----------------|
+| `id` | `output.task_id`, with the `:dashscope` suffix |
+| `status`, `provider_status` | `output.task_status`: `PENDING` → `queued`, `RUNNING` → `in_progress`, `SUCCEEDED` → `completed`, `FAILED` → `failed`, `CANCELED` → `cancelled`, `UNKNOWN` → `expired`. `provider_status` is DashScope's string unchanged |
+| `created_at`, `completed_at` | `output.submit_time`, `output.end_time`, which DashScope sends in UTC+8 |
+| `videos[]` | `output.video_url` as `{"type": "url", "url": ..., "content_type": "video/mp4"}`, the vendor's link unchanged |
+| `expires_at` | `submit_time` plus 24 hours: DashScope keeps a task and its link for 24 hours |
+| `usage.output_seconds`, `seconds` | `usage.output_video_duration`; for the older families, which do not report it, `usage.video_duration` or `usage.duration`. Absent when DashScope reports none |
+| `usage.input_seconds` | `usage.input_video_duration`, only when DashScope reports it |
+| `error` | `output.code` and `output.message` of a failed task |
+| `content_filter` | Set when a failed task's code is `DataInspectionFailed` or `IPInfringementSuspect` |
+
+DashScope reports `UNKNOWN` for a task older than 24 hours and for a task id it never issued. Both are `expired`.
+
+The create response carries the id and `status` `queued` only. DashScope returns the times, usage and link on a query.
+
+### Cancel
+
+DashScope cancels a task only while it is `PENDING`. For a task in any other state it answers 400 `UnsupportedOperation`, which Bifrost returns as 400 with `error_type` `provider_cancel_unsupported` and DashScope's message. A cancelled task object carries `status` `cancelled` and no `provider_status`, because DashScope's cancel response reports no state.
+
+### List
+
+`GET /v1/videos?provider=dashscope` calls DashScope's task list, `GET /api/v1/tasks`.
+
+| Query parameter | Sent to DashScope as |
+|-----------------|----------------------|
+| `limit` | `page_size` |
+| `page_no`, `start_time`, `end_time`, `model_name`, `status`, and any other DashScope filter | the same name and value, unchanged; a repeated parameter stays repeated |
+| `after`, `order` | 400, before any call: DashScope pages by number and has no order parameter |
+
+DashScope pages by number. While there is a further page, the response has `has_more` `true` and `next`, the number of the following page: send it back as `page_no`. `has_more` is read from DashScope's own `page_no` and `total_page`. `start_time` and `end_time` are DashScope's `YYYYMMDDhhmmss`.
+
+```bash
+curl "http://localhost:8080/v1/videos?provider=dashscope&limit=20&model_name=wan2.6-t2v&status=SUCCEEDED&page_no=2"
+```
+
+Each entry carries `id` (with the `:dashscope` suffix), `model`, `status` by the table above, `created_at` (DashScope's `gmt_create`) and, for a finished task, `completed_at` (`end_time`). DashScope's list has no prompt, size or link: query the task for those. The list is of every asynchronous task of the account in DashScope's 24-hour window, image tasks included; `model_name` narrows it.
+
 ## Authentication
 
 The API key is sent as `Authorization: Bearer <key>`. An `extra_headers` entry named `Authorization` does not replace it.
@@ -101,6 +191,6 @@ DashScope returns `{"request_id": "...", "code": "...", "message": "..."}` with 
 | `Throttling`, `Throttling.*` | 429 | `provider_rate_limited` |
 | `InternalError`, `InternalError.*` | 500 | `provider_server_error` |
 | `ServiceUnavailable` | 503 | `provider_overloaded` |
-| `DataInspectionFailed`, `data_inspection_failed` (content moderation) | 400 | `caller_content_filtered` |
+| `DataInspectionFailed`, `data_inspection_failed`, `IPInfringementSuspect` (content moderation) | 400 | `caller_content_filtered` |
 
 Any other code is classified from its status.

@@ -35,7 +35,7 @@ func TestDashScopeBases(t *testing.T) {
 		{name: "workspace base for video", network: schemas.NetworkConfig{WorkspaceBaseURL: workspace + "/"}, wantRegional: DefaultBaseURL, wantWorkspace: workspace},
 	}
 	regional := []schemas.RequestType{schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.SpeechRequest, schemas.SpeechStreamRequest, schemas.TranscriptionRequest}
-	video := []schemas.RequestType{schemas.VideoGenerationRequest, schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoListRequest, schemas.VideoDeleteRequest}
+	video := []schemas.RequestType{schemas.VideoGenerationRequest, schemas.VideoRetrieveRequest, schemas.VideoCancelRequest, schemas.VideoDownloadRequest, schemas.VideoListRequest, schemas.VideoDeleteRequest}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			provider := newTestProvider(t, tc.network)
@@ -73,8 +73,18 @@ func TestDashScopeRequestHeaders(t *testing.T) {
 	}
 }
 
-// TestDashScopeOperationsAreUnsupported pins that every operation answers the
-// unsupported-operation error, naming its own request type, without calling upstream.
+// dashScopeImplementedOperations are the Provider methods the provider implements; their
+// tests are in videos_test.go.
+var dashScopeImplementedOperations = map[string]bool{
+	"VideoGeneration": true,
+	"VideoRetrieve":   true,
+	"VideoDownload":   true,
+	"VideoList":       true,
+}
+
+// TestDashScopeOperationsAreUnsupported pins that every operation the provider does not
+// implement answers the unsupported-operation error, naming its own request type, without
+// calling upstream.
 func TestDashScopeOperationsAreUnsupported(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -90,7 +100,7 @@ func TestDashScopeOperationsAreUnsupported(t *testing.T) {
 	value := reflect.ValueOf(provider)
 	for i := 0; i < iface.NumMethod(); i++ {
 		method := iface.Method(i)
-		if method.Name == "GetProviderKey" {
+		if method.Name == "GetProviderKey" || dashScopeImplementedOperations[method.Name] {
 			continue
 		}
 		fn := value.MethodByName(method.Name)

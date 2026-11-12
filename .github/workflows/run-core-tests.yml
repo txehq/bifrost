@@ -119,8 +119,9 @@ jobs:
           # tokenhub.tencentmaas.com, sync.assemblyai.com, api-singapore.klingai.com and api.moonshot.ai are listed although this job does not pass those
           # providers' keys yet: the harness skips a provider only while its key is
           # absent, so the host must already be here the day a key is added (TXE-6981).
-          # dashscope-intl.aliyuncs.com is dialled by no request yet: every dashscope
-          # operation is unsupported and its key is a non-secret sentinel (TXE-6590).
+          # dashscope-intl.aliyuncs.com is dialled by no harness row yet: its key is a
+          # non-secret sentinel, and the dashscope rows that run with it are refused
+          # before any upstream call (TXE-6590, TXE-6432).
           # api.bfl.ai is dialled by no request yet: every bfl operation is
           # unsupported and its key is a non-secret sentinel (TXE-6591).
           allowed-endpoints: >

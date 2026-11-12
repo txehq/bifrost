@@ -511,6 +511,60 @@ test("a Gemini generateContent path answers by its image fixture model", async (
   assert.ok(other.candidates[0].content.parts.some((p) => p.executableCode || p.codeExecutionResult || p.text !== undefined), "the code-execution answer");
 });
 
+// TXE-6432: the DashScope routes answer in DashScope's shapes, the task id picks the answer, only a
+// PENDING task can be cancelled, and /__wire keeps each request's method and X-DashScope-Async header.
+test("the DashScope video routes answer by task id and record the async header", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}`;
+  const created = await fetch(`${base}/pp/dashscope/api/v1/services/aigc/video-generation/video-synthesis`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-DashScope-Async": "enable", Authorization: "Bearer not-recorded" },
+    body: JSON.stringify({ model: "wan3.0-video", input: { prompt: "p" } }),
+  });
+  assert.equal(created.status, 200);
+  assert.deepEqual((await created.json()).output, { task_status: "PENDING", task_id: "ds-pending" });
+
+  const task = async (id) => (await fetch(`${base}/pp/dashscope/api/v1/tasks/${id}`)).json();
+  const succeeded = await task("ds-succeeded");
+  assert.equal(succeeded.output.task_id, "ds-succeeded");
+  assert.equal(succeeded.output.task_status, "SUCCEEDED");
+  assert.equal(succeeded.usage.output_video_duration, 10);
+  assert.equal((await task("ds-filtered")).output.code, "DataInspectionFailed");
+  assert.equal((await task("ds-infringing")).output.code, "IPInfringementSuspect");
+  assert.equal((await task("ds-expired")).output.task_status, "UNKNOWN");
+  assert.equal((await fetch(`${base}/pp/dashscope/api/v1/tasks/no-such-task`)).status, 404);
+
+  const cancel = (id) => fetch(`${base}/pp/dashscope/api/v1/tasks/${id}/cancel`, { method: "POST" });
+  assert.equal((await cancel("ds-pending")).status, 200);
+  const refused = await cancel("ds-running");
+  assert.equal(refused.status, 400);
+  assert.equal((await refused.json()).code, "UnsupportedOperation");
+
+  const wire = (await (await fetch(`${base}/__wire`)).json()).data[0].calls;
+  assert.equal(wire[0].method, "POST");
+  assert.equal(wire[0].async, "enable");
+  assert.equal(JSON.parse(wire[0].body).model, "wan3.0-video");
+  assert.equal(JSON.stringify(wire).includes("not-recorded"), false, "no Authorization header is kept");
+  assert.deepEqual(wire.slice(-2).map((c) => `${c.method} ${c.path}`), [
+    "POST /pp/dashscope/api/v1/tasks/ds-pending/cancel",
+    "POST /pp/dashscope/api/v1/tasks/ds-running/cancel",
+  ]);
+
+  // The task list: two pages of two in DashScope's page shape; page_no=2 is the last.
+  const list = async (query) => (await fetch(`${base}/pp/dashscope/api/v1/tasks${query}`)).json();
+  const first = await list("?page_size=2&status=SUCCEEDED");
+  assert.deepEqual(first.data.map((d) => d.task_id), ["ds-succeeded", "ds-running"]);
+  assert.deepEqual([first.total, first.total_page, first.page_no, first.page_size], [3, 2, 1, 2]);
+  const last = await list("?page_no=2");
+  assert.deepEqual(last.data.map((d) => [d.task_id, d.status]), [["ds-canceled", "CANCELED"]]);
+  assert.equal(last.page_no, 2);
+  const listed = (await (await fetch(`${base}/__wire`)).json()).data[0].calls.slice(-2);
+  assert.deepEqual(listed.map((c) => `${c.method} ${c.path} ${c.query}`), [
+    "GET /pp/dashscope/api/v1/tasks ?page_size=2&status=SUCCEEDED",
+    "GET /pp/dashscope/api/v1/tasks ?page_no=2",
+  ]);
+});
+
 // TXE-6527: the OpenAI-compatible chat paths record the body the vendor received, so a harness row can read
 // max_completion_tokens, the prompt-cache fields and the service tier back; the Azure blocked-prompt answer is
 // the documented 400 with code content_filter; the capability sheet lists the tiers of oc-tiered.
