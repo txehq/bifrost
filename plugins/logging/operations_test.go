@@ -5423,6 +5423,43 @@ func BenchmarkRecordVideoJobLifecycleGate(b *testing.B) {
 	}
 }
 
+// BenchmarkVideoDimensionsFromEntryParams measures the request-dimension capture a video
+// create pays once, when its job row is written, with the JSON encoding of the result
+// (TXE-7122). "sized" is a size-only create
+// with no extra params (OpenAI's shape). "vendor extras" carries only vendor knobs, whose
+// map is kept as it is. "tier with copies" is a Wan or Seedance create that names its tier:
+// the handlers keep a copy of each unified field among the extra params, and only this case
+// copies the map, to drop them.
+func BenchmarkVideoDimensionsFromEntryParams(b *testing.B) {
+	seconds := "5"
+	cases := []struct {
+		name   string
+		params *schemas.VideoGenerationParameters
+	}{
+		{"sized", &schemas.VideoGenerationParameters{Seconds: &seconds, Size: "1280x720"}},
+		{"vendor extras", &schemas.VideoGenerationParameters{
+			Seconds: &seconds, Size: "1280x720",
+			ExtraParams: map[string]any{"watermark": false, "camera_fixed": true},
+		}},
+		{"tier with copies", &schemas.VideoGenerationParameters{
+			Seconds: &seconds, Resolution: "1080p", AspectRatio: "16:9",
+			ExtraParams: map[string]any{"resolution": "1080p", "aspect_ratio": "16:9", "watermark": false},
+		}},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			entry := &logstore.Log{ParamsParsed: tc.params, VideoGenerationInputParsed: &schemas.VideoGenerationInput{Prompt: "a cat"}}
+			b.ReportAllocs()
+			for b.Loop() {
+				// Capture and the encoding written to the row's params column.
+				if _, err := jobaccounting.MarshalVideoDimensions(videoDimensionsFromEntryParams(entry, schemas.VideoGenerationRequest)); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkProviderJobAccountingEnabled is the switch read on its own.
 func BenchmarkProviderJobAccountingEnabled(b *testing.B) {
 	plugin := &LoggerPlugin{}

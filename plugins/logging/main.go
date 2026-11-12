@@ -980,19 +980,40 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 // last_frame and reference_images it would write the frame itself, a URL or a whole
 // data URL, into the pricing row. A copy the typed field could not hold (Runware 3D's
 // numeric resolution) stays: it is captured nowhere else.
+//
+// A map holding no such copy is returned as it is, as before this filter existed, so the
+// common video create allocates nothing here; only a map that does hold one is copied.
+// The dimensions are marshalled onto the job row straight away and MergedWith never
+// writes into Extra, so sharing the request's map is safe.
 func videoExtraDimensions(extra map[string]any, dims modelcatalog.VideoPricingDimensions) map[string]any {
 	if len(extra) == 0 {
 		return nil
 	}
-	held := map[string]bool{
-		"resolution":       dims.Resolution != "",
-		"aspect_ratio":     dims.AspectRatio != "",
-		"last_frame":       dims.LastFrame,
-		"reference_images": dims.ReferenceImages > 0,
+	held := func(key string) bool {
+		switch key {
+		case "resolution":
+			return dims.Resolution != ""
+		case "aspect_ratio":
+			return dims.AspectRatio != ""
+		case "last_frame":
+			return dims.LastFrame
+		case "reference_images":
+			return dims.ReferenceImages > 0
+		}
+		return false
 	}
-	out := make(map[string]any, len(extra))
+	copies := 0
+	for _, name := range schemas.UnifiedVideoGenerationFields {
+		if _, ok := extra[name]; ok && held(name) {
+			copies++
+		}
+	}
+	if copies == 0 {
+		return extra
+	}
+	out := make(map[string]any, len(extra)-copies)
 	for key, value := range extra {
-		if held[key] {
+		if held(key) {
 			continue
 		}
 		out[key] = value
