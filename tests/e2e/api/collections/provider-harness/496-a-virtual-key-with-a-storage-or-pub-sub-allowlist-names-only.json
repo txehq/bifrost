@@ -1,6 +1,6 @@
 {
   "name": "496. A virtual key with a storage or Pub/Sub allowlist names only what the list covers (storage allowlist) [SERIAL]",
-  "description": "TXE-7088. Local fixture regression, no live provider call: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. A request can carry the name of cloud storage or of a Pub/Sub topic that the provider reads, writes or publishes to with the operator's own cloud identity, which every virtual key on the provider shares. A virtual key can be limited to the storage and topics it may name (allowed_storage_prefixes, allowed_pubsub_topics); a key with no list is not restricted. The provider is the OpenAI-shaped stand-in storage_uri_files (the fixture's /pp/storage); what the folder pins is the gateway's check, which runs before any provider call and is the same code for every provider. 496.1 and 496.2 create a key limited to gs://bifrost-fixture-bucket/tenant-a/ and one topic, and a key with no lists. 496.3 serves the limited key inside its folder. 496.4 to 496.8 are the limited key outside it: as an input, by the https URL of the same object, in a folder whose name only starts with the allowed one, as a video task's output location and as a batch's output folder; each is a 403. 496.9 is a wildcard, a 400. 496.10 and 496.11 are another topic (403) and the key's own (served). 496.12 serves the key with no lists. 496.13 and 496.14 show an invalid entry refused on update and the key still limited. 496.15 reads what reached the provider: the three served chats and nothing else. TXE-7230: a raw body forwarded as it was received is read whole for topics less the members of its wire format that hold conversation text. 496.18 creates a key limited to one topic on Gemini. 496.19 is a native Gemini chat (raw body forwarded) whose prompt is exactly another topic's name, served; 496.20 is the same body with that topic in generationConfig, a 403. 496.21 reads that only the served chat reached Gemini, with its body as sent. 496.22 deletes the key.",
+  "description": "TXE-7088. Local fixture regression, no live provider call: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. A request can carry the name of cloud storage or of a Pub/Sub topic that the provider reads, writes or publishes to with the operator's own cloud identity, which every virtual key on the provider shares. A virtual key can be limited to the storage and topics it may name (allowed_storage_prefixes, allowed_pubsub_topics); a key with no list is not restricted. The provider is the OpenAI-shaped stand-in storage_uri_files (the fixture's /pp/storage); what the folder pins is the gateway's check, which runs before any provider call and is the same code for every provider. 496.1 and 496.2 create a key limited to gs://bifrost-fixture-bucket/tenant-a/ and one topic, and a key with no lists. 496.3 serves the limited key inside its folder. 496.4 to 496.8 are the limited key outside it: as an input, by the https URL of the same object, in a folder whose name only starts with the allowed one, as a video task's output location and as a batch's output folder; each is a 403. 496.9 is a wildcard, a 400. 496.10 and 496.11 are another topic (403) and the key's own (served). 496.12 serves the key with no lists. 496.13 and 496.14 show an invalid entry refused on update and the key still limited. 496.15 reads what reached the provider: the three served chats and nothing else. TXE-7230: a raw body forwarded as it was received is read whole for topics less the members of its wire format that hold conversation text. 496.18 creates a key limited to one topic on Gemini and Anthropic. 496.19 is a native Gemini chat (raw body forwarded) whose prompt is exactly another topic's name, served; 496.20 is the same body with that topic in generationConfig, a 403. 496.21 reads that only the served chat reached Gemini, with its body as sent. 496.22 and 496.23 are the same pair on the native Anthropic Messages route from Claude Code (raw body forwarded): a prompt that is exactly another topic's name is served, the topic in metadata is a 403; 496.24 reads that only the served one reached Anthropic, as sent. 496.25 deletes the key.",
   "item": [
     {
       "name": "496.1 [setup] virtual key A (limited to tenant-a)",
@@ -1038,7 +1038,7 @@
       }
     },
     {
-      "name": "496.18 [setup] virtual key C (limited to one Pub/Sub topic, on Gemini)",
+      "name": "496.18 [setup] virtual key C (limited to one Pub/Sub topic, on Gemini and Anthropic)",
       "event": [
         {
           "listen": "prerequest",
@@ -1076,7 +1076,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\"name\": \"harness-496-c-{{$guid}}\", \"provider_configs\": [{\"provider\": \"gemini\", \"weight\": 1, \"allowed_models\": [\"*\"], \"key_ids\": [\"*\"]}], \"allowed_pubsub_topics\": [\"projects/fixture/topics/tenant-a\"]}",
+          "raw": "{\"name\": \"harness-496-c-{{$guid}}\", \"provider_configs\": [{\"provider\": \"gemini\", \"weight\": 1, \"allowed_models\": [\"*\"], \"key_ids\": [\"*\"]}, {\"provider\": \"anthropic\", \"weight\": 1, \"allowed_models\": [\"*\"], \"key_ids\": [\"*\"]}], \"allowed_pubsub_topics\": [\"projects/fixture/topics/tenant-a\"]}",
           "options": {
             "raw": {
               "language": "json"
@@ -1266,7 +1266,179 @@
       }
     },
     {
-      "name": "496.22 [cleanup] virtual key C is deleted",
+      "name": "496.22 a native Anthropic Messages request from Claude Code whose prompt is exactly another topic's name is served",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('allowVkTopic')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the request is served', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{allowVkTopic}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "User-Agent",
+            "value": "claude-cli/2.0.0 (external, cli)"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"anthropic/claude-sonnet-4-5-topic-prompt\", \"max_tokens\": 16, \"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"projects/fixture/topics/tenant-b\"}]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "496.23 [EXPECT-403] the same request with that topic in metadata is refused",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('allowVkTopic')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('a topic outside the key list is 403', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(403); });",
+              "pm.test('the refusal names the topic', function () { pm.expect(txt).to.include('is not one this virtual key may use'); pm.expect(txt).to.include('projects/fixture/topics/tenant-b'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{allowVkTopic}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "User-Agent",
+            "value": "claude-cli/2.0.0 (external, cli)"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"anthropic/claude-sonnet-4-5-topic-prompt\", \"max_tokens\": 16, \"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"projects/fixture/topics/tenant-b\"}]}], \"metadata\": {\"user_id\": \"projects/fixture/topics/tenant-b\"}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ]
+        }
+      }
+    },
+    {
+      "name": "496.24 only the served Anthropic request reached Anthropic, with the body as it was sent",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('allowVkTopic')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls.filter(function (c) { return String(c.path) === '/pp/anthropic/v1/messages' && String(c.body).indexOf('claude-sonnet-4-5-topic-prompt') !== -1; });",
+              "pm.test('one Messages call, nothing else', function () { pm.expect(calls.length, JSON.stringify(calls)).to.eql(1); });",
+              "pm.test('the raw body was forwarded with the prompt', function () { pm.expect(calls[0].body, calls[0].body).to.include('projects/fixture/topics/tenant-b'); pm.expect(calls[0].body).to.not.include('metadata'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__wire"
+      }
+    },
+    {
+      "name": "496.25 [cleanup] virtual key C is deleted",
       "event": [
         {
           "listen": "prerequest",

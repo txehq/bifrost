@@ -402,14 +402,35 @@ func TestRawRequestBodyConversationTextIsNotATopic(t *testing.T) {
 		assert.Equal(t, 403, *shortCircuit.Error.StatusCode, name)
 		assert.Contains(t, shortCircuit.Error.Error.Message, other, name)
 	}
-	// A passthrough body is not a raw request body: its format is the provider's, not the
-	// route's, and it is read whole.
-	ctx := presentCtx(mcpTestVKValue)
-	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "genai")
-	passthrough := &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.Vertex, Method: "POST", Path: "/v1beta/models/m:generateContent", Body: []byte(geminiPrompt + `}`)}}
-	_, shortCircuit, err := plugin.PreLLMHook(ctx, passthrough)
-	require.NoError(t, err)
-	require.NotNil(t, shortCircuit, "a passthrough body is read whole")
+	// A passthrough body built on an integration's route is in that route's format (the
+	// Anthropic route sends native Messages as a passthrough request) and is read like a raw
+	// body. The generic passthrough routes set no integration, so their bodies are read whole.
+	anthropicPrompt := `{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":[{"type":"text","text":"` + other + `"}]}]`
+	passthrough := func(body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.Vertex, Method: "POST", Path: "/v1/messages", Body: []byte(body)}}
+	}
+	for name, tc := range map[string]struct {
+		integration string
+		body        string
+		refused     bool
+	}{
+		"a native Messages prompt that is a topic name":      {"anthropic", anthropicPrompt + `}`, false},
+		"the same with a topic in metadata":                  {"anthropic", anthropicPrompt + `,"metadata":{"user_id":"` + other + `"}}`, true},
+		"a topic-name prompt on a generic passthrough route": {"", anthropicPrompt + `}`, true},
+	} {
+		ctx := presentCtx(mcpTestVKValue)
+		if tc.integration != "" {
+			ctx.SetValue(schemas.BifrostContextKeyIntegrationType, tc.integration)
+		}
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, passthrough(tc.body))
+		require.NoError(t, err)
+		if !tc.refused {
+			assert.Nil(t, shortCircuit, name)
+			continue
+		}
+		require.NotNil(t, shortCircuit, name)
+		assert.Equal(t, 403, *shortCircuit.Error.StatusCode, name)
+	}
 }
 
 // Every integration that forwards the body it received (sets BifrostContextKeyUseRawRequestBody

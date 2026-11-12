@@ -210,13 +210,15 @@ func requestStorageLocations(req *schemas.BifrostRequest) (locations []string, u
 type topicCollector struct {
 	topics     []string
 	unreadable bool
-	// rawText is the conversation text of the request's raw body, by the wire format of the
-	// integration that received it (rawBodyTextMembers); nil when the format is not known.
+	// rawText is the conversation text of a body forwarded as it was received on an
+	// integration's route (the raw request body, or the passthrough body the Anthropic route
+	// builds for native Messages), by that route's wire format (rawBodyTextMembers); nil when
+	// the route is not known.
 	rawText *textMember
 }
 
-// rawBodyTextMembers lists, per integration (the route a raw body was received on, the
-// request's BifrostContextKeyIntegrationType), the members of that wire format that hold
+// rawBodyTextMembers lists, per integration (the route a body was received on, the request's
+// BifrostContextKeyIntegrationType, set only by an integration's own routes), the members of that wire format that hold
 // conversation text: what the model reads, never a resource the provider resolves. A raw body
 // is untyped, so it is read whole for topics (a topic named only there reaches the provider);
 // a string that is exactly a topic name is then a topic wherever it sits, and a prompt that is
@@ -349,7 +351,7 @@ func (c *topicCollector) scan(value reflect.Value, open bool, depth int) {
 }
 
 // rawTextOf returns the text members to skip in a byte field: those of the integration for
-// the raw request body, which is in its wire format, and none for any other body.
+// the raw request body, which is in its wire format, and none for any other byte field.
 func (c *topicCollector) rawTextOf(field string) *textMember {
 	if field == "RawRequestBody" {
 		return c.rawText
@@ -415,13 +417,16 @@ func (c *topicCollector) scanJSON(value any, text *textMember, depth int) {
 // (requestFileRefPlan), which already leads to every field holding untyped data or a forwarded
 // body and skips the rest, so a chat's messages are not walked for it. A passthrough body and
 // the bodies of inline batch items, which that plan leaves to their own readers, are read here.
-// A raw request body is read less its conversation text (rawText, see rawBodyTextMembers).
+// A raw request body, and a passthrough body built on an integration's route (the Anthropic
+// route sends native Messages this way), are read less the conversation text of that route's
+// wire format (rawText, see rawBodyTextMembers). The generic passthrough routes set no
+// integration, so their bodies are read whole.
 // unreadable is true when part of the request could not be read.
 func requestPubSubTopics(req *schemas.BifrostRequest, rawText *textMember) (topics []string, unreadable bool) {
 	collector := topicCollector{rawText: rawText}
 	collector.walk(reflect.ValueOf(req).Elem(), requestFileRefPlan())
 	if r := req.PassthroughRequest; r != nil {
-		collector.scanBytes(reflect.ValueOf(r.Body), nil, 0)
+		collector.scanBytes(reflect.ValueOf(r.Body), rawText, 0)
 	}
 	if r := req.BatchCreateRequest; r != nil {
 		for i := range r.Requests {
