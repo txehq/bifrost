@@ -799,6 +799,90 @@ func TestPostLLMHookFiltersProviderObjectListsToTheVirtualKey(t *testing.T) {
 	}
 }
 
+// TXE-6430 (contract C7): a video retrieve by client_reference_id names the task by the caller's
+// own id, under which no creator is recorded, so the pre-hook cannot check it. The task the
+// vendor returned is checked instead: another key's task is answered 404, exactly as a retrieve
+// by its task id is, and the task object never reaches the caller.
+func TestPostLLMHookHidesAnotherKeysVideoRetrievedByClientReference(t *testing.T) {
+	plugin, store := newProviderJobTestPlugin(t)
+	video := configstoreTables.ProviderObjectKindVideo
+	seedProviderObject(t, store, video, "openai", "vendor-own", "vk-mcp-stamp")
+	seedProviderObject(t, store, video, "openai", "vendor-other", "vk-someone-else")
+
+	byReference := func() *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.VideoRetrieveRequest, VideoRetrieveRequest: &schemas.BifrostVideoRetrieveRequest{
+			Provider: schemas.OpenAI, ID: "tk_task_1", IDType: schemas.VideoIDTypeClientReference,
+		}}
+	}
+	returned := func(vendorID string) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			ID: vendorID + ":openai", Status: schemas.VideoStatusCompleted,
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.VideoRetrieveRequest, Provider: schemas.OpenAI},
+		}}
+	}
+	retrieve := func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, vendorID string) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		t.Helper()
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+		require.NoError(t, err)
+		require.Nil(t, shortCircuit, "the reference is not an object id: nothing is recorded under it to refuse")
+		result, bifrostErr, err := plugin.PostLLMHook(ctx, returned(vendorID), nil)
+		require.NoError(t, err)
+		return result, bifrostErr
+	}
+
+	result, bifrostErr := retrieve(presentCtx(mcpTestVKValue), byReference(), "vendor-other")
+	require.NotNil(t, bifrostErr, "another key's task must not be returned")
+	assert.Nil(t, result)
+	require.NotNil(t, bifrostErr.StatusCode)
+	assert.Equal(t, 404, *bifrostErr.StatusCode, "refused as not found, as a retrieve by its task id is")
+	assert.Equal(t, schemas.ErrorTypePolicyAccessDenied, bifrostErr.ExtraFields.ErrorType)
+	assert.NotContains(t, bifrostErr.Error.Message, "vendor-other", "the refusal must not name the other key's task")
+
+	result, bifrostErr = retrieve(presentCtx(mcpTestVKValue), byReference(), "vendor-own")
+	require.Nil(t, bifrostErr, "the key's own task")
+	require.NotNil(t, result)
+	assert.Equal(t, "vendor-own:openai", result.VideoGenerationResponse.ID)
+
+	// A task with no owner on record is not found for a virtual key, as on a retrieve by its
+	// task id (TXE-7119).
+	result, bifrostErr = retrieve(presentCtx(mcpTestVKValue), byReference(), "vendor-unknown")
+	require.NotNil(t, bifrostErr, "a task nobody recorded must not be returned")
+	assert.Nil(t, result)
+	assert.Equal(t, 404, *bifrostErr.StatusCode)
+
+	result, bifrostErr = retrieve(emptyCtx(), byReference(), "vendor-other")
+	require.Nil(t, bifrostErr, "a request that presented no key is unrestricted")
+	assert.NotNil(t, result)
+
+	// A retrieve by task id is checked before the call, on the id it names, and its answer is not
+	// looked up a second time.
+	byTaskID := &schemas.BifrostRequest{RequestType: schemas.VideoRetrieveRequest, VideoRetrieveRequest: &schemas.BifrostVideoRetrieveRequest{Provider: schemas.OpenAI, ID: "vendor-other"}}
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), byTaskID)
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "another key's task id is refused before the call")
+	assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+}
+
+// PostLLMHook runs hideForeignVideoByReference on every successful response. A response that is
+// not a video task object must cost one nil check, and a video task object that was not retrieved
+// by client_reference_id one context read; neither allocates.
+func BenchmarkHideForeignVideoByReference(b *testing.B) {
+	plugin := newAccessTestPlugin(b, buildVKForMCPStamping(nil), nil)
+	chat := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}
+	video := &schemas.BifrostResponse{VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "vendor-1:openai"}}
+	ctx := presentCtx(mcpTestVKValue)
+	for name, result := range map[string]*schemas.BifrostResponse{"chat_response": chat, "video_by_task_id": video} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if err := plugin.hideForeignVideoByReference(ctx, "openai", result); err != nil {
+					b.Fatal(err.Error.Message)
+				}
+			}
+		})
+	}
+}
+
 // Without a config store no creator is recorded anywhere, so a virtual-key request that addresses
 // a bound object is refused up front like a batch request is. Lists address nothing and are only
 // ever narrowed to what is recorded, so they go through unfiltered, as they did before.

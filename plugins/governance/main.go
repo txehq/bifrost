@@ -1467,6 +1467,10 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// what this virtual key may see before anything downstream reads it, and remember which key a
 	// freshly created object belongs to. See providerjobs.go.
 	if err == nil && result != nil {
+		if hiddenErr := p.hideForeignVideoByReference(ctx, string(provider), result); hiddenErr != nil {
+			declarePolicyErrorType(hiddenErr)
+			return nil, hiddenErr, nil
+		}
 		if filterErr := p.filterProviderObjectList(ctx, string(provider), result); filterErr != nil {
 			return nil, &schemas.BifrostError{
 				StatusCode: bifrost.Ptr(500),

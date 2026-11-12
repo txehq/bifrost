@@ -24,6 +24,7 @@ export const BaseProviderNames = [
 	"volcengine",
 	"fireworks",
 	"tencent",
+	"kling",
 	"typesafe",
 ] as const;
 

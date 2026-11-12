@@ -508,6 +508,58 @@ type BifrostVideoListResponse struct {
 type BifrostVideoReferenceRequest struct {
 	Provider ModelProvider `json:"provider"`
 	ID       string        `json:"id"`
+	// IDType says what ID is. Empty is the vendor's task id, as on every route. A retrieve may
+	// set VideoIDTypeClientReference: ID is then the client_reference_id the task was created
+	// with (fork, TXE-6430, contract C7). No other operation reads it.
+	IDType VideoIDType `json:"id_type,omitempty"`
+}
+
+// VideoIDType is the kind of id a video retrieve request names the task by.
+type VideoIDType string
+
+const (
+	// VideoIDTypeTask is the vendor's task id, the default.
+	VideoIDTypeTask VideoIDType = "task_id"
+	// VideoIDTypeClientReference is the caller's own id, sent on create as client_reference_id.
+	VideoIDTypeClientReference VideoIDType = "client_reference_id"
+)
+
+// VideoClientReferenceRetriever is implemented by a provider whose vendor can be queried by the
+// caller's own task id (fork, TXE-6430, contract C7: recovery method 2). It is not part of the
+// Provider interface: a provider that does not implement it has no such query, and core answers
+// 400 caller_unsupported_parameter without an upstream call.
+//
+// VideoRetrieveByClientReferenceID queries the vendor once for the task created with
+// request.ID as its client_reference_id and returns the same task object as VideoRetrieve, whose
+// id is the vendor's task id.
+type VideoClientReferenceRetriever interface {
+	VideoRetrieveByClientReferenceID(ctx *BifrostContext, key Key, request *BifrostVideoRetrieveRequest) (*BifrostVideoGenerationResponse, *BifrostError)
+}
+
+// NewVideoRetrieveByClientReferenceUnsupportedError is the error of a retrieve by
+// client_reference_id on a provider that cannot query by it: 400 caller_unsupported_parameter,
+// error.param id_type.
+func NewVideoRetrieveByClientReferenceUnsupportedError() *BifrostError {
+	bifrostErr := NewUnsupportedParameterError("id_type",
+		"this provider cannot query a video task by client_reference_id; query it by its task id")
+	bifrostErr.ExtraFields.RequestType = VideoRetrieveRequest
+	return bifrostErr
+}
+
+// CheckVideoRetrieveByClientReference returns that error when req is a video retrieve by
+// client_reference_id and provider does not implement VideoClientReferenceRetriever, nil
+// otherwise. Core runs it before a key is chosen.
+func CheckVideoRetrieveByClientReference(provider any, req *BifrostRequest) *BifrostError {
+	if req == nil || req.RequestType != VideoRetrieveRequest || req.VideoRetrieveRequest == nil {
+		return nil
+	}
+	if req.VideoRetrieveRequest.IDType != VideoIDTypeClientReference {
+		return nil
+	}
+	if _, ok := provider.(VideoClientReferenceRetriever); ok {
+		return nil
+	}
+	return NewVideoRetrieveByClientReferenceUnsupportedError()
 }
 
 type BifrostVideoDeleteRequest = BifrostVideoReferenceRequest

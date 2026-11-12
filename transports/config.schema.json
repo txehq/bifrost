@@ -724,6 +724,9 @@
         "tencent": {
           "$ref": "#/$defs/provider"
         },
+        "kling": {
+          "$ref": "#/$defs/provider"
+        },
         "dashscope": {
           "$ref": "#/$defs/provider"
         },
@@ -12940,7 +12943,8 @@
             "typesafe",
             "dashscope",
             "bfl",
-            "google-cloud-tts"
+            "google-cloud-tts",
+            "kling"
           ],
           "description": "Base provider type to extend"
         },

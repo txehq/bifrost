@@ -156,6 +156,9 @@
     },
     "deepgram": {
       "base_url": "honours"
+    },
+    "kling": {
+      "base_url": "honours"
     }
   }
 }

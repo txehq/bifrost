@@ -11044,6 +11044,32 @@ func (p *cancellableVideoTaskProvider) VideoCancel(_ *schemas.BifrostContext, ke
 	return &schemas.BifrostVideoGenerationResponse{ID: req.ID + ":openai", Status: schemas.VideoStatusCancelled, ProviderStatus: "cancelled"}, nil
 }
 
+// referenceVideoTaskProvider adds a vendor query by the caller's own task id
+// (schemas.VideoClientReferenceRetriever) and records which query each retrieve used.
+type referenceVideoTaskProvider struct {
+	*videoTaskProvider
+	mu          sync.Mutex
+	byTaskID    []string
+	byReference []string
+	keys        []string
+}
+
+func (p *referenceVideoTaskProvider) VideoRetrieve(_ *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.byTaskID = append(p.byTaskID, req.ID)
+	p.keys = append(p.keys, key.Name)
+	return &schemas.BifrostVideoGenerationResponse{ID: "vendor_1:openai", Status: schemas.VideoStatusInProgress, ProviderStatus: "processing"}, nil
+}
+
+func (p *referenceVideoTaskProvider) VideoRetrieveByClientReferenceID(_ *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.byReference = append(p.byReference, req.ID)
+	p.keys = append(p.keys, key.Name)
+	return &schemas.BifrostVideoGenerationResponse{ID: "vendor_1:openai", Status: schemas.VideoStatusInProgress, ProviderStatus: "processing"}, nil
+}
+
 // runVideoTaskRequest sends one request through a request worker bound to provider, the way
 // tryRequest hands it over, and returns what the worker answers. upstreamCalls counts every HTTP
 // request that reached the provider's base URL. keyName, when set, names the key as x-bf-api-key
@@ -11194,6 +11220,75 @@ func TestVideoCreateTaskControlFields(t *testing.T) {
 		}
 		if upstream != 0 {
 			t.Fatalf("made %d upstream calls for a refused field", upstream)
+		}
+	})
+}
+
+// TXE-6430 (contract C7, C3): a retrieve by client_reference_id calls the provider's query by the
+// caller's own id exactly once, with the key x-bf-api-key names, and never VideoRetrieve, which
+// would read the reference as a task id. A provider with no such query is answered 400
+// caller_unsupported_parameter without an upstream call. A retrieve by task id is unchanged.
+func TestVideoRetrieveByClientReference(t *testing.T) {
+	retrieve := func(idType schemas.VideoIDType) schemas.BifrostRequest {
+		return schemas.BifrostRequest{
+			RequestType:          schemas.VideoRetrieveRequest,
+			VideoRetrieveRequest: &schemas.BifrostVideoRetrieveRequest{Provider: schemas.OpenAI, ID: "tk_task_1", IDType: idType},
+		}
+	}
+
+	t.Run("one query by the reference with the named key", func(t *testing.T) {
+		provider := &referenceVideoTaskProvider{videoTaskProvider: &videoTaskProvider{}}
+		resp, bifrostErr, _ := runVideoTaskRequest(t, func(base schemas.Provider) schemas.Provider {
+			provider.Provider = base
+			return provider
+		}, retrieve(schemas.VideoIDTypeClientReference), "K2")
+		if bifrostErr != nil {
+			t.Fatalf("retrieve failed: %+v", bifrostErr.Error)
+		}
+		task := resp.VideoGenerationResponse
+		if task == nil || task.ID != "vendor_1:openai" || task.ProviderStatus != "processing" {
+			t.Fatalf("task object = %+v", task)
+		}
+		if task.ExtraFields.RequestType != schemas.VideoRetrieveRequest || task.ExtraFields.Provider != schemas.OpenAI {
+			t.Fatalf("extra_fields = %q/%q", task.ExtraFields.RequestType, task.ExtraFields.Provider)
+		}
+		provider.mu.Lock()
+		defer provider.mu.Unlock()
+		if !slices.Equal(provider.byReference, []string{"tk_task_1"}) || len(provider.byTaskID) != 0 || !slices.Equal(provider.keys, []string{"K2"}) {
+			t.Fatalf("by reference %v, by task id %v, keys %v: want one query by the reference with K2", provider.byReference, provider.byTaskID, provider.keys)
+		}
+	})
+
+	t.Run("a retrieve by task id is unchanged", func(t *testing.T) {
+		provider := &referenceVideoTaskProvider{videoTaskProvider: &videoTaskProvider{}}
+		for _, idType := range []schemas.VideoIDType{"", schemas.VideoIDTypeTask} {
+			if _, bifrostErr, _ := runVideoTaskRequest(t, func(base schemas.Provider) schemas.Provider {
+				provider.Provider = base
+				return provider
+			}, retrieve(idType), "K1"); bifrostErr != nil {
+				t.Fatalf("retrieve failed: %+v", bifrostErr.Error)
+			}
+		}
+		provider.mu.Lock()
+		defer provider.mu.Unlock()
+		if !slices.Equal(provider.byTaskID, []string{"tk_task_1", "tk_task_1"}) || len(provider.byReference) != 0 {
+			t.Fatalf("by task id %v, by reference %v", provider.byTaskID, provider.byReference)
+		}
+	})
+
+	t.Run("a provider with no query by reference", func(t *testing.T) {
+		resp, bifrostErr, upstream := runVideoTaskRequest(t, func(base schemas.Provider) schemas.Provider { return base }, retrieve(schemas.VideoIDTypeClientReference), "K1")
+		if resp != nil || bifrostErr == nil {
+			t.Fatalf("resp/err = %v/%v, want a refusal", resp, bifrostErr)
+		}
+		if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter {
+			t.Fatalf("status/error_type = %v/%q, want 400/caller_unsupported_parameter", bifrostErr.StatusCode, bifrostErr.ExtraFields.ErrorType)
+		}
+		if bifrostErr.Error.Param != "id_type" || bifrostErr.ExtraFields.Provider != schemas.OpenAI || bifrostErr.ExtraFields.RequestType != schemas.VideoRetrieveRequest {
+			t.Fatalf("param/identity = %v/%q/%q", bifrostErr.Error.Param, bifrostErr.ExtraFields.Provider, bifrostErr.ExtraFields.RequestType)
+		}
+		if upstream != 0 {
+			t.Fatalf("made %d upstream calls for a provider with no query by reference", upstream)
 		}
 	})
 }
@@ -11577,6 +11672,8 @@ func guardModel(provider schemas.ModelProvider) string {
 		return "hf-inference/" + guardAllowedModel
 	case schemas.Tencent:
 		return "hy-image-v3"
+	case schemas.Kling:
+		return "kling-3.0"
 	}
 	return guardAllowedModel
 }

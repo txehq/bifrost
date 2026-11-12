@@ -107,6 +107,7 @@ const (
 	// different API from Azure OpenAI audio, which Azure serves (fork, TXE-6542).
 	AzureSpeech ModelProvider = "azurespeech"
 	AssemblyAI  ModelProvider = "assemblyai"
+	Kling       ModelProvider = "kling" // Kuaishou Kling international site: video generation (fork)
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -127,6 +128,7 @@ var SupportedBaseProviders = []ModelProvider{
 	HuggingFace,
 	Replicate,
 	Tencent,
+	Kling,
 	Typesafe,
 }
 
@@ -180,6 +182,7 @@ var StandardProviders = []ModelProvider{
 	GoogleCloudTTS,
 	AzureSpeech,
 	AssemblyAI,
+	Kling,
 }
 
 // RequestType represents the type of request being made to a provider.

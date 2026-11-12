@@ -267,6 +267,31 @@
         "default_request_timeout_in_seconds": 10
       }
     },
+    "kling": {
+      "keys": [
+        {
+          "name": "kling-key-a",
+          "value": "kling-secret-a",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        },
+        {
+          "name": "kling-key-b",
+          "value": "kling-secret-b",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
     "openai_video_keys": {
       "keys": [
         {

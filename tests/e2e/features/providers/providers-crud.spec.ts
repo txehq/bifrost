@@ -430,6 +430,47 @@ test.describe("Providers", () => {
       expect(saved, "saved key must be listed").toBeTruthy();
       expect(saved?.value?.value).not.toBe(keyData.value);
     });
+
+    test("should add Kling from the dropdown and save its API key", async ({
+      providersPage,
+      page,
+    }) => {
+      // Kling is a standard provider (video on the task API); it is offered under its display
+      // name and is created with no keys.
+      if (!(await providersPage.providerExists("kling"))) {
+        await providersPage.addProviderBtn.click();
+        const option = page.getByTestId("add-provider-option-kling");
+        await expect(option).toBeVisible({ timeout: 5000 });
+        await expect(option).toContainText("Kling");
+        await option.click();
+        createdProviders.push("kling");
+      }
+      await expect(providersPage.getProviderItem("kling")).toBeVisible({
+        timeout: 15000,
+      });
+      await providersPage.selectProvider("kling");
+      await expect(page).toHaveURL(/provider=kling/);
+
+      // The provider requires a key: the key form asks for an API key and saves it.
+      const keyData = createProviderKeyData({
+        name: `Kling-Key-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        value: "e2e-kling-api-key",
+        weight: 1.0,
+      });
+      createdKeys.push({ provider: "kling", keyName: keyData.name });
+      await providersPage.addKey(keyData);
+      expect(await providersPage.keyExists(keyData.name)).toBe(true);
+
+      // The saved key is listed under the provider, and its value comes back masked.
+      const keysResponse = await page.request.get("/api/providers/kling/keys");
+      expect(keysResponse.ok()).toBe(true);
+      const provider = (await keysResponse.json()) as {
+        keys: { name: string; value?: { value?: string } }[];
+      };
+      const saved = provider.keys.find((k) => k.name === keyData.name);
+      expect(saved, "saved key must be listed").toBeTruthy();
+      expect(saved?.value?.value).not.toBe(keyData.value);
+    });
   });
 
   for (const { name, label } of REGISTRATION_ONLY_PROVIDERS) {

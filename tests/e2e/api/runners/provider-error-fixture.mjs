@@ -1179,6 +1179,23 @@ const probeDownload = (spec, reply) => {
 	upstream.end();
 };
 
+// Kling's task object (kling.ai/document-api, "Query Task"), as the fixture answers it. The task id
+// decides the state: "893605946402811986" failed on the platform's content risk control, every other id
+// succeeded with one video, a duration and a deduction of Units.
+const KLING_TASK_ID = "893605946402811985";
+const KLING_BLOCKED_TASK_ID = "893605946402811986";
+const klingTask = (id, externalID) => (id === KLING_BLOCKED_TASK_ID
+	? { id, status: "failed", message: "The task failed because it triggered the content risk control of the platform", create_time: 1781080778802, update_time: 1781080794151, external_id: externalID, outputs: [], billing: [] }
+	: {
+		id, status: "succeeded", message: "", create_time: 1781080778802, update_time: 1781080794151, external_id: externalID,
+		outputs: [{ type: "video", id: "vid_fixture_1", url: "https://kling-fixture.example.test/out.mp4", watermark_url: "", duration: "5.1" }],
+		billing: [{ charge_type: "unit", amount: "3.5", package_type: "video" }],
+	});
+const klingEnvelope = (data) => JSON.stringify({ code: 0, message: "SUCCEED", request_id: "kling-fixture-request", data });
+// Every request that reached the Kling routes, in order; GET /__kling-calls returns them and POST /__reset
+// clears them.
+const klingCalls = [];
+
 // Hit counters are keyed by the request body's model, so they must not inherit Object.prototype names.
 const hits = Object.create(null);
 // The exact bytes the last streamed answer for a model wrote, keyed by the request's model; GET /__sent?model=
@@ -1254,6 +1271,13 @@ const bigmodelAnswer = (method, path, body) => {
 		return { status: 200, contentType: "application/octet-stream", body: BIGMODEL_FILES[content[1]] };
 	}
 	return notFound;
+};
+
+// Reads a request body as text before answering.
+const collect = (req, then) => {
+	const chunks = [];
+	req.on("data", (c) => chunks.push(c));
+	req.on("end", () => then(Buffer.concat(chunks).toString("utf8")));
 };
 // Reads and discards a request body (JSON or multipart) before answering, so the gateway's upload completes.
 const drain = (req, then) => {
@@ -1386,6 +1410,7 @@ const handleRequest = (req, res) => {
 		wireCalls.length = 0;
 		for (const k of Object.keys(sentBodies)) delete sentBodies[k];
 		assemblyAICalls.length = 0;
+		klingCalls.length = 0;
 		return send(200, {}, JSON.stringify({ data: [{ reset: true }] }));
 	}
 	if (req.method === "POST" && path === "/pp/assemblyai/v1/transcribe") {
@@ -1670,6 +1695,44 @@ const handleRequest = (req, res) => {
 			return send(200, {}, JSON.stringify(videoTask("video_fixture_created")));
 		}
 		return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));
+	}
+	// The Kling API on its new design standard (TXE-6430): the three create paths, the query by task id or
+	// by the caller's own id, and the list by cursor. Only the keys of the kling provider (kling-secret-a,
+	// kling-secret-b) are served here. Every request is kept, with its key and JSON body, under
+	// /__kling-calls and counted under "kling <METHOD> <path> <bearer token>", so a case can prove the body
+	// the gateway sent, which key it used, and that a request it refuses never got here. Kling has no cancel
+	// and no delete API, so the fixture has none. A prompt that says "blocked" is answered as Kling answers
+	// its content security policy: HTTP 400, service code 1301.
+	if (req.method === "GET" && path === "/__kling-calls") {
+		return send(200, {}, JSON.stringify({ data: [{ calls: klingCalls }] }));
+	}
+	if (bearer.startsWith("kling-secret-")) {
+		const url = new URL(req.url, "http://localhost");
+		return collect(req, (raw) => {
+			let body = null;
+			try { body = raw ? JSON.parse(raw) : null; } catch { body = raw; }
+			klingCalls.push({ method: req.method, path, query: url.search.replace(/^\?/, ""), key: bearer, body });
+			countHit(`kling ${req.method} ${path} ${bearer}`);
+			if (req.method === "POST" && /^\/(text-to-video|image-to-video|omni-video)\/[^/]+$/.test(path)) {
+				const prompt = body?.prompt || (body?.contents || []).find((c) => c.type === "prompt")?.text || "";
+				if (/blocked/.test(prompt)) {
+					return send(400, {}, JSON.stringify({ code: 1301, message: "The content you uploaded appears to violate the community guidelines", request_id: "kling-fixture-1301" }));
+				}
+				return send(200, {}, klingEnvelope({ id: KLING_TASK_ID, status: "submitted", create_time: 1781080778802, update_time: 1781080778802, external_id: body?.options?.external_task_id || "" }));
+			}
+			if (req.method === "GET" && path === "/tasks") {
+				const taskID = url.searchParams.get("task_ids");
+				const externalID = url.searchParams.get("external_task_ids");
+				if (taskID) return send(200, {}, klingEnvelope([klingTask(taskID, "tk_fixture_task")]));
+				// No task was created with a reference that starts "missing": Kling answers an empty list.
+				if (externalID && !externalID.startsWith("missing")) return send(200, {}, klingEnvelope([klingTask(KLING_TASK_ID, externalID)]));
+				return send(200, {}, klingEnvelope([]));
+			}
+			if (req.method === "POST" && path === "/tasks") {
+				return send(200, {}, klingEnvelope({ result: [klingTask(KLING_TASK_ID, "tk_fixture_task")], count: 1, next_cursor: "", has_more: false }));
+			}
+			return send(404, {}, JSON.stringify({ code: 1203, message: "The requested resource does not exist", request_id: "kling-fixture-1203" }));
+		});
 	}
 	if (req.method === "GET" && path === "/mcp") {
 		return send(405, {}, errorBody("no server stream", "invalid_request_error", "method_not_allowed"));

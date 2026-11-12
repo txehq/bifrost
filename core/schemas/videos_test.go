@@ -459,3 +459,67 @@ func TestTaskControlOfImageTasks(t *testing.T) {
 		t.Fatalf("image task cancel without a cancel API: got %+v", err)
 	}
 }
+
+type videoReferenceRetrieverStub struct{}
+
+func (videoReferenceRetrieverStub) VideoRetrieveByClientReferenceID(*BifrostContext, Key, *BifrostVideoRetrieveRequest) (*BifrostVideoGenerationResponse, *BifrostError) {
+	return &BifrostVideoGenerationResponse{}, nil
+}
+
+// TXE-6430 (contract C7): a retrieve by client_reference_id is served only by a provider whose
+// vendor can be queried by the caller's own id. Every other provider answers 400
+// caller_unsupported_parameter naming id_type; a retrieve by task id is never refused.
+func TestCheckVideoRetrieveByClientReference(t *testing.T) {
+	byReference := &BifrostRequest{RequestType: VideoRetrieveRequest, VideoRetrieveRequest: &BifrostVideoRetrieveRequest{Provider: OpenAI, ID: "tk_task_1", IDType: VideoIDTypeClientReference}}
+
+	err := CheckVideoRetrieveByClientReference(struct{}{}, byReference)
+	if err == nil {
+		t.Fatal("a provider that cannot query by client_reference_id was accepted")
+	}
+	if err.StatusCode == nil || *err.StatusCode != 400 || err.ExtraFields.ErrorType != ErrorTypeCallerUnsupportedParameter {
+		t.Fatalf("status/error_type = %v/%q, want 400/caller_unsupported_parameter", err.StatusCode, err.ExtraFields.ErrorType)
+	}
+	if err.Error.Param != "id_type" || err.IsBifrostError || err.ExtraFields.RequestType != VideoRetrieveRequest {
+		t.Fatalf("param/is_bifrost_error/request_type = %v/%v/%q", err.Error.Param, err.IsBifrostError, err.ExtraFields.RequestType)
+	}
+	if err := CheckVideoRetrieveByClientReference(videoReferenceRetrieverStub{}, byReference); err != nil {
+		t.Fatalf("a provider that can query by client_reference_id was refused: %+v", err.Error)
+	}
+
+	for name, req := range map[string]*BifrostRequest{
+		"by task id":          {RequestType: VideoRetrieveRequest, VideoRetrieveRequest: &BifrostVideoRetrieveRequest{Provider: OpenAI, ID: "video_1"}},
+		"by explicit task id": {RequestType: VideoRetrieveRequest, VideoRetrieveRequest: &BifrostVideoRetrieveRequest{Provider: OpenAI, ID: "video_1", IDType: VideoIDTypeTask}},
+		"a cancel":            {RequestType: VideoCancelRequest, VideoCancelRequest: &BifrostVideoCancelRequest{Provider: OpenAI, ID: "video_1", IDType: VideoIDTypeClientReference}},
+		"a chat":              {RequestType: ChatCompletionRequest, ChatRequest: &BifrostChatRequest{Provider: OpenAI, Model: "m"}},
+		"nil":                 nil,
+	} {
+		if err := CheckVideoRetrieveByClientReference(struct{}{}, req); err != nil {
+			t.Fatalf("%s was refused: %+v", name, err.Error)
+		}
+	}
+}
+
+// The request worker runs CheckVideoRetrieveByClientReference on every request. A request that is
+// not a retrieve by client_reference_id must cost only the request-type check and allocate
+// nothing; only a refusal allocates, for the error it returns.
+func BenchmarkCheckVideoRetrieveByClientReference(b *testing.B) {
+	byReference := &BifrostRequest{RequestType: VideoRetrieveRequest, VideoRetrieveRequest: &BifrostVideoRetrieveRequest{Provider: OpenAI, ID: "tk_task_1", IDType: VideoIDTypeClientReference}}
+	cases := []struct {
+		name     string
+		provider any
+		req      *BifrostRequest
+	}{
+		{"chat_request", struct{}{}, &BifrostRequest{RequestType: ChatCompletionRequest, ChatRequest: &BifrostChatRequest{Provider: OpenAI, Model: "m"}}},
+		{"retrieve_by_task_id", struct{}{}, &BifrostRequest{RequestType: VideoRetrieveRequest, VideoRetrieveRequest: &BifrostVideoRetrieveRequest{Provider: OpenAI, ID: "video_1"}}},
+		{"by_reference_supported", videoReferenceRetrieverStub{}, byReference},
+		{"by_reference_refused", struct{}{}, byReference},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = CheckVideoRetrieveByClientReference(tc.provider, tc.req)
+			}
+		})
+	}
+}

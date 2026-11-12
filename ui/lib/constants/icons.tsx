@@ -1007,6 +1007,25 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	kling: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 24 24"
+				fill="none"
+				shapeRendering="geometricPrecision"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>Kling</title>
+				<rect x="1" y="1" width="22" height="22" rx="5" fill="#111111" />
+				<path fill="#FFFFFF" d="M7 6h2.6v4.9L14 6h3.3l-4.6 5.1L17.6 18h-3.2l-3.5-5-1.3 1.4V18H7z" />
+			</svg>
+		);
+	},
 	databricks: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 
