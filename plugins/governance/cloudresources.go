@@ -210,6 +210,80 @@ func requestStorageLocations(req *schemas.BifrostRequest) (locations []string, u
 type topicCollector struct {
 	topics     []string
 	unreadable bool
+	// rawText is the conversation text of the request's raw body, by the wire format of the
+	// integration that received it (rawBodyTextMembers); nil when the format is not known.
+	rawText *textMember
+}
+
+// rawBodyTextMembers lists, per integration (the route a raw body was received on, the
+// request's BifrostContextKeyIntegrationType), the members of that wire format that hold
+// conversation text: what the model reads, never a resource the provider resolves. A raw body
+// is untyped, so it is read whole for topics (a topic named only there reaches the provider);
+// a string that is exactly a topic name is then a topic wherever it sits, and a prompt that is
+// nothing but a topic name would be refused (TXE-7230). A string at one of these paths is not
+// read. Anything else in the body is, including a member a vendor adds later, so the list can
+// only ever let conversation text through. A path is dot-separated member names, "*" for every
+// element of a list; only a string at the end of a path is skipped, a list or object there is
+// still read. An integration that forwards a raw body and is not listed here has its body read
+// whole: TestEveryRawBodyIntegrationListsItsTextMembers fails until it is listed.
+var rawBodyTextMembers = map[string][]string{
+	// Gemini generateContent, streamGenerateContent and countTokens; embedContent and
+	// batchEmbedContents; the Veo and Imagen predict instances. Google reads every member in
+	// lowerCamel or snake case, and the two spellings of a member that differs are listed.
+	"genai": {
+		"contents.*.parts.*.text",
+		"systemInstruction.parts.*.text",
+		"system_instruction.parts.*.text",
+		"content.parts.*.text",
+		"requests.*.content.parts.*.text",
+		"instances.*.prompt",
+	},
+	// Anthropic Messages: the system prompt and message content, each a string or text blocks.
+	"anthropic": {
+		"system",
+		"system.*.text",
+		"messages.*.content",
+		"messages.*.content.*.text",
+	},
+}
+
+// textMember is one level of the rawBodyTextMembers paths of an integration.
+type textMember struct {
+	children map[string]*textMember
+	text     bool // a string here is conversation text
+}
+
+// rawBodyTextTrees holds rawBodyTextMembers as trees, built once.
+var rawBodyTextTrees = func() map[string]*textMember {
+	trees := make(map[string]*textMember, len(rawBodyTextMembers))
+	for integration, paths := range rawBodyTextMembers {
+		root := &textMember{}
+		for _, path := range paths {
+			node := root
+			for _, name := range strings.Split(path, ".") {
+				if node.children == nil {
+					node.children = map[string]*textMember{}
+				}
+				if node.children[name] == nil {
+					node.children[name] = &textMember{}
+				}
+				node = node.children[name]
+			}
+			node.text = true
+		}
+		trees[integration] = root
+	}
+	return trees
+}()
+
+// rawBodyText returns the text members of the raw body of a request received on ctx's
+// integration, or nil when it lists none.
+func rawBodyText(ctx *schemas.BifrostContext) *textMember {
+	if ctx == nil {
+		return nil
+	}
+	integration, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string)
+	return rawBodyTextTrees[integration]
 }
 
 // topicScanDepth bounds the nesting the topic scan follows, counted in containers (structs,
@@ -245,7 +319,7 @@ func (c *topicCollector) scan(value reflect.Value, open bool, depth int) {
 			// Bytes inside untyped data are a vendor member kept as raw JSON. Typed byte
 			// fields are read by name in the struct case: most are file and media content.
 			if open {
-				c.scanBytes(value, depth)
+				c.scanBytes(value, nil, depth)
 			}
 			return
 		}
@@ -266,7 +340,7 @@ func (c *topicCollector) scan(value reflect.Value, open bool, depth int) {
 			// A body forwarded to the provider as it was received is read; any other typed
 			// byte field is content (an uploaded file, audio, an image) and is not.
 			if isRawBodyField(field) {
-				c.scanBytes(value.Field(i), depth)
+				c.scanBytes(value.Field(i), c.rawTextOf(field.Name), depth)
 				continue
 			}
 			c.scan(value.Field(i), open, depth+1)
@@ -274,10 +348,20 @@ func (c *topicCollector) scan(value reflect.Value, open bool, depth int) {
 	}
 }
 
+// rawTextOf returns the text members to skip in a byte field: those of the integration for
+// the raw request body, which is in its wire format, and none for any other body.
+func (c *topicCollector) rawTextOf(field string) *textMember {
+	if field == "RawRequestBody" {
+		return c.rawText
+	}
+	return nil
+}
+
 // scanBytes reads raw bytes: a passthrough body, a raw request body, a vendor member kept as
 // raw JSON. Bytes that mention no topic are not parsed; JSON is decoded and read as untyped
-// data; bytes that mention a topic and do not decode cannot be read.
-func (c *topicCollector) scanBytes(value reflect.Value, depth int) {
+// data, less the conversation text members in text; bytes that mention a topic and do not
+// decode cannot be read.
+func (c *topicCollector) scanBytes(value reflect.Value, text *textMember, depth int) {
 	if value.Kind() != reflect.Slice || value.Len() == 0 {
 		return
 	}
@@ -294,7 +378,36 @@ func (c *topicCollector) scanBytes(value reflect.Value, depth int) {
 		}
 		return
 	}
-	c.scan(reflect.ValueOf(decoded), true, depth+1)
+	c.scanJSON(decoded, text, depth+1)
+}
+
+// scanJSON reads decoded JSON as untyped data, leaving out a string at a conversation text
+// member (text is the member value sits at, nil outside every text path).
+func (c *topicCollector) scanJSON(value any, text *textMember, depth int) {
+	if text == nil {
+		c.scan(reflect.ValueOf(value), true, depth)
+		return
+	}
+	if depth > topicScanDepth {
+		c.unreadable = true
+		return
+	}
+	switch v := value.(type) {
+	case string:
+		if !text.text {
+			c.scan(reflect.ValueOf(v), true, depth)
+		}
+	case map[string]any:
+		for name, member := range v {
+			c.scanJSON(member, text.children[name], depth+1)
+		}
+	case []any:
+		for _, element := range v {
+			c.scanJSON(element, text.children["*"], depth+1)
+		}
+	default:
+		c.scan(reflect.ValueOf(value), true, depth)
+	}
 }
 
 // requestPubSubTopics returns the Pub/Sub topics a request names in its untyped data, on
@@ -302,12 +415,13 @@ func (c *topicCollector) scanBytes(value reflect.Value, depth int) {
 // (requestFileRefPlan), which already leads to every field holding untyped data or a forwarded
 // body and skips the rest, so a chat's messages are not walked for it. A passthrough body and
 // the bodies of inline batch items, which that plan leaves to their own readers, are read here.
+// A raw request body is read less its conversation text (rawText, see rawBodyTextMembers).
 // unreadable is true when part of the request could not be read.
-func requestPubSubTopics(req *schemas.BifrostRequest) (topics []string, unreadable bool) {
-	var collector topicCollector
+func requestPubSubTopics(req *schemas.BifrostRequest, rawText *textMember) (topics []string, unreadable bool) {
+	collector := topicCollector{rawText: rawText}
 	collector.walk(reflect.ValueOf(req).Elem(), requestFileRefPlan())
 	if r := req.PassthroughRequest; r != nil {
-		collector.scanBytes(reflect.ValueOf(r.Body), 0)
+		collector.scanBytes(reflect.ValueOf(r.Body), nil, 0)
 	}
 	if r := req.BatchCreateRequest; r != nil {
 		for i := range r.Requests {
@@ -328,7 +442,7 @@ func (c *topicCollector) walk(value reflect.Value, plan *fileRefPlan) {
 		case step.kind != 0:
 		case step.open:
 			if field.Kind() == reflect.Slice && field.Type().Elem().Kind() == reflect.Uint8 {
-				c.scanBytes(field, 0)
+				c.scanBytes(field, c.rawTextOf(value.Type().Field(step.index).Name), 0)
 			} else {
 				c.scan(field, true, 0)
 			}
@@ -412,7 +526,7 @@ func (p *GovernancePlugin) enforceCloudResourceAllowlists(ctx *schemas.BifrostCo
 		}
 	}
 	if topicsRestricted {
-		named, unreadable := requestPubSubTopics(req)
+		named, unreadable := requestPubSubTopics(req, rawBodyText(ctx))
 		if unreadable {
 			return refuse(400, "this virtual key is limited to its allowed Pub/Sub topics, and the topics this request names cannot be verified against them: part of the request could not be read")
 		}
