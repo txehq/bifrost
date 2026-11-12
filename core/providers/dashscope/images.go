@@ -593,35 +593,12 @@ func (provider *DashScopeProvider) syncImage(ctx *schemas.BifrostContext, key sc
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-
-	req.SetRequestURI(provider.baseURLFor(requestType) + dashScopeImageSyncPath)
-	req.Header.SetMethod(fasthttp.MethodPost)
-	req.Header.SetContentType("application/json")
-	provider.setRequestHeaders(ctx, req, key)
-	req.SetBody(jsonData)
-
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
-	defer wait()
+	// The shared request helper keeps DashScope's response headers (Retry-After, the request
+	// id) for the caller, on a success and on an error alike.
+	body, latency, bifrostErr := provider.doDashScopeRequest(ctx, key, requestType, fasthttp.MethodPost, dashScopeImageSyncPath, jsonData, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	if resp.StatusCode() < fasthttp.StatusOK || resp.StatusCode() >= fasthttp.StatusMultipleChoices {
-		var errBody []byte
-		if decoded, err := providerUtils.CheckAndDecodeBody(resp); err == nil {
-			errBody = append([]byte(nil), decoded...)
-		}
-		return nil, providerUtils.EnrichError(ctx, parseDashScopeError(resp), jsonData, errBody, sendBackRawRequest, sendBackRawResponse, latency)
-	}
-	decoded, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		rawErrBody := append([]byte(nil), resp.Body()...)
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
-	}
-	body := append([]byte(nil), decoded...)
 
 	var dashScopeResp DashScopeImageResponse
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &dashScopeResp, jsonData, sendBackRawRequest, sendBackRawResponse)

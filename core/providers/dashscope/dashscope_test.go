@@ -228,6 +228,8 @@ func newMockDashScopeImages(t *testing.T, status int, body string) (*DashScopePr
 		captured = append(captured, capturedImageRequest{path: r.URL.Path, auth: r.Header.Get("Authorization"), body: reqBody})
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Request-Id", "req-header-1")
+		w.Header().Set("Retry-After", "7")
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
 	}))
@@ -723,4 +725,34 @@ func TestDashScopeImageRawRequestBody(t *testing.T) {
 			t.Fatalf("got %+v with %d upstream calls, want a 400 and none", bifrostErr, len(requests()))
 		}
 	})
+}
+
+// TestDashScopeImageKeepsProviderResponseHeaders pins that DashScope's response headers reach
+// the context the transport forwards them from, on a success and on a vendor error.
+func TestDashScopeImageKeepsProviderResponseHeaders(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"success", http.StatusOK, qwenImageSuccessBody},
+		{"throttled", http.StatusTooManyRequests, `{"request_id":"r1","code":"Throttling.RateQuota","message":"Requests rate limit exceeded"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider, _ := newMockDashScopeImages(t, tc.status, tc.body)
+			ctx := imageTestContext(t)
+			_, _ = provider.ImageGeneration(ctx, imageTestKey(), &schemas.BifrostImageGenerationRequest{
+				Model: "qwen-image-2.0", Input: &schemas.ImageGenerationInput{Prompt: "a cat"},
+			})
+			headers, _ := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string)
+			found := map[string]string{}
+			for name, value := range headers {
+				found[strings.ToLower(name)] = value
+			}
+			if found["retry-after"] != "7" || found["x-request-id"] != "req-header-1" {
+				t.Fatalf("provider response headers = %v, want Retry-After and X-Request-Id kept", headers)
+			}
+		})
+	}
 }
