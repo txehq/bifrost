@@ -1749,6 +1749,49 @@ const handleRequest = (req, res) => {
 		});
 		return undefined;
 	}
+	// Azure's video generation jobs API for first-generation sora (folder 420, TXE-6533), on the azure key's
+	// endpoint. Every call is counted under "sora1 <METHOD> <job|content> <api-key>" and its query and body kept
+	// in /__wire. A create answers the quickstart's queued job, or the documented ResponsibleAIPolicyViolation
+	// error when the prompt contains "blocked"; a query answers the job succeeded with one generation; the
+	// generation's video is FIXTURE_MP4; a delete answers 204 with no body, as documented. The jobs API has no cancel endpoint.
+	const soraJob = path.match(/^\/openai\/v1\/video\/generations\/jobs(?:\/([^/]+))?$/);
+	const soraJobContent = path.match(/^\/openai\/v1\/video\/generations\/([^/]+)\/content\/video$/);
+	if (soraJob || soraJobContent) {
+		const body = [];
+		req.on("data", (c) => body.push(c));
+		req.on("end", () => {
+			const bytes = Buffer.concat(body).toString("utf8");
+			countHit(`sora1 ${req.method} ${soraJobContent ? "content" : "job"} ${req.headers["api-key"] || ""}`);
+			wireCalls.push({ path, query: new URL(req.url, "http://localhost").search, body: bytes });
+			const job = (status, generations) => ({
+				object: "video.generation.job", id: "task_fixture_sora1", status, created_at: 1748469875,
+				finished_at: status === "succeeded" ? 1748470000 : null, expires_at: status === "succeeded" ? 1748556400 : null,
+				generations, prompt: "a paper boat on a pond", model: "sora", n_variants: 1, n_seconds: 5, height: 480, width: 480,
+				failure_reason: null,
+			});
+			if (soraJobContent && req.method === "GET" && soraJobContent[1] === "gen_fixture_sora1") {
+				res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": FIXTURE_MP4.length });
+				return res.end(FIXTURE_MP4);
+			}
+			if (soraJob && !soraJob[1] && req.method === "POST") {
+				let parsed = {};
+				try { parsed = JSON.parse(bytes) || {}; } catch {}
+				if (String(parsed.prompt || "").includes("blocked")) {
+					return send(400, {}, JSON.stringify({ error: { code: "content_policy_violation", message: "Your request was rejected as a result of our safety system.", param: "prompt", inner_error: { code: "ResponsibleAIPolicyViolation" } } }));
+				}
+				return send(200, {}, JSON.stringify(job("queued", [])));
+			}
+			if (soraJob && soraJob[1] === "task_fixture_sora1" && req.method === "DELETE") {
+				res.writeHead(204);
+				return res.end();
+			}
+			if (soraJob && soraJob[1] === "task_fixture_sora1" && req.method === "GET") {
+				return send(200, {}, JSON.stringify(job("succeeded", [{ object: "video.generation", id: "gen_fixture_sora1", job_id: "task_fixture_sora1", created_at: 1748469990, width: 480, height: 480, n_seconds: 5, prompt: "a paper boat on a pond" }])));
+			}
+			return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));
+		});
+		return undefined;
+	}
 	// The OpenAI video task routes (TXE-6521). Every request is counted under
 	// "videos <METHOD> <bearer token>", so a case can prove which key a task query used and that a
 	// request the gateway refuses never got here. A query answers a queued task; a create answers the

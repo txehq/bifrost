@@ -130,7 +130,8 @@
           "models": [
             "azure-filtered",
             "gpt-image-1.5",
-            "azure-content-filter"
+            "azure-content-filter",
+            "sora"
           ],
           "weight": 1,
           "azure_key_config": {

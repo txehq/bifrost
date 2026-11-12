@@ -1302,6 +1302,10 @@ func (provider *AzureProvider) ImageVariation(ctx *schemas.BifrostContext, key s
 // VideoGeneration creates a video using Azure's OpenAI-compatible Sora API.
 // This delegates to the OpenAI handler with Azure-specific URL and authentication.
 func (provider *AzureProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	// First-generation sora has its own API, the video generation jobs (sorajobs.go).
+	if isAzureSoraJobsModel(ctx, request.Model) {
+		return provider.soraJobsCreate(ctx, key, request)
+	}
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
@@ -1341,6 +1345,9 @@ func (provider *AzureProvider) VideoRetrieve(ctx *schemas.BifrostContext, key sc
 	if request.ID == "" {
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
 	}
+	if jobID, ok := azureSoraJobID(request.ID, providerName); ok {
+		return provider.soraJobsRetrieveForCaller(ctx, key, jobID)
+	}
 	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
 	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
 	if idErr != nil {
@@ -1379,6 +1386,9 @@ func (provider *AzureProvider) VideoDownload(ctx *schemas.BifrostContext, key sc
 
 	if request.ID == "" {
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
+	}
+	if jobID, ok := azureSoraJobID(request.ID, providerName); ok {
+		return provider.soraJobsDownload(ctx, key, request, jobID)
 	}
 	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
 	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
@@ -1431,6 +1441,9 @@ func (provider *AzureProvider) VideoDelete(ctx *schemas.BifrostContext, key sche
 
 	if request.ID == "" {
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
+	}
+	if jobID, ok := azureSoraJobID(request.ID, providerName); ok {
+		return provider.soraJobsDelete(ctx, key, request, jobID)
 	}
 	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
 	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")

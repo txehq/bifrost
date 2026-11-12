@@ -1,0 +1,637 @@
+{
+  "name": "420. First-generation sora on Azure: video generation jobs API create, query, download (azure sora jobs)",
+  "description": "Pins TXE-6533 (contract C3, C4, C6, C7, C9): the azure provider sends first-generation sora to the video generation jobs API (/openai/v1/video/generations/jobs), not to /openai/v1/videos. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. Every task query, download, delete, cancel and GenAI poll names the creating key with x-bf-api-key, as contract C3 requires and Tokun does; the fixture also has Sora 2 keys on other endpoints (folder 419), so an unnamed key may reach one that does not serve the jobs API. The azure key's endpoint is the fixture, which serves the jobs API, counts each call under 'sora1 <METHOD> <job|content> <api-key>' and keeps the bodies in /__wire. Rows 2 and 3: a create sends n_seconds, width and height from seconds and size and returns the task object 'sora1.<job id>:azure'. Row 4: a query maps succeeded to completed, keeps provider_status, and gives a content artifact and the generation's n_seconds as usage.output_seconds. Row 5: /content streams the generation's video. Rows 6 to 8: fields the jobs API cannot take are 400 caller_unsupported_parameter. Row 9: ResponsibleAIPolicyViolation keeps the vendor 400 as caller_content_filtered. Row 10: the jobs API has no cancel, so cancel is provider_cancel_unsupported. Row 11: a delete is DELETE on the job, whose 204 becomes the unified deletion object. Row 12: a GenAI SDK operation poll gets the completed generation's video as bytes. Row 13: the call counts. Before the change rows 2 to 9 and 11 to 13 fail: azure/sora and its task id went to /openai/v1/videos, which the fixture does not serve for the azure key. Run with the augment's --profile set to the fixture config, so the azure key's literal value is not taken for a missing secret.",
+  "item": [
+    {
+      "name": "420.1 reset the fixture's hit counters and wire log (azure sora jobs)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "http://127.0.0.1:8791/__reset"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture reset its counters', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.json().data[0].reset).to.eql(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "420.2 azure/sora POST /v1/videos creates a video generation job and returns a task object ending :azure (azure sora jobs)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"azure/sora\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"seconds\": \"5\",\n  \"size\": \"480x480\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create returns the queued job as a task object', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.eql('sora1.task_fixture_sora1:azure');",
+              "  pm.expect(j.status, pm.response.text()).to.eql('queued');",
+              "  pm.expect(j.provider_status, pm.response.text()).to.eql('queued');",
+              "  pm.expect(j.seconds, pm.response.text()).to.eql('5');",
+              "  pm.expect(j.size, pm.response.text()).to.eql('480x480');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "420.3 the create reached the jobs API with n_seconds, width and height from seconds and size (azure sora jobs)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "http://127.0.0.1:8791/__wire"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path === '/openai/v1/video/generations/jobs'; });",
+              "pm.test('one POST body carried n_seconds 5, width 480, height 480 and no unified names', function () {",
+              "  pm.expect(calls.length, JSON.stringify(calls)).to.eql(1);",
+              "  pm.expect(calls[0].query, JSON.stringify(calls[0])).to.eql('?api-version=preview');",
+              "  var b = JSON.parse(calls[0].body);",
+              "  pm.expect(b, calls[0].body).to.eql({ prompt: 'a paper boat on a pond', model: 'sora', width: 480, height: 480, n_seconds: 5 });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "420.4 azure GET /v1/videos/{id} maps succeeded to completed with a content artifact and vendor-reported output_seconds (azure sora jobs)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/sora1.task_fixture_sora1:azure",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "sora1.task_fixture_sora1:azure"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the query returns the completed task object', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.status, pm.response.text()).to.eql('completed');",
+              "  pm.expect(j.provider_status, pm.response.text()).to.eql('succeeded');",
+              "  pm.expect(j.videos, pm.response.text()).to.have.lengthOf(1);",
+              "  pm.expect(j.videos[0].type, pm.response.text()).to.eql('content');",
+              "  pm.expect(j.videos[0].url, pm.response.text()).to.be.undefined;",
+              "  pm.expect(j.usage && j.usage.output_seconds, pm.response.text()).to.eql(5);",
+              "  pm.expect(j.completed_at, pm.response.text()).to.eql(1748470000);",
+              "  pm.expect(j.expires_at, pm.response.text()).to.eql(1748556400);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "420.5 azure GET /v1/videos/{id}/content returns the generation's video (azure sora jobs)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/sora1.task_fixture_sora1:azure/content",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "sora1.task_fixture_sora1:azure",
+            "content"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the content is the fixture mp4', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.headers.get('Content-Type'), 'content type').to.include('video/mp4');",
+              "  pm.expect(pm.response.text(), 'body').to.include('FIXTURE-MP4 bytes served by provider-error-fixture');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "420.6 [EXPECT-400] azure/sora POST /v1/videos refuses aspect_ratio the jobs API does not take (azure sora jobs)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"azure/sora\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"aspect_ratio\": \"16:9\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('aspect_ratio is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('aspect_ratio');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "420.7 [EXPECT-400] azure/sora POST /v1/videos refuses n_variants above one (azure sora jobs)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"azure/sora\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"n_variants\": 2\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('n_variants is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('n_variants');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "420.8 [EXPECT-400] azure/sora POST /v1/videos refuses a seconds value n_seconds cannot carry (azure sora jobs)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"azure/sora\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"seconds\": \"2.5\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('seconds is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('seconds');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "420.9 [EXPECT-400] azure/sora POST /v1/videos with a ResponsibleAIPolicyViolation keeps the vendor 400 as caller_content_filtered (azure sora jobs)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"azure/sora\",\n  \"prompt\": \"a blocked paper boat\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the vendor refusal is caller_content_filtered with the vendor status', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_content_filtered');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "420.10 [EXPECT-400] azure POST /v1/videos/{id}/cancel on a jobs API task is provider_cancel_unsupported (azure sora jobs)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/sora1.task_fixture_sora1:azure/cancel",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "sora1.task_fixture_sora1:azure",
+            "cancel"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the cancel is refused as provider_cancel_unsupported', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_cancel_unsupported');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "420.11 azure DELETE /v1/videos/{id} deletes the job with the jobs API's 204 (azure sora jobs)",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/sora1.task_fixture_sora1:azure",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "sora1.task_fixture_sora1:azure"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the delete answers the unified deletion object', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.eql('sora1.task_fixture_sora1:azure');",
+              "  pm.expect(j.deleted, pm.response.text()).to.eql(true);",
+              "  pm.expect(j.object, pm.response.text()).to.eql('video.deleted');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "420.12 genai GET /genai/v1beta/models/sora/operations/{id} polls the job and returns the generation's video bytes (azure sora jobs)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/sora/operations/sora1.task_fixture_sora1:azure",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "sora",
+            "operations",
+            "sora1.task_fixture_sora1:azure"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the operation is done and carries the generated video as bytes', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.done, pm.response.text()).to.eql(true);",
+              "  pm.expect(pm.response.text(), 'videoBytes').to.include('GkZJWFRVUkUtTVA0IGJ5dGVzIHNlcnZlZCBieSBwcm92aWRlci1lcnJvci1maXh0dXJl');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "420.13 fixture hit counts prove each operation was one call with the key and refused requests made none (azure sora jobs)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "http://127.0.0.1:8791/__hits"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var h = pm.response.json().data[0].hits;",
+              "var sora = {};",
+              "Object.keys(h).forEach(function (k) { if (k.indexOf('sora1 ') === 0) { sora[k] = h[k]; } });",
+              "pm.test('two creates (one filtered), a query, a download (query and content), a delete and a GenAI poll (query and content), all with the azure key', function () {",
+              "  pm.expect(sora, JSON.stringify(h)).to.eql({ 'sora1 POST job test-key': 2, 'sora1 GET job test-key': 3, 'sora1 GET content test-key': 2, 'sora1 DELETE job test-key': 1 });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

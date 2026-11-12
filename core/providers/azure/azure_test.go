@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1445,5 +1446,465 @@ func TestAzureImageStreamReportsOutputImages(t *testing.T) {
 				t.Fatalf("upstream calls = %v, want one to %s", paths, wantPath)
 			}
 		})
+	}
+}
+
+// First-generation sora on Azure (TXE-6533): the video generation jobs API.
+
+// azureSoraJobQueued is the create response sample from the Azure video generation quickstart.
+const azureSoraJobQueued = `{
+    "object": "video.generation.job",
+    "id": "task_01jwcet0eje35tc5jy54yjax5q",
+    "status": "queued",
+    "created_at": 1748469875,
+    "finished_at": null,
+    "expires_at": null,
+    "generations": [],
+    "prompt": "A cat playing piano in a jazz bar.",
+    "model": "sora",
+    "n_variants": 1,
+    "n_seconds": 5,
+    "height": 480,
+    "width": 480,
+    "failure_reason": null
+}`
+
+// azureSoraJobWithStatus is a job in the reference's VideoGenerationJob shape; a succeeded one
+// carries one generation in the reference's VideoGeneration shape.
+func azureSoraJobWithStatus(status string) string {
+	generations, finished, expires, failure := `[]`, `null`, `null`, `null`
+	switch status {
+	case "succeeded":
+		generations = `[{"object":"video.generation","id":"gen_01jwcf0a","job_id":"task_01jwcet0eje35tc5jy54yjax5q","created_at":1748469990,"width":480,"height":480,"n_seconds":5,"prompt":"A cat playing piano in a jazz bar."}]`
+		finished, expires = `1748470000`, `1748556400`
+	case "failed":
+		finished, failure = `1748470000`, `"output_moderation"`
+	}
+	return `{"object":"video.generation.job","id":"task_01jwcet0eje35tc5jy54yjax5q","status":"` + status +
+		`","created_at":1748469875,"finished_at":` + finished + `,"expires_at":` + expires +
+		`,"generations":` + generations + `,"prompt":"A cat playing piano in a jazz bar.","model":"sora","n_variants":1,"n_seconds":5,"height":480,"width":480,"failure_reason":` + failure + `}`
+}
+
+type azureSoraJobsCall struct {
+	method, path, query, apiKey string
+	body                        []byte
+}
+
+// azureSoraJobsServer answers every jobs API call with respond and records each call.
+func azureSoraJobsServer(t *testing.T, respond func(w http.ResponseWriter, r *http.Request)) (*httptest.Server, func() []azureSoraJobsCall) {
+	t.Helper()
+	var mu sync.Mutex
+	var calls []azureSoraJobsCall
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		calls = append(calls, azureSoraJobsCall{r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("api-key"), body})
+		mu.Unlock()
+		respond(w, r)
+	}))
+	t.Cleanup(server.Close)
+	return server, func() []azureSoraJobsCall {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]azureSoraJobsCall(nil), calls...)
+	}
+}
+
+func newAzureSoraJobsRequest(params *schemas.VideoGenerationParameters) *schemas.BifrostVideoGenerationRequest {
+	return &schemas.BifrostVideoGenerationRequest{
+		Provider: schemas.Azure,
+		Model:    "sora",
+		Input:    &schemas.VideoGenerationInput{Prompt: "A cat playing piano in a jazz bar."},
+		Params:   params,
+	}
+}
+
+// TestAzureSoraJobsCreateSendsJobsBody pins the create: one POST to the jobs API with
+// n_seconds, width and height from seconds and size, and a task object whose id names the job
+// and ends ":azure".
+func TestAzureSoraJobsCreateSendsJobsBody(t *testing.T) {
+	server, calls := azureSoraJobsServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, azureSoraJobQueued)
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := newAzureDecisionProvider(t).VideoGeneration(ctx, newAzureDecisionKey(server.URL),
+		newAzureSoraJobsRequest(&schemas.VideoGenerationParameters{Seconds: schemas.Ptr("5"), Size: "480x480"}))
+	if bifrostErr != nil {
+		t.Fatalf("VideoGeneration: %+v", bifrostErr.Error)
+	}
+	got := calls()
+	if len(got) != 1 {
+		t.Fatalf("upstream calls = %d, want 1", len(got))
+	}
+	if got[0].method != http.MethodPost || got[0].path != "/openai/v1/video/generations/jobs" || got[0].query != "api-version=preview" || got[0].apiKey != "test-key" {
+		t.Fatalf("call = %s %s?%s key %q, want POST /openai/v1/video/generations/jobs?api-version=preview with the key", got[0].method, got[0].path, got[0].query, got[0].apiKey)
+	}
+	var sent, want map[string]any
+	if err := json.Unmarshal(got[0].body, &sent); err != nil {
+		t.Fatalf("body is not JSON: %s", got[0].body)
+	}
+	_ = json.Unmarshal([]byte(`{"prompt":"A cat playing piano in a jazz bar.","model":"sora","width":480,"height":480,"n_seconds":5}`), &want)
+	if !reflect.DeepEqual(sent, want) {
+		t.Fatalf("body = %s, want the quickstart's jobs body", got[0].body)
+	}
+	if resp.ID != "sora1.task_01jwcet0eje35tc5jy54yjax5q:azure" {
+		t.Errorf("id = %q, want sora1.task_01jwcet0eje35tc5jy54yjax5q:azure", resp.ID)
+	}
+	if resp.Status != schemas.VideoStatusQueued || resp.ProviderStatus != "queued" {
+		t.Errorf("status = %q/%q, want queued/queued", resp.Status, resp.ProviderStatus)
+	}
+	if resp.CreatedAt != 1748469875 || resp.Size != "480x480" || resp.Seconds == nil || *resp.Seconds != "5" {
+		t.Errorf("task = created %d size %q seconds %v, want the job's", resp.CreatedAt, resp.Size, resp.Seconds)
+	}
+	if resp.ExpiresAt != nil || len(resp.Videos) != 0 || resp.Usage != nil {
+		t.Errorf("queued task carries expires_at %v, videos %v, usage %+v; want none", resp.ExpiresAt, resp.Videos, resp.Usage)
+	}
+}
+
+// TestAzureSoraJobsQueryMapsEveryStatus pins the status table: each job status the Azure
+// quickstart names maps to a unified status, with the raw one in provider_status.
+func TestAzureSoraJobsQueryMapsEveryStatus(t *testing.T) {
+	for raw, want := range map[string]schemas.VideoStatus{
+		"queued":        schemas.VideoStatusQueued,
+		"preprocessing": schemas.VideoStatusInProgress,
+		"running":       schemas.VideoStatusInProgress,
+		"processing":    schemas.VideoStatusInProgress,
+		"succeeded":     schemas.VideoStatusCompleted,
+		"failed":        schemas.VideoStatusFailed,
+		"cancelled":     schemas.VideoStatusCancelled,
+		"some_new_word": schemas.VideoStatusInProgress,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			server, calls := azureSoraJobsServer(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, azureSoraJobWithStatus(raw))
+			})
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			resp, bifrostErr := newAzureDecisionProvider(t).VideoRetrieve(ctx, newAzureDecisionKey(server.URL),
+				&schemas.BifrostVideoRetrieveRequest{Provider: schemas.Azure, ID: "sora1.task_01jwcet0eje35tc5jy54yjax5q:azure"})
+			if bifrostErr != nil {
+				t.Fatalf("VideoRetrieve: %+v", bifrostErr.Error)
+			}
+			if c := calls(); len(c) != 1 || c[0].method != http.MethodGet || c[0].path != "/openai/v1/video/generations/jobs/task_01jwcet0eje35tc5jy54yjax5q" {
+				t.Fatalf("calls = %+v, want one GET of the job", c)
+			}
+			if resp.Status != want || resp.ProviderStatus != raw {
+				t.Errorf("status = %q/%q, want %q/%q", resp.Status, resp.ProviderStatus, want, raw)
+			}
+			switch raw {
+			case "succeeded":
+				if len(resp.Videos) != 1 || resp.Videos[0].Type != schemas.VideoOutputTypeContent || resp.Videos[0].URL != nil || resp.Videos[0].ID != "gen_01jwcf0a" || resp.Videos[0].ContentType != "video/mp4" {
+					t.Errorf("videos = %+v, want one content entry for gen_01jwcf0a", resp.Videos)
+				}
+				if resp.Usage == nil || resp.Usage.OutputSeconds == nil || *resp.Usage.OutputSeconds != 5 {
+					t.Errorf("usage = %+v, want output_seconds 5 from the generation", resp.Usage)
+				}
+				if resp.CompletedAt == nil || *resp.CompletedAt != 1748470000 || resp.ExpiresAt == nil || *resp.ExpiresAt != 1748556400 {
+					t.Errorf("completed_at %v expires_at %v, want the job's finished_at and expires_at", resp.CompletedAt, resp.ExpiresAt)
+				}
+			case "failed":
+				if resp.Error == nil || resp.Error.Code != "output_moderation" {
+					t.Errorf("error = %+v, want the job's failure_reason as the code", resp.Error)
+				}
+				if len(resp.Videos) != 0 || resp.Usage != nil {
+					t.Errorf("failed task carries videos %v usage %+v", resp.Videos, resp.Usage)
+				}
+			}
+		})
+	}
+}
+
+// TestAzureSoraJobsDownloadStreamsTheGenerationWithTheKey pins the artifact: the job is
+// queried, then the generation's video is fetched with the same key and returned as is.
+func TestAzureSoraJobsDownloadStreamsTheGenerationWithTheKey(t *testing.T) {
+	server, calls := azureSoraJobsServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/openai/v1/video/generations/jobs/task_01jwcet0eje35tc5jy54yjax5q":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, azureSoraJobWithStatus("succeeded"))
+		case "/openai/v1/video/generations/gen_01jwcf0a/content/video":
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = io.WriteString(w, "mp4-bytes")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := newAzureDecisionProvider(t).VideoDownload(ctx, newAzureDecisionKey(server.URL),
+		&schemas.BifrostVideoDownloadRequest{Provider: schemas.Azure, ID: "sora1.task_01jwcet0eje35tc5jy54yjax5q:azure"})
+	if bifrostErr != nil {
+		t.Fatalf("VideoDownload: %+v", bifrostErr.Error)
+	}
+	if string(resp.Content) != "mp4-bytes" || resp.ContentType != "video/mp4" {
+		t.Errorf("content = %q (%s), want the generation's mp4", resp.Content, resp.ContentType)
+	}
+	got := calls()
+	if len(got) != 2 || got[1].path != "/openai/v1/video/generations/gen_01jwcf0a/content/video" || got[1].query != "api-version=preview" {
+		t.Fatalf("calls = %+v, want the job query then the generation's content", got)
+	}
+	for _, c := range got {
+		if c.apiKey != "test-key" {
+			t.Errorf("%s sent key %q, want the creating key", c.path, c.apiKey)
+		}
+	}
+}
+
+// TestAzureSoraJobsRefusesUndeliverableFields pins contract C4 convention three on the jobs
+// API: a priced field it cannot take, or a value it cannot be sent as, is a 400
+// caller_unsupported_parameter naming it, and nothing reaches Azure.
+func TestAzureSoraJobsRefusesUndeliverableFields(t *testing.T) {
+	server, calls := azureSoraJobsServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, azureSoraJobQueued)
+	})
+	for _, tc := range []struct {
+		param  string
+		params schemas.VideoGenerationParameters
+		input  *string
+	}{
+		{"aspect_ratio", schemas.VideoGenerationParameters{AspectRatio: "16:9"}, nil},
+		{"resolution", schemas.VideoGenerationParameters{Resolution: "1080p"}, nil},
+		{"last_frame", schemas.VideoGenerationParameters{LastFrame: "https://example.com/a.png"}, nil},
+		{"reference_images", schemas.VideoGenerationParameters{ReferenceImages: []string{"https://example.com/a.png"}}, nil},
+		{"audio", schemas.VideoGenerationParameters{Audio: schemas.Ptr(false)}, nil},
+		{"output_format", schemas.VideoGenerationParameters{OutputFormat: schemas.Ptr("mp4")}, nil},
+		{"seconds", schemas.VideoGenerationParameters{Seconds: schemas.Ptr("2.5")}, nil},
+		{"size", schemas.VideoGenerationParameters{Size: "1080p"}, nil},
+		{"n", schemas.VideoGenerationParameters{ExtraParams: map[string]any{"n": float64(2)}}, nil},
+		{"n_variants", schemas.VideoGenerationParameters{ExtraParams: map[string]any{"n_variants": float64(3)}}, nil},
+		{"input_reference", schemas.VideoGenerationParameters{}, schemas.Ptr("https://example.com/a.png")},
+	} {
+		t.Run(tc.param, func(t *testing.T) {
+			request := newAzureSoraJobsRequest(&tc.params)
+			request.Input.InputReference = tc.input
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := newAzureDecisionProvider(t).VideoGeneration(ctx, newAzureDecisionKey(server.URL), request)
+			if bifrostErr == nil {
+				t.Fatalf("want a 400 naming %s", tc.param)
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %v, want 400", bifrostErr.StatusCode)
+			}
+			if got := bifrostErr.ResolveErrorType(); got != schemas.ErrorTypeCallerUnsupportedParameter {
+				t.Fatalf("error_type = %q, want %q", got, schemas.ErrorTypeCallerUnsupportedParameter)
+			}
+			if bifrostErr.Error == nil || bifrostErr.Error.Param != tc.param {
+				t.Fatalf("error.param = %+v, want %q", bifrostErr.Error, tc.param)
+			}
+		})
+	}
+	if c := calls(); len(c) != 0 {
+		t.Fatalf("refused requests reached Azure: %+v", c)
+	}
+
+	// One variant is deliverable as asked.
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, bifrostErr := newAzureDecisionProvider(t).VideoGeneration(ctx, newAzureDecisionKey(server.URL), newAzureSoraJobsRequest(&schemas.VideoGenerationParameters{
+		Seconds: schemas.Ptr("5"), Size: "480x480", ExtraParams: map[string]any{"n_variants": float64(1)},
+	})); bifrostErr != nil {
+		t.Fatalf("VideoGeneration with deliverable fields: %+v", bifrostErr.Error)
+	}
+}
+
+// TestAzureSoraJobsErrorsKeepTheVendorStatus pins contract C6 on the jobs API: the vendor's
+// status stays, and a ResponsibleAIPolicyViolation is caller_content_filtered.
+func TestAzureSoraJobsErrorsKeepTheVendorStatus(t *testing.T) {
+	for name, tc := range map[string]struct {
+		status    int
+		body      string
+		errorType schemas.ErrorType
+	}{
+		"content filtered": {400, `{"error":{"code":"content_policy_violation_custom","message":"Your request was rejected by the safety system.","inner_error":{"code":"ResponsibleAIPolicyViolation"}}}`, schemas.ErrorTypeCallerContentFiltered},
+		"unwrapped body":   {400, `{"code":"invalid_size","message":"Unsupported resolution","inner_error":{"code":"ResponsibleAIPolicyViolation"}}`, schemas.ErrorTypeCallerContentFiltered},
+		"rate limited":     {429, `{"error":{"code":"429","message":"Too Many Requests"}}`, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server, _ := azureSoraJobsServer(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			})
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := newAzureDecisionProvider(t).VideoGeneration(ctx, newAzureDecisionKey(server.URL), newAzureSoraJobsRequest(nil))
+			if bifrostErr == nil {
+				t.Fatal("want the vendor's error")
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != tc.status {
+				t.Fatalf("status = %v, want %d", bifrostErr.StatusCode, tc.status)
+			}
+			if tc.errorType != "" && bifrostErr.ExtraFields.ErrorType != tc.errorType {
+				t.Fatalf("error_type = %q, want %q", bifrostErr.ExtraFields.ErrorType, tc.errorType)
+			}
+			if tc.errorType == "" && bifrostErr.ExtraFields.ErrorType == schemas.ErrorTypeCallerContentFiltered {
+				t.Fatal("a rate limit was marked content filtered")
+			}
+			if bifrostErr.Error == nil || bifrostErr.Error.Message == "" || strings.HasPrefix(bifrostErr.Error.Message, "provider API error") {
+				t.Fatalf("message = %+v, want the vendor's", bifrostErr.Error)
+			}
+		})
+	}
+}
+
+// TestAzureSoraJobsCancelIsUnsupported pins that the jobs API, which documents no cancel,
+// gets provider_cancel_unsupported from core with no upstream call.
+func TestAzureSoraJobsCancelIsUnsupported(t *testing.T) {
+	provider := newAzureDecisionProvider(t)
+	bifrostErr := schemas.CheckVideoCancelSupported(provider, &schemas.BifrostRequest{
+		RequestType:        schemas.VideoCancelRequest,
+		VideoCancelRequest: &schemas.BifrostVideoCancelRequest{Provider: schemas.Azure, ID: "sora1.task_01jwcet0eje35tc5jy54yjax5q:azure"},
+	})
+	if bifrostErr == nil || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeProviderCancelUnsupported {
+		t.Fatalf("cancel = %+v, want provider_cancel_unsupported", bifrostErr)
+	}
+}
+
+// TestAzureSoraJobsLeaveSora2OnVideos pins the selection: only first-generation sora goes to
+// the jobs API; sora-2 and its ids stay on /openai/v1/videos.
+func TestAzureSoraJobsLeaveSora2OnVideos(t *testing.T) {
+	server, calls := azureSoraJobsServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"video_68f0","object":"video","status":"queued","model":"sora-2","created_at":1}`)
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	provider := newAzureDecisionProvider(t)
+	request := newAzureSoraJobsRequest(nil)
+	request.Model = "sora-2"
+	if _, bifrostErr := provider.VideoGeneration(ctx, newAzureDecisionKey(server.URL), request); bifrostErr != nil {
+		t.Fatalf("VideoGeneration sora-2: %+v", bifrostErr.Error)
+	}
+	if _, bifrostErr := provider.VideoRetrieve(ctx, newAzureDecisionKey(server.URL), &schemas.BifrostVideoRetrieveRequest{Provider: schemas.Azure, ID: "video_68f0:azure"}); bifrostErr != nil {
+		t.Fatalf("VideoRetrieve sora-2: %+v", bifrostErr.Error)
+	}
+	got := calls()
+	if len(got) != 2 || got[0].path != "/openai/v1/videos" || got[1].path != "/openai/v1/videos/video_68f0" {
+		t.Fatalf("calls = %+v, want sora-2 on /openai/v1/videos", got)
+	}
+}
+
+// TestAzureSoraJobsDeleteSendsDeleteToTheJob pins the delete: one DELETE of the job with the
+// key, whose documented 204 with no body becomes the unified deletion object.
+func TestAzureSoraJobsDeleteSendsDeleteToTheJob(t *testing.T) {
+	server, calls := azureSoraJobsServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	// The HTTP handler passes the id without ":azure"; a Go caller may pass the task id whole.
+	for i, id := range []string{"sora1.task_01jwcet0eje35tc5jy54yjax5q", "sora1.task_01jwcet0eje35tc5jy54yjax5q:azure"} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, bifrostErr := newAzureDecisionProvider(t).VideoDelete(ctx, newAzureDecisionKey(server.URL),
+			&schemas.BifrostVideoDeleteRequest{Provider: schemas.Azure, ID: id})
+		if bifrostErr != nil {
+			t.Fatalf("VideoDelete(%s): %+v", id, bifrostErr.Error)
+		}
+		got := calls()
+		if len(got) != i+1 || got[i].method != http.MethodDelete || got[i].path != "/openai/v1/video/generations/jobs/task_01jwcet0eje35tc5jy54yjax5q" || got[i].query != "api-version=preview" || got[i].apiKey != "test-key" {
+			t.Fatalf("calls = %+v, want one DELETE of the job with the key per delete", got)
+		}
+		if resp.ID != "sora1.task_01jwcet0eje35tc5jy54yjax5q:azure" || !resp.Deleted || resp.Object != "video.deleted" {
+			t.Errorf("VideoDelete(%s) = %+v, want the task id deleted", id, resp)
+		}
+	}
+}
+
+// TestAzureSoraJobsQueryCarriesBytesWhenTheCallerAsks pins the GenAI SDK operation poll: with
+// BifrostContextKeyVideoOutputRequested set, a completed job's query also carries the
+// generation's video as base64, fetched with the same key, next to its content entry.
+func TestAzureSoraJobsQueryCarriesBytesWhenTheCallerAsks(t *testing.T) {
+	server, calls := azureSoraJobsServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/openai/v1/video/generations/gen_01jwcf0a/content/video" {
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = io.WriteString(w, "mp4-bytes")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, azureSoraJobWithStatus("succeeded"))
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyVideoOutputRequested, true)
+	resp, bifrostErr := newAzureDecisionProvider(t).VideoRetrieve(ctx, newAzureDecisionKey(server.URL),
+		&schemas.BifrostVideoRetrieveRequest{Provider: schemas.Azure, ID: "sora1.task_01jwcet0eje35tc5jy54yjax5q"})
+	if bifrostErr != nil {
+		t.Fatalf("VideoRetrieve: %+v", bifrostErr.Error)
+	}
+	if len(resp.Videos) != 2 || resp.Videos[0].Type != schemas.VideoOutputTypeContent || resp.Videos[1].Type != schemas.VideoOutputTypeBase64 ||
+		resp.Videos[1].Base64Data == nil || *resp.Videos[1].Base64Data != "bXA0LWJ5dGVz" || resp.Videos[1].ContentType != "video/mp4" {
+		t.Fatalf("videos = %+v, want the content entry and the video as base64", resp.Videos)
+	}
+	got := calls()
+	if len(got) != 2 || got[1].path != "/openai/v1/video/generations/gen_01jwcf0a/content/video" || got[1].apiKey != "test-key" {
+		t.Fatalf("calls = %+v, want the job query then the generation's content with the key", got)
+	}
+}
+
+// TestAzureSoraJobsDownloadStreamsOnRequest pins contract C9 / BF20 on the jobs API: with Stream
+// set, the generation's file comes back as an open Body read as it arrives, never as buffered
+// Content; the job lookup before it is an ordinary call with the same key.
+func TestAzureSoraJobsDownloadStreamsOnRequest(t *testing.T) {
+	server, calls := azureSoraJobsServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/openai/v1/video/generations/gen_01jwcf0a/content/video" {
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = io.WriteString(w, "mp4-bytes")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, azureSoraJobWithStatus("succeeded"))
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := newAzureDecisionProvider(t).VideoDownload(ctx, newAzureDecisionKey(server.URL),
+		&schemas.BifrostVideoDownloadRequest{Provider: schemas.Azure, ID: "sora1.task_01jwcet0eje35tc5jy54yjax5q:azure", Stream: true})
+	if bifrostErr != nil {
+		t.Fatalf("VideoDownload: %+v", bifrostErr.Error)
+	}
+	if resp.Body == nil || resp.Content != nil || resp.ContentType != "video/mp4" || resp.VideoID != "sora1.task_01jwcet0eje35tc5jy54yjax5q:azure" {
+		t.Fatalf("streamed response = %+v, want an open Body and no Content", resp)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || resp.Body.Close() != nil || string(body) != "mp4-bytes" {
+		t.Fatalf("body = %q, %v", body, err)
+	}
+	got := calls()
+	if len(got) != 2 || got[0].path != "/openai/v1/video/generations/jobs/task_01jwcet0eje35tc5jy54yjax5q" ||
+		got[1].path != "/openai/v1/video/generations/gen_01jwcf0a/content/video" || got[1].query != "api-version=preview" || got[1].apiKey != "test-key" {
+		t.Fatalf("calls = %+v, want the job lookup then the streamed content with the key", got)
+	}
+}
+
+// TestAzureSoraJobsAgreeWithTheProviderDeclaration pins that the jobs path takes exactly the video
+// fields the azure provider declares, the declaration core checks before the converter runs: a
+// field the jobs path accepted but the declaration did not would be unreachable through the
+// gateway, and one the declaration admitted but the jobs path refused would contradict Tokun's
+// catalog.
+func TestAzureSoraJobsAgreeWithTheProviderDeclaration(t *testing.T) {
+	declared, ok := newAzureDecisionProvider(t).SupportedUnifiedFields(schemas.VideoGenerationRequest)
+	if !ok {
+		t.Fatal("azure declares no video generation fields")
+	}
+	server, _ := azureSoraJobsServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, azureSoraJobQueued)
+	})
+	request := &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: newAzureSoraJobsRequest(&schemas.VideoGenerationParameters{
+		Seconds: schemas.Ptr("5"), Size: "480x480", Audio: schemas.Ptr(false), OutputFormat: schemas.Ptr("mp4"), AspectRatio: "1:1",
+	})}
+	for _, field := range request.UnifiedFieldsPresent() {
+		params := schemas.VideoGenerationParameters{}
+		switch field {
+		case "seconds":
+			params.Seconds = schemas.Ptr("5")
+		case "size":
+			params.Size = "480x480"
+		case "audio":
+			params.Audio = schemas.Ptr(false)
+		case "output_format":
+			params.OutputFormat = schemas.Ptr("mp4")
+		case "aspect_ratio":
+			params.AspectRatio = "1:1"
+		}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		_, bifrostErr := newAzureDecisionProvider(t).VideoGeneration(ctx, newAzureDecisionKey(server.URL), newAzureSoraJobsRequest(&params))
+		accepted := bifrostErr == nil
+		if accepted != slices.Contains(declared, field) {
+			t.Errorf("field %s: jobs path accepted=%v, provider declares it=%v", field, accepted, slices.Contains(declared, field))
+		}
 	}
 }
