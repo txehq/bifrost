@@ -301,7 +301,7 @@ func TestVideoBackoffStaysInMinutes(t *testing.T) {
 
 func TestVideoSettlerSupportsOnlyRealVideoProviders(t *testing.T) {
 	settler := NewVideoSettler(nil)
-	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Gemini, schemas.Vertex, schemas.Replicate, schemas.Runway, schemas.Runware, schemas.MiniMax, schemas.BytePlus, schemas.Kling, schemas.DashScope} {
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Gemini, schemas.Vertex, schemas.Replicate, schemas.Runway, schemas.Runware, schemas.MiniMax, schemas.BytePlus, schemas.Kling, schemas.DashScope, schemas.Azure} {
 		assert.True(t, settler.SupportsProvider(provider), string(provider))
 	}
 	// Every provider implements the VideoGeneration method, so a real allowlist is
@@ -723,10 +723,12 @@ func TestVideoSettlerSupportsCustomProviderOnAVideoBase(t *testing.T) {
 		"my-minimax":   schemas.MiniMax,
 		"my-openai":    schemas.OpenAI,
 		"my-anthropic": schemas.Anthropic,
+		"my-azure":     schemas.Azure,
 	}}
 	settler := NewVideoSettler(retriever)
 	assert.True(t, settler.SupportsProvider("my-minimax"))
 	assert.True(t, settler.SupportsProvider("my-openai"))
+	assert.True(t, settler.SupportsProvider("my-azure"), "a custom provider on azure settles through its base (TXE-7054)")
 	assert.False(t, settler.SupportsProvider("my-anthropic"), "a base with no video settlement stays unsupported")
 	assert.False(t, settler.SupportsProvider("unknown"))
 	assert.True(t, settler.SupportsProvider(schemas.MiniMax))

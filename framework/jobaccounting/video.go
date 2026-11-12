@@ -65,6 +65,10 @@ var videoProviders = map[schemas.ModelProvider]struct{}{
 	// Fork: Wan video on DashScope (TXE-6432). Without this entry a create is recorded and never
 	// settled, so a budgeted virtual key is never charged for it.
 	schemas.DashScope: {},
+	// Fork: Azure (TXE-7054), both of its video APIs. Sora 2 task ids are video_…:azure and
+	// first-generation sora ids are sora1.<job id>:azure; the provider routes a retrieve by the id,
+	// and both terminal responses report seconds, size and one output per generation.
+	schemas.Azure: {},
 }
 
 // videoSettlementExemptions are the providers that implement video and are deliberately not
@@ -74,7 +78,6 @@ var videoProviders = map[schemas.ModelProvider]struct{}{
 var videoSettlementExemptions = map[schemas.ModelProvider]string{
 	schemas.ModelArk:   "TXE-7131 adds modelark with a settle-and-read-cost regression: it serves Seedance tasks through the Ark API and has never been settled",
 	schemas.Volcengine: "TXE-7131 adds volcengine with a settle-and-read-cost regression: it serves Seedance tasks through the Ark API and has never been settled",
-	schemas.Azure:      "TXE-7054 adds azure: its two video APIs (Sora 2 and the first-generation jobs API) use different ids and dimensions, and settlement must also be reached from /content",
 }
 
 // VideoRetriever is the provider call the video settler needs: given a job row,
