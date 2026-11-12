@@ -4278,6 +4278,102 @@ func TestRecordVideoJobLifecycle_MarksTheRequestRowWithTheVideo(t *testing.T) {
 	}
 }
 
+// azureSoraTerminalRetriever answers the sweeper's poll with the task object the Azure provider
+// returns for a succeeded first-generation sora job (TXE-6533): n_seconds, width and height as
+// seconds and size, and one output per generation.
+type azureSoraTerminalRetriever struct{ calls int }
+
+func (r *azureSoraTerminalRetriever) RetrieveVideo(_ context.Context, job *cstables.TableProviderJob) (*schemas.BifrostVideoGenerationResponse, error) {
+	r.calls++
+	five := "5"
+	return &schemas.BifrostVideoGenerationResponse{
+		ID:      job.JobID,
+		Model:   "sora",
+		Status:  schemas.VideoStatusCompleted,
+		Seconds: &five,
+		Size:    "480x480",
+		Videos:  []schemas.VideoOutput{{Type: schemas.VideoOutputTypeContent, ContentType: "video/mp4"}},
+	}, nil
+}
+
+// azureSoraPricing prices azure sora at 0.02 per second per output.
+type azureSoraPricing struct{}
+
+func (azureSoraPricing) CalculateBatchCostDetailsForUsage(*schemas.BifrostLLMUsage, schemas.ModelProvider, string, schemas.RequestType, *modelcatalog.PricingLookupScopes) modelcatalog.BatchCostDetails {
+	return modelcatalog.BatchCostDetails{}
+}
+
+func (azureSoraPricing) CalculateVideoCostDetails(dims modelcatalog.VideoPricingDimensions, provider schemas.ModelProvider, _ *modelcatalog.PricingLookupScopes) modelcatalog.VideoCostDetails {
+	if provider != schemas.Azure || dims.Model != "sora" || dims.Seconds == nil {
+		return modelcatalog.VideoCostDetails{}
+	}
+	return modelcatalog.VideoCostDetails{Cost: float64(*dims.Seconds) * 0.02 * float64(max(1, dims.OutputCount)), Priced: true}
+}
+
+type recordingUsageReporter struct{ reports []jobaccounting.UsageReport }
+
+func (r *recordingUsageReporter) ReportUsage(_ context.Context, report jobaccounting.UsageReport) error {
+	r.reports = append(r.reports, report)
+	return nil
+}
+
+// TestRecordVideoJobLifecycle_AzureSoraCreateThenContentIsSettledByTheSweeper (TXE-7054) follows
+// the sequence the Codex review of PR #164 found unsettled, through this plugin's own recording:
+// a budgeted virtual key creates first-generation sora on Azure, then only downloads it. The
+// download is a VideoDownloadRequest, which records and settles nothing here, so the row the
+// create wrote is what is left, and the video sweeper settles it and charges the budget.
+func TestRecordVideoJobLifecycle_AzureSoraCreateThenContentIsSettledByTheSweeper(t *testing.T) {
+	plugin, bs := newVideoLifecyclePlugin(t)
+
+	taskID := "sora1.task_01jwcet0eje35tc5jy54yjax5q:azure"
+	vk := "vk-budgeted"
+	five := "5"
+	entry := &logstore.Log{
+		ID:              "req-azure-sora-create",
+		Provider:        string(schemas.Azure),
+		Model:           "sora",
+		SelectedKeyID:   "azure-key",
+		VirtualKeyID:    &vk,
+		BudgetIDsParsed: []string{"budget-dollars"},
+		ParamsParsed:    &schemas.VideoGenerationParameters{Seconds: &five, Size: "480x480"},
+	}
+	plugin.recordVideoJobLifecycle(entry, &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: taskID, Model: "sora", Status: schemas.VideoStatusQueued},
+	}, schemas.VideoGenerationRequest)
+
+	rowID := cstables.ProviderJobID(cstables.ProviderJobKindVideo, string(schemas.Azure), taskID)
+	job, err := bs.GetProviderJob(context.Background(), rowID)
+	require.NoError(t, err, "the create records the job under azure and its sora1 task id")
+	require.Equal(t, "azure-key", job.SelectedKeyID, "the sweeper polls with the creating key")
+	dims := jobaccounting.VideoDimensionsFromJob(job)
+	require.NotNil(t, dims.Seconds)
+	require.Equal(t, 5, *dims.Seconds)
+	require.Equal(t, "480x480", dims.Size)
+
+	require.False(t, isVideoJobRequestType(schemas.VideoDownloadRequest), "/content neither records nor settles a job")
+
+	// The job finishes; the sweeper's next pass finds it due.
+	past := time.Now().UTC().Add(-time.Minute)
+	bs.jobs[rowID].NextCheckAt = &past
+
+	retriever := &azureSoraTerminalRetriever{}
+	reporter := &recordingUsageReporter{}
+	sweeper := jobaccounting.NewVideoSweeper(bs, plugin.store, azureSoraPricing{}, retriever, nil, reporter, jobaccounting.SweeperConfig{Provider: schemas.Azure, Limit: 10})
+	sweeper.SweepOnce(context.Background())
+
+	require.Equal(t, 1, retriever.calls)
+	require.Equal(t, cstables.ProviderJobAccountingStatusAccounted, bs.jobs[rowID].AccountingStatus)
+	require.Len(t, reporter.reports, 1, "governance is told of the cost once")
+	require.InDelta(t, 0.10, reporter.reports[0].Cost, 1e-12)
+	require.Equal(t, []string{"budget-dollars"}, reporter.reports[0].BudgetIDs, "the virtual key's dollar budget is charged")
+	require.Equal(t, vk, reporter.reports[0].VirtualKeyID)
+
+	settled, err := plugin.store.FindByID(context.Background(), jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindVideo, schemas.Azure, taskID))
+	require.NoError(t, err)
+	require.NotNil(t, settled.Cost)
+	require.InDelta(t, 0.10, *settled.Cost, 1e-12)
+}
+
 // newEndedTraceContext builds a context whose tracer already completed the trace,
 // the state a late terminal hook observes after the transport flushed the request.
 // The root span is started first because a live trace gets its root span from the
