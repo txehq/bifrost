@@ -65,6 +65,9 @@ var videoProviders = map[schemas.ModelProvider]struct{}{
 	// Fork: Wan video on DashScope (TXE-6432). Without this entry a create is recorded and never
 	// settled, so a budgeted virtual key is never charged for it.
 	schemas.DashScope: {},
+	// xAI's video retrieve reports the bill itself (usage.cost_in_usd_ticks), so a finished job
+	// settles at the vendor's figure (fork, TXE-6429).
+	schemas.XAI: {},
 }
 
 // videoSettlementExemptions are the providers that implement video and are deliberately not
