@@ -959,7 +959,6 @@ const wireAnswer = (path, body, bytes) => {
 	if (path.startsWith("/pp/storage/")) return storageAnswer(path, body);
 	if (path.startsWith("/pp/bfl/v1/")) return { status: 200, body: JSON.stringify(bflSubmitAnswer()) };
 	if (isOpenAIImagePath(path)) return openAIImageAnswer(body, bytes, path.endsWith("/images/edits"));
-	if (path === dashScopeImagePath) return dashScopeImageAnswer(body);
 	const geminiImage = geminiImageAnswerFor(path);
 	if (geminiImage) return geminiImage;
 	if (path === "/pp/gemini/files") return geminiFileUpload();
@@ -1613,8 +1612,8 @@ const handleRequest = (req, res) => {
 	if (req.method === "GET" && path === "/__wire") {
 		return send(200, {}, JSON.stringify({ data: [{ calls: wireCalls }] }));
 	}
-	// DashScope's native Wan video API, TXE-6432 (folder 423). The gateway's dashscope provider has both of its
-	// bases at /pp/dashscope. Every request is kept in /__wire with its method and its X-DashScope-Async header (no
+	// DashScope's native API: Wan video, TXE-6432 (folder 423), and the synchronous image endpoint, TXE-6607
+	// (folder 425). The gateway's dashscope provider has both of its bases at /pp/dashscope. Every request is kept in /__wire with its method and its X-DashScope-Async header (no
 	// other header, so no key reaches a report). A create answers a PENDING task. The task id of a query or a
 	// cancel picks the answer (see dashScopeTasks): only ds-pending can be cancelled, as at DashScope, which
 	// answers 400 UnsupportedOperation for a task in any other state. GET /api/v1/tasks is the task list.
@@ -1623,7 +1622,15 @@ const handleRequest = (req, res) => {
 		req.on("data", (c) => body.push(c));
 		req.on("end", () => {
 			const url = new URL(req.url, "http://localhost");
-			wireCalls.push({ method: req.method, path, query: url.search, body: Buffer.concat(body).toString("utf8"), async: req.headers["x-dashscope-async"] || "" });
+			const bytes = Buffer.concat(body).toString("utf8");
+			wireCalls.push({ method: req.method, path, query: url.search, body: bytes, async: req.headers["x-dashscope-async"] || "" });
+			// The synchronous image endpoint (TXE-6607, folder 425) answers by the model in the body.
+			if (req.method === "POST" && path === dashScopeImagePath) {
+				let parsed = {};
+				try { parsed = JSON.parse(bytes) || {}; } catch {}
+				const image = dashScopeImageAnswer(parsed);
+				return send(image.status, {}, image.body);
+			}
 			const answer = dashScopeAnswer(req.method, path.slice("/pp/dashscope".length), url.search);
 			send(answer.status, {}, JSON.stringify(answer.body));
 		});
