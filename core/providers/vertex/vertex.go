@@ -2594,6 +2594,11 @@ func (provider *VertexProvider) ImageVariation(ctx *schemas.BifrostContext, key 
 func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, bifrostReq *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
+	// An Omni model generates video through the Interactions API (fork, TXE-6538).
+	if gemini.IsOmniVideoModel(ctx, bifrostReq.Model) {
+		return provider.interactionVideoCreate(ctx, key, bifrostReq)
+	}
+
 	// Only Gemini models support video generation in Vertex
 	if !schemas.IsVeoModelFamily(ctx, bifrostReq.Model) && !schemas.IsAllDigitsASCII(bifrostReq.Model) {
 		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("video generation is only supported for Veo models in Vertex, got: %s", bifrostReq.Model))
@@ -2730,6 +2735,15 @@ func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 	// projects/PROJECT_ID/locations/REGION/publishers/google/models/MODEL_ID/operations/OPERATION_ID
 	// Its region, not the selected key's, decides the host: keys rotate across regions on model-less polls.
 	taskID := providerUtils.StripVideoIDProviderSuffix(bifrostReq.ID, provider.GetProviderKey())
+	// The task id carries its kind: an interaction resource name is queried on the
+	// Interactions API (fork, TXE-6538), anything else is a Veo operation name.
+	if interactionURL, isInteraction, idErr := vertexInteractionURL(taskID); isInteraction {
+		if idErr != nil {
+			return nil, idErr
+		}
+		bifrostResp, _, bifrostErr := provider.interactionVideoRetrieve(ctx, key, taskID, interactionURL)
+		return bifrostResp, bifrostErr
+	}
 	completeURL, idErr := vertexVideoOperationURL(taskID)
 	if idErr != nil {
 		return nil, idErr
@@ -2819,6 +2833,13 @@ func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 func (provider *VertexProvider) VideoDownload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
 	if request == nil || request.ID == "" {
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
+	}
+	taskID := providerUtils.StripVideoIDProviderSuffix(request.ID, provider.GetProviderKey())
+	if interactionURL, isInteraction, idErr := vertexInteractionURL(taskID); isInteraction {
+		if idErr != nil {
+			return nil, idErr
+		}
+		return provider.interactionVideoDownload(ctx, key, request, taskID, interactionURL)
 	}
 	// Retrieve operation first to get the video URL
 	bifrostVideoRetrieveRequest := &schemas.BifrostVideoRetrieveRequest{

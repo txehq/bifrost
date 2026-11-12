@@ -1,0 +1,680 @@
+{
+  "name": "518. Vertex Omni video on the Interactions API: create, query, cancel and download on the host of the task's location (vertex omni video, vertex endpoint fixture)",
+  "description": "Pins TXE-6538 (contract C4, C5, C7, C9) on the unified video routes for the vertex provider; folder 418 is the same for gemini. Local fixture regression, no network traffic leaves the machine: run tests/e2e/api/runners/vertex-endpoint-fixture.mjs --app-dir <dir>, start an isolated gateway with -app-dir <dir> and run with vertexEndpointFixture=1 (and vertexEndpointFixtureUrl when the fixture is not on port 8792); every case is skipped otherwise. The fixture is the gateway's HTTP proxy and terminates TLS for whatever host the gateway asks for, so the cases assert the real host and path. It serves the Interactions API: POST .../interactions answers a running interaction, GET .../interactions/{id} one whose state its id names (omni-running, omni-completed with the video inline, omni-incomplete), and POST .../interactions/{id}/cancel a cancelled one. Keys are selected with x-bf-api-key. Before the change an Omni model on vertex was sent to the Veo endpoint (publishers/google/models/{model}:predictLongRunning), an interaction resource name was not a valid task id, and the cancel route answered provider_cancel_unsupported for every id. Row 1: a create on the global key goes to aiplatform.googleapis.com .../locations/global/interactions with background true and the unified fields in response_format, with no webhook_config, and the task id is the interaction's resource name. Row 2: the us key reaches aiplatform.us.rep.googleapis.com. Row 3: a key of a region the Interactions API does not serve (us-central1) is refused with 400 and a message naming the served locations, and sends nothing; the region is never replaced. Rows 4 and 5: callback_url, which Vertex documents no webhook field for, and size are refused with 400 caller_unsupported_parameter and send nothing. Row 6: a query made with the us-east5 key reads the eu host the task id names, and the completed task carries provider_status, one videos entry of type content, usage.output_tokens from the video modality and expires_at 7 days after created_at. Row 7: a status with no task-object status of the same meaning (incomplete) stays in provider_status and reports in_progress. Row 8: cancel of a running interaction queries it, calls the vendor cancel and returns cancelled. Row 9: cancel of a completed interaction is 400 provider_cancel_unsupported after the one query, with no cancel call. Row 10: /content returns the inline video bytes.",
+  "item": [
+    {
+      "name": "518.1 vertex/gemini-omni-1.1-flash-preview POST /v1/videos on the global key creates a background interaction on aiplatform.googleapis.com (vertex omni video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-global"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-omni-1.1-flash-preview\",\n  \"prompt\": \"a marble on a track\",\n  \"seconds\": \"8\",\n  \"aspect_ratio\": \"16:9\",\n  \"resolution\": \"720p\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var VX = pm.variables.get('vertexEndpointFixtureUrl') || 'http://127.0.0.1:8792';",
+              "  pm.sendRequest({ url: VX + '/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create returns a running task whose id is the interaction resource name', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('projects%2Ffixture-project%2Flocations%2Fglobal%2Finteractions%2Fomni-running:vertex');",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('in_progress');",
+              "  pm.expect(j.provider_status, 'provider_status: ' + pm.response.text()).to.eql('in_progress');",
+              "  pm.expect(j.seconds, 'seconds: ' + pm.response.text()).to.eql('8');",
+              "});",
+              "var VX = pm.variables.get('vertexEndpointFixtureUrl') || 'http://127.0.0.1:8792';",
+              "pm.sendRequest({ url: VX + '/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('the one call is the Interactions create on the global host, with the unified fields converted', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    var reqs = res.json().data[0].requests.filter(function (q) { return /\\/interactions/.test(q.path); });",
+              "    var calls = reqs.map(function (q) { return q.method + ' ' + q.host + q.path.replace(/\\?.*$/, ''); });",
+              "    pm.expect(calls, JSON.stringify(calls)).to.eql(['POST aiplatform.googleapis.com/v1/projects/fixture-project/locations/global/interactions']);",
+              "    var b = JSON.parse(reqs[0].body);",
+              "    pm.expect(b.model, reqs[0].body).to.eql('gemini-omni-1.1-flash-preview');",
+              "    pm.expect(b.background, 'background').to.eql(true);",
+              "    pm.expect(b.input, 'input').to.eql([{ type: 'text', text: 'a marble on a track' }]);",
+              "    pm.expect(b.response_format, 'response_format').to.eql({ type: 'video', aspect_ratio: '16:9', duration: '8s', resolution: '720p' });",
+              "    pm.expect(b.webhook_config, 'Vertex documents no webhook field').to.eql(undefined);",
+              "    pm.expect(b.seconds, 'the unified name must not be sent').to.eql(undefined);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "518.2 vertex/gemini-omni-1.1-flash-preview POST /v1/videos on the us key reaches aiplatform.us.rep.googleapis.com (vertex omni video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-omni-1.1-flash-preview\",\n  \"prompt\": \"a marble on a track\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var VX = pm.variables.get('vertexEndpointFixtureUrl') || 'http://127.0.0.1:8792';",
+              "  pm.sendRequest({ url: VX + '/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the task id names the us location', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.json().id, 'id: ' + pm.response.text()).to.eql('projects%2Ffixture-project%2Flocations%2Fus%2Finteractions%2Fomni-running:vertex');",
+              "});",
+              "var VX = pm.variables.get('vertexEndpointFixtureUrl') || 'http://127.0.0.1:8792';",
+              "pm.sendRequest({ url: VX + '/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('the create went to the us multi-region host', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    var reqs = res.json().data[0].requests.filter(function (q) { return /\\/interactions/.test(q.path); });",
+              "    var calls = reqs.map(function (q) { return q.method + ' ' + q.host + q.path.replace(/\\?.*$/, ''); });",
+              "    pm.expect(calls, JSON.stringify(calls)).to.eql(['POST aiplatform.us.rep.googleapis.com/v1/projects/fixture-project/locations/us/interactions']);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "518.3 [EXPECT-400] vertex/gemini-omni-1.1-flash-preview POST /v1/videos on a us-central1 key fails with the served locations and sends nothing (vertex omni video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-omni-1.1-flash-preview\",\n  \"prompt\": \"a marble on a track\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var VX = pm.variables.get('vertexEndpointFixtureUrl') || 'http://127.0.0.1:8792';",
+              "  pm.sendRequest({ url: VX + '/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create fails naming the locations the Interactions API serves', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.error && j.error.message, 'message: ' + pm.response.text()).to.include('global, us, eu');",
+              "  pm.expect(j.error.message, 'message: ' + pm.response.text()).to.include('us-central1');",
+              "});",
+              "var VX = pm.variables.get('vertexEndpointFixtureUrl') || 'http://127.0.0.1:8792';",
+              "pm.sendRequest({ url: VX + '/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('nothing reached Vertex: the region is not replaced by another', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    var reqs = res.json().data[0].requests.filter(function (q) { return /\\/interactions/.test(q.path); });",
+              "    var calls = reqs.map(function (q) { return q.method + ' ' + q.host + q.path.replace(/\\?.*$/, ''); });",
+              "    pm.expect(calls, JSON.stringify(calls)).to.eql([]);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "518.4 [EXPECT-400] vertex/gemini-omni-1.1-flash-preview POST /v1/videos refuses callback_url, which Vertex documents no webhook field for (vertex omni video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-global"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-omni-1.1-flash-preview\",\n  \"prompt\": \"a marble on a track\",\n  \"callback_url\": \"https://hooks.example.test/v/task_518\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var VX = pm.variables.get('vertexEndpointFixtureUrl') || 'http://127.0.0.1:8792';",
+              "  pm.sendRequest({ url: VX + '/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create is refused naming callback_url', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'param: ' + pm.response.text()).to.eql('callback_url');",
+              "});",
+              "var VX = pm.variables.get('vertexEndpointFixtureUrl') || 'http://127.0.0.1:8792';",
+              "pm.sendRequest({ url: VX + '/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('nothing reached Vertex', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    var reqs = res.json().data[0].requests.filter(function (q) { return /\\/interactions/.test(q.path); });",
+              "    var calls = reqs.map(function (q) { return q.method + ' ' + q.host + q.path.replace(/\\?.*$/, ''); });",
+              "    pm.expect(calls, JSON.stringify(calls)).to.eql([]);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "518.5 [EXPECT-400] vertex/gemini-omni-1.1-flash-preview POST /v1/videos refuses size, which the Interactions API has no field for (vertex omni video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-global"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-omni-1.1-flash-preview\",\n  \"prompt\": \"a marble on a track\",\n  \"size\": \"1280x720\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var VX = pm.variables.get('vertexEndpointFixtureUrl') || 'http://127.0.0.1:8792';",
+              "  pm.sendRequest({ url: VX + '/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create is refused naming size', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'param: ' + pm.response.text()).to.eql('size');",
+              "});",
+              "var VX = pm.variables.get('vertexEndpointFixtureUrl') || 'http://127.0.0.1:8792';",
+              "pm.sendRequest({ url: VX + '/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('nothing reached Vertex', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    var reqs = res.json().data[0].requests.filter(function (q) { return /\\/interactions/.test(q.path); });",
+              "    var calls = reqs.map(function (q) { return q.method + ' ' + q.host + q.path.replace(/\\?.*$/, ''); });",
+              "    pm.expect(calls, JSON.stringify(calls)).to.eql([]);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "518.6 vertex GET /v1/videos/{id} of a completed Omni interaction on the us-east5 key reads the eu host the id names (vertex omni video)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-east5"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/projects%2Ffixture-project%2Flocations%2Feu%2Finteractions%2Fomni-completed:vertex",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "projects%2Ffixture-project%2Flocations%2Feu%2Finteractions%2Fomni-completed:vertex"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var VX = pm.variables.get('vertexEndpointFixtureUrl') || 'http://127.0.0.1:8792';",
+              "  pm.sendRequest({ url: VX + '/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the query returns the completed task object', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('projects%2Ffixture-project%2Flocations%2Feu%2Finteractions%2Fomni-completed:vertex');",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('completed');",
+              "  pm.expect(j.provider_status, 'provider_status: ' + pm.response.text()).to.eql('completed');",
+              "  pm.expect(j.videos, 'videos: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+              "  pm.expect(j.videos[0].type, 'videos[0].type').to.eql('content');",
+              "  pm.expect(j.videos[0].url, 'the bytes need credentials, so no url is returned').to.eql(undefined);",
+              "  pm.expect(j.videos[0].base64_data, 'the bytes are not copied into the task object').to.eql(undefined);",
+              "  pm.expect(j.usage && j.usage.output_tokens, 'usage: ' + pm.response.text()).to.eql(46336);",
+              "  pm.expect(j.expires_at, 'expires_at is 7 days after created_at: ' + pm.response.text()).to.eql(j.created_at + 7 * 24 * 3600);",
+              "});",
+              "var VX = pm.variables.get('vertexEndpointFixtureUrl') || 'http://127.0.0.1:8792';",
+              "pm.sendRequest({ url: VX + '/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('the one call is the query on the eu host', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    var reqs = res.json().data[0].requests.filter(function (q) { return /\\/interactions/.test(q.path); });",
+              "    var calls = reqs.map(function (q) { return q.method + ' ' + q.host + q.path.replace(/\\?.*$/, ''); });",
+              "    pm.expect(calls, JSON.stringify(calls)).to.eql(['GET aiplatform.eu.rep.googleapis.com/v1/projects/fixture-project/locations/eu/interactions/omni-completed']);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "518.7 vertex GET /v1/videos/{id} of an Omni interaction in a status with no task status of its own keeps it in provider_status (vertex omni video)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-global"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/projects%2Ffixture-project%2Flocations%2Fglobal%2Finteractions%2Fomni-incomplete:vertex",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "projects%2Ffixture-project%2Flocations%2Fglobal%2Finteractions%2Fomni-incomplete:vertex"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var VX = pm.variables.get('vertexEndpointFixtureUrl') || 'http://127.0.0.1:8792';",
+              "  pm.sendRequest({ url: VX + '/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('incomplete stays in provider_status and reports in_progress', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('in_progress');",
+              "  pm.expect(j.provider_status, 'provider_status: ' + pm.response.text()).to.eql('incomplete');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "518.8 vertex POST /v1/videos/{id}/cancel of a running Omni interaction queries it and calls the vendor cancel (vertex omni video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-global"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/projects%2Ffixture-project%2Flocations%2Fglobal%2Finteractions%2Fomni-running:vertex/cancel",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "projects%2Ffixture-project%2Flocations%2Fglobal%2Finteractions%2Fomni-running:vertex",
+            "cancel"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var VX = pm.variables.get('vertexEndpointFixtureUrl') || 'http://127.0.0.1:8792';",
+              "  pm.sendRequest({ url: VX + '/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the cancel returns the cancelled task object', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('projects%2Ffixture-project%2Flocations%2Fglobal%2Finteractions%2Fomni-running:vertex');",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('cancelled');",
+              "  pm.expect(j.provider_status, 'provider_status: ' + pm.response.text()).to.eql('cancelled');",
+              "});",
+              "var VX = pm.variables.get('vertexEndpointFixtureUrl') || 'http://127.0.0.1:8792';",
+              "pm.sendRequest({ url: VX + '/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('one query, then the vendor cancel', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    var reqs = res.json().data[0].requests.filter(function (q) { return /\\/interactions/.test(q.path); });",
+              "    var calls = reqs.map(function (q) { return q.method + ' ' + q.host + q.path.replace(/\\?.*$/, ''); });",
+              "    pm.expect(calls, JSON.stringify(calls)).to.eql(['GET aiplatform.googleapis.com/v1/projects/fixture-project/locations/global/interactions/omni-running', 'POST aiplatform.googleapis.com/v1/projects/fixture-project/locations/global/interactions/omni-running/cancel']);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "518.9 [EXPECT-400] vertex POST /v1/videos/{id}/cancel of a completed Omni interaction is provider_cancel_unsupported (vertex omni video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-global"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/projects%2Ffixture-project%2Flocations%2Fglobal%2Finteractions%2Fomni-completed:vertex/cancel",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "projects%2Ffixture-project%2Flocations%2Fglobal%2Finteractions%2Fomni-completed:vertex",
+            "cancel"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var VX = pm.variables.get('vertexEndpointFixtureUrl') || 'http://127.0.0.1:8792';",
+              "  pm.sendRequest({ url: VX + '/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the cancel is refused as provider_cancel_unsupported', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_cancel_unsupported');",
+              "  pm.expect(j.error.message, 'message: ' + pm.response.text()).to.include('completed');",
+              "});",
+              "var VX = pm.variables.get('vertexEndpointFixtureUrl') || 'http://127.0.0.1:8792';",
+              "pm.sendRequest({ url: VX + '/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('the one call is the query: no cancel reached Vertex', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    var reqs = res.json().data[0].requests.filter(function (q) { return /\\/interactions/.test(q.path); });",
+              "    var calls = reqs.map(function (q) { return q.method + ' ' + q.host + q.path.replace(/\\?.*$/, ''); });",
+              "    pm.expect(calls, JSON.stringify(calls)).to.eql(['GET aiplatform.googleapis.com/v1/projects/fixture-project/locations/global/interactions/omni-completed']);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "518.10 vertex GET /v1/videos/{id}/content returns the inline video of a completed Omni interaction (vertex omni video)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-global"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/projects%2Ffixture-project%2Flocations%2Fglobal%2Finteractions%2Fomni-completed:vertex/content",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "projects%2Ffixture-project%2Flocations%2Fglobal%2Finteractions%2Fomni-completed:vertex",
+            "content"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var VX = pm.variables.get('vertexEndpointFixtureUrl') || 'http://127.0.0.1:8792';",
+              "  pm.sendRequest({ url: VX + '/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the content route returns the video bytes', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "  pm.expect(pm.response.headers.get('Content-Type'), 'content type').to.eql('video/webm');",
+              "  pm.expect(pm.response.text(), 'body').to.include('fixture-video');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

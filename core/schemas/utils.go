@@ -2675,6 +2675,12 @@ func IsVeoModel(model string) bool {
 	return strings.Contains(model, "veo")
 }
 
+// IsGeminiOmniModel reports whether model is a Gemini Omni model (fork, TXE-6538). Omni generates
+// video through the Interactions API, not through Veo's predictLongRunning.
+func IsGeminiOmniModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "gemini-omni")
+}
+
 func IsGemmaModel(model string) bool {
 	return strings.Contains(model, "gemma")
 }

@@ -967,6 +967,9 @@ const wireAnswer = (path, body, bytes) => {
 	}
 	// Replicate accepts a prediction (201) but the answer names no urls.get to poll it at (folder 456, TXE-7056).
 	if (path.startsWith("/pp/replicate/") && path.endsWith("/predictions")) return { status: 201, body: JSON.stringify({ id: "pred_fixture_no_urls", status: "starting" }) };
+	if (path === "/pp/gemini/interactions") return { status: 200, body: JSON.stringify(omniInteraction("omni-running", "")) };
+	const omniCancel = path.match(/^\/pp\/gemini\/interactions\/([^/]+)\/cancel$/);
+	if (omniCancel) return { status: 200, body: JSON.stringify({ ...omniInteraction(omniCancel[1], ""), status: "cancelled" }) };
 	if (path.endsWith(":predict")) return { status: 200, body: JSON.stringify(imagenPartiallyBlocked) };
 	const geminiAudio = geminiAudioAnswer(path);
 	if (geminiAudio) return geminiAudio;
@@ -1053,6 +1056,29 @@ const probeStreamGaps = (spec, reply) => {
 	});
 	upstream.on("error", (err) => reply(502, { error: { message: `probe could not reach the gateway: ${err.message}`, type: "probe_error" } }));
 	upstream.end(payload);
+};
+// A Gemini Interactions API resource for an Omni video task, folder 418 (TXE-6538). The interaction id picks
+// the state: "omni-running" is in_progress and "omni-<status>" is that status ("omni-completed",
+// "omni-incomplete", ...). A completed interaction carries a delivery=uri video, a Gemini Files file on this
+// fixture (GET /pp/gemini/files/omni-file:download), and usage broken down by modality. POST /pp/gemini/interactions
+// answers the running one and POST /pp/gemini/interactions/{id}/cancel a cancelled one; both land in /__wire like
+// every POST under /pp/. The GETs are counted under "omni.retrieve <id>" and "omni.file".
+const omniInteraction = (id, origin) => {
+	const status = id === "omni-running" ? "in_progress" : id.replace(/^omni-/, "");
+	const interaction = { id, object: "interaction", status, model: "gemini-omni-1.1-flash", created: "2026-11-10T12:22:47Z", updated: "2026-11-10T12:25:15Z" };
+	if (status === "completed") {
+		interaction.steps = [
+			{ type: "user_input", content: [{ type: "text", text: "a marble on a track" }] },
+			{ type: "thought", content: [{ type: "thought", text: "planning the shot" }] },
+			{ type: "model_output", content: [{ type: "video", mime_type: "video/mp4", uri: `${origin}/pp/gemini/files/omni-file:download?alt=media` }] },
+		];
+		interaction.usage = {
+			input_tokens_by_modality: [{ modality: "text", tokens: 12 }],
+			output_tokens_by_modality: [{ modality: "text", tokens: 7 }, { modality: "video", tokens: 46336 }],
+			total_input_tokens: 12, total_output_tokens: 46343, total_tokens: 46355,
+		};
+	}
+	return interaction;
 };
 // An OpenAI video task as GET /v1/videos/{id} returns it while the task waits in the queue.
 const videoTask = (id) => ({ id, object: "video", model: "sora-2", status: "queued", progress: 0, created_at: 1762700000, seconds: "4", size: "720x1280" });
@@ -1703,6 +1729,17 @@ const handleRequest = (req, res) => {
 	}
 	if (req.method === "GET" && path === "/__hits") {
 		return send(200, {}, JSON.stringify({ data: [{ hits: { ...hits } }] }));
+	}
+	// The Gemini Interactions API reads of folder 418 (TXE-6538); see omniInteraction above.
+	const omniRetrieve = path.match(/^\/pp\/gemini\/interactions\/([^/]+)$/);
+	if (req.method === "GET" && omniRetrieve) {
+		countHit(`omni.retrieve ${omniRetrieve[1]}`);
+		return send(200, {}, JSON.stringify(omniInteraction(omniRetrieve[1], `http://${req.headers.host}`)));
+	}
+	if (req.method === "GET" && path === "/pp/gemini/files/omni-file:download") {
+		countHit("omni.file");
+		res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": FIXTURE_MP4.length });
+		return res.end(FIXTURE_MP4);
 	}
 	if (req.method === "GET" && path === "/__sent") {
 		const model = new URL(req.url, "http://localhost").searchParams.get("model") || "";

@@ -1454,16 +1454,19 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 }
 
 // SupportedUnifiedFields implements schemas.UnifiedFieldDeclarer for the operations whose
-// vendor sheet is wired up: speech and transcription, streamed or not. Core refuses a
-// request carrying any other unified field of those operations with
-// caller_unsupported_parameter before a key is chosen (contract C4). Every other operation
-// is undeclared and stays unchecked.
+// vendor sheet is wired up: speech and transcription, streamed or not, and video create
+// (TXE-6538; see VideoGenerationUnifiedFields for why that list is the union of the Veo and
+// the Omni paths). Core refuses a request carrying any other unified field of those
+// operations with caller_unsupported_parameter before a key is chosen (contract C4). Every
+// other operation is undeclared and stays unchecked.
 func (provider *GeminiProvider) SupportedUnifiedFields(requestType schemas.RequestType) ([]string, bool) {
 	switch requestType {
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		return SpeechUnifiedFields, true
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		return TranscriptionUnifiedFields, true
+	case schemas.VideoGenerationRequest:
+		return VideoGenerationUnifiedFields, true
 	}
 	return nil, false
 }
@@ -2456,11 +2459,23 @@ func (provider *GeminiProvider) ImageVariation(ctx *schemas.BifrostContext, key 
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
 }
 
-// VideoGeneration creates a video generation operation using Gemini's Veo models.
-// Uses the POST /models/{model}:predictLongRunning endpoint.
+// VideoGeneration creates a video generation task. An Omni model runs on the Interactions API
+// (POST /interactions, see interactions.go); every other model is a Veo model and uses the
+// POST /models/{model}:predictLongRunning endpoint.
 func (provider *GeminiProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, bifrostReq *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.VideoGenerationRequest); err != nil {
 		return nil, err
+	}
+
+	if IsOmniVideoModel(ctx, bifrostReq.Model) {
+		return provider.interactionVideoCreate(ctx, key, bifrostReq)
+	}
+	// predictLongRunning has no webhook or caller-reference field. The provider declares the
+	// two control fields for the Interactions API, so this path refuses them itself.
+	if bifrostReq.Params != nil {
+		if present := bifrostReq.Params.TaskControlParameters.Present(); len(present) > 0 {
+			return nil, schemas.NewUnsupportedParameterError(present[0], "")
+		}
 	}
 
 	model := bifrostReq.Model
@@ -2574,6 +2589,12 @@ func (provider *GeminiProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 	operationID := bifrostReq.ID
 
 	operationID = providerUtils.StripVideoIDProviderSuffix(operationID, provider.GetProviderKey())
+	// The task id carries its kind: an interaction is queried on the Interactions API, anything
+	// else is a predictLongRunning operation name.
+	if interactionID, ok := interactionIDFromVideoID(operationID); ok {
+		bifrostResp, _, bifrostErr := provider.interactionVideoRetrieve(ctx, key, interactionID)
+		return bifrostResp, bifrostErr
+	}
 	operationPath, idErr := geminiVideoOperationPath(operationID)
 	if idErr != nil {
 		return nil, idErr
@@ -2635,6 +2656,9 @@ func (provider *GeminiProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	if request == nil || request.ID == "" {
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
 	}
+	if interactionID, ok := interactionIDFromVideoID(providerUtils.StripVideoIDProviderSuffix(request.ID, provider.GetProviderKey())); ok {
+		return provider.interactionVideoDownload(ctx, key, request, interactionID)
+	}
 	// Retrieve operation first so download behavior follows retrieve status.
 	bifrostVideoRetrieveRequest := &schemas.BifrostVideoRetrieveRequest{
 		Provider: request.Provider,
@@ -2694,6 +2718,23 @@ func (provider *GeminiProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	default:
 		return nil, providerUtils.NewBifrostOperationError("invalid video output type", nil)
 	}
+}
+
+// VideoCancel implements schemas.VideoCanceller (fork, TXE-6538). Only an Omni task has a cancel
+// API: POST /interactions/{id}/cancel, for an interaction that is still running. A
+// predictLongRunning (Veo) operation has none that the contract records, so it is refused.
+func (provider *GeminiProvider) VideoCancel(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoCancelRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.VideoCancelRequest); err != nil {
+		return nil, err
+	}
+	if request == nil || request.ID == "" {
+		return nil, providerUtils.NewBifrostBadRequestError("video_id is required")
+	}
+	interactionID, ok := interactionIDFromVideoID(providerUtils.StripVideoIDProviderSuffix(request.ID, provider.GetProviderKey()))
+	if !ok {
+		return nil, schemas.NewVideoCancelUnsupportedError("this provider cancels only an Interactions API task; a predictLongRunning operation has no cancel API")
+	}
+	return provider.interactionVideoCancel(ctx, key, interactionID)
 }
 
 // VideoDelete is not supported by the Gemini provider.

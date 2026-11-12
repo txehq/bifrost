@@ -1,0 +1,430 @@
+{
+  "name": "418. Gemini Omni video on the Interactions API: create, query, cancel and keyed download (gemini omni video, provider error fixture)",
+  "description": "Pins TXE-6538 (contract C4, C5, C7, C9) on the unified video routes for the gemini provider. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. The gemini provider of that config has the fixture as its base URL, and the fixture serves the Interactions API: POST /interactions answers a running interaction, GET /interactions/{id} one whose state its id names (omni-running, omni-completed, omni-incomplete), POST /interactions/{id}/cancel a cancelled one, and GET /files/omni-file:download the video bytes. Before the change an Omni model was sent to models/{model}:predictLongRunning, which the fixture has no answer for, the cancel route answered provider_cancel_unsupported for every id, and an interaction id was not a valid task id. Row 1 creates a task and reads the body the fixture received: background true, seconds as duration, aspect_ratio, resolution, delivery uri, callback_url in webhook_config.uris and client_reference_id in webhook_config.user_metadata. Rows 2 and 3: a field the Interactions API has no field for (size) and a control field no Gemini API takes (expires_after_seconds) are refused with 400 caller_unsupported_parameter. Row 4: the query of a completed interaction is completed with provider_status, one videos entry of type content with no url, usage.output_tokens from the video modality and expires_at 48 hours after completed_at. Row 5: a status with no task-object status of the same meaning (incomplete) stays in provider_status and reports in_progress. Row 6: cancel of a running interaction calls the vendor cancel and returns cancelled. Row 7: cancel of a completed interaction is 400 provider_cancel_unsupported; it also reads the fixture: the only cancel that arrived is the running interaction's, so the refused cancel and the refused creates made no upstream write. Row 8: /content returns the Gemini Files artifact fetched with the key. The same behaviour on the vertex provider is pinned by folder 518, on the vertex endpoint fixture.",
+  "item": [
+    {
+      "name": "418.1 gemini/gemini-omni-1.1-flash POST /v1/videos creates a background interaction with the unified fields in the Interactions body (gemini omni video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-omni-1.1-flash\",\n  \"prompt\": \"a marble on a track\",\n  \"seconds\": \"8\",\n  \"aspect_ratio\": \"16:9\",\n  \"resolution\": \"720p\",\n  \"callback_url\": \"https://hooks.example.test/v/task_418\",\n  \"client_reference_id\": \"task_418\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+              "pm.test('the create returns a running task whose id names the interaction kind', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('interactions%2Fomni-running:gemini');",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('in_progress');",
+              "  pm.expect(j.provider_status, 'provider_status: ' + pm.response.text()).to.eql('in_progress');",
+              "});",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture received the Interactions body', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/gemini/interactions' && c.body.indexOf('task_418') !== -1; });",
+              "    pm.expect(calls.length, 'no create reached /pp/gemini/interactions: ' + res.text()).to.be.above(0);",
+              "    var b = JSON.parse(calls[calls.length - 1].body);",
+              "    pm.expect(b.model, calls[calls.length - 1].body).to.eql('gemini-omni-1.1-flash');",
+              "    pm.expect(b.background, 'background').to.eql(true);",
+              "    pm.expect(b.input, 'input').to.eql([{ type: 'text', text: 'a marble on a track' }]);",
+              "    pm.expect(b.response_format, 'response_format').to.eql({ type: 'video', delivery: 'uri', aspect_ratio: '16:9', duration: '8s', resolution: '720p' });",
+              "    pm.expect(b.webhook_config, 'webhook_config').to.eql({ uris: ['https://hooks.example.test/v/task_418'], user_metadata: { client_reference_id: 'task_418' } });",
+              "    pm.expect(b.seconds, 'the unified name must not be sent').to.eql(undefined);",
+              "    pm.expect(b.callback_url, 'the unified name must not be sent').to.eql(undefined);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "418.2 [EXPECT-400] gemini/gemini-omni-1.1-flash POST /v1/videos refuses size, which the Interactions API has no field for (gemini omni video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-omni-1.1-flash\",\n  \"prompt\": \"a marble on a track\",\n  \"size\": \"1280x720\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create is refused naming size', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'param: ' + pm.response.text()).to.eql('size');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "418.3 [EXPECT-400] gemini/gemini-omni-1.1-flash POST /v1/videos refuses the task control field expires_after_seconds (gemini omni video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-omni-1.1-flash\",\n  \"prompt\": \"a marble on a track\",\n  \"expires_after_seconds\": 600\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create is refused naming expires_after_seconds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'param: ' + pm.response.text()).to.eql('expires_after_seconds');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "418.4 gemini GET /v1/videos/{id} of a completed Omni interaction reports provider_status, a content artifact, video output tokens and expires_at (gemini omni video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/interactions%2Fomni-completed:gemini",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "interactions%2Fomni-completed:gemini"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the query returns the completed task object', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('interactions%2Fomni-completed:gemini');",
+              "  pm.expect(j.status, 'status').to.eql('completed');",
+              "  pm.expect(j.provider_status, 'provider_status').to.eql('completed');",
+              "  pm.expect(j.videos, 'videos: ' + pm.response.text()).to.eql([{ type: 'content', content_type: 'video/mp4' }]);",
+              "  pm.expect(j.usage && j.usage.output_tokens, 'usage: ' + pm.response.text()).to.eql(46336);",
+              "  pm.expect(j.completed_at, 'completed_at').to.be.a('number');",
+              "  pm.expect(j.expires_at, 'expires_at is completed_at plus 48 hours').to.eql(j.completed_at + 172800);",
+              "  pm.expect(j.content_filter, 'content_filter').to.eql(undefined);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "418.5 gemini GET /v1/videos/{id} of an Omni interaction in a status with no task status of its own keeps it in provider_status (gemini omni video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/interactions%2Fomni-incomplete:gemini",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "interactions%2Fomni-incomplete:gemini"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('incomplete stays in provider_status and reports in_progress', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.provider_status, 'provider_status: ' + pm.response.text()).to.eql('incomplete');",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('in_progress');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "418.6 gemini POST /v1/videos/{id}/cancel of a running Omni interaction calls the vendor cancel (gemini omni video)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/interactions%2Fomni-running:gemini/cancel",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "interactions%2Fomni-running:gemini",
+            "cancel"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the cancel returns the cancelled task object', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('interactions%2Fomni-running:gemini');",
+              "  pm.expect(j.status, 'status').to.eql('cancelled');",
+              "  pm.expect(j.provider_status, 'provider_status').to.eql('cancelled');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "418.7 [EXPECT-400] gemini POST /v1/videos/{id}/cancel of a completed Omni interaction is provider_cancel_unsupported (gemini omni video)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/interactions%2Fomni-completed:gemini/cancel",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "interactions%2Fomni-completed:gemini",
+            "cancel"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the cancel is refused as provider_cancel_unsupported', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_cancel_unsupported');",
+              "  pm.expect(j.error.message, 'message: ' + pm.response.text()).to.include('completed');",
+              "});",
+              "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the only cancel that reached the vendor is the running interaction\\'s, and no refused create did', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    var calls = res.json().data[0].calls;",
+              "    var cancels = calls.filter(function (c) { return /^\\/pp\\/gemini\\/interactions\\/[^/]+\\/cancel$/.test(c.path); }).map(function (c) { return c.path; });",
+              "    pm.expect(cancels.length, 'cancels: ' + JSON.stringify(cancels)).to.be.above(0);",
+              "    cancels.forEach(function (p) { pm.expect(p).to.eql('/pp/gemini/interactions/omni-running/cancel'); });",
+              "    calls.filter(function (c) { return c.path === '/pp/gemini/interactions'; }).forEach(function (c) {",
+              "      pm.expect(c.body, 'a refused create reached the vendor').to.not.include('1280x720');",
+              "      pm.expect(c.body, 'a refused create reached the vendor').to.not.include('expires_after_seconds');",
+              "    });",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "418.8 gemini GET /v1/videos/{id}/content returns the Gemini Files artifact of a completed Omni interaction (gemini omni video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/interactions%2Fomni-completed:gemini/content",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "interactions%2Fomni-completed:gemini",
+            "content"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the content route returns the video bytes', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.headers.get('Content-Type'), 'content type').to.include('video/mp4');",
+              "  pm.expect(pm.response.text(), 'body').to.include('FIXTURE-MP4 bytes served by provider-error-fixture');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
