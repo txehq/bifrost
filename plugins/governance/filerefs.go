@@ -598,6 +598,7 @@ func buildFileRefPlans(root reflect.Type) *fileRefPlan {
 type fileIDCollector struct {
 	ids        []string
 	locations  []string // the ids among ids that a request writes its output to (fileRefLocation)
+	open       []string // the ids among ids found in untyped data, where an input and an output look alike
 	seen       map[string]struct{}
 	unreadable bool // the ids are not the whole answer; the request is refused
 }
@@ -646,6 +647,35 @@ func (c *fileIDCollector) addReference(kind fileRefKind, value string) {
 	}
 }
 
+// addOpen adds what a string in untyped data names. Nothing says whether the provider reads
+// the object of that name or writes beneath it, so it is also marked for the folder check
+// (see storagefolders.go).
+func (c *fileIDCollector) addOpen(value string) {
+	id, ok, unverifiable := recordedFileID(value)
+	if unverifiable {
+		c.unreadable = true
+	}
+	if ok {
+		c.add(id)
+		if id = strings.TrimSpace(id); !slices.Contains(c.open, id) {
+			c.open = append(c.open, id)
+		}
+	}
+}
+
+// outputLocationKey reports whether untyped data names an output location under key: the
+// extra params a provider reads as the place it writes (Bedrock's batch output_s3_uri, the
+// storageUri of a Gemini or Vertex image request and the storageURI of a video request, a
+// batch's outputGcsUri or outputUriPrefix). A string under one of them is a location like the
+// typed fields.
+func outputLocationKey(key string) bool {
+	switch key {
+	case "output_s3_uri", "storageUri", "storageURI", "storage_uri", "outputGcsUri", "outputUriPrefix", "output_storage_uri":
+		return true
+	}
+	return false
+}
+
 // addLocation marks id, already added, as a storage location the request writes to.
 func (c *fileIDCollector) addLocation(id string) {
 	if id = strings.TrimSpace(id); id != "" && !slices.Contains(c.locations, id) {
@@ -660,20 +690,19 @@ func (c *fileIDCollector) addLocation(id string) {
 // than maxFileReferences files, in which case the list is not the whole answer and the request
 // must not be let through on it.
 func requestFileIDs(req *schemas.BifrostRequest) (ids []string, unreadable bool) {
-	ids, _, unreadable = requestFileReferences(req)
+	ids, _, _, unreadable = requestFileReferences(req)
 	return ids, unreadable
 }
 
-// requestFileReferences is requestFileIDs with one more answer: locations are the ids among
-// ids that the request names as the place its output is written (a batch's output folder, a
-// task's output_storage_uri). The provider writes new objects beneath such a location, so it
-// is checked as a folder (see storagefolders.go), not only as the one object of that name.
-//
-// Bedrock takes a batch's output location from the output_s3_uri extra param, which the walk
-// reads as any other string of an extra param; it is marked as a location here.
-func requestFileReferences(req *schemas.BifrostRequest) (ids, locations []string, unreadable bool) {
+// requestFileReferences is requestFileIDs with two more answers about the ids it returns:
+// locations are the ones the request names as the place its output is written (a batch's
+// output folder, a task's output_storage_uri, the extra params of outputLocationKey), and
+// open are the ones found in untyped data, where nothing says whether the provider reads the
+// object or writes beneath it. The provider writes new objects beneath an output location,
+// so both are checked as folders, and a location is claimed as one (see storagefolders.go).
+func requestFileReferences(req *schemas.BifrostRequest) (ids, locations, open []string, unreadable bool) {
 	if req == nil {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 	var collector fileIDCollector
 	walkFileRefs(reflect.ValueOf(req).Elem(), requestFileRefPlan(), &collector)
@@ -682,14 +711,7 @@ func requestFileReferences(req *schemas.BifrostRequest) (ids, locations []string
 			collector.add(location)
 		}
 	}
-	if r := req.BatchCreateRequest; r != nil {
-		if output, _ := r.ExtraParams["output_s3_uri"].(string); output != "" {
-			if id, ok, _ := recordedFileID(output); ok && slices.Contains(collector.ids, id) {
-				collector.addLocation(id)
-			}
-		}
-	}
-	return collector.ids, collector.locations, collector.unreadable
+	return collector.ids, collector.locations, collector.open, collector.unreadable
 }
 
 // uploadLocations returns the storage objects a file upload writes, which it names in pieces:
@@ -820,7 +842,7 @@ func scanOpenValue(value reflect.Value, collector *fileIDCollector, depth int) {
 		}
 	case reflect.String:
 		if value.Len() > 0 {
-			collector.addReference(fileRefURL, value.String())
+			collector.addOpen(value.String())
 		}
 	case reflect.Slice, reflect.Array:
 		if value.Type().Elem().Kind() == reflect.Uint8 {
@@ -837,6 +859,12 @@ func scanOpenValue(value reflect.Value, collector *fileIDCollector, depth int) {
 			if key := iter.Key(); key.Kind() == reflect.String && isFileIDKey(key.String()) {
 				scanFileIDs(item, collector, depth+1)
 				continue
+			}
+			if key := iter.Key(); key.Kind() == reflect.String && outputLocationKey(key.String()) {
+				if location, ok := openString(item); ok {
+					collector.addReference(fileRefLocation, location)
+					continue
+				}
 			}
 			scanOpenValue(item, collector, depth+1)
 		}
@@ -870,11 +898,26 @@ func scanOpenBytes(value reflect.Value, collector *fileIDCollector, depth int) {
 		case len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[' || trimmed[0] == '"'):
 			collector.unreadable = true
 		default:
-			collector.addReference(fileRefURL, string(raw))
+			collector.addOpen(string(raw))
 		}
 		return
 	}
 	scanOpenValue(reflect.ValueOf(decoded), collector, depth+1)
+}
+
+// openString returns the string an untyped value holds, directly or behind an interface or
+// a pointer.
+func openString(value reflect.Value) (string, bool) {
+	for value.Kind() == reflect.Interface || value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return "", false
+		}
+		value = value.Elem()
+	}
+	if value.Kind() != reflect.String || value.Len() == 0 {
+		return "", false
+	}
+	return value.String(), true
 }
 
 // scanFileIDs adds the strings under a file-id key as ids.
@@ -901,7 +944,7 @@ func scanFileIDs(value reflect.Value, collector *fileIDCollector, depth int) {
 // A request part of which could not be read yields one more reference, marked unreadable, which
 // enforceProviderObjectOwnership refuses.
 func requestFileRefs(req *schemas.BifrostRequest) []providerObjectRef {
-	ids, locations, unreadable := requestFileReferences(req)
+	ids, locations, open, unreadable := requestFileReferences(req)
 	if len(ids) == 0 && !unreadable {
 		return nil
 	}
@@ -914,6 +957,7 @@ func requestFileRefs(req *schemas.BifrostRequest) []providerObjectRef {
 		if ref, ok := objectRef(configstoreTables.ProviderObjectKindFile, provider, id); ok {
 			ref.indirect = true
 			ref.destination = slices.Contains(locations, id)
+			ref.open = slices.Contains(open, id)
 			refs = append(refs, ref)
 		}
 	}

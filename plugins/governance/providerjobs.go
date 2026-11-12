@@ -55,7 +55,11 @@ type providerObjectRef struct {
 	// destination marks a storage location the request writes its output beneath, which is
 	// checked and claimed as a folder (see storagefolders.go).
 	destination bool
-	unreadable  bool // the request's files could not all be read (requestFileIDs), or this id cannot be resolved to one recorded name, so it is refused
+	// open marks a stored object named in untyped data (an extra param, a passthrough body,
+	// an inline batch item), where an input and an output location look alike: it is checked
+	// as a folder too, and never claimed.
+	open       bool
+	unreadable bool // the request's files could not all be read (requestFileIDs), or this id cannot be resolved to one recorded name, so it is refused
 }
 
 // governanceAutoContainerContextKey marks a request whose code_interpreter tool asked the provider
@@ -331,6 +335,7 @@ func providerObjectReferences(req *schemas.BifrostRequest) []providerObjectRef {
 			if refs[i].kind == fileRef.kind && refs[i].requestID == fileRef.requestID && !refs[i].isList {
 				known = true
 				refs[i].destination = refs[i].destination || fileRef.destination
+				refs[i].open = refs[i].open || fileRef.open
 				break
 			}
 		}
@@ -841,6 +846,7 @@ func jsonObjectRefs(provider schemas.ModelProvider, body any) []providerObjectRe
 		seen[key] = struct{}{}
 		if ref, ok := objectRef(kind, provider, id); ok {
 			ref.indirect = true
+			ref.open = kind == configstoreTables.ProviderObjectKindFile
 			refs = append(refs, ref)
 		}
 	}

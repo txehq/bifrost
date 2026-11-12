@@ -1460,11 +1460,6 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		return result, err, nil
 	}
 
-	// A request that claimed an output folder and then failed wrote nothing there; see storagefolders.go.
-	if err != nil {
-		p.withdrawStorageFolderClaims(ctx)
-	}
-
 	if ctx.Grant() == nil {
 		p.logger.Warn("PostLLMHook called with no grant in context")
 		return result, err, nil

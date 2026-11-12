@@ -38,8 +38,19 @@ import (
 // "s3://b/out/". An output location written without its trailing slash is the folder with
 // it, since that is where Vertex and Bedrock write.
 //
-// A claim is never released: a batch's results outlive the batch, and other batches of the
-// key share the folder.
+// A request also names storage in untyped data (an extra param, a passthrough body, an inline
+// batch item), where nothing says whether the provider reads the object of that name or writes
+// beneath it. Such a name is checked both ways, as an object and as a folder, and claims
+// nothing. The extra params known to be output locations (outputLocationKey) are locations.
+//
+// A claim is never released, not even when the request that made it fails: a batch's results
+// outlive the batch, other requests of the key may already rely on the folder, and withdrawing
+// it under them would leave what they write unclaimed.
+//
+// Two keys that claim nested folders in the same instant can both pass the exclusivity check.
+// Both claims then stand, and the closest one decides for every object, so neither key reaches
+// into the other's folder; only the "nothing of another key beneath" promise is weakened, for
+// folders that did not exist a moment earlier. The same folder has one row and one owner.
 
 // maxStorageFolderLevels bounds the folders above one stored object. Each is one id in a
 // single lookup; an object nested deeper cannot be checked in full and is refused.
@@ -48,10 +59,6 @@ const maxStorageFolderLevels = 64
 // maxStorageFolderLength is the longest folder URI a claim can be recorded under
 // (provider_objects.object_id).
 const maxStorageFolderLength = 512
-
-// governanceStorageFolderClaimsContextKey carries the ids of the folder rows this request
-// wrote, so a request that ends in an error withdraws them: nothing was written there.
-const governanceStorageFolderClaimsContextKey schemas.BifrostContextKey = "bf-governance-storage-folder-claims"
 
 // storageFolderProvider is the provider name folder rows are recorded under: the storage
 // system, not the provider the request went to. A bucket is the same bucket through every
@@ -144,17 +151,19 @@ func (p *GovernancePlugin) foreignRecordBeneath(ctx *schemas.BifrostContext, fol
 }
 
 // refuseForeignStorageFolder is the folder rule for one referenced object. It refuses a
-// stored object that lies in another key's folder, and an output location another key has
-// records beneath. own says the object has a row of its own for the request's key, which
-// settles it as an input. claim is the folder the request has to claim before it goes on: an
-// output location no folder of the key covers yet.
+// stored object that lies in another key's folder, and a name the provider may write beneath
+// (an output location, a name in untyped data) that another key has records beneath. own says
+// the object has a row of its own for the request's key, which settles it as an input. claim
+// is the folder the request has to claim before it goes on: an output location no folder of
+// the key covers yet.
 func (p *GovernancePlugin) refuseForeignStorageFolder(ctx *schemas.BifrostContext, ref providerObjectRef, own bool, vkID string) (claim string, shortCircuit *schemas.LLMPluginShortCircuit) {
 	if p.configStore == nil || ref.kind != configstoreTables.ProviderObjectKindFile {
 		return "", nil
 	}
-	// A destination is a prefix the provider writes new objects beneath, not a reference to
-	// the one object of that name: the key's own file row there does not settle it.
-	if own && !ref.destination {
+	// A name the provider may write beneath is a prefix, not a reference to the one object of
+	// that name: the key's own file row there does not settle it.
+	asFolder := ref.destination || ref.open
+	if own && !asFolder {
 		return "", nil
 	}
 	uri, stored := storageURIForm(ref.ids)
@@ -169,7 +178,7 @@ func (p *GovernancePlugin) refuseForeignStorageFolder(ctx *schemas.BifrostContex
 		return storageFolderRefusal(ctx, 500, fmt.Sprintf("failed to verify access to file '%s'", ref.requestID))
 	}
 	folder := ""
-	if ref.destination {
+	if asFolder {
 		folder = storageFolderOf(uri)
 		uri = folder
 	}
@@ -195,7 +204,7 @@ func (p *GovernancePlugin) refuseForeignStorageFolder(ctx *schemas.BifrostContex
 		}
 		return "", nil
 	}
-	if !ref.destination {
+	if !asFolder {
 		return "", nil
 	}
 	foreign, err := p.foreignRecordBeneath(ctx, folder, vkID)
@@ -204,6 +213,9 @@ func (p *GovernancePlugin) refuseForeignStorageFolder(ctx *schemas.BifrostContex
 	}
 	if foreign {
 		return "", notFound()
+	}
+	if !ref.destination {
+		return "", nil
 	}
 	return folder, nil
 }
@@ -294,30 +306,12 @@ func (p *GovernancePlugin) listedInForeignFolders(ctx *schemas.BifrostContext, p
 	return hidden, nil
 }
 
-// claimStorageFolders records folders, each already found exclusive, for the request's key,
-// and checks again once the rows are written: two keys that claimed overlapping folders at
-// the same moment each passed the first check, and each now sees the other's row. Both are
-// then refused and withdraw what they wrote. The ids written are kept on the context so a
-// request the provider goes on to refuse withdraws them too.
+// claimStorageFolders records folders, each already found exclusive, for the request's key.
+// A folder has one row, and the first writer keeps it: when the row was already there, the
+// request goes on only if it is the key's own.
 func (p *GovernancePlugin) claimStorageFolders(ctx *schemas.BifrostContext, folders []string, vkID string) *schemas.LLMPluginShortCircuit {
 	if len(folders) == 0 || p.configStore == nil {
 		return nil
-	}
-	var written []string
-	withdraw := func() {
-		for _, id := range written {
-			if err := p.configStore.DeleteProviderObject(ctx, id); err != nil {
-				p.logger.Warn("failed to withdraw the storage folder claim %s: %v", id, err)
-			}
-		}
-	}
-	refuse := func(folder string, err error) *schemas.LLMPluginShortCircuit {
-		withdraw()
-		if err != nil {
-			p.logger.Error("failed to claim the storage folder %s: %v", folder, err)
-			return storageFolderRefusal(ctx, 500, fmt.Sprintf("failed to verify access to file '%s'", folder))
-		}
-		return storageFolderRefusal(ctx, 404, fmt.Sprintf("file '%s' not found", folder))
 	}
 	for _, folder := range folders {
 		row := &configstoreTables.TableProviderObject{
@@ -328,53 +322,16 @@ func (p *GovernancePlugin) claimStorageFolders(ctx *schemas.BifrostContext, fold
 			VirtualKeyID: vkID,
 		}
 		inserted, err := p.configStore.InsertProviderObject(ctx, row)
-		if err != nil {
-			return refuse(folder, err)
-		}
-		if inserted {
-			written = append(written, row.ID)
-		}
-		above, _ := storageFoldersAbove(folder)
-		owners, err := p.storageFolderOwners(ctx, above)
-		if err != nil {
-			return refuse(folder, err)
-		}
-		for _, level := range above {
-			if owner, claimed := owners[level]; claimed && owner != vkID {
-				return refuse(folder, nil)
+		if err == nil && !inserted {
+			var owners map[string]string
+			if owners, err = p.storageFolderOwners(ctx, []string{folder}); err == nil && owners[folder] != vkID {
+				return storageFolderRefusal(ctx, 404, fmt.Sprintf("file '%s' not found", folder))
 			}
 		}
-		if owners[folder] != vkID {
-			// The row is gone again: another request of this key withdrew it. Nothing
-			// covers the folder, so the request does not go on.
-			return refuse(folder, nil)
-		}
-		foreign, err := p.foreignRecordBeneath(ctx, folder, vkID)
 		if err != nil {
-			return refuse(folder, err)
+			p.logger.Error("failed to claim the storage folder %s: %v", folder, err)
+			return storageFolderRefusal(ctx, 500, fmt.Sprintf("failed to verify access to file '%s'", folder))
 		}
-		if foreign {
-			return refuse(folder, nil)
-		}
-	}
-	if len(written) > 0 {
-		ctx.SetValue(governanceStorageFolderClaimsContextKey, written)
 	}
 	return nil
-}
-
-// withdrawStorageFolderClaims forgets the folders a request claimed when the request ended in
-// an error: the provider wrote nothing there, and a claim nothing stands behind would keep
-// other keys out of the folder for good.
-func (p *GovernancePlugin) withdrawStorageFolderClaims(ctx *schemas.BifrostContext) {
-	written, _ := ctx.Value(governanceStorageFolderClaimsContextKey).([]string)
-	if len(written) == 0 || p.configStore == nil {
-		return
-	}
-	ctx.SetValue(governanceStorageFolderClaimsContextKey, []string(nil))
-	for _, id := range written {
-		if err := p.configStore.DeleteProviderObject(ctx, id); err != nil {
-			p.logger.Warn("failed to withdraw the storage folder claim %s: %v", id, err)
-		}
-	}
 }

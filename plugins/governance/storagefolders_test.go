@@ -285,72 +285,98 @@ func TestOutputFolderIsNotClaimedWithoutEnforcement(t *testing.T) {
 	assert.Nil(t, shortCircuit, "a batch create with no config store is left open, as before")
 }
 
-// A claim is made before the provider is called. When the request then fails, nothing was
-// written there, and the claim is withdrawn so it does not keep other keys out for good. A
-// claim the key already held is not this request's to withdraw.
-func TestOutputFolderClaimIsWithdrawnWhenTheRequestFails(t *testing.T) {
+// A claim outlives the request that made it, also a request the provider then refuses:
+// another request of the key may already be writing into the folder, and withdrawing the claim
+// under it would leave what it writes unclaimed.
+func TestOutputFolderClaimStaysWhenTheRequestFails(t *testing.T) {
 	plugin, store := newStorageFolderTestPlugin(t)
-	s := storageFolderSurfaces{provider: schemas.Bedrock, root: "s3://withdraw-bucket/"}
+	s := storageFolderSurfaces{provider: schemas.Bedrock, root: "s3://kept-bucket/"}
 	folder := s.root + "out/"
-	failure := &schemas.BifrostError{StatusCode: schemas.Ptr(400), Error: &schemas.ErrorField{Message: "role cannot write to the bucket"}}
-
 	ctx := presentCtx(mcpTestVKValue)
 	_, shortCircuit, err := plugin.PreLLMHook(ctx, s.batchInto(folder))
 	require.NoError(t, err)
 	require.Nil(t, shortCircuit)
-	require.Equal(t, "vk-mcp-stamp", storageFolderOwner(t, store, folder))
-	_, _, err = plugin.PostLLMHook(ctx, nil, failure)
+	_, _, err = plugin.PostLLMHook(ctx, nil, &schemas.BifrostError{StatusCode: schemas.Ptr(400), Error: &schemas.ErrorField{Message: "role cannot write to the bucket"}})
 	require.NoError(t, err)
-	assert.Empty(t, storageFolderOwner(t, store, folder), "the failed request's claim is gone")
-
-	ctx = presentCtx(mcpTestVKValue)
-	_, shortCircuit, err = plugin.PreLLMHook(ctx, s.batchInto(folder))
-	require.NoError(t, err)
-	require.Nil(t, shortCircuit)
-	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{BatchCreateResponse: &schemas.BifrostBatchCreateResponse{ID: "job-1",
-		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.BatchCreateRequest, Provider: schemas.Bedrock}}}, nil)
-	require.NoError(t, err)
-	assert.Equal(t, "vk-mcp-stamp", storageFolderOwner(t, store, folder), "a successful create keeps it")
-
-	ctx = presentCtx(mcpTestVKValue)
-	_, shortCircuit, err = plugin.PreLLMHook(ctx, s.batchInto(folder))
-	require.NoError(t, err)
-	require.Nil(t, shortCircuit)
-	_, _, err = plugin.PostLLMHook(ctx, nil, failure)
-	require.NoError(t, err)
-	assert.Equal(t, "vk-mcp-stamp", storageFolderOwner(t, store, folder), "a later failure does not withdraw the claim an earlier batch stands behind")
+	assert.Equal(t, "vk-mcp-stamp", storageFolderOwner(t, store, folder))
 }
 
-// Two keys that claim overlapping folders at the same moment each pass the first check. The
-// check after the write is what each then fails on: it sees the other's row, withdraws its own
-// and refuses.
-func TestOverlappingFolderClaimsAreBothRefused(t *testing.T) {
+// A folder has one row and the first writer keeps it. Two keys that claimed nested folders in
+// the same instant both hold a claim; the closest one decides, so neither reaches into the
+// other's folder.
+func TestConcurrentFolderClaims(t *testing.T) {
 	folderKind := configstoreTables.ProviderObjectKindStorageFolder
-	for name, theirs := range map[string]string{
-		"the other key claimed a folder above":   "gs://race-bucket/",
-		"the other key claimed a folder beneath": "gs://race-bucket/out/run-2/",
-	} {
-		t.Run(name, func(t *testing.T) {
-			plugin, store := newStorageFolderTestPlugin(t)
-			// The state right after both keys passed their first check and wrote their rows.
-			seedProviderObject(t, store, folderKind, "gcs", theirs, "vk-someone-else")
-			ctx := presentCtx(mcpTestVKValue)
-			shortCircuit := plugin.claimStorageFolders(ctx, []string{"gs://race-bucket/out/"}, "vk-mcp-stamp")
-			require.NotNil(t, shortCircuit)
-			assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
-			assert.Empty(t, storageFolderOwner(t, store, "gs://race-bucket/out/"), "the claim it wrote is withdrawn")
-			assert.Equal(t, "vk-someone-else", storageFolderOwner(t, store, theirs))
-		})
+	plugin, store := newStorageFolderTestPlugin(t)
+	s := storageFolderSurfaces{provider: schemas.Vertex, root: "gs://race-bucket/"}
+	status := func(req *schemas.BifrostRequest) int {
+		t.Helper()
+		_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), req)
+		require.NoError(t, err)
+		if shortCircuit == nil {
+			return 200
+		}
+		return *shortCircuit.Error.StatusCode
 	}
 
-	t.Run("the same folder", func(t *testing.T) {
-		plugin, store := newStorageFolderTestPlugin(t)
-		seedProviderObject(t, store, folderKind, "gcs", "gs://race-bucket/out/", "vk-someone-else")
-		shortCircuit := plugin.claimStorageFolders(presentCtx(mcpTestVKValue), []string{"gs://race-bucket/out/"}, "vk-mcp-stamp")
-		require.NotNil(t, shortCircuit)
-		assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
-		assert.Equal(t, "vk-someone-else", storageFolderOwner(t, store, "gs://race-bucket/out/"), "the first writer keeps the folder")
-	})
+	// The other key's row for the same folder landed between this key's check and its write.
+	seedProviderObject(t, store, folderKind, "gcs", s.root+"same/", "vk-someone-else")
+	shortCircuit := plugin.claimStorageFolders(presentCtx(mcpTestVKValue), []string{s.root + "same/"}, "vk-mcp-stamp")
+	require.NotNil(t, shortCircuit)
+	assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+	assert.Equal(t, "vk-someone-else", storageFolderOwner(t, store, s.root+"same/"), "the first writer keeps the folder")
+
+	// Nested claims that both landed: this key holds out/, the other key out/run-2/.
+	require.Nil(t, plugin.claimStorageFolders(presentCtx(mcpTestVKValue), []string{s.root + "out/"}, "vk-mcp-stamp"))
+	seedProviderObject(t, store, folderKind, "gcs", s.root+"out/run-2/", "vk-someone-else")
+	assert.Equal(t, 200, status(s.chatFile(s.root+"out/run-1/predictions.jsonl")), "the key reads its own folder")
+	assert.Equal(t, 404, status(s.chatFile(s.root+"out/run-2/predictions.jsonl")), "but not the folder the other key holds inside it")
+	assert.Equal(t, 404, status(s.batchInto(s.root+"out/run-2/again/")), "nor does it write there")
+	assert.Equal(t, 200, status(s.batchInto(s.root+"out/")), "and it keeps writing into its own")
+}
+
+// A storage name in untyped data (an extra param, a passthrough body, an inline batch item)
+// may be an input or an output location; nothing says which. It is checked both ways and
+// claims nothing. The extra params known to be output locations are claimed like the typed ones.
+func TestStorageNamedInUntypedDataIsCheckedAsAFolderToo(t *testing.T) {
+	plugin, store := newStorageFolderTestPlugin(t)
+	root := "gs://open-bucket/"
+	folderKind, fileKind := configstoreTables.ProviderObjectKindStorageFolder, configstoreTables.ProviderObjectKindFile
+	seedProviderObject(t, store, folderKind, "gcs", root+"other/out/", "vk-someone-else")
+	seedProviderObject(t, store, fileKind, "vertex", root+"shared/uploads/other.pdf", "vk-someone-else")
+	status := func(req *schemas.BifrostRequest) int {
+		t.Helper()
+		_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), req)
+		require.NoError(t, err)
+		if shortCircuit == nil {
+			return 200
+		}
+		return *shortCircuit.Error.StatusCode
+	}
+	image := func(extra map[string]any) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.ImageGenerationRequest, ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{Provider: schemas.Vertex, Model: "m",
+			Input: &schemas.ImageGenerationInput{Prompt: "a cat"}, Params: &schemas.ImageGenerationParameters{ExtraParams: extra}}}
+	}
+	inline := func(body map[string]any) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.Vertex, Model: schemas.Ptr("m"),
+			Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: body}}}}
+	}
+
+	// Written without its slash, the other key's folder is no object in it and no folder above
+	// it; as the place a provider writes beneath, it is that folder.
+	for name, req := range map[string]*schemas.BifrostRequest{
+		"an extra param of unknown meaning":   image(map[string]any{"someVendorOutput": root + "other/out"}),
+		"nested in an extra param":            image(map[string]any{"config": map[string]any{"target": []any{root + "other/out"}}}),
+		"a known output extra param":          image(map[string]any{"storageUri": root + "other/out"}),
+		"an inline batch item":                inline(map[string]any{"outputConfig": map[string]any{"gcsDestination": map[string]any{"outputUriPrefix": root + "other/out"}}}),
+		"a folder holding another key's file": image(map[string]any{"someVendorOutput": root + "shared/"}),
+	} {
+		assert.Equal(t, 404, status(req), name)
+	}
+
+	assert.Equal(t, 200, status(image(map[string]any{"gcsUri": root + "free/in.png"})), "a name with nothing of another key's at, above or beneath it")
+	assert.Empty(t, storageFolderOwner(t, store, root+"free/in.png/"), "a name in untyped data claims nothing")
+	assert.Equal(t, 200, status(image(map[string]any{"storageUri": root + "mine/images"})), "a known output extra param on a free location")
+	assert.Equal(t, "vk-mcp-stamp", storageFolderOwner(t, store, root+"mine/images/"), "is claimed like a typed output location")
 }
 
 // BenchmarkStorageFolderCheck measures what the folder rule adds to a request that names a
