@@ -1,6 +1,11 @@
 package schemas
 
 import (
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -329,4 +334,76 @@ func TestDeepCopyResponsesMessageOutputConfigKeepsNil(t *testing.T) {
 	if copied.OutputConfig == nil || copied.OutputConfig.Effort != nil {
 		t.Fatalf("output_config = %#v, want present with nil effort", copied.OutputConfig)
 	}
+}
+
+// A parameter the HTTP transport read from the query string is a string when sent once and
+// a []string when sent more than once. One the vendor takes once is read as its value, and
+// refused, never reduced to one value or read as absent, when it carries several.
+func TestSingleExtraParamString(t *testing.T) {
+	extra := map[string]interface{}{
+		"once":     "a",
+		"listed":   []string{"a"},
+		"empty":    []string{},
+		"repeated": []string{"a", "b"},
+		"number":   7,
+	}
+	for name, want := range map[string]string{"once": "a", "listed": "a", "empty": "", "number": "", "missing": ""} {
+		got, bifrostErr := SingleExtraParamString(extra, name)
+		require.Nil(t, bifrostErr, name)
+		assert.Equal(t, want, got, name)
+	}
+	got, bifrostErr := SingleExtraParamString(nil, "once")
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "", got)
+
+	got, bifrostErr = SingleExtraParamString(extra, "repeated")
+	require.NotNil(t, bifrostErr)
+	assert.Equal(t, "", got)
+	require.NotNil(t, bifrostErr.StatusCode)
+	assert.Equal(t, 400, *bifrostErr.StatusCode)
+	assert.Equal(t, ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+	require.NotNil(t, bifrostErr.Error)
+	assert.Equal(t, "repeated", bifrostErr.Error.Param)
+}
+
+// queryFedRequests are the request types whose ExtraParams the HTTP transport fills from
+// the query string with lib.QueryExtraParams: a name sent more than once is a []string
+// there. Add a type here when a handler starts filling its ExtraParams that way.
+var queryFedRequests = []string{"BifrostListModelsRequest", "BifrostFileListRequest"}
+
+// TestListExtraParamsAreNotReadWithAStringAssertion fails when provider code reads an
+// ExtraParams entry of a query-fed request with a string type assertion. Such a read
+// treats a parameter the caller sent twice as absent, without an error (fork, TXE-7086).
+// Read it with SingleExtraParamString, or handle []string as huggingface does.
+func TestListExtraParamsAreNotReadWithAStringAssertion(t *testing.T) {
+	queryFed := regexp.MustCompile(`\b(` + strings.Join(queryFedRequests, "|") + `)\b`)
+	assertion := regexp.MustCompile(`ExtraParams\[[^\]]*\]\.\(string\)`)
+	functions := 0
+	err := filepath.WalkDir(filepath.Join("..", "providers"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		src, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		inQueryFed := false
+		for i, line := range strings.Split(string(src), "\n") {
+			if strings.HasPrefix(line, "func ") {
+				inQueryFed = queryFed.MatchString(line)
+				if inQueryFed {
+					functions++
+				}
+			}
+			if inQueryFed && assertion.MatchString(line) {
+				t.Errorf("%s:%d reads a query-fed extra parameter with a string assertion; use schemas.SingleExtraParamString", path, i+1)
+			}
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	require.NotZero(t, functions, "the scan found no function taking a query-fed request; it is looking in the wrong place")
 }

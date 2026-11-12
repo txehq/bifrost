@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -229,4 +230,27 @@ func TestToBifrostListModelsResponse_BackfillEnrichesHuggingFaceIDOnlyWhenMethod
 	require.NotNil(t, got.HuggingFaceID)
 	assert.Equal(t, "abc123", *got.HuggingFaceID)
 	assert.Nil(t, got.SupportedMethods)
+}
+
+// A hub query parameter the caller sent more than once (GET /v1/models?filter=a&filter=b)
+// arrives as a []string and reaches the hub with every value in the order sent; before it
+// was formatted into one value, "[a b]" (fork, TXE-7086).
+func TestBuildModelHubURL_RepeatedExtraParamKeepsEveryValue(t *testing.T) {
+	t.Parallel()
+
+	hubURL := (&HuggingFaceProvider{}).buildModelHubURL(&schemas.BifrostListModelsRequest{
+		ExtraParams: map[string]interface{}{
+			"filter": []string{"text-generation", "", "conversational"},
+			"search": "glm",
+			"sort":   []string{"downloads", "trending"},
+		},
+	}, baseten)
+
+	parsed, err := url.Parse(hubURL)
+	require.NoError(t, err)
+	query := parsed.Query()
+	assert.Equal(t, []string{"text-generation", "conversational"}, query["filter"])
+	assert.Equal(t, []string{"glm"}, query["search"])
+	assert.Equal(t, []string{"downloads", "trending"}, query["sort"], "the caller's values replace the default, all of them")
+	assert.Equal(t, []string{string(baseten)}, query["inference_provider"])
 }

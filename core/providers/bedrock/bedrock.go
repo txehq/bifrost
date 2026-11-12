@@ -936,18 +936,14 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 
 	// Build query parameters
 	params := url.Values{}
-	if request.ExtraParams != nil {
-		if byCustomizationType, ok := request.ExtraParams["byCustomizationType"].(string); ok && byCustomizationType != "" {
-			params.Set("byCustomizationType", byCustomizationType)
+	// A filter sent more than once is refused: the vendor takes each once (TXE-7086).
+	for _, name := range []string{"byCustomizationType", "byInferenceType", "byOutputModality", "byProvider"} {
+		value, bifrostErr := schemas.SingleExtraParamString(request.ExtraParams, name)
+		if bifrostErr != nil {
+			return nil, bifrostErr
 		}
-		if byInferenceType, ok := request.ExtraParams["byInferenceType"].(string); ok && byInferenceType != "" {
-			params.Set("byInferenceType", byInferenceType)
-		}
-		if byOutputModality, ok := request.ExtraParams["byOutputModality"].(string); ok && byOutputModality != "" {
-			params.Set("byOutputModality", byOutputModality)
-		}
-		if byProvider, ok := request.ExtraParams["byProvider"].(string); ok && byProvider != "" {
-			params.Set("byProvider", byProvider)
+		if value != "" {
+			params.Set(name, value)
 		}
 	}
 
@@ -2994,13 +2990,20 @@ func (provider *BedrockProvider) FileList(ctx *schemas.BifrostContext, keys []sc
 			s3Prefix = request.StorageConfig.S3.Prefix
 		}
 	}
-	if request.ExtraParams != nil {
-		if bucket, ok := request.ExtraParams["s3_bucket"].(string); ok && bucket != "" {
-			s3Bucket = bucket
-		}
-		if prefix, ok := request.ExtraParams["s3_prefix"].(string); ok && prefix != "" {
-			s3Prefix = prefix
-		}
+	// s3_bucket or s3_prefix sent more than once is refused, not read as absent (TXE-7086).
+	bucket, bifrostErr := schemas.SingleExtraParamString(request.ExtraParams, "s3_bucket")
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if bucket != "" {
+		s3Bucket = bucket
+	}
+	prefix, bifrostErr := schemas.SingleExtraParamString(request.ExtraParams, "s3_prefix")
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if prefix != "" {
+		s3Prefix = prefix
 	}
 
 	if s3Bucket == "" {

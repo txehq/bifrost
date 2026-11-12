@@ -1,0 +1,299 @@
+{
+  "name": "488. A vendor query parameter sent more than once on GET /v1/models and GET /v1/files is refused, never reduced to one value (repeated vendor query) [SERIAL]",
+  "description": "TXE-7086 regression. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. GET /v1/models and GET /v1/files forward the query parameters the gateway does not read to the provider. They kept one value of a name sent more than once, so endpoint=chat&endpoint=embed listed Cohere's chat models as if embed had never been sent. Now every value reaches the provider code, and a provider whose vendor takes the parameter once refuses the request with 400 caller_unsupported_parameter naming it, before any vendor call. The pp_cohere rows (base_url is the fixture) read /__wire: no call for the repeated endpoint, one call carrying endpoint once. The bedrock rows are refused before a request is built, so they need no upstream; Bedrock ignores base_url and is not pointed at the fixture for them. Run the whole folder in order.",
+  "item": [
+    {
+      "name": "pp_cohere GET /v1/models with endpoint sent twice: 400 caller_unsupported_parameter naming endpoint, no vendor call (repeated vendor query) [EXPECT-400]",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/models?provider=pp_cohere&endpoint=chat&endpoint=embed",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "models"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "pp_cohere"
+            },
+            {
+              "key": "endpoint",
+              "value": "chat"
+            },
+            {
+              "key": "endpoint",
+              "value": "embed"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('repeated vendor query setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var text = pm.response.text();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, text).to.equal(400); });",
+              "var body = {};",
+              "pm.test('the body is JSON', function () { body = pm.response.json(); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect((body.extra_fields || {}).error_type, text).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.code is caller_unsupported_parameter', function () { pm.expect((body.error || {}).code, text).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names endpoint', function () { pm.expect((body.error || {}).param, text).to.equal('endpoint'); });",
+              "// wire: nothing reached the fixture, the request was refused before any vendor call.",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  pm.test('no upstream call', function () { pm.expect(res.json().data[0].calls, res.text()).to.have.length(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "pp_cohere GET /v1/models with endpoint sent once: the vendor receives it (repeated vendor query)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/models?provider=pp_cohere&endpoint=chat",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "models"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "pp_cohere"
+            },
+            {
+              "key": "endpoint",
+              "value": "chat"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('repeated vendor query setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var text = pm.response.text();",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+              "// wire: the request that reached the fixture, with the query string as it arrived.",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/cohere/v1/models'; });",
+              "  pm.test('exactly one upstream call', function () { pm.expect(calls, res.text()).to.have.length(1); });",
+              "  pm.test('the vendor received endpoint once, and provider is not forwarded', function () { pm.expect((calls[0] || {}).query, res.text()).to.equal('?endpoint=chat&page_size=1000'); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "bedrock GET /v1/files with s3_bucket sent twice: 400 caller_unsupported_parameter naming s3_bucket, no vendor call (repeated vendor query) [EXPECT-400]",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/files?provider=bedrock&s3_bucket=bucket-one&s3_bucket=bucket-two",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "bedrock"
+            },
+            {
+              "key": "s3_bucket",
+              "value": "bucket-one"
+            },
+            {
+              "key": "s3_bucket",
+              "value": "bucket-two"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('repeated vendor query setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var text = pm.response.text();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, text).to.equal(400); });",
+              "var body = {};",
+              "pm.test('the body is JSON', function () { body = pm.response.json(); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect((body.extra_fields || {}).error_type, text).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.code is caller_unsupported_parameter', function () { pm.expect((body.error || {}).code, text).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names s3_bucket', function () { pm.expect((body.error || {}).param, text).to.equal('s3_bucket'); });",
+              "// wire: nothing reached the fixture, the request was refused before any vendor call.",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  pm.test('no upstream call', function () { pm.expect(res.json().data[0].calls, res.text()).to.have.length(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "bedrock GET /v1/models with byProvider sent twice: 400 caller_unsupported_parameter naming byProvider, no vendor call (repeated vendor query) [EXPECT-400]",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/models?provider=bedrock&byProvider=amazon&byProvider=anthropic",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "models"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "bedrock"
+            },
+            {
+              "key": "byProvider",
+              "value": "amazon"
+            },
+            {
+              "key": "byProvider",
+              "value": "anthropic"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('repeated vendor query setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var text = pm.response.text();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, text).to.equal(400); });",
+              "var body = {};",
+              "pm.test('the body is JSON', function () { body = pm.response.json(); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect((body.extra_fields || {}).error_type, text).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.code is caller_unsupported_parameter', function () { pm.expect((body.error || {}).code, text).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names byProvider', function () { pm.expect((body.error || {}).param, text).to.equal('byProvider'); });",
+              "// wire: nothing reached the fixture, the request was refused before any vendor call.",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  pm.test('no upstream call', function () { pm.expect(res.json().data[0].calls, res.text()).to.have.length(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

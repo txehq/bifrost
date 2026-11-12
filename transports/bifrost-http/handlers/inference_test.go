@@ -12,6 +12,9 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -1042,4 +1045,149 @@ func TestXAIImageGenerationIngressToEgress(t *testing.T) {
 		require.Equal(t, "deferred", bifrostErr.Error.Param)
 		require.Zero(t, egress.calls())
 	})
+}
+
+// listRouteAccount gives Bedrock a key with no endpoint (a refused request never dials)
+// and points Cohere at a local test server.
+type listRouteAccount struct {
+	cohereURL string
+}
+
+func (a listRouteAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.Bedrock, schemas.Cohere}, nil
+}
+
+func (a listRouteAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	key := schemas.Key{ID: "k-" + string(p), Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 1}
+	if p == schemas.Bedrock {
+		key.BedrockKeyConfig = &schemas.BedrockKeyConfig{Region: schemas.NewSecretVar("us-east-1")}
+	}
+	return []schemas.Key{key}, nil
+}
+
+func (a listRouteAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	nc := schemas.DefaultNetworkConfig
+	if p == schemas.Cohere {
+		nc.BaseURL = a.cohereURL
+	}
+	return &schemas.ProviderConfig{NetworkConfig: nc, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// queryExtraParamRoutes names every handler that forwards the query parameters it does not
+// read to a provider, with a request that repeats one the vendor takes once.
+// TestRepeatedVendorQueryParameterIsNeverReducedToOne runs each and fails when a handler
+// calls lib.QueryExtraParams without a row here.
+var queryExtraParamRoutes = []struct {
+	route   string
+	handle  func(*CompletionHandler, *fasthttp.RequestCtx)
+	uri     string
+	refused string
+}{
+	{"GET /v1/models", (*CompletionHandler).listModels, "/v1/models?provider=bedrock&byProvider=amazon&byProvider=anthropic", "byProvider"},
+	{"GET /v1/models", (*CompletionHandler).listModels, "/v1/models?provider=cohere&endpoint=chat&endpoint=embed", "endpoint"},
+	{"GET /v1/files", (*CompletionHandler).fileList, "/v1/files?provider=bedrock&s3_bucket=one&s3_bucket=two", "s3_bucket"},
+	{"GET /v1/files", (*CompletionHandler).fileList, "/v1/files?provider=bedrock&s3_bucket=one&s3_prefix=a/&s3_prefix=b/", "s3_prefix"},
+}
+
+// A vendor parameter sent more than once on a route that forwards unread query parameters
+// reaches the provider code with every value, so a provider whose vendor takes it once
+// refuses the request with 400 caller_unsupported_parameter naming it. Before, the handler
+// kept one value and the vendor was called with it as if the caller had sent nothing else
+// (fork, TXE-7086). Sent once, the parameter still reaches the vendor.
+func TestRepeatedVendorQueryParameterIsNeverReducedToOne(t *testing.T) {
+	var mu sync.Mutex
+	var cohereQueries []string
+	cohereSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		cohereQueries = append(cohereQueries, r.URL.Query().Get("endpoint"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"models":[]}`)
+	}))
+	t.Cleanup(cohereSrv.Close)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: listRouteAccount{cohereURL: cohereSrv.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("bifrost.Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	h := &CompletionHandler{client: client, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+	get := func(uri string) *fasthttp.RequestCtx {
+		var req fasthttp.Request
+		req.Header.SetMethod(fasthttp.MethodGet)
+		req.SetRequestURI(uri)
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Init(&req, nil, nil)
+		return ctx
+	}
+
+	routes := map[string]bool{}
+	for _, tc := range queryExtraParamRoutes {
+		routes[tc.route] = true
+		t.Run(tc.uri, func(t *testing.T) {
+			ctx := get(tc.uri)
+			tc.handle(h, ctx)
+			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+				t.Fatalf("status %d, want 400: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			var body struct {
+				Error struct {
+					Code  string `json:"code"`
+					Param string `json:"param"`
+				} `json:"error"`
+				ExtraFields struct {
+					ErrorType string `json:"error_type"`
+				} `json:"extra_fields"`
+			}
+			if err := json.Unmarshal(ctx.Response.Body(), &body); err != nil {
+				t.Fatalf("decode %s: %v", ctx.Response.Body(), err)
+			}
+			if body.ExtraFields.ErrorType != string(schemas.ErrorTypeCallerUnsupportedParameter) || body.Error.Param != tc.refused {
+				t.Fatalf("error_type %q param %q, want caller_unsupported_parameter naming %q: %s",
+					body.ExtraFields.ErrorType, body.Error.Param, tc.refused, ctx.Response.Body())
+			}
+		})
+	}
+	mu.Lock()
+	if len(cohereQueries) != 0 {
+		t.Fatalf("a refused request reached the vendor: endpoint values %q", cohereQueries)
+	}
+	mu.Unlock()
+
+	// Sent once, the parameter reaches the vendor as before.
+	ctx := get("/v1/models?provider=cohere&endpoint=chat")
+	h.listModels(ctx)
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("status %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	mu.Lock()
+	if !slices.Equal(cohereQueries, []string{"chat"}) {
+		t.Fatalf("vendor endpoint values = %q, want [chat]", cohereQueries)
+	}
+	mu.Unlock()
+
+	// Every call site of lib.QueryExtraParams has a row above.
+	call := regexp.MustCompile(`\blib\.QueryExtraParams\(`)
+	sites := 0
+	for _, dir := range []string{".", filepath.Join("..", "integrations")} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+				continue
+			}
+			src, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			sites += len(call.FindAll(src, -1))
+		}
+	}
+	if sites != len(routes) {
+		t.Fatalf("%d handlers call lib.QueryExtraParams, queryExtraParamRoutes covers %d routes: add a row for each handler", sites, len(routes))
+	}
 }
