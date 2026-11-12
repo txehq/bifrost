@@ -554,6 +554,32 @@ Rows 403.10 and 403.11 are the async route: 403.10 submits a url-only job to
 transcript, the duration usage and exactly one call in `/__wire`. Run them together and in order, as the
 folder does.
 
+## Repeated query parameters
+
+Folder 481 pins what happens to a query parameter sent more than once, against the same local fixture and
+with no live provider calls. With a transport plugin loaded the gateway used to copy the query string into
+a map with one value per name and write it back, so `include=a&include=b` reached the vendor as
+`include=b&include=b` and a repeated `after`, `order` or `provider` was read as its last value. The fixture
+answers OpenAI's Responses lifecycle reads, `GET /v1/responses/{id}` and
+`GET /v1/responses/{id}/input_items`, and keeps each call in `GET /__wire` with the query string as it
+arrived. The three rows send parameters twice and read back what the vendor received: every `include`
+value in the order sent, on the inference route and on the `/openai` integration route; the first `after`
+and `order`; and the first `provider`, which serves the request.
+
+Start the fixture and the isolated gateway as in the provider error fixture section above, then run:
+
+```bash
+node tests/e2e/api/runners/provider-harness-folders.mjs build
+newman run tmp/provider-harness.json \
+  --folder "481. A query parameter sent more than once keeps every value through the transport plugins (repeated query) [SERIAL]" \
+  --working-dir . \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1 \
+  --env-var providerErrorFixtureUrl=http://127.0.0.1:8791
+```
+
+Every row is skipped unless `providerErrorFixture=1`.
+
 ## Fork deployment switches: provider job accounting off and passthrough heartbeat off
 
 Folder 329 (TXE-6519) uses the same fixture and the same isolated gateway as folder 154. The

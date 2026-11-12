@@ -6,13 +6,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
+	"io/fs"
 	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -3093,5 +3099,395 @@ func TestConvertToBifrostContext_MarksExtraFieldsInHeaders(t *testing.T) {
 	cancel()
 	if !ExtraFieldsInHeaders(headersCtx) {
 		t.Fatal("headers mode must mark the request")
+	}
+}
+
+// queryTestCtx builds a request context for a GET of uri.
+func queryTestCtx(uri string) *fasthttp.RequestCtx {
+	var req fasthttp.Request
+	req.Header.SetMethod("GET")
+	req.SetRequestURI(uri)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, nil, nil)
+	return ctx
+}
+
+// CopyQueryFirstValues keeps the first value of a name, the one Args.Peek returns, and
+// reports every value of a name sent more than once (fork, TXE-7042).
+func TestCopyQueryFirstValues(t *testing.T) {
+	ctx := queryTestCtx("/v1/batches?provider=openai&status=a&Status=c&status=b&flag&limit=5")
+	args := ctx.Request.URI().QueryArgs()
+
+	got := map[string]string{}
+	repeated := CopyQueryFirstValues(args, got, false)
+	want := map[string]string{"provider": "openai", "status": "a", "Status": "c", "flag": "", "limit": "5"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("first values = %v, want %v", got, want)
+	}
+	if wantRepeated := map[string][]string{"status": {"a", "b"}}; !reflect.DeepEqual(repeated, wantRepeated) {
+		t.Fatalf("repeated = %v, want %v", repeated, wantRepeated)
+	}
+	for name, value := range got {
+		if peeked := string(args.Peek(name)); peeked != value {
+			t.Errorf("%s: map holds %q, Peek returns %q", name, value, peeked)
+		}
+	}
+
+	lowered := map[string]string{}
+	repeated = CopyQueryFirstValues(args, lowered, true)
+	if lowered["status"] != "a" {
+		t.Fatalf("lowercased first value = %q, want a", lowered["status"])
+	}
+	// The lower-case spelling's first value wins over another spelling sent before it, and
+	// a name sent only in another spelling is still found under its lower-case key.
+	variants := map[string]string{}
+	CopyQueryFirstValues(queryTestCtx("/v1/realtime?Model=a&model=b&model=c&MODEL=d&Only=x&ONLY=y").Request.URI().QueryArgs(), variants, true)
+	if want := map[string]string{"model": "b", "only": "x"}; !reflect.DeepEqual(variants, want) {
+		t.Fatalf("lowercased case variants = %v, want %v", variants, want)
+	}
+	if wantRepeated := map[string][]string{"status": {"a", "c", "b"}}; !reflect.DeepEqual(repeated, wantRepeated) {
+		t.Fatalf("lowercased repeated = %v, want %v", repeated, wantRepeated)
+	}
+
+	if repeated := CopyQueryFirstValues(queryTestCtx("/v1/models?a=1&b=2").Request.URI().QueryArgs(), map[string]string{}, false); repeated != nil {
+		t.Fatalf("no name repeats, repeated = %v, want nil", repeated)
+	}
+}
+
+// ApplyQueryChanges leaves what a plugin did not set exactly as sent. A name set through
+// SetQuery ends with that one value, also when it is the value the name already had; a
+// direct write is applied by comparing text (fork, TXE-7042).
+func TestApplyQueryChanges(t *testing.T) {
+	const sent = "provider=openai&status=a&status=b&flag&limit=5&tier=allowed&tier=other&empty=&empty=x"
+	const pinned = "provider=openai&status=a&status=b&flag&limit=5&empty=&empty=x&tier=allowed"
+	type request = schemas.HTTPRequest
+	cases := []struct {
+		name   string
+		mutate func(r *request)
+		want   string
+	}{
+		{name: "nothing changed", mutate: func(*request) {}, want: sent},
+		// SetQuery: the name ends with the one value.
+		{name: "repeated name pinned to its first value", mutate: func(r *request) { r.SetQuery("tier", "allowed") }, want: pinned},
+		{name: "repeated name pinned to the string read from the request", mutate: func(r *request) { r.SetQuery("tier", r.Query["tier"]) }, want: pinned},
+		{name: "repeated name pinned to its empty first value", mutate: func(r *request) { r.SetQuery("empty", "") }, want: "provider=openai&status=a&status=b&flag&limit=5&tier=allowed&tier=other&empty="},
+		{name: "repeated name set to another value", mutate: func(r *request) { r.SetQuery("status", "z") }, want: "provider=openai&flag&limit=5&tier=allowed&tier=other&empty=&empty=x&status=z"},
+		{name: "repeated name set to its last value", mutate: func(r *request) { r.SetQuery("status", "b") }, want: "provider=openai&flag&limit=5&tier=allowed&tier=other&empty=&empty=x&status=b"},
+		{name: "name sent once set to its own value", mutate: func(r *request) { r.SetQuery("limit", "5") }, want: sent},
+		{name: "name sent once set to another value", mutate: func(r *request) { r.SetQuery("limit", "9") }, want: "provider=openai&status=a&status=b&flag&limit=9&tier=allowed&tier=other&empty=&empty=x"},
+		{name: "name added", mutate: func(r *request) { r.SetQuery("injected", "yes") }, want: sent + "&injected=yes"},
+		{name: "empty name added", mutate: func(r *request) { r.SetQuery("bare", "") }, want: sent + "&bare="},
+		{name: "pin holds without the record of repeated names", mutate: func(r *request) { r.RepeatedQuery = nil; r.SetQuery("tier", "allowed") }, want: pinned},
+		// A direct write, from a plugin built outside this repository, is compared as text.
+		{name: "direct write of another value", mutate: func(r *request) { r.Query["status"] = "z" }, want: "provider=openai&flag&limit=5&tier=allowed&tier=other&empty=&empty=x&status=z"},
+		{name: "direct write of a new name", mutate: func(r *request) { r.Query["injected"] = "yes" }, want: sent + "&injected=yes"},
+		{name: "direct write of the first value reads as untouched", mutate: func(r *request) { r.Query["tier"] = "allowed" }, want: sent},
+		{name: "name deleted stays", mutate: func(r *request) { delete(r.Query, "status") }, want: sent},
+	}
+	// Each row runs on the query string as written, which is scanned once per name, and
+	// with enough other names in front of it to take the one-pass path.
+	padding := ""
+	for i := range 2 * maxQueryNamesScannedPerName {
+		padding += fmt.Sprintf("pad%d=%d&", i, i)
+	}
+	for _, tc := range cases {
+		for pathName, prefix := range map[string]string{"scan per name": "", "one pass": padding} {
+			t.Run(tc.name+"/"+pathName, func(t *testing.T) {
+				ctx := queryTestCtx("/v1/batches?" + prefix + sent)
+				args := ctx.Request.URI().QueryArgs()
+				r := &request{Query: map[string]string{}}
+				r.RepeatedQuery = CopyQueryFirstValues(args, r.Query, false)
+				tc.mutate(r)
+				ApplyQueryChanges(args, r)
+				got := string(args.QueryString())
+				if !sameQueryPairs(got, prefix+tc.want) {
+					t.Fatalf("query string = %q, want %q", got, prefix+tc.want)
+				}
+			})
+		}
+	}
+}
+
+// A caller chooses how many names a query string carries, and the write-back runs before
+// authentication, so a long query string is read in one pass instead of once per name
+// (8,000 names cost 64 million comparisons a pass that way). The result is the same: a
+// pinned name ends with one value and the rest stays as sent (fork, TXE-7042). No time is
+// asserted here; BenchmarkApplyQueryChangesManyNames shows the cost.
+func TestApplyQueryChangesOnAQueryStringOfThousandsOfNames(t *testing.T) {
+	var query strings.Builder
+	for i := range 8000 {
+		fmt.Fprintf(&query, "n%d=%d&", i, i)
+	}
+	sent := query.String() + "status=a&status=b"
+	ctx := queryTestCtx("/v1/batches?" + sent + "&tier=allowed&tier=other")
+	args := ctx.Request.URI().QueryArgs()
+	r := &schemas.HTTPRequest{Query: map[string]string{}}
+	r.RepeatedQuery = CopyQueryFirstValues(args, r.Query, false)
+	r.SetQuery("tier", "allowed")
+	ApplyQueryChanges(args, r)
+	if got, want := string(args.QueryString()), sent+"&tier=allowed"; got != want {
+		t.Fatalf("query string ends %q, want it to end %q", got[max(0, len(got)-60):], want[len(want)-60:])
+	}
+}
+
+func BenchmarkApplyQueryChangesManyNames(b *testing.B) {
+	for _, names := range []int{8, 1000, 8000} {
+		var query strings.Builder
+		for i := range names {
+			fmt.Fprintf(&query, "n%d=%d&", i, i)
+		}
+		ctx := queryTestCtx("/v1/batches?" + query.String() + "tier=allowed&tier=other")
+		args := ctx.Request.URI().QueryArgs()
+		r := &schemas.HTTPRequest{Query: map[string]string{}}
+		r.RepeatedQuery = CopyQueryFirstValues(args, r.Query, false)
+		b.Run(fmt.Sprintf("names=%d", names), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				ApplyQueryChanges(args, r)
+			}
+		})
+	}
+}
+
+// TestPluginsSetQueryValuesThroughSetQuery fails when Go code in this repository writes
+// an entry of an HTTPRequest's Query map itself. The transport cannot see such a write
+// when it stores the value the name already had, so a plugin pinning tier=allowed on a
+// request that carries tier=allowed&tier=other would leave both values on it;
+// HTTPRequest.SetQuery records the name and the transport forwards the one value
+// (fork, TXE-7042). The check reads syntax: it catches x.Query[k] = v, x.Query[k] += v
+// and maps.Copy(x.Query, ...) on any expression, not a write through another variable
+// holding the map. The two allowed files are SetQuery itself and the transport's own
+// copy of a request for the streamed post-hooks.
+func TestPluginsSetQueryValuesThroughSetQuery(t *testing.T) {
+	root := filepath.Join("..", "..", "..")
+	allowed := map[string]bool{
+		filepath.Join("core", "schemas", "plugin.go"):                             true,
+		filepath.Join("transports", "bifrost-http", "handlers", "middlewares.go"): true,
+	}
+	isQueryField := func(e ast.Expr) bool {
+		sel, ok := e.(*ast.SelectorExpr)
+		return ok && sel.Sel.Name == "Query"
+	}
+	writes := func(src string) (lines []int, err error) {
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, "", src, parser.SkipObjectResolution)
+		if err != nil {
+			return nil, err
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.AssignStmt:
+				for _, lhs := range node.Lhs {
+					if index, ok := lhs.(*ast.IndexExpr); ok && isQueryField(index.X) {
+						lines = append(lines, fset.Position(node.Pos()).Line)
+					}
+				}
+			case *ast.CallExpr:
+				if fn, ok := node.Fun.(*ast.SelectorExpr); ok && fn.Sel.Name == "Copy" && len(node.Args) == 2 {
+					if pkg, ok := fn.X.(*ast.Ident); ok && pkg.Name == "maps" && isQueryField(node.Args[0]) {
+						lines = append(lines, fset.Position(node.Pos()).Line)
+					}
+				}
+			}
+			return true
+		})
+		return lines, nil
+	}
+
+	// The check itself: each written form is found, SetQuery and reads are not.
+	for src, want := range map[string]int{
+		`package p; func f(req *R) { req.Query["tier"] = "allowed" }`:             1,
+		`package p; func f(req *R) { req.Query[k] += "x" }`:                       1,
+		`package p; func f(req *R) { maps.Copy(req.Query, other) }`:               1,
+		`package p; func f(c *C) { c.Request.Query["a"], c.n = "b", 1 }`:          1,
+		`package p; func f(req *R) { req.SetQuery("tier", "allowed") }`:           0,
+		`package p; func f(req *R) string { v := req.Query["tier"]; return v }`:   0,
+		`package p; func f(req *R) { maps.Copy(dst, req.Query); q["a"] = "b" }`:   0,
+		`package p; func f(req *R) { req.Headers["a"] = "b"; action.Query = &q }`: 0,
+	} {
+		lines, err := writes(src)
+		if err != nil {
+			t.Fatalf("%s: %v", src, err)
+		}
+		if len(lines) != want {
+			t.Fatalf("%s: found %d writes, want %d", src, len(lines), want)
+		}
+	}
+
+	found := map[string]bool{}
+	scanned := 0
+	for _, module := range []string{"core", "framework", "plugins", "transports", "examples"} {
+		err := filepath.WalkDir(filepath.Join(root, module), func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if d.Name() == "ui" || d.Name() == "node_modules" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			src, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			scanned++
+			if !bytes.Contains(src, []byte("Query")) {
+				return nil
+			}
+			lines, parseErr := writes(string(src))
+			if parseErr != nil {
+				return fmt.Errorf("%s: %w", path, parseErr)
+			}
+			if len(lines) == 0 {
+				return nil
+			}
+			rel, _ := filepath.Rel(root, path)
+			found[rel] = true
+			if !allowed[rel] {
+				t.Errorf("%s writes a Query entry directly (line %v); call HTTPRequest.SetQuery", rel, lines)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if scanned < 500 {
+		t.Fatalf("scanned %d Go files under %s, expected the whole repository", scanned, root)
+	}
+	for rel := range allowed {
+		if !found[rel] {
+			t.Errorf("%s no longer writes a Query entry: drop it from the allow list", rel)
+		}
+	}
+}
+
+// sameQueryPairs compares two query strings as name=value pairs, keeping the order of the
+// values of each name: ApplyQueryChanges walks a map, so the names it rewrites land at
+// the end in no fixed order.
+func sameQueryPairs(got, want string) bool {
+	byName := func(qs string) map[string][]string {
+		out := map[string][]string{}
+		for _, pair := range strings.Split(qs, "&") {
+			name, value, _ := strings.Cut(pair, "=")
+			out[name] = append(out[name], value)
+		}
+		return out
+	}
+	g, w := byName(got), byName(want)
+	if len(g) != len(w) || len(got) != len(want) {
+		return false
+	}
+	for name, values := range w {
+		if !slices.Equal(g[name], values) {
+			return false
+		}
+	}
+	return true
+}
+
+// Routing rules read BifrostContextKeyRequestQuery and handlers read Args.Peek: both must
+// name the same value of a repeated parameter (fork, TXE-7042).
+func TestConvertToBifrostContext_RepeatedQueryParameterReadsAsPeek(t *testing.T) {
+	ctx := queryTestCtx("/v1/batches?Provider=a&provider=b&status=x&status=y")
+	converted, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel()
+	query, _ := converted.Value(schemas.BifrostContextKeyRequestQuery).(map[string]string)
+	if query["status"] != "x" || query["status"] != string(ctx.QueryArgs().Peek("status")) {
+		t.Fatalf("routing rules read status=%q, handlers read %q, want x for both", query["status"], ctx.QueryArgs().Peek("status"))
+	}
+	// Handlers look the name up in lower case, so the lower-case spelling's first value
+	// wins over another spelling sent before it.
+	if query["provider"] != "b" || query["provider"] != string(ctx.QueryArgs().Peek("provider")) {
+		t.Fatalf("routing rules read provider=%q, handlers read %q, want b for both", query["provider"], ctx.QueryArgs().Peek("provider"))
+	}
+}
+
+// The request snapshot a streaming post-hook receives carries the same query view as the
+// pre-hook: first values, and every value of a repeated name (fork, TXE-7042).
+func TestBuildHTTPRequestFromFastHTTP_RepeatedQueryParameter(t *testing.T) {
+	req := BuildHTTPRequestFromFastHTTP(queryTestCtx("/v1/videos?provider=p&status=completed&status=failed"))
+	defer schemas.ReleaseHTTPRequest(req)
+	if req.Query["status"] != "completed" {
+		t.Fatalf("Query[status] = %q, want completed", req.Query["status"])
+	}
+	if want := map[string][]string{"status": {"completed", "failed"}}; !reflect.DeepEqual(req.RepeatedQuery, want) {
+		t.Fatalf("RepeatedQuery = %v, want %v", req.RepeatedQuery, want)
+	}
+}
+
+// BenchmarkCopyQueryFirstValues is the per-request cost of copying the query string for the
+// transport plugins and for the routing rules (TXE-7042): no query, an ordinary query, and
+// one with a repeated name, which is the only case that allocates beyond the map entries.
+func BenchmarkCopyQueryFirstValues(b *testing.B) {
+	for name, uri := range map[string]string{
+		"none":     "/v1/chat/completions",
+		"ordinary": "/v1/chat/completions?api-version=2025-04-01-preview&trace=1",
+		"repeated": "/v1/videos?provider=azure&status=completed&status=failed&limit=2",
+	} {
+		for _, lower := range []bool{false, true} {
+			b.Run(fmt.Sprintf("%s/lower=%t", name, lower), func(b *testing.B) {
+				args := queryTestCtx(uri).Request.URI().QueryArgs()
+				dst := make(map[string]string, 8)
+				b.ReportAllocs()
+				for b.Loop() {
+					clear(dst)
+					CopyQueryFirstValues(args, dst, lower)
+				}
+			})
+		}
+	}
+}
+
+// TestQueryStringIsCopiedInOnePlace fails when a transport source file walks the whole
+// query string itself instead of calling CopyQueryFirstValues. Every such walk that built
+// a map kept the last value of a repeated parameter while handlers read the first
+// (fork, TXE-7042). Read one name with Peek or PeekMulti; copy all of them with
+// CopyQueryFirstValues. The two allowed files scan for a metadata_ prefix on management
+// routes and send nothing to a vendor or a plugin.
+func TestQueryStringIsCopiedInOnePlace(t *testing.T) {
+	allowed := map[string]bool{
+		filepath.Join("lib", "query.go"):           true,
+		filepath.Join("handlers", "logging.go"):    true,
+		filepath.Join("handlers", "governance.go"): true,
+	}
+	walk := regexp.MustCompile(`(?i)(QueryArgs\(\)|queryArgs|args)\.(All|VisitAll)\(`)
+	root := ".."
+	found := 0
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == "ui" || d.Name() == "node_modules" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, path)
+		src, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if walk.Match(src) {
+			found++
+			if !allowed[rel] {
+				t.Errorf("%s walks the query string itself; use lib.CopyQueryFirstValues, Peek or PeekMulti", rel)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found != len(allowed) {
+		t.Errorf("%d files walk the query string, the allow list names %d: drop the entries that no longer apply", found, len(allowed))
 	}
 }
