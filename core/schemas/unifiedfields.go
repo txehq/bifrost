@@ -237,7 +237,7 @@ var nestedPriceFields = func() []NestedPriceField {
 		{Replicate, "input.background", "background", image},
 		{Replicate, "input.duration", "seconds", video},
 	}
-	// Gemini and Vertex run the same converters for Imagen, Gemini image models and Veo.
+	// Gemini and Vertex run the same converters for Imagen, Gemini image models, Veo and Omni.
 	for _, provider := range []ModelProvider{Gemini, Vertex} {
 		fields = append(fields,
 			NestedPriceField{provider, "parameters.sampleCount", "n", image},
@@ -249,6 +249,10 @@ var nestedPriceFields = func() []NestedPriceField {
 			NestedPriceField{provider, "parameters.aspectRatio", "aspect_ratio", video},
 			NestedPriceField{provider, "parameters.durationSeconds", "seconds", video},
 			NestedPriceField{provider, "parameters.generateAudio", "audio", video},
+			// An Omni model's video create is an Interactions API body (TXE-6538).
+			NestedPriceField{provider, "response_format.duration", "seconds", video},
+			NestedPriceField{provider, "response_format.aspect_ratio", "aspect_ratio", video},
+			NestedPriceField{provider, "response_format.resolution", "resolution", video},
 		)
 	}
 	fields = append(fields,

@@ -12606,12 +12606,12 @@ func TestConvertersReadNoUnlistedVendorPriceName(t *testing.T) {
 
 // nestedPriceProbeModels are the extra models TestNestedPriceFieldsAreDeclaredAndRefused
 // sends each price field with, beside guardModel: the names from which a provider picks a
-// request shape that nests those fields elsewhere (Imagen and Veo beside the Gemini image
+// request shape that nests those fields elsewhere (Imagen, Veo and Omni beside the Gemini image
 // models; Bedrock's embedding families). A converter that gains a shape for a new model
 // family is covered once a model of it is listed here.
 var nestedPriceProbeModels = map[schemas.ModelProvider][]string{
-	schemas.Gemini:  {"imagen-4.0-generate-001", "veo-3.1-generate-preview"},
-	schemas.Vertex:  {"imagen-4.0-generate-001", "veo-3.1-generate-preview"},
+	schemas.Gemini:  {"imagen-4.0-generate-001", "veo-3.1-generate-preview", "gemini-omni-1.1-flash"},
+	schemas.Vertex:  {"imagen-4.0-generate-001", "veo-3.1-generate-preview", "gemini-omni-1.1-flash-preview"},
 	schemas.Bedrock: {"amazon.titan-embed-image-v1", "amazon.nova-2-multimodal-embeddings-v1:0"},
 	// Wan 2.6 and earlier take parameters.size; Wan 2.7 and 3.0 (guardModel) take resolution and ratio.
 	schemas.DashScope: {"wan2.6-t2v"},
@@ -12813,8 +12813,14 @@ func TestNestedPriceFieldsAreDeclaredAndRefused(t *testing.T) {
 			if err != nil {
 				t.Fatalf("construct: %v", err)
 			}
-			key := guardKey(providerKey)
 			body := func(probe nestedPriceProbe, model string, variant int) (leaves map[string]string, sent, more bool) {
+				key := guardKey(providerKey)
+				// The Vertex Interactions API, which an Omni model runs on, serves the
+				// locations global, us and eu only; any other region is a configuration
+				// error before a body is built.
+				if providerKey == schemas.Vertex && schemas.IsGeminiOmniModel(model) {
+					key.VertexKeyConfig.Region = *schemas.NewSecretVar("global")
+				}
 				upstream.take()
 				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 				ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
@@ -12910,7 +12916,7 @@ func TestNestedPriceFieldsAreDeclaredAndRefused(t *testing.T) {
 			// Through the real worker and the real provider: refused, and nothing is sent.
 			account := NewMockAccount()
 			account.AddProvider(providerKey, 1, 4)
-			workerKey := key
+			workerKey := guardKey(providerKey)
 			workerKey.Models, workerKey.Weight = schemas.WhiteList{"*"}, 100
 			account.SetKeysForProvider(providerKey, []schemas.Key{workerKey})
 			core, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
