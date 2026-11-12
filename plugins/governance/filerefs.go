@@ -37,7 +37,8 @@ import (
 // output folder, the object a file upload stores. Those are in the same table and go through
 // the same resolver, so a location recorded for another key is refused as an output like it is
 // as an input. A stored object is looked up under the one name it is recorded under; whether a
-// recorded folder should also answer for what is inside it is not decided here (TXE-7121).
+// folder a key has claimed as an output location also answers for what is inside it (TXE-7121,
+// see storagefolders.go).
 
 // fileRefKind says how a field names a file.
 type fileRefKind uint8
@@ -596,6 +597,7 @@ func buildFileRefPlans(root reflect.Type) *fileRefPlan {
 // distinct files, or a name recordedFileID cannot follow to an object. What was not read, or not kept, may name another key's file.
 type fileIDCollector struct {
 	ids        []string
+	locations  []string // the ids among ids that a request writes its output to (fileRefLocation)
 	seen       map[string]struct{}
 	unreadable bool // the ids are not the whole answer; the request is refused
 }
@@ -638,6 +640,16 @@ func (c *fileIDCollector) addReference(kind fileRefKind, value string) {
 	}
 	if ok {
 		c.add(id)
+		if kind == fileRefLocation {
+			c.addLocation(id)
+		}
+	}
+}
+
+// addLocation marks id, already added, as a storage location the request writes to.
+func (c *fileIDCollector) addLocation(id string) {
+	if id = strings.TrimSpace(id); id != "" && !slices.Contains(c.locations, id) {
+		c.locations = append(c.locations, id)
 	}
 }
 
@@ -648,8 +660,20 @@ func (c *fileIDCollector) addReference(kind fileRefKind, value string) {
 // than maxFileReferences files, in which case the list is not the whole answer and the request
 // must not be let through on it.
 func requestFileIDs(req *schemas.BifrostRequest) (ids []string, unreadable bool) {
+	ids, _, unreadable = requestFileReferences(req)
+	return ids, unreadable
+}
+
+// requestFileReferences is requestFileIDs with one more answer: locations are the ids among
+// ids that the request names as the place its output is written (a batch's output folder, a
+// task's output_storage_uri). The provider writes new objects beneath such a location, so it
+// is checked as a folder (see storagefolders.go), not only as the one object of that name.
+//
+// Bedrock takes a batch's output location from the output_s3_uri extra param, which the walk
+// reads as any other string of an extra param; it is marked as a location here.
+func requestFileReferences(req *schemas.BifrostRequest) (ids, locations []string, unreadable bool) {
 	if req == nil {
-		return nil, false
+		return nil, nil, false
 	}
 	var collector fileIDCollector
 	walkFileRefs(reflect.ValueOf(req).Elem(), requestFileRefPlan(), &collector)
@@ -658,7 +682,14 @@ func requestFileIDs(req *schemas.BifrostRequest) (ids []string, unreadable bool)
 			collector.add(location)
 		}
 	}
-	return collector.ids, collector.unreadable
+	if r := req.BatchCreateRequest; r != nil {
+		if output, _ := r.ExtraParams["output_s3_uri"].(string); output != "" {
+			if id, ok, _ := recordedFileID(output); ok && slices.Contains(collector.ids, id) {
+				collector.addLocation(id)
+			}
+		}
+	}
+	return collector.ids, collector.locations, collector.unreadable
 }
 
 // uploadLocations returns the storage objects a file upload writes, which it names in pieces:
@@ -870,7 +901,7 @@ func scanFileIDs(value reflect.Value, collector *fileIDCollector, depth int) {
 // A request part of which could not be read yields one more reference, marked unreadable, which
 // enforceProviderObjectOwnership refuses.
 func requestFileRefs(req *schemas.BifrostRequest) []providerObjectRef {
-	ids, unreadable := requestFileIDs(req)
+	ids, locations, unreadable := requestFileReferences(req)
 	if len(ids) == 0 && !unreadable {
 		return nil
 	}
@@ -882,6 +913,7 @@ func requestFileRefs(req *schemas.BifrostRequest) []providerObjectRef {
 	for _, id := range ids {
 		if ref, ok := objectRef(configstoreTables.ProviderObjectKindFile, provider, id); ok {
 			ref.indirect = true
+			ref.destination = slices.Contains(locations, id)
 			refs = append(refs, ref)
 		}
 	}

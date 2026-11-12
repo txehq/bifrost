@@ -52,7 +52,10 @@ type providerObjectRef struct {
 	indirect  bool // named inside a request that creates or runs something else, not addressed by id
 	// passthroughList is a list through a passthrough route: its raw page cannot be narrowed.
 	passthroughList bool
-	unreadable      bool // the request's files could not all be read (requestFileIDs), or this id cannot be resolved to one recorded name, so it is refused
+	// destination marks a storage location the request writes its output beneath, which is
+	// checked and claimed as a folder (see storagefolders.go).
+	destination bool
+	unreadable  bool // the request's files could not all be read (requestFileIDs), or this id cannot be resolved to one recorded name, so it is refused
 }
 
 // governanceAutoContainerContextKey marks a request whose code_interpreter tool asked the provider
@@ -327,6 +330,7 @@ func providerObjectReferences(req *schemas.BifrostRequest) []providerObjectRef {
 		for i := range refs {
 			if refs[i].kind == fileRef.kind && refs[i].requestID == fileRef.requestID && !refs[i].isList {
 				known = true
+				refs[i].destination = refs[i].destination || fileRef.destination
 				break
 			}
 		}
@@ -1328,13 +1332,27 @@ func (p *GovernancePlugin) enforceProviderObjectOwnership(ctx *schemas.BifrostCo
 		ctx.SetValue(governanceVideoByReferenceContextKey, true)
 		return nil
 	}
+	// Every object is checked before any folder is claimed, so a request refused for one
+	// object claims nothing.
+	var claims []string
 	for _, ref := range refs {
 		if ref.isList {
 			continue
 		}
-		if shortCircuit := p.refuseForeignProviderObject(ctx, req, ref, vkID); shortCircuit != nil {
+		shortCircuit, own := p.refuseForeignProviderObject(ctx, req, ref, vkID)
+		if shortCircuit != nil {
 			return shortCircuit
 		}
+		claim, shortCircuit := p.refuseForeignStorageFolder(ctx, ref, own, vkID)
+		if shortCircuit != nil {
+			return shortCircuit
+		}
+		if claim != "" {
+			claims = append(claims, claim)
+		}
+	}
+	if shortCircuit := p.claimStorageFolders(ctx, claims, vkID); shortCircuit != nil {
+		return shortCircuit
 	}
 	// A native list is narrowed in the post-hook. A passthrough list is the provider's raw page,
 	// which cannot be, so a virtual key is sent to the gateway's own list route; the objects the
@@ -1397,8 +1415,9 @@ func distinctObjectRefs(refs []providerObjectRef) ([]providerObjectRef, bool) {
 	return distinct, true
 }
 
-// refuseForeignProviderObject is enforceProviderObjectOwnership for one referenced object.
-func (p *GovernancePlugin) refuseForeignProviderObject(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, ref providerObjectRef, vkID string) *schemas.LLMPluginShortCircuit {
+// refuseForeignProviderObject is enforceProviderObjectOwnership for one referenced object. own
+// is true when the object is let through because it is recorded for the request's own key.
+func (p *GovernancePlugin) refuseForeignProviderObject(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, ref providerObjectRef, vkID string) (shortCircuit *schemas.LLMPluginShortCircuit, own bool) {
 	label := providerObjectLabel(ref.kind)
 	if p.configStore == nil {
 		// A batch create only names its input file, and a container create or a request on a
@@ -1407,14 +1426,14 @@ func (p *GovernancePlugin) refuseForeignProviderObject(ctx *schemas.BifrostConte
 		// below. Creating and running are left open so a deployment without a config store can
 		// still submit batches, build containers and use caches.
 		if req.BatchCreateRequest != nil || ref.indirect {
-			return nil
+			return nil, false
 		}
 		ctx.SetValue(governanceRejectedContextKey, true)
 		return &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
 			Type:       bifrost.Ptr(string(DecisionAccessBlocked)),
 			StatusCode: bifrost.Ptr(403),
 			Error:      &schemas.ErrorField{Message: fmt.Sprintf("%s access cannot be verified for virtual keys without a config store", label)},
-		}}
+		}}, false
 	}
 	owners, ambiguous, err := p.providerObjectOwnersOf(ctx, ref.kind, ref.provider, ref.ids, true)
 	if err != nil {
@@ -1423,7 +1442,7 @@ func (p *GovernancePlugin) refuseForeignProviderObject(ctx *schemas.BifrostConte
 		return &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
 			StatusCode: bifrost.Ptr(500),
 			Error:      &schemas.ErrorField{Message: fmt.Sprintf("failed to verify access to %s '%s'", label, ref.requestID)},
-		}}
+		}}, false
 	}
 	notFound := func() *schemas.LLMPluginShortCircuit {
 		ctx.SetValue(governanceRejectedContextKey, true)
@@ -1435,7 +1454,7 @@ func (p *GovernancePlugin) refuseForeignProviderObject(ctx *schemas.BifrostConte
 	}
 	for _, owner := range owners {
 		if owner != vkID {
-			return notFound()
+			return notFound(), false
 		}
 	}
 	if len(ambiguous) > 0 {
@@ -1446,7 +1465,7 @@ func (p *GovernancePlugin) refuseForeignProviderObject(ctx *schemas.BifrostConte
 			Type:       bifrost.Ptr(string(DecisionAccessBlocked)),
 			StatusCode: bifrost.Ptr(400),
 			Error:      &schemas.ErrorField{Message: fmt.Sprintf("%s '%s' matches objects in more than one project; address it by its full resource name", label, ref.requestID)},
-		}}
+		}}, false
 	}
 	// A task fails closed (TXE-6431 for image tasks, TXE-7119 for batches and videos): a key
 	// reaches one only under an id recorded for it. A task created outside the gateway, before
@@ -1454,15 +1473,16 @@ func (p *GovernancePlugin) refuseForeignProviderObject(ctx *schemas.BifrostConte
 	// an id can carry more than the vendor's task id (BFL's carries the model and the polling
 	// host), so "no row stays reachable" would let any key reach it by rewriting the rest.
 	if ownedOnlyByRecord(ref.kind) && len(owners) == 0 {
-		return notFound()
+		return notFound(), false
 	}
-	return nil
+	return nil, len(owners) > 0
 }
 
 // hiddenProviderObjects returns, from a page of ids, the ones the virtual key may not see, as a
 // predicate on the listed id. Every form of each id is looked up, and an id is hidden when any
 // of its forms is another key's. A task (ownedOnlyByRecord) is also hidden when none of its
-// forms has an owner on record, as it is not found when addressed. The predicate is nil when
+// forms has an owner on record, as it is not found when addressed. A stored file with no row
+// of its own is hidden when it lies in a folder another key claimed. The predicate is nil when
 // nothing on the page is hidden.
 func (p *GovernancePlugin) hiddenProviderObjects(ctx *schemas.BifrostContext, kind, provider, vkID string, ids []string) (func(id string) bool, error) {
 	forms := make([]string, 0, len(ids)*2)
@@ -1486,11 +1506,21 @@ func (p *GovernancePlugin) hiddenProviderObjects(ctx *schemas.BifrostContext, ki
 	for id := range ambiguous {
 		hidden[id] = struct{}{}
 	}
+	// A stored object with no row of its own follows the folder it lies in (storagefolders.go).
+	var inForeignFolder map[string]struct{}
+	if kind == configstoreTables.ProviderObjectKindFile {
+		if inForeignFolder, err = p.listedInForeignFolders(ctx, provider, vkID, ids, owners); err != nil {
+			return nil, err
+		}
+	}
 	closed := ownedOnlyByRecord(kind)
-	if len(hidden) == 0 && !unverifiable && !closed {
+	if len(hidden) == 0 && len(inForeignFolder) == 0 && !unverifiable && !closed {
 		return nil, nil
 	}
 	return func(id string) bool {
+		if _, foreign := inForeignFolder[id]; foreign {
+			return true
+		}
 		lookup, unclear := providerObjectLookupForms(kind, schemas.ModelProvider(provider), id)
 		if unclear {
 			return true

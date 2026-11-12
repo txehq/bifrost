@@ -299,6 +299,8 @@ A virtual key can be limited to its own storage and topics:
 
 A key with no list is not restricted, which is the default. A request with no virtual key is never restricted.
 
+The lists are separate from the ownership of stored objects, which needs no configuration: a file belongs to the key that uploaded it, and an output folder, with the results written into it, to the key that first wrote there (see [Files and Batch](/integrations/openai-sdk/files-and-batch)). Ownership covers what Bifrost recorded; the lists also cover objects nobody recorded.
+
 The check runs before any provider call, on every provider and route, and on every form of a name: a `gs://` or `s3://` URI, the https URLs of the same object, an S3 ARN, and the bucket and prefix of a file operation. A location outside the list is refused with `403`; a name that cannot be resolved to one bucket and path (a wildcard, a `.` or `..` segment, an S3 access point) is refused with `400`. An entry may not hold a wildcard or a `.` or `..` segment, and a list holds at most 64 entries. The limit does not depend on **Restrict Provider Objects to the Creating Virtual Key**: it is the key's own.
 
 ```bash
