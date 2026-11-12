@@ -236,6 +236,7 @@ var nestedPriceFields = func() []NestedPriceField {
 		{Replicate, "input.output_format", "output_format", image},
 		{Replicate, "input.background", "background", image},
 		{Replicate, "input.duration", "seconds", video},
+		{XAI, "output_format.codec", "response_format", speech},
 	}
 	// Gemini and Vertex run the same converters for Imagen, Gemini image models, Veo and Omni.
 	for _, provider := range []ModelProvider{Gemini, Vertex} {

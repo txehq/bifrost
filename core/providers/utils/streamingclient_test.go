@@ -1545,6 +1545,95 @@ func BenchmarkIsWriteOnce(b *testing.B) {
 	}
 }
 
+// TestBuildSingleAttemptClient_WritesARequestOnce: an upstream that reads a request and then
+// drops the connection has the request, so a client for a request that must never be repeated
+// (the create of a task the vendor cannot find again) must not write it a second time. The
+// shared client does: its second request reuses the pooled socket, sees it die before the
+// first response byte, and is written again on a new socket. The single-attempt client sends
+// each request on a connection of its own and never retries, so the upstream reads it once.
+func TestBuildSingleAttemptClient_WritesARequestOnce(t *testing.T) {
+	newUpstream := func(t *testing.T) (target string, received *atomic.Int32) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen: %v", err)
+		}
+		t.Cleanup(func() { ln.Close() })
+		received = &atomic.Int32{}
+		go func() {
+			for {
+				conn, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				go func() {
+					defer conn.Close()
+					br := bufio.NewReader(conn)
+					for {
+						httpReq, err := http.ReadRequest(br)
+						if err != nil {
+							return
+						}
+						_, _ = io.Copy(io.Discard, httpReq.Body)
+						// The first request is answered and its socket kept alive; every later
+						// one is read in full and then dropped without a response byte.
+						if received.Add(1) > 1 {
+							return
+						}
+						_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}")
+					}
+				}()
+			}
+		}()
+		return "http://" + ln.Addr().String(), received
+	}
+	base := func() *fasthttp.Client {
+		return ConfigureDialer(&fasthttp.Client{ReadTimeout: 2 * time.Second, WriteTimeout: 2 * time.Second}, true)
+	}
+
+	t.Run("shared client resends", func(t *testing.T) {
+		target, received := newUpstream(t)
+		client := base()
+		for i := 1; i <= 2; i++ {
+			req, resp := newSilentStreamingRequest(target)
+			err := client.Do(req, resp)
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			if i == 2 && err == nil {
+				t.Fatal("the dropped request must fail")
+			}
+		}
+		if got := received.Load(); got <= 2 {
+			t.Fatalf("upstream read %d request(s); the shared client was expected to resend the dropped one", got)
+		}
+	})
+
+	t.Run("single-attempt client does not", func(t *testing.T) {
+		target, received := newUpstream(t)
+		client := BuildSingleAttemptClient(base())
+		for i := 1; i <= 2; i++ {
+			req, resp := newSilentStreamingRequest(target)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr, wait := SendSingleAttempt(ctx, client, req, resp)
+			wait()
+			// Only a send that got no response leaves the outcome unknown.
+			if unknown := bifrostErr != nil && bifrostErr.UpstreamWriteUnknown; unknown != (i == 2) {
+				t.Fatalf("request %d: upstream-write-unknown = %v", i, unknown)
+			}
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			if i == 1 && bifrostErr != nil {
+				t.Fatalf("request 1 failed: %+v", bifrostErr.Error)
+			}
+			if i == 2 && bifrostErr == nil {
+				t.Fatal("the dropped request must fail")
+			}
+		}
+		if got := received.Load(); got != 2 {
+			t.Fatalf("upstream read %d request(s), want 2: each request written exactly once", got)
+		}
+	})
+}
+
 // TestContextTransport_PooledConnTruncatedBodyNotRetried: once a status line
 // has been parsed the upstream has processed the request, so a body that is
 // cut short must surface as an error rather than replay the POST on a new

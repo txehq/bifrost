@@ -1,0 +1,1448 @@
+{
+  "name": "415. xAI video, text to speech and speech to text meet the contract (xai media contract)",
+  "description": "Pins TXE-6429 (contract C3, C4, C5, C6, C7, C9) for the xai provider on POST /v1/videos, GET /v1/videos/{id}, GET /v1/videos/{id}/content, POST /v1/videos/{id}/cancel, POST /v1/audio/speech and POST /v1/audio/transcriptions. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. The xai provider's base is the fixture's /pp/xai, so every vendor call is a row of GET /__wire. Before the change xai answered every one of these operations with an unsupported-operation error. Rows 2 and 3: a video create converts the unified fields to xAI's own (seconds to duration, input_reference to image.url, last_frame, reference_images, output_storage_uri to output.upload_url) and merges the extra fields unchanged. Rows 4 to 8: callback_url, client_reference_id, expires_after_seconds, a size xAI cannot produce and a fractional seconds are 400 caller_unsupported_parameter. Row 9: cancel is 400 provider_cancel_unsupported. Row 10: a usage-policy refusal keeps xAI's 403 and body and is caller_content_filtered. Rows 11 to 13: the task object carries provider_status, usage{output_tokens, output_seconds, vendor_cost in usd_ticks} and a url artifact; a moderated task is failed with content_filter. Row 14 creates on an upstream that reads the request and drops the connection; it follows three queries, which leave a keep-alive connection in the provider's shared pool, the one a resend would come from. Row 15 reads the wire: the dropped create arrived exactly once (xAI cannot find a task again, so a second copy would be a second billed task) and no refused request arrived at all. Rows 16 to 20: speech returns xAI's audio bytes, decodes the with_timestamps envelope and reports its duration in x-bifrost-usage, refuses instructions and a codec xAI does not produce, and sends /v1/tts its own fields. Rows 21 to 24: a transcription returns usage{type: duration, seconds} and words, takes a url in place of the file, refuses response_format, and writes file as the last form field with repeated fields once per value. Rows 25 to 28: the download. The gateway's media fetcher refuses loopback, so the provider xai_media_proxy (the xAI base, with this fixture as its HTTP forward proxy) is given a link under 203.0.113.10 (TEST-NET-3, never routed), which the fixture answers as the proxy. The video comes back as video/mp4, a thumbnail variant is 400 caller_unsupported_parameter, a pending task is a 400, and the wire shows one task query and one fetch of the link with no Authorization header.",
+  "item": [
+    {
+      "name": "415.1 reset the fixture's wire record (xai media contract)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "http://127.0.0.1:8791/__reset"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture reset its record', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.json().data[0].reset).to.eql(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.2 xai/grok-imagine-video-1.5 POST /v1/videos creates a task from the unified fields (xai media contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-imagine-video-1.5\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"seconds\": \"8\",\n  \"aspect_ratio\": \"16:9\",\n  \"resolution\": \"720p\",\n  \"input_reference\": \"https://media.example.invalid/first.jpg\",\n  \"last_frame\": \"https://media.example.invalid/last.jpg\",\n  \"reference_images\": [\n    \"https://media.example.invalid/ref1.jpg\",\n    \"https://media.example.invalid/ref2.jpg\"\n  ],\n  \"output_storage_uri\": \"https://storage.example.invalid/signed-put-url\",\n  \"keyframes\": [\n    {\n      \"image\": {\n        \"url\": \"https://media.example.invalid/key.jpg\"\n      },\n      \"timestamp_s\": 2\n    }\n  ],\n  \"reference_audios\": [\n    {\n      \"voice_id\": \"eve\"\n    }\n  ],\n  \"storage_options\": {\n    \"filename\": \"boat.mp4\",\n    \"expires_after\": 86400\n  },\n  \"user\": \"user-123\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create returns a queued task object scoped to the provider', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.eql('xai-fixture-done:xai');",
+              "  pm.expect(j.status, pm.response.text()).to.eql('queued');",
+              "  pm.expect(j.object, pm.response.text()).to.eql('video');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.3 xai video create reached the vendor with xAI's own fields and the extra fields unchanged (xai media contract)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "http://127.0.0.1:8791/__wire"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls;",
+              "function on(path, method) { return calls.filter(function (c) { return c.path === path && (c.method || 'POST') === (method || 'POST'); }); }",
+              "pm.test('the unified fields were converted and the extra fields merged, with no extra-params header', function () {",
+              "  var creates = on('/pp/xai/v1/videos/generations');",
+              "  pm.expect(creates.length, JSON.stringify(calls)).to.eql(1);",
+              "  var b = JSON.parse(creates[0].body);",
+              "  pm.expect(b.model, creates[0].body).to.eql('grok-imagine-video-1.5');",
+              "  pm.expect(b.prompt, creates[0].body).to.eql('a paper boat on a pond');",
+              "  pm.expect(b.duration, creates[0].body).to.eql(8);",
+              "  pm.expect(b.aspect_ratio, creates[0].body).to.eql('16:9');",
+              "  pm.expect(b.resolution, creates[0].body).to.eql('720p');",
+              "  pm.expect(b.image, creates[0].body).to.eql({ url: 'https://media.example.invalid/first.jpg' });",
+              "  pm.expect(b.last_frame, creates[0].body).to.eql({ url: 'https://media.example.invalid/last.jpg' });",
+              "  pm.expect(b.reference_images, creates[0].body).to.eql([{ url: 'https://media.example.invalid/ref1.jpg' }, { url: 'https://media.example.invalid/ref2.jpg' }]);",
+              "  pm.expect(b.output, creates[0].body).to.eql({ upload_url: 'https://storage.example.invalid/signed-put-url' });",
+              "  pm.expect(b.keyframes, creates[0].body).to.eql([{ image: { url: 'https://media.example.invalid/key.jpg' }, timestamp_s: 2 }]);",
+              "  pm.expect(b.reference_audios, creates[0].body).to.eql([{ voice_id: 'eve' }]);",
+              "  pm.expect(b.storage_options, creates[0].body).to.eql({ filename: 'boat.mp4', expires_after: 86400 });",
+              "  pm.expect(b.user, creates[0].body).to.eql('user-123');",
+              "  ['seconds', 'input_reference', 'output_storage_uri', 'size'].forEach(function (k) {",
+              "    pm.expect(b, k + ' must not reach xAI under its unified name: ' + creates[0].body).to.not.have.property(k);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.4 [EXPECT-400] xai/grok-imagine-video-1.5 POST /v1/videos refuses the task control field callback_url, which cannot reach xAI (xai media contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-imagine-video-1.5\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"callback_url\": \"https://hooks.example.test/v/task_1\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('callback_url is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('callback_url');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.5 [EXPECT-400] xai/grok-imagine-video-1.5 POST /v1/videos refuses the task control field client_reference_id, which cannot reach xAI (xai media contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-imagine-video-1.5\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"client_reference_id\": \"task_1\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('client_reference_id is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('client_reference_id');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.6 [EXPECT-400] xai/grok-imagine-video-1.5 POST /v1/videos refuses the task control field expires_after_seconds, which cannot reach xAI (xai media contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-imagine-video-1.5\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"expires_after_seconds\": 600\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('expires_after_seconds is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('expires_after_seconds');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.7 [EXPECT-400] xai/grok-imagine-video-1.5 POST /v1/videos refuses a size that is not one of xAI's ratios at one of its tiers (xai media contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-imagine-video-1.5\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"size\": \"1000x700\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('size is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('size');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.8 [EXPECT-400] xai/grok-imagine-video-1.5 POST /v1/videos refuses a fractional seconds instead of rounding it (xai media contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-imagine-video-1.5\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"seconds\": \"5.5\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('seconds is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('seconds');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.9 [EXPECT-400] xai POST /v1/videos/{id}/cancel is provider_cancel_unsupported: xAI has no cancel API (xai media contract)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/xai-fixture-done:xai/cancel",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "xai-fixture-done:xai",
+            "cancel"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the cancel is refused as provider_cancel_unsupported', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_cancel_unsupported');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.10 [EXPECT-403] xai/xai-video-policy POST /v1/videos keeps a usage-policy refusal's status and body as caller_content_filtered (xai media contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-response",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/xai-video-policy\",\n  \"prompt\": \"blocked\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the refusal is caller_content_filtered with the vendor status, code and body', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(403);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_content_filtered');",
+              "  pm.expect(j.error && j.error.code, pm.response.text()).to.eql('content_policy_violation');",
+              "  pm.expect(j.extra_fields.raw_response, 'raw_response: ' + pm.response.text()).to.eql({ code: 'content_policy_violation', error: 'The prompt violates the usage policy.' });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.11 xai GET /v1/videos/{id} returns the task object: provider_status, usage with vendor_cost in usd_ticks, a url artifact (xai media contract)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/xai-fixture-done:xai",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "xai-fixture-done:xai"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the finished task carries the vendor status word, its usage and its public link', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.eql('xai-fixture-done:xai');",
+              "  pm.expect(j.status, pm.response.text()).to.eql('completed');",
+              "  pm.expect(j.provider_status, pm.response.text()).to.eql('done');",
+              "  pm.expect(j.usage.output_tokens, pm.response.text()).to.eql(4800);",
+              "  pm.expect(j.usage.output_seconds, pm.response.text()).to.eql(6);",
+              "  pm.expect(j.usage.vendor_cost, pm.response.text()).to.eql({ amount: 3000000000, unit: 'usd_ticks' });",
+              "  pm.expect(j.videos, pm.response.text()).to.have.length(1);",
+              "  pm.expect(j.videos[0].type, pm.response.text()).to.eql('url');",
+              "  pm.expect(j.videos[0].url, pm.response.text()).to.match(/xai-video-xai-fixture-done\\.mp4$/);",
+              "  pm.expect(j.videos[0].content_type, pm.response.text()).to.eql('video/mp4');",
+              "  pm.expect(j, 'no content_filter on a delivered video: ' + pm.response.text()).to.not.have.property('content_filter');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.12 xai GET /v1/videos/{id} reports a pending task as in_progress with xAI's status word (xai media contract)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/xai-fixture-pending:xai",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "xai-fixture-pending:xai"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('pending is in_progress, with no usage and no artifact invented', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.status, pm.response.text()).to.eql('in_progress');",
+              "  pm.expect(j.provider_status, pm.response.text()).to.eql('pending');",
+              "  pm.expect(j, pm.response.text()).to.not.have.property('usage');",
+              "  pm.expect(j, pm.response.text()).to.not.have.property('videos');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.13 xai GET /v1/videos/{id} reports a moderated task (respect_moderation false) as failed with content_filter (xai media contract)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/xai-fixture-moderated:xai",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "xai-fixture-moderated:xai"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a withheld video is failed with content_filter, the vendor status word and the usage xAI billed', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.status, pm.response.text()).to.eql('failed');",
+              "  pm.expect(j.provider_status, pm.response.text()).to.eql('done');",
+              "  pm.expect(j.content_filter, pm.response.text()).to.eql({ filtered_count: 1, reasons: ['respect_moderation'] });",
+              "  pm.expect(j, pm.response.text()).to.not.have.property('videos');",
+              "  pm.expect(j.usage.vendor_cost, pm.response.text()).to.eql({ amount: 3000000000, unit: 'usd_ticks' });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.14 [EXPECT-502] xai/xai-video-drop POST /v1/videos fails when the upstream connection dies after the request was read (xai media contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/xai-video-drop\",\n  \"prompt\": \"a paper boat on a pond\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a create whose connection died is a vendor failure, not a task', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(502);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.is_bifrost_error, pm.response.text()).to.eql(false);",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_connection_failed');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.15 xai video creates reached the vendor exactly once each, the dropped one included, and no refused request did (xai media contract)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "http://127.0.0.1:8791/__wire"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls;",
+              "function on(path, method) { return calls.filter(function (c) { return c.path === path && (c.method || 'POST') === (method || 'POST'); }); }",
+              "pm.test('one create per accepted request: the dropped create was not resent, the six refused requests made no call', function () {",
+              "  var models = on('/pp/xai/v1/videos/generations').map(function (c) { return JSON.parse(c.body).model; });",
+              "  pm.expect(models, JSON.stringify(calls)).to.eql(['grok-imagine-video-1.5', 'xai-video-policy', 'xai-video-drop']);",
+              "});",
+              "pm.test('each query reached the vendor once', function () {",
+              "  var queries = calls.filter(function (c) { return c.method === 'GET'; }).map(function (c) { return c.path; });",
+              "  pm.expect(queries, JSON.stringify(calls)).to.eql(['/pp/xai/v1/videos/xai-fixture-done', '/pp/xai/v1/videos/xai-fixture-pending', '/pp/xai/v1/videos/xai-fixture-moderated']);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.16 xai/grok-voice-tts POST /v1/audio/speech returns xAI's audio bytes with their own Content-Type (xai media contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-voice-tts\",\n  \"input\": \"Hello from xAI through Bifrost.\",\n  \"voice\": \"ara\",\n  \"response_format\": \"mp3\",\n  \"speed\": 1.2,\n  \"language_code\": \"en\",\n  \"sample_rate\": 44100,\n  \"bit_rate\": 192000,\n  \"text_normalization\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('audio bytes with the vendor Content-Type and no invented audio_seconds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.headers.get('Content-Type'), 'content type').to.eql('audio/mpeg');",
+              "  var bytes = pm.response.stream;",
+              "  pm.expect(String.fromCharCode(bytes[0], bytes[1], bytes[2]), 'body is not the vendor audio').to.eql('ID3');",
+              "  var usage = JSON.parse(pm.response.headers.get('x-bifrost-usage') || '{}');",
+              "  pm.expect(usage, 'xAI reports no duration with plain audio: ' + JSON.stringify(usage)).to.not.have.property('audio_seconds');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.17 xai/grok-voice-tts POST /v1/audio/speech with_timestamps decodes xAI's envelope to bytes and reports audio_seconds (xai media contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-voice-tts\",\n  \"input\": \"Hi\",\n  \"voice\": \"eve\",\n  \"with_timestamps\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the base64 audio is returned as bytes and the vendor duration is usage.audio_seconds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.headers.get('Content-Type'), 'content type').to.eql('audio/mpeg');",
+              "  var bytes = pm.response.stream;",
+              "  pm.expect(String.fromCharCode(bytes[0], bytes[1], bytes[2]), 'body is not the decoded audio').to.eql('ID3');",
+              "  var raw = pm.response.headers.get('x-bifrost-usage');",
+              "  pm.expect(raw, 'no x-bifrost-usage header; headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.a('string').and.not.empty;",
+              "  pm.expect(JSON.parse(raw).audio_seconds, raw).to.eql(3);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.18 [EXPECT-400] xai/grok-voice-tts POST /v1/audio/speech refuses instructions, which /v1/tts cannot take (xai media contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-voice-tts\",\n  \"input\": \"Hi\",\n  \"voice\": \"eve\",\n  \"instructions\": \"speak slowly\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('instructions is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('instructions');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.19 [EXPECT-400] xai/grok-voice-tts POST /v1/audio/speech refuses a response_format xAI does not produce (xai media contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-voice-tts\",\n  \"input\": \"Hi\",\n  \"voice\": \"eve\",\n  \"response_format\": \"opus\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('response_format is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('response_format');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.20 xai speech reached /v1/tts with xAI's own fields and only for the accepted requests (xai media contract)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "http://127.0.0.1:8791/__wire"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls;",
+              "function on(path, method) { return calls.filter(function (c) { return c.path === path && (c.method || 'POST') === (method || 'POST'); }); }",
+              "pm.test('two requests reached /v1/tts; the refused ones made no call', function () {",
+              "  var tts = on('/pp/xai/v1/tts');",
+              "  pm.expect(tts.length, JSON.stringify(calls)).to.eql(2);",
+              "  var first = JSON.parse(tts[0].body);",
+              "  pm.expect(first, tts[0].body).to.eql({ text: 'Hello from xAI through Bifrost.', voice_id: 'ara', language: 'en', output_format: { codec: 'mp3', sample_rate: 44100, bit_rate: 192000 }, speed: 1.2, text_normalization: true });",
+              "  var second = JSON.parse(tts[1].body);",
+              "  pm.expect(second, tts[1].body).to.eql({ text: 'Hi', voice_id: 'eve', language: 'auto', with_timestamps: true });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.21 xai/grok-voice-transcribe-2.0 POST /v1/audio/transcriptions returns duration usage and words (xai media contract)",
+      "request": {
+        "method": "POST",
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "xai/grok-voice-transcribe-2.0",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.txt",
+              "type": "file"
+            },
+            {
+              "key": "language",
+              "value": "en",
+              "type": "text"
+            },
+            {
+              "key": "keyterm",
+              "value": "Tokun",
+              "type": "text"
+            },
+            {
+              "key": "keyterm",
+              "value": "Bifrost",
+              "type": "text"
+            },
+            {
+              "key": "diarize",
+              "value": "true",
+              "type": "text"
+            },
+            {
+              "key": "multichannel",
+              "value": "true",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the vendor duration is usage{type: duration, seconds} and words carry their speaker', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.text, pm.response.text()).to.eql('The balance is $167,983.15.');",
+              "  pm.expect(j.usage, pm.response.text()).to.eql({ type: 'duration', seconds: 8.4 });",
+              "  pm.expect(j.words, pm.response.text()).to.eql([{ word: 'The', start: 0, end: 0.24, speaker: '0' }, { word: 'balance', start: 0.24, end: 0.64, speaker: '1' }]);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.22 xai/grok-voice-transcribe-2.0 POST /v1/audio/transcriptions takes an audio url in place of the file (xai media contract)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-send-back-raw-response",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "xai/grok-voice-transcribe-2.0",
+              "type": "text"
+            },
+            {
+              "key": "url",
+              "value": "https://media.example.invalid/call.mp3",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a url-only request is transcribed and the raw body is returned', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.usage, pm.response.text()).to.eql({ type: 'duration', seconds: 8.4 });",
+              "  pm.expect(j.extra_fields.raw_response.channels, pm.response.text()).to.eql([{ index: 0, language: 'en', text: 'The balance is $167,983.15.' }]);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.23 [EXPECT-400] xai/grok-voice-transcribe-2.0 POST /v1/audio/transcriptions refuses response_format, which /v1/stt cannot take (xai media contract)",
+      "request": {
+        "method": "POST",
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "xai/grok-voice-transcribe-2.0",
+              "type": "text"
+            },
+            {
+              "key": "response_format",
+              "value": "verbose_json",
+              "type": "text"
+            },
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.txt",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('response_format is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('response_format');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.24 xai transcriptions reached /v1/stt with file as the last form field and the extra fields unchanged (xai media contract)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "http://127.0.0.1:8791/__wire"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls;",
+              "function on(path, method) { return calls.filter(function (c) { return c.path === path && (c.method || 'POST') === (method || 'POST'); }); }",
+              "function fields(body) { var names = [], re = /; name=\"([^\"]+)\"/g, m; while ((m = re.exec(body)) !== null) { names.push(m[1]); } return names; }",
+              "pm.test('file is written last, a repeated field once per value, a url goes as url with no file', function () {",
+              "  var stt = on('/pp/xai/v1/stt');",
+              "  pm.expect(stt.length, JSON.stringify(calls.map(function (c) { return c.path; }))).to.eql(2);",
+              "  pm.expect(fields(stt[0].body), stt[0].body).to.eql(['model', 'language', 'diarize', 'keyterm', 'keyterm', 'multichannel', 'file']);",
+              "  pm.expect(stt[0].body, stt[0].body).to.match(/name=\"model\"\\r\\n\\r\\ngrok-voice-transcribe-2\\.0\\r\\n/);",
+              "  pm.expect(stt[0].body, stt[0].body).to.match(/name=\"keyterm\"\\r\\n\\r\\nTokun\\r\\n[\\s\\S]*name=\"keyterm\"\\r\\n\\r\\nBifrost\\r\\n/);",
+              "  pm.expect(fields(stt[1].body), stt[1].body).to.eql(['model', 'url']);",
+              "  pm.expect(stt[1].body, stt[1].body).to.match(/name=\"url\"\\r\\n\\r\\nhttps:\\/\\/media\\.example\\.invalid\\/call\\.mp3\\r\\n/);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.25 xai_media_proxy GET /v1/videos/{id}/content downloads the finished video from the public link xAI gave (xai media contract)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/xai-fixture-download:xai_media_proxy/content",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "xai-fixture-download:xai_media_proxy",
+            "content"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the video bytes are returned as video/mp4', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.headers.get('Content-Type'), 'content type').to.eql('video/mp4');",
+              "  pm.expect(pm.response.text(), 'body is not the video the link serves').to.include('FIXTURE-MP4');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.26 [EXPECT-400] xai_media_proxy GET /v1/videos/{id}/content?variant=thumbnail is refused: xAI produces only the video (xai media contract)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/xai-fixture-download:xai_media_proxy/content?variant=thumbnail",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "xai-fixture-download:xai_media_proxy",
+            "content"
+          ],
+          "query": [
+            {
+              "key": "variant",
+              "value": "thumbnail"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('variant is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('variant');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.27 [EXPECT-400] xai GET /v1/videos/{id}/content of a pending task is a 400, not a Bifrost fault (xai media contract)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/xai-fixture-pending:xai/content",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "xai-fixture-pending:xai",
+            "content"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a task with nothing to download yet answers 400 naming its status', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.error && j.error.message, pm.response.text()).to.include('video not ready, current status: in_progress');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "415.28 xai video download queried the task once and fetched the link once without credentials (xai media contract)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "http://127.0.0.1:8791/__wire"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls;",
+              "function on(path, method) { return calls.filter(function (c) { return c.path === path && (c.method || 'POST') === (method || 'POST'); }); }",
+              "pm.test('one task query and one fetch of the link, with no Authorization header; the refused variant made no call', function () {",
+              "  pm.expect(on('/pp/xai/v1/videos/xai-fixture-download', 'GET').length, JSON.stringify(calls.map(function (c) { return (c.method || 'POST') + ' ' + c.path; }))).to.eql(1);",
+              "  var fetched = on('/xai-video-xai-fixture-download.mp4', 'GET');",
+              "  pm.expect(fetched.length, JSON.stringify(calls.map(function (c) { return (c.method || 'POST') + ' ' + c.path; }))).to.eql(1);",
+              "  pm.expect(fetched[0].authorization, 'the link is public: the xAI key must not be sent to it').to.eql(false);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

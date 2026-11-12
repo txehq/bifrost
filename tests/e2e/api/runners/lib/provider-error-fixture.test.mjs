@@ -793,3 +793,86 @@ test("Kling routes answer the task object, keep the wire and count requests per 
   await fetch(`${base}/__reset`, { method: "POST" });
   assert.deepEqual((await (await fetch(`${base}/__kling-calls`)).json()).data[0].calls, []);
 });
+
+// Folder 415 (TXE-6429): xAI's video, text to speech and speech to text endpoints under /pp/xai. Every
+// call is a /__wire row, and a create for xai-video-drop loses its connection without a response byte.
+test("xAI video, tts and stt endpoints answer in xAI's shapes and record the wire", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}`;
+  await fetch(`${base}/__reset`, { method: "POST" });
+  const created = await post({ model: "grok-imagine-video-1.5", prompt: "a clip" }, "/pp/xai/v1/videos/generations");
+  assert.deepEqual(await created.json(), { request_id: "xai-fixture-done" });
+  const refused = await post({ model: "xai-video-policy", prompt: "blocked" }, "/pp/xai/v1/videos/generations");
+  assert.equal(refused.status, 403);
+  assert.equal((await refused.json()).code, "content_policy_violation");
+  await assert.rejects(
+    fetch(`${base}/pp/xai/v1/videos/generations`, { method: "POST", body: JSON.stringify({ model: "xai-video-drop" }) }),
+    "a dropped create must fail at the connection, not answer",
+  );
+  const done = await (await fetch(`${base}/pp/xai/v1/videos/xai-fixture-done`)).json();
+  assert.equal(done.status, "done");
+  assert.equal(done.video.respect_moderation, true);
+  assert.equal(done.usage.cost_in_usd_ticks, 3000000000);
+  const moderated = await (await fetch(`${base}/pp/xai/v1/videos/xai-fixture-moderated`)).json();
+  assert.deepEqual(moderated.video, { url: "", duration: 6, respect_moderation: false });
+  assert.equal((await (await fetch(`${base}/pp/xai/v1/videos/xai-fixture-pending`)).json()).status, "pending");
+
+  // A proxied fetch of the downloadable link (an absolute-URI request line) is answered with the video.
+  const download = await (await fetch(`${base}/pp/xai/v1/videos/xai-fixture-download`)).json();
+  assert.equal(download.video.url, "http://203.0.113.10/xai-video-xai-fixture-download.mp4");
+  const proxied = await new Promise((resolve, reject) => {
+    const socket = net.connect(post.port, "127.0.0.1", () => {
+      socket.write(`GET ${download.video.url} HTTP/1.1\r\nHost: 203.0.113.10\r\nConnection: close\r\n\r\n`);
+    });
+    let data = "";
+    socket.on("data", (c) => (data += c));
+    socket.on("end", () => resolve(data));
+    socket.on("error", reject);
+  });
+  assert.match(proxied, /^HTTP\/1\.1 200 /);
+  assert.match(proxied, /content-type: video\/mp4/i);
+  assert.ok(proxied.includes("FIXTURE-MP4"));
+  // A client that tunnels sends CONNECT first; the request inside the tunnel is served the same way.
+  const tunnelled = await new Promise((resolve, reject) => {
+    const socket = net.connect(post.port, "127.0.0.1", () => socket.write("CONNECT 203.0.113.10:80 HTTP/1.1\r\nHost: 203.0.113.10:80\r\n\r\n"));
+    let data = "";
+    let sent = false;
+    socket.on("data", (c) => {
+      data += c;
+      if (!sent && data.includes("\r\n\r\n")) {
+        sent = true;
+        socket.write("GET /xai-video-xai-fixture-download.mp4 HTTP/1.1\r\nHost: 203.0.113.10\r\nConnection: close\r\n\r\n");
+      }
+    });
+    socket.on("end", () => resolve(data));
+    socket.on("error", reject);
+  });
+  assert.match(tunnelled, /^HTTP\/1\.1 200 Connection Established/);
+  assert.ok(tunnelled.includes("FIXTURE-MP4"));
+
+  const audio = await post({ text: "Hi", language: "auto" }, "/pp/xai/v1/tts");
+  assert.equal(audio.headers.get("content-type"), "audio/mpeg");
+  assert.ok((await audio.text()).startsWith("ID3"));
+  const envelope = await (await post({ text: "Hi", language: "auto", with_timestamps: true }, "/pp/xai/v1/tts")).json();
+  assert.equal(envelope.duration, 2.6);
+  assert.ok(Buffer.from(envelope.audio, "base64").toString().startsWith("ID3"));
+  const transcript = await (await fetch(`${base}/pp/xai/v1/stt`, { method: "POST", body: "a multipart form" })).json();
+  assert.equal(transcript.duration, 8.4);
+  assert.equal(transcript.words[1].speaker, 1);
+
+  const calls = (await (await fetch(`${base}/__wire`)).json()).data[0].calls;
+  assert.deepEqual(calls.map((c) => `${c.method || "POST"} ${c.path}`), [
+    "POST /pp/xai/v1/videos/generations",
+    "POST /pp/xai/v1/videos/generations",
+    "POST /pp/xai/v1/videos/generations",
+    "GET /pp/xai/v1/videos/xai-fixture-done",
+    "GET /pp/xai/v1/videos/xai-fixture-moderated",
+    "GET /pp/xai/v1/videos/xai-fixture-pending",
+    "GET /pp/xai/v1/videos/xai-fixture-download",
+    "GET /xai-video-xai-fixture-download.mp4",
+    "GET /xai-video-xai-fixture-download.mp4",
+    "POST /pp/xai/v1/tts",
+    "POST /pp/xai/v1/tts",
+    "POST /pp/xai/v1/stt",
+  ]);
+});

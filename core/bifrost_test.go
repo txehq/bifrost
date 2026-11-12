@@ -9615,6 +9615,154 @@ func BenchmarkRequestIsWriteOnce(b *testing.B) {
 	}
 }
 
+// TXE-6429 (contract C3, C7 recovery method 5): a request that must reach the vendor at most
+// once and got no response is not sent again by core, whatever max_retries says. The vendor may
+// have it, and a second copy is a second billed task whose first id is lost.
+func TestWriteOnceRequestIsNotRetriedAfterNoResponse(t *testing.T) {
+	// Through the real path: the xai provider, three retries configured, an upstream that reads
+	// the create and drops the connection without a response byte.
+	t.Run("xai video create through Bifrost with max_retries 3", func(t *testing.T) {
+		var creates, chats atomic.Int64
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			// A chat request is answered, with an error core retries.
+			if r.URL.Path == "/v1/chat/completions" {
+				chats.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = io.WriteString(w, `{"error":{"message":"overloaded","type":"server_error"}}`)
+				return
+			}
+			if r.Method == http.MethodPost && r.URL.Path == "/v1/videos/generations" {
+				creates.Add(1)
+			}
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				_ = conn.Close()
+			}
+		}))
+		t.Cleanup(server.Close)
+
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.XAI, 1, 4, server.URL)
+		account.SetKeysForProvider(schemas.XAI, []schemas.Key{
+			{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("xai-test"), Weight: 1, Models: schemas.WhiteList{"*"}},
+		})
+		cfg, err := account.GetConfigForProvider(schemas.XAI)
+		if err != nil {
+			t.Fatalf("GetConfigForProvider: %v", err)
+		}
+		if cfg.NetworkConfig.MaxRetries < 1 {
+			t.Fatalf("the test needs retries enabled, got max_retries %d", cfg.NetworkConfig.MaxRetries)
+		}
+		cfg.NetworkConfig.RetryBackoffInitial = time.Millisecond
+		cfg.NetworkConfig.RetryBackoffMax = 5 * time.Millisecond
+		client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+		if initErr != nil {
+			t.Fatalf("Init failed: %v", initErr)
+		}
+		t.Cleanup(client.Shutdown)
+
+		ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		resp, bifrostErr := client.VideoGenerationRequest(ctx, &schemas.BifrostVideoGenerationRequest{
+			Provider: schemas.XAI, Model: "grok-imagine-video", Input: &schemas.VideoGenerationInput{Prompt: "a dog"},
+			// A fallback the caller named: it must not run either, so the count below
+			// stays at one create.
+			Fallbacks: []schemas.Fallback{{Provider: schemas.XAI, Model: "grok-imagine-video-fallback"}},
+		})
+		if resp != nil || bifrostErr == nil {
+			t.Fatalf("resp/err = %v/%v, want the connection failure", resp, bifrostErr)
+		}
+		if bifrostErr.IsBifrostError {
+			t.Fatalf("the upstream connection failed, not Bifrost: %+v", bifrostErr.Error)
+		}
+		if got := creates.Load(); got != 1 {
+			t.Fatalf("xAI read the create %d times, want exactly 1 (error: %s)", got, bifrostErr.GetErrorString())
+		}
+
+		// The mark belongs to that failure. The next request on the same context, a chat
+		// request, keeps its retries: the mark is on the error, so nothing is left on the
+		// context for a later or a concurrent request to inherit or to clear.
+		_, bifrostErr = client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+			Provider: schemas.XAI, Model: "grok-4.5",
+			Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		})
+		if bifrostErr == nil {
+			t.Fatal("the chat request was answered 503, want an error")
+		}
+		if got, want := chats.Load(), int64(cfg.NetworkConfig.MaxRetries+1); got != want {
+			t.Fatalf("the chat request after the failed create was sent %d times, want %d (max_retries %d): the earlier request's mark was still on the context", got, want, cfg.NetworkConfig.MaxRetries)
+		}
+	})
+
+	// The rule itself, on the retry loop: the same transient error is retried without the mark
+	// and not retried with it.
+	for name, tc := range map[string]struct {
+		mark      bool
+		wantCalls int
+	}{
+		"a transient failure is retried":            {mark: false, wantCalls: 3},
+		"a write-once send with no response is not": {mark: true, wantCalls: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := createTestConfig(2, time.Millisecond, 5*time.Millisecond)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+			calls := 0
+			handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+				calls++
+				bifrostErr := providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, io.ErrUnexpectedEOF)
+				if tc.mark {
+					providerUtils.MarkUpstreamWriteUnknown(bifrostErr)
+				}
+				return "", bifrostErr
+			}
+			_, bifrostErr := executeRequestWithRetries(ctx, config, handler, nil, schemas.VideoGenerationRequest, schemas.XAI, "grok-imagine-video", nil, NewDefaultLogger(schemas.LogLevelError))
+			if bifrostErr == nil {
+				t.Fatal("expected the connection failure")
+			}
+			if calls != tc.wantCalls {
+				t.Fatalf("the provider was called %d times, want %d", calls, tc.wantCalls)
+			}
+		})
+	}
+
+	// A fallback would submit the task to another provider while the first may be running.
+	t.Run("no fallback runs", func(t *testing.T) {
+		client := &Bifrost{logger: NewNoOpLogger()}
+		req := &schemas.BifrostRequest{
+			RequestType: schemas.VideoGenerationRequest,
+			VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{
+				Provider: schemas.XAI, Model: "grok-imagine-video", Input: &schemas.VideoGenerationInput{Prompt: "a dog"},
+				Fallbacks: []schemas.Fallback{{Provider: schemas.OpenAI, Model: "sora-2"}},
+			},
+		}
+		primaryErr := providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, io.ErrUnexpectedEOF)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if !client.shouldTryFallbacks(ctx, req, primaryErr) {
+			t.Fatal("a plain connection failure must still try the caller's fallback")
+		}
+		marked := providerUtils.MarkUpstreamWriteUnknown(providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, io.ErrUnexpectedEOF))
+		if client.shouldTryFallbacks(ctx, req, marked) {
+			t.Fatal("a write-once request with no response must not be sent to a fallback")
+		}
+		// The mark is the error's: the same context still lets an unmarked failure fall back.
+		if !client.shouldTryFallbacks(ctx, req, primaryErr) {
+			t.Fatal("an unmarked failure on the same context must still try the fallback")
+		}
+	})
+}
+
+// BenchmarkUpstreamWriteUnknown measures the check every failed attempt pays before a retry or
+// a fallback is considered.
+func BenchmarkUpstreamWriteUnknown(b *testing.B) {
+	bifrostErr := providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, io.ErrUnexpectedEOF)
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = upstreamWriteUnknown(bifrostErr)
+	}
+}
+
 // BenchmarkInjectedToolsRan measures the check a failed attempt pays before a fallback.
 func BenchmarkInjectedToolsRan(b *testing.B) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)

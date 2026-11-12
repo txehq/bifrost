@@ -881,6 +881,58 @@ const storageAnswer = (path, body) => {
 	return { status: 404, body: JSON.stringify({ error: { message: `no storage fixture route for ${path}` } }) };
 };
 
+// xAI's video, text to speech and speech to text endpoints (folder 415, TXE-6429), under the xai provider's
+// base /pp/xai, so every call is a /__wire row. A create answers a request id; the model xai-video-policy
+// is refused as a usage-policy block under a 403, and xai-video-drop is read in full and then the socket is
+// destroyed without a response byte: the failing upstream of a task create that must be written only once.
+const xaiVideoCreateAnswer = (body) => {
+	if (body.model === "xai-video-drop") return { drop: true };
+	if (body.model === "xai-video-policy") return { status: 403, body: JSON.stringify({ code: "content_policy_violation", error: "The prompt violates the usage policy." }) };
+	return { status: 200, body: JSON.stringify({ request_id: "xai-fixture-done" }) };
+};
+// GET /pp/xai/v1/videos/{request_id}: xai-fixture-pending is still generating, xai-fixture-moderated finished
+// with the video withheld (respect_moderation false, no link), anything else finished with a link and usage.
+// The link is under a reserved name: nothing fetches it.
+const xaiVideoTask = (id) => {
+	if (id === "xai-fixture-pending") return { status: "pending", progress: 42, model: "grok-imagine-video-1.5" };
+	const usage = { cost_in_usd_ticks: 3000000000, input_tokens: 12, output_tokens: 4800, total_tokens: 4812 };
+	if (id === "xai-fixture-moderated") {
+		return { status: "done", progress: 100, model: "grok-imagine-video-1.5", video: { url: "", duration: 6, respect_moderation: false }, usage };
+	}
+	// xai-fixture-download names a link the fixture itself serves, as a forward proxy (see XAI_MEDIA_HOST).
+	const url = id === "xai-fixture-download" ? `http://${XAI_MEDIA_HOST}/xai-video-${id}.mp4` : `https://vidgen.fixture.invalid/xai-video-${id}.mp4`;
+	return { status: "done", progress: 100, model: "grok-imagine-video-1.5", video: { url, duration: 6, respect_moderation: true }, usage };
+};
+// The host of a downloadable xAI video link. The gateway's media fetcher refuses loopback, so a link it can
+// fetch has to name a public address; this one is in TEST-NET-3 (RFC 5737), which is never routed. The
+// provider xai_media_proxy sends its traffic through this fixture as an HTTP forward proxy, so the fetch of
+// http://203.0.113.10/... arrives here as an absolute-URI request and is answered with FIXTURE_MP4.
+const XAI_MEDIA_HOST = "203.0.113.10";
+// POST /pp/xai/v1/tts: audio bytes, or the JSON envelope (base64 audio, duration, character timings) when
+// with_timestamps is true. The bytes start with an ID3 tag, as an MP3 file does.
+const XAI_FIXTURE_AUDIO = Buffer.from("ID3\u0004 FIXTURE-MP3 bytes served by provider-error-fixture");
+const xaiSpeechAnswer = (body) => {
+	if (body.with_timestamps === true) {
+		return {
+			status: 200,
+			body: JSON.stringify({
+				audio: XAI_FIXTURE_AUDIO.toString("base64"), content_type: "audio/mpeg", duration: 2.6,
+				audio_timestamps: { graph_chars: ["H", "i"], graph_times: [{ start: 0, end: 0.06 }, { start: 0.06, end: 0.12 }] },
+			}),
+		};
+	}
+	return { status: 200, headers: { "Content-Type": "audio/mpeg" }, body: XAI_FIXTURE_AUDIO };
+};
+// POST /pp/xai/v1/stt: the transcript of xAI's reference, with a speaker per word and one channel.
+const xaiTranscript = {
+	text: "The balance is $167,983.15.", language: "en", duration: 8.4,
+	words: [
+		{ text: "The", start: 0, end: 0.24, confidence: 0.33, speaker: 0 },
+		{ text: "balance", start: 0.24, end: 0.64, confidence: 0.67, speaker: 1 },
+	],
+	channels: [{ index: 0, language: "en", text: "The balance is $167,983.15." }],
+};
+
 const wireAnswer = (path, body, bytes) => {
 	if (isBedrockConversePath(path)) return bedrockConverseAnswer(path);
 	if (path.startsWith("/pp/storage/")) return storageAnswer(path, body);
@@ -970,6 +1022,9 @@ const wireAnswer = (path, body, bytes) => {
 	if (path === "/pp/gemini/interactions") return { status: 200, body: JSON.stringify(omniInteraction("omni-running", "")) };
 	const omniCancel = path.match(/^\/pp\/gemini\/interactions\/([^/]+)\/cancel$/);
 	if (omniCancel) return { status: 200, body: JSON.stringify({ ...omniInteraction(omniCancel[1], ""), status: "cancelled" }) };
+	if (path === "/pp/xai/v1/videos/generations") return xaiVideoCreateAnswer(body);
+	if (path === "/pp/xai/v1/tts") return xaiSpeechAnswer(body);
+	if (path === "/pp/xai/v1/stt") return { status: 200, body: JSON.stringify(xaiTranscript) };
 	if (path.endsWith(":predict")) return { status: 200, body: JSON.stringify(imagenPartiallyBlocked) };
 	const geminiAudio = geminiAudioAnswer(path);
 	if (geminiAudio) return geminiAudio;
@@ -1684,7 +1739,7 @@ const handleRequest = (req, res) => {
 				res.writeHead(answer.status, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
 				return res.end(answer.stream);
 			}
-			send(answer.status, {}, answer.body);
+			send(answer.status, answer.headers || {}, answer.body);
 		});
 		return undefined;
 	}
@@ -1704,6 +1759,22 @@ const handleRequest = (req, res) => {
 		req.on("data", (c) => body.push(c));
 		req.on("end", () => azureSpeechAnswer(req, res, path, Buffer.concat(body)));
 		return undefined;
+	}
+	// The xAI video link, fetched through this fixture as a forward proxy (see XAI_MEDIA_HOST). The row
+	// says whether the fetch carried credentials: the link is public and must get none.
+	const proxiedHost = /^http:\/\//.test(req.url) ? new URL(req.url).hostname : (req.headers.host || "").split(":")[0];
+	// Only the video's own path: the media tunnel joins other requests for this address to the
+	// fixture's ordinary routes (/__hits among them).
+	if (req.method === "GET" && proxiedHost === XAI_MEDIA_HOST && path.startsWith("/xai-video-")) {
+		wireCalls.push({ method: "GET", path, query: "", body: "", host: XAI_MEDIA_HOST, authorization: Boolean(req.headers.authorization) });
+		res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": FIXTURE_MP4.length });
+		return res.end(FIXTURE_MP4);
+	}
+	// An xAI video task query (folder 415, TXE-6429), recorded as a /__wire row with its method.
+	const xaiVideoQuery = path.match(/^\/pp\/xai\/v1\/videos\/([^/]+)$/);
+	if (req.method === "GET" && xaiVideoQuery) {
+		wireCalls.push({ method: "GET", path, query: "", body: "" });
+		return send(200, {}, JSON.stringify(xaiVideoTask(decodeURIComponent(xaiVideoQuery[1]))));
 	}
 	if (req.method === "POST" && path === "/__probe/stream-gaps") {
 		const body = [];
@@ -2183,6 +2254,15 @@ const handleRequest = (req, res) => {
 	});
 };
 const server = http.createServer(handleRequest);
+
+// The forward-proxy role (folder 415, TXE-6429). A client that tunnels answers to CONNECT host:port; the
+// tunnel ends here whatever host it names, so the requests inside it are served by this same server: one for
+// this fixture's own address is an ordinary request, one for XAI_MEDIA_HOST is the video link.
+server.on("connect", (req, socket, head) => {
+	socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+	if (head && head.length) socket.unshift(head);
+	server.emit("connection", socket);
+});
 
 const stallProxy = net.createServer((socket) => {
 	let seen = "";

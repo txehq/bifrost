@@ -26,13 +26,14 @@ xAI is an **OpenAI-compatible provider** powering the Grok family of models. Bif
 | Context Compaction | ✅ | - | `/v1/responses/compact` |
 | List Models | ✅ | - | `/v1/models` |
 | Embeddings | ❌ | ❌ | - |
-| Speech (TTS) | ❌ | ❌ | - |
-| Transcriptions (STT) | ❌ | ❌ | - |
+| Video Generation | ✅ | - | `/v1/videos/generations`, `/v1/videos/{request_id}` |
+| Speech (TTS) | ✅ | ❌ | `/v1/tts` |
+| Transcriptions (STT) | ✅ | ❌ | `/v1/stt` |
 | Files | ✅ | - | `/v1/files` |
 | Batch | ✅ | - | `/v1/batches` |
 
 <Note>
-**Unsupported Operations** (❌): Embeddings, Speech and Transcriptions are not supported by the upstream xAI API. These return `UnsupportedOperationError`.
+**Unsupported Operations** (❌): Embeddings return `UnsupportedOperationError`, as do streamed speech and streamed transcription.
 </Note>
 
 ## Setup & Configuration
@@ -255,13 +256,89 @@ curl -X POST http://localhost:8080/v1/batches \
 
 ---
 
+# 7. Video Generation
+
+xAI video generation is an asynchronous task: `POST /v1/videos` creates it, `GET /v1/videos/{id}` queries it, and `GET /v1/videos/{id}/content` downloads the finished video.
+
+**Request Parameters**
+
+| Bifrost field | xAI field | Notes |
+|---------------|-----------|-------|
+| `prompt` | `prompt` | |
+| `seconds` | `duration` | A whole number of seconds. A fractional value returns `400 caller_unsupported_parameter` |
+| `aspect_ratio` | `aspect_ratio` | Sent as given |
+| `resolution` | `resolution` | Sent as given (`480p`, `720p`, `1080p`) |
+| `size` | `aspect_ratio` + `resolution` | Only a `WIDTHxHEIGHT` that is exactly one of xAI's ratios at one of its tiers (`1280x720` is `16:9` at `720p`). Any other size returns `400 caller_unsupported_parameter` |
+| `input_reference` | `image.url` | First frame: a URL or a data URL, sent as given |
+| `last_frame` | `last_frame.url` | A URL or a data URL, sent as given |
+| `reference_images` | `reference_images[].url` | URLs or data URLs, sent as given |
+| `output_storage_uri` | `output.upload_url` | A presigned URL xAI uploads the video to |
+
+Fields outside this table (`keyframes`, `reference_audios`, `storage_options`, `user`, `generate_audio`, and any other xAI field) are merged into the request unchanged. `callback_url`, `client_reference_id`, `expires_after_seconds`, `audio` and `output_format` cannot reach xAI and return `400 caller_unsupported_parameter` without an upstream call.
+
+<Note>
+A video create is written to xAI **exactly once**, also when the connection fails. xAI cannot find a task again without its request id, so a repeated create would be a second billed task. A create that gets no response is not retried even when `network_config.max_retries` is above zero, and no fallback runs. It returns `502 provider_connection_failed`; whether xAI started the task is unknown. An xAI error response (4xx, 5xx) is an answer, so it follows the ordinary retry rules.
+</Note>
+
+**Task object**
+
+| xAI | Bifrost |
+|-----|---------|
+| `status` `pending`, `done`, `failed`, `expired` | `status` `in_progress`, `completed`, `failed`, `expired`; the xAI value is kept in `provider_status` |
+| `video.url` | `videos[0]` with `type: "url"`, a public link |
+| `video.duration` | `seconds` and `usage.output_seconds` |
+| `usage.output_tokens` | `usage.output_tokens` |
+| `usage.cost_in_usd_ticks` | `usage.vendor_cost` with `unit: "usd_ticks"` (1 USD = 10,000,000,000 ticks), and `usage.cost` in USD |
+| `video.respect_moderation: false` | `status: "failed"` with `content_filter: {filtered_count: 1, reasons: ["respect_moderation"]}`; `provider_status` stays `done` |
+| `error.code`, `error.message` | `error.code`, `error.message` |
+
+xAI states no lifetime for `video.url`, so `expires_at` is not set. `POST /v1/videos/{id}/cancel` returns `400 provider_cancel_unsupported`.
+
+---
+
+# 8. Speech (TTS)
+
+`POST /v1/audio/speech` calls xAI's `POST /v1/tts`.
+
+| Bifrost field | xAI field | Notes |
+|---------------|-----------|-------|
+| `input` | `text` | |
+| `voice` | `voice_id` | One voice; a multi-speaker voice list returns `400 caller_unsupported_parameter` |
+| `response_format` | `output_format.codec` | `mp3`, `wav`, `pcm`, `mulaw`, `alaw`; any other value returns `400 caller_unsupported_parameter` |
+| `sample_rate`, `bit_rate` (extra fields) | `output_format.sample_rate`, `output_format.bit_rate` | Whole numbers |
+| `language_code` | `language` | xAI requires it; `auto` is sent when it is absent |
+| `speed` | `speed` | Sent as given |
+| `with_timestamps` | `with_timestamps` | See below |
+
+Other extra fields (`text_normalization`, `replace`, and any other xAI field) are merged unchanged. `instructions` and the other unified speech fields xAI has no field for return `400 caller_unsupported_parameter` without an upstream call.
+
+The response is the audio bytes with xAI's `Content-Type`. With `with_timestamps: true` xAI answers a JSON envelope: Bifrost decodes its base64 audio and returns the bytes, reports its `duration` as `usage.audio_seconds` (whole seconds, in the `x-bifrost-usage` header), and puts the envelope without the audio in `extra_fields.raw_response`. Without `with_timestamps` xAI reports no duration, so `audio_seconds` is absent.
+
+---
+
+# 9. Transcription (STT)
+
+`POST /v1/audio/transcriptions` calls xAI's `POST /v1/stt` as a multipart form. `model` and `language` are written first, then every extra form field unchanged (`keyterm` once per value, `diarize`, `multichannel`, `format`, `audio_format`, `sample_rate` and the rest), and `file` last, because xAI may ignore a field that follows the file. A `url` field in place of `file` is sent to xAI as given; Bifrost does not download it.
+
+| xAI | Bifrost |
+|-----|---------|
+| `text`, `language` | `text`, `language` |
+| `duration` | `duration` and `usage: {type: "duration", seconds}` |
+| `words[].text`, `start`, `end`, `speaker` | `words[].word`, `start`, `end`, `speaker` |
+| `channels`, `words[].confidence` | In `extra_fields.raw_response` only |
+
+`response_format`, `timestamp_granularities` and the other unified transcription fields xAI has no field for return `400 caller_unsupported_parameter` without an upstream call.
+
+---
+
 ## Unsupported Features
 
 | Feature | Reason |
 |---------|--------|
 | Embedding | Not offered by xAI API |
-| Speech/TTS | Not offered by xAI API |
-| Transcription/STT | Not offered by xAI API |
+| Streamed speech, streamed transcription | xAI streams these over WebSocket only |
+| Video cancel, delete, list | xAI has no API for them; cancel returns `400 provider_cancel_unsupported` |
+| Large-payload passthrough for video, speech and transcription | Each request is converted to xAI's own fields, so it cannot be streamed through unparsed; returns `400` |
 | Batch delete | Not offered by xAI API (batches are kept until they expire) |
 
 ---

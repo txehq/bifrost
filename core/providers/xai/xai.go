@@ -19,6 +19,7 @@ type XAIProvider struct {
 	logger               schemas.Logger        // Logger for provider operations
 	client               *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
 	streamingClient      *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	createClient         *fasthttp.Client      // HTTP client for video task creates: writes a request at most once (providerUtils.BuildSingleAttemptClient)
 	networkConfig        schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest   bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse  bool                  // Whether to include raw response in BifrostResponse
@@ -57,6 +58,7 @@ func NewXAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*XAI
 		logger:               logger,
 		client:               client,
 		streamingClient:      streamingClient,
+		createClient:         providerUtils.BuildSingleAttemptClient(client),
 		networkConfig:        config.NetworkConfig,
 		sendBackRawRequest:   config.SendBackRawRequest,
 		sendBackRawResponse:  config.SendBackRawResponse,
@@ -306,11 +308,6 @@ func (provider *XAIProvider) Embedding(ctx *schemas.BifrostContext, key schemas.
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.EmbeddingRequest, provider.GetProviderKey())
 }
 
-// Speech is not supported by the xAI provider.
-func (provider *XAIProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechRequest, provider.GetProviderKey())
-}
-
 // Rerank is not supported by the XAI provider.
 func (provider *XAIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
@@ -331,11 +328,6 @@ func (provider *XAIProvider) SpeechStream(ctx *schemas.BifrostContext, postHookR
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
 }
 
-// Transcription is not supported by the xAI provider.
-func (provider *XAIProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionRequest, provider.GetProviderKey())
-}
-
 // TranscriptionStream is not supported by the xAI provider.
 func (provider *XAIProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
@@ -354,31 +346,6 @@ func (provider *XAIProvider) ImageEditStream(ctx *schemas.BifrostContext, postHo
 // ImageVariation is not supported by the XAI provider.
 func (provider *XAIProvider) ImageVariation(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
-}
-
-// VideoGeneration is not supported by the xAI provider.
-func (provider *XAIProvider) VideoGeneration(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoGenerationRequest, provider.GetProviderKey())
-}
-
-// VideoRetrieve is not supported by the xAI provider.
-func (provider *XAIProvider) VideoRetrieve(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRetrieveRequest, provider.GetProviderKey())
-}
-
-// VideoDownload is not supported by the xAI provider.
-func (provider *XAIProvider) VideoDownload(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoDownloadRequest, provider.GetProviderKey())
-}
-
-// VideoDelete is not supported by the xAI provider.
-func (provider *XAIProvider) VideoDelete(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoDeleteRequest) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoDeleteRequest, provider.GetProviderKey())
-}
-
-// VideoList is not supported by the xAI provider.
-func (provider *XAIProvider) VideoList(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
 }
 
 // VideoEdit is not supported by the XAI provider.

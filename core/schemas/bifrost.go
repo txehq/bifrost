@@ -2211,6 +2211,14 @@ type BifrostError struct {
 	AllowFallbacks *bool                   `json:"-"` // Optional: Controls fallback behavior (nil = true by default)
 	StreamControl  *StreamControl          `json:"-"` // Optional: Controls stream behavior
 	ExtraFields    BifrostErrorExtraFields `json:"extra_fields"`
+
+	// UpstreamWriteUnknown is set by a provider when a request that must reach the vendor at
+	// most once (a task create the vendor cannot find again) was sent and its outcome is
+	// unknown: no response came, or a 2xx whose answer cannot be used. Core neither retries
+	// such a request nor sends it to a fallback (fork, TXE-6429, contract C3 and C7). It is
+	// on the error, not on the context, so it belongs to the attempt that failed and to no
+	// other request sharing the context.
+	UpstreamWriteUnknown bool `json:"-"`
 }
 
 // PopulateExtraFields sets RequestType, Provider, OriginalModelRequested, and ResolvedModelUsed on the
