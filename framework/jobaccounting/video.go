@@ -82,15 +82,17 @@ var videoProviders = map[schemas.ModelProvider]struct{}{
 	// (usage.output_tokens) and the seconds, priced as on byteplus.
 	schemas.Volcengine: {},
 	schemas.ModelArk:   {},
+	// Fork: Azure (TXE-7054), both of its video APIs. Sora 2 task ids are video_…:azure and
+	// first-generation sora ids are sora1.<job id>:azure; the provider routes a retrieve by the id,
+	// and both terminal responses report seconds, size and one output per generation.
+	schemas.Azure: {},
 }
 
 // videoSettlementExemptions are the providers that implement video and are deliberately not
 // settled, each with the reason. TestVideoSettlerCoversEveryProviderThatImplementsVideo fails
 // for a provider that implements video and is in neither this map nor videoProviders
 // (fork, TXE-7118).
-var videoSettlementExemptions = map[schemas.ModelProvider]string{
-	schemas.Azure: "TXE-7054 adds azure: its two video APIs (Sora 2 and the first-generation jobs API) use different ids and dimensions, and settlement must also be reached from /content",
-}
+var videoSettlementExemptions = map[schemas.ModelProvider]string{}
 
 // renderedVideoHostPolicy is where a settled provider's rendered video may be fetched from to
 // measure it (fork, TXE-7386). The settler downloads a finished job's video to read its length,
@@ -130,6 +132,7 @@ var renderedVideoHosts = map[schemas.ModelProvider]renderedVideoHostPolicy{
 	schemas.DashScope:  {vendorGenerated: "DashScope answers with a URL for a video it stores"},
 	schemas.XAI:        {vendorGenerated: "xAI answers with a URL for a video it stores, and reports the cost itself"},
 	schemas.BFL:        {vendorGenerated: "BFL answers with a delivery URL for a video it stores"},
+	schemas.Azure:      {vendorGenerated: "both Azure video APIs serve the video from the resource's own content endpoint with the key's credentials (Sora 2 /videos/{id}/content, first-generation sora /video/generations/{id}/content/video), never from a URL in the response"},
 }
 
 // ProviderOriginResolver is implemented by a VideoRetriever that can say which origin
@@ -225,6 +228,7 @@ var unmeasuredVideoBoundSeconds = map[schemas.ModelProvider]int{
 	schemas.BFL:        30,
 	schemas.Volcengine: 30,
 	schemas.ModelArk:   30,
+	schemas.Azure:      30,
 }
 
 // unmeasuredBound is the provider's default bound for an unmeasurable rendered video, a custom
