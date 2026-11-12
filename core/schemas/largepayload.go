@@ -117,6 +117,7 @@ var largePayloadDeclarations = map[ModelProvider]largePayloadDeclaration{
 	Elevenlabs:     convertsBecause(largePayloadOwnAPI),
 	GoogleCloudTTS: convertsBecause(largePayloadOwnAPI),
 	HuggingFace:    convertsBecause(largePayloadOwnAPI),
+	Kling:          convertsBecause(largePayloadOwnAPI),
 	MiniMax:        convertsBecause(largePayloadOwnAPI),
 	Replicate:      convertsBecause(largePayloadOwnAPI),
 	Runware:        convertsBecause(largePayloadOwnAPI),
