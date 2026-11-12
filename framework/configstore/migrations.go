@@ -574,6 +574,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_client_config_fork_deployment_switch_columns"}, run: migrationAddClientConfigForkDeploymentSwitchColumns},
 	{IDs: []string{"add_client_config_disable_encrypted_reasoning_retry_column"}, run: migrationAddClientConfigDisableEncryptedReasoningRetryColumn},
 	{IDs: []string{"add_virtual_key_allowed_cloud_resource_columns"}, run: migrationAddVirtualKeyAllowedCloudResourceColumns},
+	{IDs: []string{"add_storage_prefix_indexes"}, run: migrationAddStoragePrefixIndexes},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16419,6 +16420,66 @@ func migrationAddVirtualKeyAllowedCloudResourceColumns(ctx context.Context, db *
 		return fmt.Errorf("error while running db migration: %s", err.Error())
 	}
 	return nil
+}
+
+// storagePrefixIndexes are the indexes the storage-folder ownership check reads through
+// (fork, TXE-7121): "does another key have a record under this folder" is a prefix lookup on
+// provider_objects.object_id and on the output and error files of batch_jobs
+// (HasForeignProviderObjectUnderPrefix, HasForeignProviderJobFileUnderPrefix). A prefix is
+// a range only in byte order, and Postgres orders text by the database's collation, so the
+// lookups compare under COLLATE "C" and these indexes are built on the same expression.
+var storagePrefixIndexes = []struct{ table, name, definition string }{
+	{"provider_objects", "idx_provider_objects_kind_object_id_bytes", `kind, object_id COLLATE "C"`},
+	{"batch_jobs", "idx_batch_jobs_output_file_id_bytes", `output_file_id COLLATE "C"`},
+	{"batch_jobs", "idx_batch_jobs_error_file_id_bytes", `error_file_id COLLATE "C"`},
+}
+
+// migrationAddStoragePrefixIndexes builds storagePrefixIndexes on Postgres, concurrently and
+// outside a transaction like the other index migrations. SQLite compares text in byte order
+// already, so the existing indexes on the same columns serve the lookups there and nothing
+// is built.
+func migrationAddStoragePrefixIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_storage_prefix_indexes"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, storagePrefixIndexesMigration(ctx, migrationName)); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// storagePrefixIndexesMigration builds the migration applied by
+// migrationAddStoragePrefixIndexes, so tests exercise its callbacks.
+func storagePrefixIndexesMigration(ctx context.Context, migrationName string) *migrator.Migration {
+	return &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+			for _, index := range storagePrefixIndexes {
+				if err := ensureIndexConcurrently(tx, index.table, index.name, index.definition, false); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+			for _, index := range storagePrefixIndexes {
+				if err := dropIndexConcurrently(tx, index.table, index.name); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
 }
 
 // migrationAddVirtualKeyMetadataColumn adds the nullable metadata column to
