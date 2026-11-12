@@ -492,10 +492,29 @@ func BenchmarkPreLLMHookCloudResourceAllowlists(b *testing.B) {
 		}}})
 	}
 	stored := "gs://shared-bucket/tenant-a/in/a.png"
+	// A native Gemini chat forwarded as its raw body (TXE-7230), 20 turns of text. "plain" never
+	// says "topics", so it is not decoded; "mentions_topics" says it in every turn, so it is
+	// decoded and walked; "topic_prompt" has a last turn that is exactly a topic name, which is
+	// conversation text and served (on main before TXE-7230 it was refused, so it has no before).
+	geminiBody := func(turn, last string) []byte {
+		contents := make([]string, 0, 20)
+		for i := 0; i < 19; i++ {
+			contents = append(contents, `{"role":"user","parts":[{"text":"`+turn+`"}]}`)
+		}
+		contents = append(contents, `{"role":"user","parts":[{"text":"`+last+`"}]}`)
+		return []byte(`{"contents":[` + strings.Join(contents, ",") + `],"generationConfig":{"temperature":0.2}}`)
+	}
+	rawChat := func(body []byte) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "m", Input: messages[:1], RawRequestBody: body}}
+	}
+	mentions := strings.Repeat("Two topics for the call. ", 40)
 	requests := map[string]*schemas.BifrostRequest{
 		"chat_web_images": {RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "m", Input: messages}},
 		"chat_stored_image": {RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "m", Input: []schemas.ChatMessage{{
 			Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: stored}}}}}}}},
+		"genai_raw_plain":           rawChat(geminiBody(text, text)),
+		"genai_raw_mentions_topics": rawChat(geminiBody(mentions, mentions)),
+		"genai_raw_topic_prompt":    rawChat(geminiBody(mentions, "projects/p/topics/tenant-b")),
 	}
 	keys := map[string][2][]string{
 		"no_lists":           {nil, nil},
@@ -508,15 +527,21 @@ func BenchmarkPreLLMHookCloudResourceAllowlists(b *testing.B) {
 		plugin := newAccessTestPlugin(b, vk, nil)
 		plugin.objectOwnershipEnforcedFn = func() bool { return false }
 		for reqName, req := range requests {
-			b.Run(keyName+"/"+reqName, func(b *testing.B) {
+			newCtx := func() *schemas.BifrostContext {
 				ctx := presentCtx(mcpTestVKValue)
-				if _, shortCircuit, err := plugin.PreLLMHook(ctx, req); err != nil || shortCircuit != nil {
+				if strings.HasPrefix(reqName, "genai_") {
+					ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "genai")
+				}
+				return ctx
+			}
+			b.Run(keyName+"/"+reqName, func(b *testing.B) {
+				if _, shortCircuit, err := plugin.PreLLMHook(newCtx(), req); err != nil || shortCircuit != nil {
 					b.Fatalf("the request is refused: %v %v", err, shortCircuit)
 				}
 				b.ReportAllocs()
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
-					_, _, _ = plugin.PreLLMHook(presentCtx(mcpTestVKValue), req)
+					_, _, _ = plugin.PreLLMHook(newCtx(), req)
 				}
 			})
 		}
