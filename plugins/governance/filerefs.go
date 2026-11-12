@@ -489,6 +489,20 @@ func isOpenType(rt reflect.Type) bool {
 	}
 }
 
+// rawBodyFieldNames are the typed byte fields that hold a request body forwarded to the
+// provider as it was received: the raw body a native route keeps beside the fields it parsed
+// (RawRequestBody), and a passthrough request's Body. What such a body names reaches the
+// provider whether or not a typed field repeats it (a native Vertex batch keeps only the first
+// input URI in its typed field and sends the body with all of them), so it is read like any
+// other untyped data. Every other byte field is content: an uploaded file, audio, an image.
+var rawBodyFieldNames = map[string]struct{}{"RawRequestBody": {}, "Body": {}}
+
+// isRawBodyField reports whether a struct field is a forwarded request body.
+func isRawBodyField(field reflect.StructField) bool {
+	_, named := rawBodyFieldNames[field.Name]
+	return named && field.Type.Kind() == reflect.Slice && field.Type.Elem().Kind() == reflect.Uint8
+}
+
 // isStringType reports whether a field holds a string, a pointer to one or a list of them.
 func isStringType(rt reflect.Type) bool {
 	for rt.Kind() == reflect.Pointer || rt.Kind() == reflect.Slice || rt.Kind() == reflect.Array {
@@ -527,6 +541,11 @@ func buildFileRefPlans(root reflect.Type) *fileRefPlan {
 			return kind, false
 		}
 		if _, ok := fileReferenceOpenFields[field.Name]; ok && isOpenType(field.Type) {
+			return 0, true
+		}
+		// A forwarded raw body is untyped data too. A passthrough request's body is read by
+		// passthroughObjectRefs, with the path it belongs to.
+		if isRawBodyField(field) && rt.Name() != "BifrostPassthroughRequest" {
 			return 0, true
 		}
 		return 0, false

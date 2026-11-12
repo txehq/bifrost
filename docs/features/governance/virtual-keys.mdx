@@ -288,6 +288,38 @@ curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
 
 Precedence is client setting, then the key, then the `x-bf-disable-content-logging` header when per-request overrides are allowed. See [Content Logging](/features/observability/content-logging) for how each layer treats the log store and observability connectors.
 
+### Storage and Pub/Sub topics per key
+
+Some requests carry the name of cloud storage or of a Pub/Sub topic, which the provider then reads, writes or publishes to with the operator's own cloud identity: a `gs://` or `s3://` file or image input, a batch's input file and output folder, a video task's `output_storage_uri`, the bucket and prefix of a file upload or list, Veo's `pubsubTopic`. Every virtual key allowed on the provider shares that identity, so by default any of them can name any path it can reach.
+
+A virtual key can be limited to its own storage and topics:
+
+- `allowed_storage_prefixes`: buckets or folders, written `gs://<bucket>[/<folder>]` or `s3://<bucket>[/<folder>]`. With a list set, every storage location a request names, read or written, must lie under one of the entries at a folder boundary (`gs://bucket/tenant-a` covers `gs://bucket/tenant-a/in/x.jsonl`, not `gs://bucket/tenant-ab/x.jsonl`).
+- `allowed_pubsub_topics`: full topic names, `projects/<project>/topics/<topic>`. With a list set, a topic a request names in its provider-specific fields must be one of them.
+
+A key with no list is not restricted, which is the default. A request with no virtual key is never restricted.
+
+The check runs before any provider call, on every provider and route, and on every form of a name: a `gs://` or `s3://` URI, the https URLs of the same object, an S3 ARN, and the bucket and prefix of a file operation. A location outside the list is refused with `403`; a name that cannot be resolved to one bucket and path (a wildcard, a `.` or `..` segment, an S3 access point) is refused with `400`. An entry may not hold a wildcard or a `.` or `..` segment, and a list holds at most 64 entries. The limit does not depend on **Restrict Provider Objects to the Creating Virtual Key**: it is the key's own.
+
+```bash
+# Create a key limited to one folder and one topic
+curl -X POST http://localhost:8080/api/governance/virtual-keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "tenant-a",
+    "allowed_storage_prefixes": ["gs://shared-bucket/tenant-a/"],
+    "allowed_pubsub_topics": ["projects/my-project/topics/tenant-a-video"],
+    "provider_configs": [{ "provider": "vertex", "allowed_models": ["*"], "key_ids": ["*"] }]
+  }'
+
+# Replace a list (omit the field to leave it unchanged, send [] to remove the limit)
+curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
+  -H "Content-Type: application/json" \
+  -d '{ "allowed_storage_prefixes": ["gs://shared-bucket/tenant-a/", "s3://tenant-a-bucket"] }'
+```
+
+In `config.json` the two lists sit on the virtual key, under `governance.virtual_keys[]`. The dashboard does not show or edit the lists yet; set them through the API or `config.json`. Saving a key in the dashboard leaves its lists as they are.
+
 ### Metadata per key
 
 A virtual key can carry custom key/value metadata for cost attribution, such as a cost center, project, owner or environment. Each request made with the key copies the key's metadata into the log entry's metadata, so logs and dashboard spend can be filtered by it without callers sending any headers.

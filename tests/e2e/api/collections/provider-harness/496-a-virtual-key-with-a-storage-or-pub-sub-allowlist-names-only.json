@@ -1,0 +1,1041 @@
+{
+  "name": "496. A virtual key with a storage or Pub/Sub allowlist names only what the list covers (storage allowlist) [SERIAL]",
+  "description": "TXE-7088. Local fixture regression, no live provider call: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. A request can carry the name of cloud storage or of a Pub/Sub topic that the provider reads, writes or publishes to with the operator's own cloud identity, which every virtual key on the provider shares. A virtual key can be limited to the storage and topics it may name (allowed_storage_prefixes, allowed_pubsub_topics); a key with no list is not restricted. The provider is the OpenAI-shaped stand-in storage_uri_files (the fixture's /pp/storage); what the folder pins is the gateway's check, which runs before any provider call and is the same code for every provider. 496.1 and 496.2 create a key limited to gs://bifrost-fixture-bucket/tenant-a/ and one topic, and a key with no lists. 496.3 serves the limited key inside its folder. 496.4 to 496.8 are the limited key outside it: as an input, by the https URL of the same object, in a folder whose name only starts with the allowed one, as a video task's output location and as a batch's output folder; each is a 403. 496.9 is a wildcard, a 400. 496.10 and 496.11 are another topic (403) and the key's own (served). 496.12 serves the key with no lists. 496.13 and 496.14 show an invalid entry refused on update and the key still limited. 496.15 reads what reached the provider: the three served chats and nothing else.",
+  "item": [
+    {
+      "name": "496.1 [setup] virtual key A (limited to tenant-a)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('allowVkLimited'); pm.collectionVariables.unset('allowVkLimitedId');",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('the fixture was reset', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the virtual key was created', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var created = (pm.response.json() || {}).virtual_key || {};",
+              "pm.test('it has an id and a value', function () { pm.expect(created.id, pm.response.text()).to.be.a('string').and.not.equal(''); pm.expect(created.value, pm.response.text()).to.be.a('string').and.not.equal(''); });",
+              "pm.collectionVariables.set('allowVkLimited', created.value || ''); pm.collectionVariables.set('allowVkLimitedId', created.id || '');",
+              "pm.test('the lists are stored normalized', function () { pm.expect(created.allowed_storage_prefixes, pm.response.text()).to.eql(['gs://bifrost-fixture-bucket/tenant-a']); pm.expect(created.allowed_pubsub_topics, pm.response.text()).to.eql(['projects/fixture/topics/tenant-a']); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"name\": \"harness-496-a-{{$guid}}\", \"provider_configs\": [{\"provider\": \"storage_uri_files\", \"weight\": 1, \"allowed_models\": [\"*\"], \"key_ids\": [\"*\"]}], \"allowed_storage_prefixes\": [\"GS://bifrost-fixture-bucket/tenant-a/\"], \"allowed_pubsub_topics\": [\"projects/fixture/topics/tenant-a\"]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "496.2 [setup] virtual key B (no lists)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('allowVkOpen'); pm.collectionVariables.unset('allowVkOpenId');"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the virtual key was created', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var created = (pm.response.json() || {}).virtual_key || {};",
+              "pm.test('it has an id and a value', function () { pm.expect(created.id, pm.response.text()).to.be.a('string').and.not.equal(''); pm.expect(created.value, pm.response.text()).to.be.a('string').and.not.equal(''); });",
+              "pm.collectionVariables.set('allowVkOpen', created.value || ''); pm.collectionVariables.set('allowVkOpenId', created.id || '');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"name\": \"harness-496-b-{{$guid}}\", \"provider_configs\": [{\"provider\": \"storage_uri_files\", \"weight\": 1, \"allowed_models\": [\"*\"], \"key_ids\": [\"*\"]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "496.3 the limited key names storage inside its folder and is served",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('allowVkLimited') || !pm.collectionVariables.get('allowVkOpen')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a location inside the key folder is served', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{allowVkLimited}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"storage_uri_files/fixture-model\", \"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"Describe this.\"}, {\"type\": \"image_url\", \"image_url\": {\"url\": \"gs://bifrost-fixture-bucket/tenant-a/in.png\"}}]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "496.4 [EXPECT-403] the limited key cannot name storage outside its folder as an input",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('allowVkLimited') || !pm.collectionVariables.get('allowVkOpen')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('an input outside the key folder is 403', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(403); });",
+              "pm.test('the refusal is the gateway and says why', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.type, 'unexpected body: ' + txt.slice(0, 400)).to.eql('access_blocked');",
+              "  pm.expect(body.error && body.error.message, txt.slice(0, 400)).to.be.a('string');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include('outside the storage this virtual key may use');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include('tenant-b/in.png');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{allowVkLimited}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"storage_uri_files/fixture-model\", \"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"Describe this.\"}, {\"type\": \"image_url\", \"image_url\": {\"url\": \"gs://bifrost-fixture-bucket/tenant-b/in.png\"}}]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "496.5 [EXPECT-403] nor by the https URL of the same object",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('allowVkLimited') || !pm.collectionVariables.get('allowVkOpen')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('the same object by its https URL is 403', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(403); });",
+              "pm.test('the refusal is the gateway and says why', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.type, 'unexpected body: ' + txt.slice(0, 400)).to.eql('access_blocked');",
+              "  pm.expect(body.error && body.error.message, txt.slice(0, 400)).to.be.a('string');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include('outside the storage this virtual key may use');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include('tenant-b/in.png');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{allowVkLimited}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"storage_uri_files/fixture-model\", \"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"Describe this.\"}, {\"type\": \"image_url\", \"image_url\": {\"url\": \"https://storage.googleapis.com/bifrost-fixture-bucket/tenant-b/in.png\"}}]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "496.6 [EXPECT-403] nor a folder whose name only starts with the allowed one",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('allowVkLimited') || !pm.collectionVariables.get('allowVkOpen')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('a folder that only shares a name prefix is 403', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(403); });",
+              "pm.test('the refusal is the gateway and says why', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.type, 'unexpected body: ' + txt.slice(0, 400)).to.eql('access_blocked');",
+              "  pm.expect(body.error && body.error.message, txt.slice(0, 400)).to.be.a('string');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include('outside the storage this virtual key may use');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include('tenant-ab/in.png');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{allowVkLimited}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"storage_uri_files/fixture-model\", \"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"Describe this.\"}, {\"type\": \"image_url\", \"image_url\": {\"url\": \"gs://bifrost-fixture-bucket/tenant-ab/in.png\"}}]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "496.7 [EXPECT-403] nor as a video task output location",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('allowVkLimited') || !pm.collectionVariables.get('allowVkOpen')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('an output location outside the key folder is 403', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(403); });",
+              "pm.test('the refusal is the gateway and says why', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.type, 'unexpected body: ' + txt.slice(0, 400)).to.eql('access_blocked');",
+              "  pm.expect(body.error && body.error.message, txt.slice(0, 400)).to.be.a('string');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include('outside the storage this virtual key may use');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include('tenant-b/out');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{allowVkLimited}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"storage_uri_files/fixture-model\", \"prompt\": \"Pan left.\", \"output_storage_uri\": \"gs://bifrost-fixture-bucket/tenant-b/out/\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      }
+    },
+    {
+      "name": "496.8 [EXPECT-403] nor as a batch output folder",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('allowVkLimited') || !pm.collectionVariables.get('allowVkOpen')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('a batch output folder outside the key folder is 403', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(403); });",
+              "pm.test('the refusal is the gateway and says why', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.type, 'unexpected body: ' + txt.slice(0, 400)).to.eql('access_blocked');",
+              "  pm.expect(body.error && body.error.message, txt.slice(0, 400)).to.be.a('string');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include('outside the storage this virtual key may use');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include('tenant-b/out');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{allowVkLimited}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"storage_uri_files/fixture-model\", \"input_file_id\": \"gs://bifrost-fixture-bucket/tenant-a/in.jsonl\", \"endpoint\": \"/v1/chat/completions\", \"completion_window\": \"24h\", \"output_folder\": {\"url\": \"gs://bifrost-fixture-bucket/tenant-b/out/\"}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "496.9 [EXPECT-400] a wildcard cannot be shown to be inside the list",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('allowVkLimited') || !pm.collectionVariables.get('allowVkOpen')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('a wildcard under the key folder is 400', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400); });",
+              "pm.test('the refusal is the gateway and says why', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.type, 'unexpected body: ' + txt.slice(0, 400)).to.eql('access_blocked');",
+              "  pm.expect(body.error && body.error.message, txt.slice(0, 400)).to.be.a('string');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include('cannot be verified');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{allowVkLimited}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"storage_uri_files/fixture-model\", \"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"Describe this.\"}, {\"type\": \"image_url\", \"image_url\": {\"url\": \"gs://bifrost-fixture-bucket/tenant-a/*\"}}]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "496.10 [EXPECT-403] the limited key cannot name a Pub/Sub topic that is not its own",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('allowVkLimited') || !pm.collectionVariables.get('allowVkOpen')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('a topic outside the key list is 403', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(403); });",
+              "pm.test('the refusal is the gateway and says why', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.type, 'unexpected body: ' + txt.slice(0, 400)).to.eql('access_blocked');",
+              "  pm.expect(body.error && body.error.message, txt.slice(0, 400)).to.be.a('string');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include('is not one this virtual key may use');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include('projects/fixture/topics/tenant-b');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{allowVkLimited}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"storage_uri_files/fixture-model\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}], \"pubsubTopic\": \"projects/fixture/topics/tenant-b\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "496.11 the limited key names its own Pub/Sub topic and is served",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('allowVkLimited') || !pm.collectionVariables.get('allowVkOpen')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the key own topic is served', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{allowVkLimited}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"storage_uri_files/fixture-model\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}], \"pubsubTopic\": \"projects/fixture/topics/tenant-a\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "496.12 a key with no lists is not restricted",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('allowVkLimited') || !pm.collectionVariables.get('allowVkOpen')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a key with no lists names any storage', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{allowVkOpen}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"storage_uri_files/fixture-model\", \"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"Describe this.\"}, {\"type\": \"image_url\", \"image_url\": {\"url\": \"gs://bifrost-fixture-bucket/tenant-b/in.png\"}}]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "496.13 [EXPECT-400] an invalid entry is refused when the list is set",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('allowVkLimited') || !pm.collectionVariables.get('allowVkOpen')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('a pattern is not a storage prefix', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400); pm.expect(txt).to.include('not a pattern'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"allowed_storage_prefixes\": [\"gs://bifrost-fixture-bucket/*\"]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys/{{allowVkLimitedId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{allowVkLimitedId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "496.14 [EXPECT-403] the refused update left the key limited as before",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('allowVkLimited') || !pm.collectionVariables.get('allowVkOpen')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('the key is still limited', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(403); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{allowVkLimited}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"storage_uri_files/fixture-model\", \"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"Describe this.\"}, {\"type\": \"image_url\", \"image_url\": {\"url\": \"gs://bifrost-fixture-bucket/tenant-b/in.png\"}}]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "496.15 only the three served chats reached the provider; no refused request did",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('allowVkLimited') || !pm.collectionVariables.get('allowVkOpen')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls.filter(function (c) { return String(c.path).indexOf('/pp/storage/') === 0; }).map(function (c) { return c.path; });",
+              "pm.test('three chat completions, nothing else', function () {",
+              "  pm.expect(calls, JSON.stringify(calls)).to.eql(['/pp/storage/v1/chat/completions', '/pp/storage/v1/chat/completions', '/pp/storage/v1/chat/completions']);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__wire"
+      }
+    },
+    {
+      "name": "496.16 [cleanup] virtual key A is deleted",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('allowVkLimitedId')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the virtual key was deleted', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.collectionVariables.unset('allowVkLimited'); pm.collectionVariables.unset('allowVkLimitedId');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys/{{allowVkLimitedId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{allowVkLimitedId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "496.17 [cleanup] virtual key B is deleted",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('allowVkOpenId')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the virtual key was deleted', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.collectionVariables.unset('allowVkOpen'); pm.collectionVariables.unset('allowVkOpenId');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys/{{allowVkOpenId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{allowVkOpenId}}"
+          ]
+        }
+      }
+    }
+  ]
+}

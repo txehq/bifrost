@@ -1335,6 +1335,7 @@ func StampVirtualKeyScope(ctx *schemas.BifrostContext, virtualKey *configstoreTa
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, virtualKey.Name)
 	stampVirtualKeyContentLogging(ctx, virtualKey)
 	stampVirtualKeyMetadata(ctx, virtualKey)
+	stampVirtualKeyCloudResources(ctx, virtualKey)
 	if virtualKey.Team != nil {
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, virtualKey.Team.ID)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, virtualKey.Team.Name)
@@ -3334,6 +3335,19 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 
 	// Load virtual keys with all relationships
 	virtualKeys := config.VirtualKeys
+	// A key that comes from memory never passes the table's save hook, which is where the
+	// storage and topic allowlists are normalized (TXE-7088). They are normalized here, once, so
+	// "gs://bucket/tenant-a/" means the same with and without a config store. A list that does
+	// not validate is kept as written: its entries then cover nothing, and the key stays
+	// restricted rather than open.
+	for i := range virtualKeys {
+		prefixes, topics, err := configstoreTables.NormalizeVirtualKeyAllowlists(virtualKeys[i].AllowedStoragePrefixes, virtualKeys[i].AllowedPubSubTopics)
+		if err != nil {
+			gs.logger.Warn("virtual key %s has an invalid storage or Pub/Sub allowlist and is restricted to nothing it names: %v", virtualKeys[i].ID, err)
+			continue
+		}
+		virtualKeys[i].AllowedStoragePrefixes, virtualKeys[i].AllowedPubSubTopics = prefixes, topics
+	}
 
 	// Load rate limits
 	rateLimits := config.RateLimits

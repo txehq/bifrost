@@ -403,8 +403,13 @@ type CreateVirtualKeyRequest struct {
 	DisableContentLogging *bool `json:"disable_content_logging,omitempty"`
 	// Metadata is free-form key/value attribution (cost center, owner, ...). See
 	// configstoreTables.ValidateVirtualKeyMetadata for the rules.
-	Metadata    map[string]string `json:"metadata,omitempty"`
-	AgentGrants []struct {
+	Metadata map[string]string `json:"metadata,omitempty"`
+	// AllowedStoragePrefixes and AllowedPubSubTopics limit the cloud storage and the Pub/Sub
+	// topics a request made with this key may name (fork, TXE-7088). Omitted means not restricted.
+	// See configstoreTables.NormalizeVirtualKeyAllowlists for the rules.
+	AllowedStoragePrefixes []string `json:"allowed_storage_prefixes,omitempty"`
+	AllowedPubSubTopics    []string `json:"allowed_pubsub_topics,omitempty"`
+	AgentGrants            []struct {
 		AgentName string `json:"agent_name" validate:"required"`
 	} `json:"agent_grants,omitempty"` // Empty means no agents allowed (deny-by-default)
 }
@@ -464,8 +469,13 @@ type UpdateVirtualKeyRequest struct {
 	DisableContentLogging schemas.OptionalJSON[bool] `json:"disable_content_logging,omitempty"`
 	// Metadata replaces the key's metadata as a whole: omitted (or null) leaves it unchanged,
 	// {} clears it, and any other object becomes the new metadata.
-	Metadata    *map[string]string `json:"metadata,omitempty"`
-	AgentGrants []struct {
+	Metadata *map[string]string `json:"metadata,omitempty"`
+	// AllowedStoragePrefixes and AllowedPubSubTopics each replace the key's list as a whole:
+	// omitted (or null) leaves it unchanged, [] clears it (the key is then not restricted), and
+	// any other list becomes the new one.
+	AllowedStoragePrefixes *[]string `json:"allowed_storage_prefixes,omitempty"`
+	AllowedPubSubTopics    *[]string `json:"allowed_pubsub_topics,omitempty"`
+	AgentGrants            []struct {
 		AgentName string `json:"agent_name" validate:"required"`
 	} `json:"agent_grants,omitempty"` // Omitted leaves grants unchanged; [] clears all grants
 }
@@ -2130,6 +2140,11 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, err.Error())
 		return
 	}
+	allowedStoragePrefixes, allowedPubSubTopics, err := configstoreTables.NormalizeVirtualKeyAllowlists(req.AllowedStoragePrefixes, req.AllowedPubSubTopics)
+	if err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
 	// Set defaults: nil means "use DB default (true)"
 	isActive := req.IsActive
 	if isActive == nil {
@@ -2164,6 +2179,9 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			// Stored as given: nil is inherit, so no defaulting here.
 			DisableContentLogging: req.DisableContentLogging,
 			Metadata:              req.Metadata,
+			// Stored normalized; no list means the key is not restricted.
+			AllowedStoragePrefixes: allowedStoragePrefixes,
+			AllowedPubSubTopics:    allowedPubSubTopics,
 		}
 		if err := h.configStore.CreateVirtualKey(ctx, &vk, tx); err != nil {
 			return err
@@ -2507,6 +2525,24 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
+	// Each allowlist is validated on its own, so a bad entry is refused before anything is saved.
+	var newStoragePrefixes, newPubSubTopics []string
+	if req.AllowedStoragePrefixes != nil {
+		normalized, _, err := configstoreTables.NormalizeVirtualKeyAllowlists(*req.AllowedStoragePrefixes, nil)
+		if err != nil {
+			SendError(ctx, 400, err.Error())
+			return
+		}
+		newStoragePrefixes = normalized
+	}
+	if req.AllowedPubSubTopics != nil {
+		_, normalized, err := configstoreTables.NormalizeVirtualKeyAllowlists(nil, *req.AllowedPubSubTopics)
+		if err != nil {
+			SendError(ctx, 400, err.Error())
+			return
+		}
+		newPubSubTopics = normalized
+	}
 	// The operator's explicit "reset usage" choice, surfaced by the UI's
 	// Preserve / Reset dialog. Carried into budget reconciliation and collected
 	// there, so the in-memory store can be cleared once the transaction commits.
@@ -2577,6 +2613,13 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		}
 		if req.Metadata != nil {
 			vk.Metadata = *req.Metadata
+		}
+		// A list sent empty is an explicit clear: it stays non-nil so the store writes it.
+		if req.AllowedStoragePrefixes != nil {
+			vk.AllowedStoragePrefixes = append([]string{}, newStoragePrefixes...)
+		}
+		if req.AllowedPubSubTopics != nil {
+			vk.AllowedPubSubTopics = append([]string{}, newPubSubTopics...)
 		}
 		if err := applyVirtualKeyOwnershipUpdate(vk, &req); err != nil {
 			if errors.Is(err, errVirtualKeyDualAssociation) {

@@ -4437,6 +4437,15 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 		if virtualKey.Metadata != nil {
 			columns = append(columns, "metadata")
 		}
+		// The allowlists follow the same rule (TXE-7088): nil keeps the stored list, so a key is
+		// never left unrestricted by an update that did not name the list; an empty list is an
+		// explicit clear and is written as NULL.
+		if virtualKey.AllowedStoragePrefixes != nil {
+			columns = append(columns, "allowed_storage_prefixes")
+		}
+		if virtualKey.AllowedPubSubTopics != nil {
+			columns = append(columns, "allowed_pubsub_topics")
+		}
 		if err := txDB.WithContext(ctx).
 			Select(columns).
 			Updates(virtualKey).Error; err != nil {

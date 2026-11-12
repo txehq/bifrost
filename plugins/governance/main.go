@@ -1283,6 +1283,11 @@ func (p *GovernancePlugin) preLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		return req, shortCircuit, nil
 	}
 
+	// A virtual key with a storage or topic allowlist names only what the list covers; see cloudresources.go.
+	if shortCircuit := p.enforceCloudResourceAllowlists(ctx, req); shortCircuit != nil {
+		return req, shortCircuit, nil
+	}
+
 	// A provider object addressed by id belongs to the virtual key that created it; see providerjobs.go.
 	if shortCircuit := p.enforceProviderObjectOwnership(ctx, req); shortCircuit != nil {
 		return req, shortCircuit, nil

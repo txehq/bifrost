@@ -4555,6 +4555,56 @@ func TestMigrationAddVirtualKeyDisableContentLoggingColumn(t *testing.T) {
 	assert.Equal(t, storedOff.ConfigHash, recomputed, "the stored hash must match what synchronization recomputes")
 }
 
+// TestMigrationAddVirtualKeyAllowedCloudResourceColumns pins the allowlist columns (TXE-7088):
+// the migration adds them and is idempotent, a key without lists reads back with none and keeps
+// its config hash, and a key with lists round-trips them normalized and hashes them.
+func TestMigrationAddVirtualKeyAllowedCloudResourceColumns(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	for _, column := range []string{"allowed_storage_prefixes", "allowed_pubsub_topics"} {
+		require.False(t, mg.HasColumn(&tables.TableVirtualKey{}, column), "%s must not exist before migration", column)
+	}
+	require.NoError(t, migrationAddVirtualKeyAllowedCloudResourceColumns(ctx, db, testMigrationLogger))
+	for _, column := range []string{"allowed_storage_prefixes", "allowed_pubsub_topics"} {
+		assert.True(t, mg.HasColumn(&tables.TableVirtualKey{}, column), column)
+	}
+	// Idempotent: a re-run with the columns already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_virtual_key_allowed_cloud_resource_columns").Error)
+	require.NoError(t, migrationAddVirtualKeyAllowedCloudResourceColumns(ctx, db, testMigrationLogger))
+
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKey{}))
+	plain := tables.TableVirtualKey{ID: "vk-al-none", Name: "vk-al-none", Value: *schemas.NewSecretVar("sk-bf-vk-al-none")}
+	before, err := GenerateVirtualKeyHash(plain)
+	require.NoError(t, err)
+	limited := tables.TableVirtualKey{ID: "vk-al-limited", Name: "vk-al-limited", Value: *schemas.NewSecretVar("sk-bf-vk-al-limited"),
+		AllowedStoragePrefixes: []string{"GS://bucket/tenant-a/", "gs://bucket/tenant-a"}, AllowedPubSubTopics: []string{"projects/p/topics/t"}}
+	for _, vk := range []*tables.TableVirtualKey{&plain, &limited} {
+		require.NoError(t, db.Create(vk).Error)
+	}
+	var readPlain, readLimited tables.TableVirtualKey
+	require.NoError(t, db.First(&readPlain, "id = ?", "vk-al-none").Error)
+	require.NoError(t, db.First(&readLimited, "id = ?", "vk-al-limited").Error)
+	assert.Nil(t, readPlain.AllowedStoragePrefixes, "a key with no list reads back with none")
+	assert.Nil(t, readPlain.AllowedPubSubTopics)
+	assert.Equal(t, []string{"gs://bucket/tenant-a"}, readLimited.AllowedStoragePrefixes, "the list is stored normalized, each entry once")
+	assert.Equal(t, []string{"projects/p/topics/t"}, readLimited.AllowedPubSubTopics)
+
+	after, err := GenerateVirtualKeyHash(readPlain)
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "a key with no list keeps the hash it had before the columns existed")
+	limitedHash, err := GenerateVirtualKeyHash(readLimited)
+	require.NoError(t, err)
+	readLimited.AllowedStoragePrefixes = []string{"gs://bucket/tenant-b"}
+	changedHash, err := GenerateVirtualKeyHash(readLimited)
+	require.NoError(t, err)
+	assert.NotEqual(t, limitedHash, changedHash, "a changed list moves the hash, so a config.json edit is synchronized")
+
+	bad := tables.TableVirtualKey{ID: "vk-al-bad", Name: "vk-al-bad", Value: *schemas.NewSecretVar("sk-bf-vk-al-bad"), AllowedStoragePrefixes: []string{"gs://bucket/*"}}
+	assert.Error(t, db.Create(&bad).Error, "an invalid entry is refused on save, whatever wrote it")
+}
+
 // TestMigrationAddVirtualKeyMetadataColumn pins the metadata column: the migration adds it and is
 // idempotent, a key without metadata reads back with none, and the config hash only moves when the
 // key has metadata, so every pre-existing key keeps the hash synchronization already stored for it.

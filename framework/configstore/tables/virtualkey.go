@@ -280,6 +280,16 @@ type TableVirtualKey struct {
 	// empty map is stored as NULL, and a nil map on UpdateVirtualKey keeps the stored value.
 	Metadata map[string]string `gorm:"type:text;serializer:json" json:"metadata,omitempty"`
 
+	// AllowedStoragePrefixes limits the object storage a request made with this key may name
+	// (fork, TXE-7088): buckets or folders such as "gs://bucket/tenant-a". With a list set, every
+	// storage location a request names, read or written, must lie under one of them; with none,
+	// storage is not restricted. Entries are kept normalized (NormalizeVirtualKeyStoragePrefix);
+	// an empty list is stored as NULL, and a nil list on UpdateVirtualKey keeps the stored value.
+	AllowedStoragePrefixes []string `gorm:"type:text;serializer:json" json:"allowed_storage_prefixes,omitempty"`
+	// AllowedPubSubTopics limits the Pub/Sub topics a request made with this key may name
+	// (Veo's pubsubTopic), as full topic names. With none, topics are not restricted.
+	AllowedPubSubTopics []string `gorm:"column:allowed_pubsub_topics;type:text;serializer:json" json:"allowed_pubsub_topics,omitempty"`
+
 	// Relationships
 	Team      *TableTeam      `gorm:"foreignKey:TeamID" json:"team,omitempty"`
 	Customer  *TableCustomer  `gorm:"foreignKey:CustomerID" json:"customer,omitempty"`
@@ -493,6 +503,12 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 	if len(vk.Metadata) == 0 {
 		vk.Metadata = nil
 	}
+	// The allowlists are stored normalized, and "no list" is NULL, never "[]".
+	prefixes, topics, err := NormalizeVirtualKeyAllowlists(vk.AllowedStoragePrefixes, vk.AllowedPubSubTopics)
+	if err != nil {
+		return err
+	}
+	vk.AllowedStoragePrefixes, vk.AllowedPubSubTopics = prefixes, topics
 
 	// Hash must be computed before encryption (from plaintext value).
 	if vk.Value.IsSet() {
