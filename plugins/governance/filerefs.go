@@ -628,6 +628,12 @@ func (c *fileIDCollector) add(id string) {
 	c.ids = append(c.ids, id)
 }
 
+// kept reports whether id is among the ids gathered. Past maxFileReferences nothing more is.
+func (c *fileIDCollector) kept(id string) bool {
+	_, ok := c.seen[id]
+	return ok
+}
+
 // addReference adds what a reference field of the given kind names: an id as written, a URL
 // or an output location under the id recordedFileID resolves it to.
 func (c *fileIDCollector) addReference(kind fileRefKind, value string) {
@@ -657,7 +663,8 @@ func (c *fileIDCollector) addOpen(value string) {
 	}
 	if ok {
 		c.add(id)
-		if id = strings.TrimSpace(id); !slices.Contains(c.open, id) {
+		// Only an id the bounded list kept is annotated, so the annotations are bounded with it.
+		if id = strings.TrimSpace(id); c.kept(id) && !slices.Contains(c.open, id) {
 			c.open = append(c.open, id)
 		}
 	}
@@ -678,7 +685,7 @@ func outputLocationKey(key string) bool {
 
 // addLocation marks id, already added, as a storage location the request writes to.
 func (c *fileIDCollector) addLocation(id string) {
-	if id = strings.TrimSpace(id); id != "" && !slices.Contains(c.locations, id) {
+	if id = strings.TrimSpace(id); c.kept(id) && !slices.Contains(c.locations, id) {
 		c.locations = append(c.locations, id)
 	}
 }

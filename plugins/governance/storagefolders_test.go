@@ -285,6 +285,25 @@ func TestOutputFolderIsNotClaimedWithoutEnforcement(t *testing.T) {
 	assert.Nil(t, shortCircuit, "a batch create with no config store is left open, as before")
 }
 
+// A request naming more stored objects than the bound is refused, and what it gathered on the
+// way, the annotations included, stays within the bound.
+func TestStorageAnnotationsAreBoundedWithTheReferences(t *testing.T) {
+	extra := map[string]any{}
+	var many []any
+	for i := 0; i < maxFileReferences*4; i++ {
+		many = append(many, "gs://b/in/"+strings.Repeat("x", i%7)+string(rune('a'+i%26))+strings.Repeat("y", i))
+		extra["storageUri"+strings.Repeat("_", i)] = "ignored"
+	}
+	extra["inputs"] = many
+	req := &schemas.BifrostRequest{RequestType: schemas.ImageGenerationRequest, ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{Provider: schemas.Vertex, Model: "m",
+		Input: &schemas.ImageGenerationInput{Prompt: "a cat"}, Params: &schemas.ImageGenerationParameters{ExtraParams: extra}}}
+	ids, locations, open, unreadable := requestFileReferences(req)
+	assert.True(t, unreadable)
+	assert.Len(t, ids, maxFileReferences)
+	assert.LessOrEqual(t, len(open), maxFileReferences)
+	assert.LessOrEqual(t, len(locations), maxFileReferences)
+}
+
 // A claim outlives the request that made it, also a request the provider then refuses:
 // another request of the key may already be writing into the folder, and withdrawing the claim
 // under it would leave what it writes unclaimed.
