@@ -555,6 +555,22 @@ Rows 403.10 and 403.11 are the async route: 403.10 submits a url-only job to
 `GET /v1/async/audio/transcriptions/{job_id}` three seconds later and expects the job completed, with the
 transcript, the duration usage and exactly one call in `/__wire`. Run them together and in order, as the
 folder does.
+## DashScope sync image generation and edit
+
+Folder 425 (TXE-6607) uses the same fixture and the same isolated gateway as folder 154. The
+fixture's gateway config points the `dashscope` provider at the fixture, which answers DashScope's
+`multimodal-generation` endpoint by the model in the body (`qwen-image-2.0`, `z-image-turbo`,
+`qwen-image-moderated`, `qwen-image-empty`). Start the fixture and the isolated gateway as in the
+previous section, then:
+
+```bash
+node tests/e2e/api/runners/provider-harness-folders.mjs build
+newman run tmp/provider-harness.json \
+  --folder "425. DashScope Qwen-Image and Z-Image sync generation and edit meet the contract (dashscope images) [SERIAL]" \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1 \
+  --env-var providerErrorFixtureUrl=http://127.0.0.1:8791
+```
 
 ## Fork deployment switches: provider job accounting off and passthrough heartbeat off
 

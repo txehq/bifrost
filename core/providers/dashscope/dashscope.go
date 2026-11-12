@@ -139,6 +139,23 @@ func (provider *DashScopeProvider) doDashScopeRequest(ctx *schemas.BifrostContex
 	return append([]byte(nil), body...), latency, nil
 }
 
+// SupportedUnifiedFields declares, per operation, the unified fields the provider delivers, so
+// core refuses any other with caller_unsupported_parameter before a key is chosen (contract C4,
+// BF4). It is the one declaration for the provider: each operation family keeps its field list
+// next to its converter (videos.go, images.go) and adds its case here. Operations with no case
+// are not checked.
+func (provider *DashScopeProvider) SupportedUnifiedFields(requestType schemas.RequestType) ([]string, bool) {
+	switch requestType {
+	case schemas.VideoGenerationRequest:
+		return dashScopeVideoGenerationFields, true
+	case schemas.ImageGenerationRequest:
+		return dashScopeImageGenerationFields, true
+	case schemas.ImageEditRequest:
+		return dashScopeImageEditFields, true
+	}
+	return nil, false
+}
+
 // ListModels is not supported by the DashScope provider yet.
 func (provider *DashScopeProvider) ListModels(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ListModelsRequest, provider.GetProviderKey())
@@ -229,19 +246,9 @@ func (provider *DashScopeProvider) TranscriptionStream(_ *schemas.BifrostContext
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
-// ImageGeneration is not supported by the DashScope provider yet.
-func (provider *DashScopeProvider) ImageGeneration(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, provider.GetProviderKey())
-}
-
 // ImageGenerationStream is not supported by the DashScope provider yet.
 func (provider *DashScopeProvider) ImageGenerationStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
-}
-
-// ImageEdit is not supported by the DashScope provider yet.
-func (provider *DashScopeProvider) ImageEdit(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditRequest, provider.GetProviderKey())
 }
 
 // ImageEditStream is not supported by the DashScope provider yet.

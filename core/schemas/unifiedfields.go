@@ -202,6 +202,7 @@ type NestedPriceField struct {
 var nestedPriceFields = func() []NestedPriceField {
 	image := []RequestType{ImageGenerationRequest, ImageGenerationStreamRequest, ImageEditRequest, ImageEditStreamRequest}
 	imageGeneration := []RequestType{ImageGenerationRequest, ImageGenerationStreamRequest}
+	imageSync := []RequestType{ImageGenerationRequest, ImageEditRequest}
 	video := []RequestType{VideoGenerationRequest}
 	speech := []RequestType{SpeechRequest, SpeechStreamRequest}
 	embedding := []RequestType{EmbeddingRequest}
@@ -214,7 +215,8 @@ var nestedPriceFields = func() []NestedPriceField {
 		{Bedrock, "singleEmbeddingParams.embeddingDimension", "dimensions", embedding},
 		{Bedrock, "singleEmbeddingParams.embeddingPurpose", "task_type", embedding},
 		{BytePlus, "sequential_image_generation_options.max_images", "n", image},
-		{DashScope, "parameters.size", "size", video},
+		{DashScope, "parameters.n", "n", imageSync},
+		{DashScope, "parameters.size", "size", append(append([]RequestType(nil), video...), imageSync...)},
 		{DashScope, "parameters.resolution", "resolution", video},
 		{DashScope, "parameters.ratio", "aspect_ratio", video},
 		{DashScope, "parameters.duration", "seconds", video},

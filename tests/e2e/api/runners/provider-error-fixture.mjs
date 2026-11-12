@@ -933,11 +933,33 @@ const xaiTranscript = {
 	channels: [{ index: 0, language: "en", text: "The balance is $167,983.15." }],
 };
 
+// DashScope's synchronous image endpoint, TXE-6607. The model in the body picks the answer; bodies follow the samples
+// of Alibaba's Qwen-Image and Z-Image API references. qwen-image-2.0 returns as many links as parameters.n asks for.
+const dashScopeImagePath = "/pp/dashscope/api/v1/services/aigc/multimodal-generation/generation";
+const dashScopeImageAnswer = (body) => {
+	const link = (i) => ({ image: `https://dashscope-result-sh.oss-cn-shanghai.aliyuncs.com/fixture/${i}.png?Expires=1` });
+	const ok = (content, usage) => ({ status: 200, body: JSON.stringify({ output: { choices: [{ finish_reason: "stop", message: { role: "assistant", content } }] }, usage, request_id: "fixture-dashscope-image" }) });
+	switch (body.model) {
+		case "z-image-turbo":
+			return ok([link(1), { text: "a lighthouse at dusk, warm light, 35mm" }, { reasoning_content: "the user wants a lighthouse" }],
+				{ width: 1024, height: 1536, image_count: 1, input_tokens: 120, output_tokens: 310, total_tokens: 430, output_tokens_details: { reasoning_tokens: 250 } });
+		case "qwen-image-moderated":
+			return { status: 400, body: JSON.stringify({ request_id: "fixture-dashscope-moderated", code: "DataInspectionFailed", message: "Input data may contain inappropriate content." }) };
+		case "qwen-image-empty":
+			return { status: 200, body: JSON.stringify({ output: { choices: [] }, request_id: "fixture-dashscope-empty" }) };
+		default: {
+			const n = (body.parameters && body.parameters.n) || 1;
+			return ok(Array.from({ length: n }, (_, i) => link(i + 1)), { width: 1536, height: 1024, image_count: n });
+		}
+	}
+};
+
 const wireAnswer = (path, body, bytes) => {
 	if (isBedrockConversePath(path)) return bedrockConverseAnswer(path);
 	if (path.startsWith("/pp/storage/")) return storageAnswer(path, body);
 	if (path.startsWith("/pp/bfl/v1/")) return { status: 200, body: JSON.stringify(bflSubmitAnswer()) };
 	if (isOpenAIImagePath(path)) return openAIImageAnswer(body, bytes, path.endsWith("/images/edits"));
+	if (path === dashScopeImagePath) return dashScopeImageAnswer(body);
 	const geminiImage = geminiImageAnswerFor(path);
 	if (geminiImage) return geminiImage;
 	if (path === "/pp/gemini/files") return geminiFileUpload();

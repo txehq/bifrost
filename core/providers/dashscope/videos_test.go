@@ -374,7 +374,7 @@ func TestDashScopeVideoCreateRefusesTaskControlFields(t *testing.T) {
 	if _, declared := provider.SupportedUnifiedFields(schemas.VideoGenerationRequest); !declared {
 		t.Fatal("dashscope declares no unified fields for video generation")
 	}
-	if _, declared := provider.SupportedUnifiedFields(schemas.ImageGenerationRequest); declared {
+	if _, declared := provider.SupportedUnifiedFields(schemas.SpeechRequest); declared {
 		t.Error("dashscope declares unified fields for an operation it does not implement")
 	}
 	controls := map[string]schemas.TaskControlParameters{
