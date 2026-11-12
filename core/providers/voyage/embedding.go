@@ -5,6 +5,7 @@ import (
 	"math"
 	"slices"
 
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -43,7 +44,8 @@ func ToVoyageEmbeddingRequest(request *schemas.BifrostEmbeddingRequest) (*Voyage
 				collision = p.AutoTruncate != nil
 			}
 			if collision {
-				return nil, schemas.NewUnsupportedParameterError("extra_params."+field, "extra parameters cannot replace authorized or unified request fields")
+				bifrostErr, _ := providerUtils.AsBifrostBadRequestError(providerUtils.ExtraParamConflictError(field, field))
+				return nil, bifrostErr
 			}
 		}
 		if p.Dimensions != nil {

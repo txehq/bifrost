@@ -243,7 +243,8 @@ func TestVoyageExtraParamsCannotReplaceAuthorizedFields(t *testing.T) {
 			require.Nil(t, got)
 			require.NotNil(t, err)
 			require.Equal(t, 400, *err.StatusCode)
-			require.Equal(t, "extra_params."+field, err.Error.Param)
+			require.Equal(t, field, err.Error.Param)
+			require.Equal(t, schemas.ErrorTypeCallerInvalidRequest, err.ExtraFields.ErrorType)
 		})
 	}
 	for _, field := range []string{"model", "input"} {
