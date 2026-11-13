@@ -57,6 +57,58 @@ type Entry struct {
 	AdditionalAttributes map[string]string `json:"-"`
 
 	Options
+
+	upstreamRateAliases
+}
+
+// upstreamRateAliases are second spellings upstream publishes for rates Options already holds
+// (fork, TXE-7353). Upstream writes the tier both before and after the context window
+// (input_cost_per_token_flex_above_272k_tokens and input_cost_per_token_above_272k_tokens_flex),
+// and some rows (every Azure gpt-6 row) carry only the second spelling, so a 272k+ flex request
+// on them was billed at the flat flex rate. OpenAI's "fast" service tier is Priority renamed
+// (see tierFromResponse), and its *_fast_above_272k_tokens rates equal the priority 272k rates on
+// every row that has both. Entry.UnmarshalJSON folds each alias into its Options field when that
+// field is absent; the aliases are never stored or emitted on their own.
+type upstreamRateAliases struct {
+	AliasInputCostPerTokenAbove272kTokensFlex           *float64 `json:"input_cost_per_token_above_272k_tokens_flex,omitempty"`
+	AliasOutputCostPerTokenAbove272kTokensFlex          *float64 `json:"output_cost_per_token_above_272k_tokens_flex,omitempty"`
+	AliasCacheReadInputTokenCostAbove272kTokensFlex     *float64 `json:"cache_read_input_token_cost_above_272k_tokens_flex,omitempty"`
+	AliasCacheCreationInputTokenCostAbove272kTokensFlex *float64 `json:"cache_creation_input_token_cost_above_272k_tokens_flex,omitempty"`
+
+	AliasInputCostPerTokenPriorityAbove272kTokens           *float64 `json:"input_cost_per_token_priority_above_272k_tokens,omitempty"`
+	AliasOutputCostPerTokenPriorityAbove272kTokens          *float64 `json:"output_cost_per_token_priority_above_272k_tokens,omitempty"`
+	AliasCacheReadInputTokenCostPriorityAbove272kTokens     *float64 `json:"cache_read_input_token_cost_priority_above_272k_tokens,omitempty"`
+	AliasCacheCreationInputTokenCostPriorityAbove272kTokens *float64 `json:"cache_creation_input_token_cost_priority_above_272k_tokens,omitempty"`
+
+	AliasInputCostPerTokenFastAbove272kTokens           *float64 `json:"input_cost_per_token_fast_above_272k_tokens,omitempty"`
+	AliasOutputCostPerTokenFastAbove272kTokens          *float64 `json:"output_cost_per_token_fast_above_272k_tokens,omitempty"`
+	AliasCacheReadInputTokenCostFastAbove272kTokens     *float64 `json:"cache_read_input_token_cost_fast_above_272k_tokens,omitempty"`
+	AliasCacheCreationInputTokenCostFastAbove272kTokens *float64 `json:"cache_creation_input_token_cost_fast_above_272k_tokens,omitempty"`
+}
+
+// foldInto copies each alias into its Options field when the field is unset, in order of
+// preference: the tier-first spelling, then the tier-last one, then (for priority) fast.
+func (a upstreamRateAliases) foldInto(o *Options) {
+	fill := func(dst **float64, srcs ...*float64) {
+		for _, src := range srcs {
+			if *dst != nil {
+				return
+			}
+			if src != nil {
+				v := *src
+				*dst = &v
+			}
+		}
+	}
+	fill(&o.InputCostPerTokenFlexAbove272kTokens, a.AliasInputCostPerTokenAbove272kTokensFlex)
+	fill(&o.OutputCostPerTokenFlexAbove272kTokens, a.AliasOutputCostPerTokenAbove272kTokensFlex)
+	fill(&o.CacheReadInputTokenCostFlexAbove272kTokens, a.AliasCacheReadInputTokenCostAbove272kTokensFlex)
+	fill(&o.CacheCreationInputTokenCostFlexAbove272kTokens, a.AliasCacheCreationInputTokenCostAbove272kTokensFlex)
+
+	fill(&o.InputCostPerTokenAbove272kTokensPriority, a.AliasInputCostPerTokenPriorityAbove272kTokens, a.AliasInputCostPerTokenFastAbove272kTokens)
+	fill(&o.OutputCostPerTokenAbove272kTokensPriority, a.AliasOutputCostPerTokenPriorityAbove272kTokens, a.AliasOutputCostPerTokenFastAbove272kTokens)
+	fill(&o.CacheReadInputTokenCostAbove272kTokensPriority, a.AliasCacheReadInputTokenCostPriorityAbove272kTokens, a.AliasCacheReadInputTokenCostFastAbove272kTokens)
+	fill(&o.CacheCreationInputTokenCostAbove272kTokensPriority, a.AliasCacheCreationInputTokenCostPriorityAbove272kTokens, a.AliasCacheCreationInputTokenCostFastAbove272kTokens)
 }
 
 // UnmarshalJSON handles the special case where search_context_cost_per_query
@@ -76,6 +128,8 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*p = Entry(raw.entryAlias)
+	p.upstreamRateAliases.foldInto(&p.Options)
+	p.upstreamRateAliases = upstreamRateAliases{}
 
 	// search_context_cost_per_query arrives as a tiered object — all three values are
 	// equal for non-Perplexity providers; we prefer medium, then low, then high.
@@ -116,6 +170,14 @@ type Options struct {
 	// is a chat row served natively on /v1/decisions). See computeDecisionCost.
 	InputCostPerTokenDecisions  *float64 `json:"input_cost_per_token_decisions,omitempty"`
 	OutputCostPerTokenDecisions *float64 `json:"output_cost_per_token_decisions,omitempty"`
+	// Decision rates above the 272k context window, and the decision cache rates
+	// (fork, TXE-7353). Upstream publishes them for gpt-6-luna.
+	InputCostPerTokenAbove272kTokensDecisions           *float64 `json:"input_cost_per_token_above_272k_tokens_decisions,omitempty"`
+	OutputCostPerTokenAbove272kTokensDecisions          *float64 `json:"output_cost_per_token_above_272k_tokens_decisions,omitempty"`
+	CacheReadInputTokenCostDecisions                    *float64 `json:"cache_read_input_token_cost_decisions,omitempty"`
+	CacheReadInputTokenCostAbove272kTokensDecisions     *float64 `json:"cache_read_input_token_cost_above_272k_tokens_decisions,omitempty"`
+	CacheCreationInputTokenCostDecisions                *float64 `json:"cache_creation_input_token_cost_decisions,omitempty"`
+	CacheCreationInputTokenCostAbove272kTokensDecisions *float64 `json:"cache_creation_input_token_cost_above_272k_tokens_decisions,omitempty"`
 	// Fast mode (Anthropic research preview, speed:"fast" on Opus 4.6/4.7/4.8).
 	// Flat rate across the full context window — no 128k/200k/272k tiering.
 	InputCostPerTokenFast  *float64 `json:"input_cost_per_token_fast,omitempty"`
@@ -135,6 +197,10 @@ type Options struct {
 	InputCostPerTokenAbove200kTokensPriority  *float64 `json:"input_cost_per_token_above_200k_tokens_priority,omitempty"`
 	OutputCostPerTokenAbove200kTokens         *float64 `json:"output_cost_per_token_above_200k_tokens,omitempty"`
 	OutputCostPerTokenAbove200kTokensPriority *float64 `json:"output_cost_per_token_above_200k_tokens_priority,omitempty"`
+	// Flex above 200k (Gemini; fork, TXE-7353).
+	InputCostPerTokenAbove200kTokensFlex       *float64 `json:"input_cost_per_token_above_200k_tokens_flex,omitempty"`
+	OutputCostPerTokenAbove200kTokensFlex      *float64 `json:"output_cost_per_token_above_200k_tokens_flex,omitempty"`
+	CacheReadInputTokenCostAbove200kTokensFlex *float64 `json:"cache_read_input_token_cost_above_200k_tokens_flex,omitempty"`
 	// Costs - 272k Tier
 	InputCostPerTokenAbove272kTokens           *float64 `json:"input_cost_per_token_above_272k_tokens,omitempty"`
 	InputCostPerTokenAbove272kTokensPriority   *float64 `json:"input_cost_per_token_above_272k_tokens_priority,omitempty"`
@@ -177,6 +243,17 @@ type Options struct {
 	CacheCreationInputTokenCostFast         *float64 `json:"cache_creation_input_token_cost_fast,omitempty"`
 	CacheCreationInputTokenCostAbove1hrFast *float64 `json:"cache_creation_input_token_cost_above_1hr_fast,omitempty"`
 	CacheReadInputTokenCostFast             *float64 `json:"cache_read_input_token_cost_fast,omitempty"`
+	// OpenAI 12-hour cache-write rates (prompt_cache_retention "24h" writes reported as
+	// ttl_12h_tokens), by service tier and the 272k context window (fork, TXE-7353). A
+	// 12h write is priced here; without a 12h rate it falls back to the above-1hr rate.
+	CacheCreationInputTokenCostAbove12hr                         *float64 `json:"cache_creation_input_token_cost_above_12hr,omitempty"`
+	CacheCreationInputTokenCostAbove12hrAbove272kTokens          *float64 `json:"cache_creation_input_token_cost_above_12hr_above_272k_tokens,omitempty"`
+	CacheCreationInputTokenCostAbove12hrFlex                     *float64 `json:"cache_creation_input_token_cost_above_12hr_flex,omitempty"`
+	CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex      *float64 `json:"cache_creation_input_token_cost_above_12hr_above_272k_tokens_flex,omitempty"`
+	CacheCreationInputTokenCostAbove12hrPriority                 *float64 `json:"cache_creation_input_token_cost_above_12hr_priority,omitempty"`
+	CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority  *float64 `json:"cache_creation_input_token_cost_above_12hr_above_272k_tokens_priority,omitempty"`
+	CacheCreationInputTokenCostAbove12hrUltrafast                *float64 `json:"cache_creation_input_token_cost_above_12hr_ultrafast,omitempty"`
+	CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast *float64 `json:"cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast,omitempty"`
 
 	// Costs - Image
 	InputCostPerImage                             *float64 `json:"input_cost_per_image,omitempty"`
@@ -203,6 +280,8 @@ type Options struct {
 	OutputCostPerImageAutoQuality                 *float64 `json:"output_cost_per_image_auto_quality,omitempty"`
 	InputCostPerImageToken                        *float64 `json:"input_cost_per_image_token,omitempty"`
 	OutputCostPerImageToken                       *float64 `json:"output_cost_per_image_token,omitempty"`
+	// Priority image output tokens (Gemini image models; fork, TXE-7353).
+	OutputCostPerImageTokenPriority *float64 `json:"output_cost_per_image_token_priority,omitempty"`
 
 	// Costs - Image, joint size and quality. These are the most specific
 	// per-image rates: they win over the quality-only and size-only rates
@@ -221,13 +300,16 @@ type Options struct {
 	OutputCostPerImageAbove1536x1024PixelsStandardQuality *float64 `json:"output_cost_per_image_above_1536_and_1024_pixels_standard_quality,omitempty"`
 
 	// Costs - Audio/Video
-	InputCostPerAudioToken      *float64 `json:"input_cost_per_audio_token,omitempty"`
-	InputCostPerAudioPerSecond  *float64 `json:"input_cost_per_audio_per_second,omitempty"`
-	InputCostPerSecond          *float64 `json:"input_cost_per_second,omitempty"`
-	InputCostPerVideoPerSecond  *float64 `json:"input_cost_per_video_per_second,omitempty"`
-	OutputCostPerAudioToken     *float64 `json:"output_cost_per_audio_token,omitempty"`
-	OutputCostPerVideoPerSecond *float64 `json:"output_cost_per_video_per_second,omitempty"`
-	OutputCostPerSecond         *float64 `json:"output_cost_per_second,omitempty"`
+	InputCostPerAudioToken *float64 `json:"input_cost_per_audio_token,omitempty"`
+	// Audio input tokens by service tier (Gemini and Vertex; fork, TXE-7353).
+	InputCostPerAudioTokenFlex     *float64 `json:"input_cost_per_audio_token_flex,omitempty"`
+	InputCostPerAudioTokenPriority *float64 `json:"input_cost_per_audio_token_priority,omitempty"`
+	InputCostPerAudioPerSecond     *float64 `json:"input_cost_per_audio_per_second,omitempty"`
+	InputCostPerSecond             *float64 `json:"input_cost_per_second,omitempty"`
+	InputCostPerVideoPerSecond     *float64 `json:"input_cost_per_video_per_second,omitempty"`
+	OutputCostPerAudioToken        *float64 `json:"output_cost_per_audio_token,omitempty"`
+	OutputCostPerVideoPerSecond    *float64 `json:"output_cost_per_video_per_second,omitempty"`
+	OutputCostPerSecond            *float64 `json:"output_cost_per_second,omitempty"`
 
 	// Resolution-banded video output rates, matched on the short edge of the response's
 	// size. Absent band falls back to OutputCostPerVideoPerSecond, then OutputCostPerSecond.
@@ -756,40 +838,61 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		Architecture:    entry.Architecture,
 		IsDeprecated:    entry.IsDeprecated,
 
-		InputCostPerToken:                          entry.InputCostPerToken,
-		OutputCostPerToken:                         entry.OutputCostPerToken,
-		InputCostPerTokenBatches:                   entry.InputCostPerTokenBatches,
-		OutputCostPerTokenBatches:                  entry.OutputCostPerTokenBatches,
-		InputCostPerTokenPriority:                  entry.InputCostPerTokenPriority,
-		OutputCostPerTokenPriority:                 entry.OutputCostPerTokenPriority,
-		InputCostPerTokenUltrafast:                 entry.InputCostPerTokenUltrafast,
-		OutputCostPerTokenUltrafast:                entry.OutputCostPerTokenUltrafast,
-		InputCostPerTokenFlex:                      entry.InputCostPerTokenFlex,
-		OutputCostPerTokenFlex:                     entry.OutputCostPerTokenFlex,
-		InputCostPerTokenDecisions:                 entry.InputCostPerTokenDecisions,
-		OutputCostPerTokenDecisions:                entry.OutputCostPerTokenDecisions,
-		InputCostPerTokenFast:                      entry.InputCostPerTokenFast,
-		OutputCostPerTokenFast:                     entry.OutputCostPerTokenFast,
-		InputCostPerTokenAbove200kTokens:           entry.InputCostPerTokenAbove200kTokens,
-		InputCostPerTokenAbove200kTokensPriority:   entry.InputCostPerTokenAbove200kTokensPriority,
-		OutputCostPerTokenAbove200kTokens:          entry.OutputCostPerTokenAbove200kTokens,
-		OutputCostPerTokenAbove200kTokensPriority:  entry.OutputCostPerTokenAbove200kTokensPriority,
-		InputCostPerTokenAbove272kTokens:           entry.InputCostPerTokenAbove272kTokens,
-		InputCostPerTokenAbove272kTokensPriority:   entry.InputCostPerTokenAbove272kTokensPriority,
-		InputCostPerTokenFlexAbove272kTokens:       entry.InputCostPerTokenFlexAbove272kTokens,
-		OutputCostPerTokenAbove272kTokens:          entry.OutputCostPerTokenAbove272kTokens,
-		OutputCostPerTokenAbove272kTokensPriority:  entry.OutputCostPerTokenAbove272kTokensPriority,
-		OutputCostPerTokenFlexAbove272kTokens:      entry.OutputCostPerTokenFlexAbove272kTokens,
-		InputCostPerTokenAbove272kTokensUltrafast:  entry.InputCostPerTokenAbove272kTokensUltrafast,
-		OutputCostPerTokenAbove272kTokensUltrafast: entry.OutputCostPerTokenAbove272kTokensUltrafast,
-		InputCostPerCharacter:                      entry.InputCostPerCharacter,
-		InputCostPerTokenAbove128kTokens:           entry.InputCostPerTokenAbove128kTokens,
-		InputCostPerImageAbove128kTokens:           entry.InputCostPerImageAbove128kTokens,
-		InputCostPerVideoPerSecondAbove128kTokens:  entry.InputCostPerVideoPerSecondAbove128kTokens,
-		InputCostPerAudioPerSecondAbove128kTokens:  entry.InputCostPerAudioPerSecondAbove128kTokens,
-		OutputCostPerTokenAbove128kTokens:          entry.OutputCostPerTokenAbove128kTokens,
-		InputCostPerTokenAbove100kTokens:           entry.InputCostPerTokenAbove100kTokens,
-		OutputCostPerTokenAbove100kTokens:          entry.OutputCostPerTokenAbove100kTokens,
+		InputCostPerToken:           entry.InputCostPerToken,
+		OutputCostPerToken:          entry.OutputCostPerToken,
+		InputCostPerTokenBatches:    entry.InputCostPerTokenBatches,
+		OutputCostPerTokenBatches:   entry.OutputCostPerTokenBatches,
+		InputCostPerTokenPriority:   entry.InputCostPerTokenPriority,
+		OutputCostPerTokenPriority:  entry.OutputCostPerTokenPriority,
+		InputCostPerTokenUltrafast:  entry.InputCostPerTokenUltrafast,
+		OutputCostPerTokenUltrafast: entry.OutputCostPerTokenUltrafast,
+		InputCostPerTokenFlex:       entry.InputCostPerTokenFlex,
+		OutputCostPerTokenFlex:      entry.OutputCostPerTokenFlex,
+		InputCostPerTokenDecisions:  entry.InputCostPerTokenDecisions,
+		OutputCostPerTokenDecisions: entry.OutputCostPerTokenDecisions,
+		// Fork, TXE-7353: service-tier and 12h cache-write rates.
+		InputCostPerTokenAbove272kTokensDecisions:                    entry.InputCostPerTokenAbove272kTokensDecisions,
+		OutputCostPerTokenAbove272kTokensDecisions:                   entry.OutputCostPerTokenAbove272kTokensDecisions,
+		CacheReadInputTokenCostDecisions:                             entry.CacheReadInputTokenCostDecisions,
+		CacheReadInputTokenCostAbove272kTokensDecisions:              entry.CacheReadInputTokenCostAbove272kTokensDecisions,
+		CacheCreationInputTokenCostDecisions:                         entry.CacheCreationInputTokenCostDecisions,
+		CacheCreationInputTokenCostAbove272kTokensDecisions:          entry.CacheCreationInputTokenCostAbove272kTokensDecisions,
+		InputCostPerTokenAbove200kTokensFlex:                         entry.InputCostPerTokenAbove200kTokensFlex,
+		OutputCostPerTokenAbove200kTokensFlex:                        entry.OutputCostPerTokenAbove200kTokensFlex,
+		CacheReadInputTokenCostAbove200kTokensFlex:                   entry.CacheReadInputTokenCostAbove200kTokensFlex,
+		CacheCreationInputTokenCostAbove12hr:                         entry.CacheCreationInputTokenCostAbove12hr,
+		CacheCreationInputTokenCostAbove12hrAbove272kTokens:          entry.CacheCreationInputTokenCostAbove12hrAbove272kTokens,
+		CacheCreationInputTokenCostAbove12hrFlex:                     entry.CacheCreationInputTokenCostAbove12hrFlex,
+		CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex:      entry.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex,
+		CacheCreationInputTokenCostAbove12hrPriority:                 entry.CacheCreationInputTokenCostAbove12hrPriority,
+		CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority:  entry.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority,
+		CacheCreationInputTokenCostAbove12hrUltrafast:                entry.CacheCreationInputTokenCostAbove12hrUltrafast,
+		CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast: entry.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast,
+		OutputCostPerImageTokenPriority:                              entry.OutputCostPerImageTokenPriority,
+		InputCostPerAudioTokenFlex:                                   entry.InputCostPerAudioTokenFlex,
+		InputCostPerAudioTokenPriority:                               entry.InputCostPerAudioTokenPriority,
+		InputCostPerTokenFast:                                        entry.InputCostPerTokenFast,
+		OutputCostPerTokenFast:                                       entry.OutputCostPerTokenFast,
+		InputCostPerTokenAbove200kTokens:                             entry.InputCostPerTokenAbove200kTokens,
+		InputCostPerTokenAbove200kTokensPriority:                     entry.InputCostPerTokenAbove200kTokensPriority,
+		OutputCostPerTokenAbove200kTokens:                            entry.OutputCostPerTokenAbove200kTokens,
+		OutputCostPerTokenAbove200kTokensPriority:                    entry.OutputCostPerTokenAbove200kTokensPriority,
+		InputCostPerTokenAbove272kTokens:                             entry.InputCostPerTokenAbove272kTokens,
+		InputCostPerTokenAbove272kTokensPriority:                     entry.InputCostPerTokenAbove272kTokensPriority,
+		InputCostPerTokenFlexAbove272kTokens:                         entry.InputCostPerTokenFlexAbove272kTokens,
+		OutputCostPerTokenAbove272kTokens:                            entry.OutputCostPerTokenAbove272kTokens,
+		OutputCostPerTokenAbove272kTokensPriority:                    entry.OutputCostPerTokenAbove272kTokensPriority,
+		OutputCostPerTokenFlexAbove272kTokens:                        entry.OutputCostPerTokenFlexAbove272kTokens,
+		InputCostPerTokenAbove272kTokensUltrafast:                    entry.InputCostPerTokenAbove272kTokensUltrafast,
+		OutputCostPerTokenAbove272kTokensUltrafast:                   entry.OutputCostPerTokenAbove272kTokensUltrafast,
+		InputCostPerCharacter:                                        entry.InputCostPerCharacter,
+		InputCostPerTokenAbove128kTokens:                             entry.InputCostPerTokenAbove128kTokens,
+		InputCostPerImageAbove128kTokens:                             entry.InputCostPerImageAbove128kTokens,
+		InputCostPerVideoPerSecondAbove128kTokens:                    entry.InputCostPerVideoPerSecondAbove128kTokens,
+		InputCostPerAudioPerSecondAbove128kTokens:                    entry.InputCostPerAudioPerSecondAbove128kTokens,
+		OutputCostPerTokenAbove128kTokens:                            entry.OutputCostPerTokenAbove128kTokens,
+		InputCostPerTokenAbove100kTokens:                             entry.InputCostPerTokenAbove100kTokens,
+		OutputCostPerTokenAbove100kTokens:                            entry.OutputCostPerTokenAbove100kTokens,
 
 		CacheCreationInputTokenCost:                         entry.CacheCreationInputTokenCost,
 		CacheReadInputTokenCost:                             entry.CacheReadInputTokenCost,
@@ -900,40 +1003,61 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 // into the Entry shape callers consume.
 func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *Entry {
 	options := Options{
-		InputCostPerToken:                          pricing.InputCostPerToken,
-		OutputCostPerToken:                         pricing.OutputCostPerToken,
-		InputCostPerTokenBatches:                   pricing.InputCostPerTokenBatches,
-		OutputCostPerTokenBatches:                  pricing.OutputCostPerTokenBatches,
-		InputCostPerTokenPriority:                  pricing.InputCostPerTokenPriority,
-		OutputCostPerTokenPriority:                 pricing.OutputCostPerTokenPriority,
-		InputCostPerTokenUltrafast:                 pricing.InputCostPerTokenUltrafast,
-		OutputCostPerTokenUltrafast:                pricing.OutputCostPerTokenUltrafast,
-		InputCostPerTokenFlex:                      pricing.InputCostPerTokenFlex,
-		OutputCostPerTokenFlex:                     pricing.OutputCostPerTokenFlex,
-		InputCostPerTokenDecisions:                 pricing.InputCostPerTokenDecisions,
-		OutputCostPerTokenDecisions:                pricing.OutputCostPerTokenDecisions,
-		InputCostPerTokenFast:                      pricing.InputCostPerTokenFast,
-		OutputCostPerTokenFast:                     pricing.OutputCostPerTokenFast,
-		InputCostPerTokenAbove200kTokens:           pricing.InputCostPerTokenAbove200kTokens,
-		InputCostPerTokenAbove200kTokensPriority:   pricing.InputCostPerTokenAbove200kTokensPriority,
-		OutputCostPerTokenAbove200kTokens:          pricing.OutputCostPerTokenAbove200kTokens,
-		OutputCostPerTokenAbove200kTokensPriority:  pricing.OutputCostPerTokenAbove200kTokensPriority,
-		InputCostPerTokenAbove272kTokens:           pricing.InputCostPerTokenAbove272kTokens,
-		InputCostPerTokenAbove272kTokensPriority:   pricing.InputCostPerTokenAbove272kTokensPriority,
-		InputCostPerTokenFlexAbove272kTokens:       pricing.InputCostPerTokenFlexAbove272kTokens,
-		OutputCostPerTokenAbove272kTokens:          pricing.OutputCostPerTokenAbove272kTokens,
-		OutputCostPerTokenAbove272kTokensPriority:  pricing.OutputCostPerTokenAbove272kTokensPriority,
-		OutputCostPerTokenFlexAbove272kTokens:      pricing.OutputCostPerTokenFlexAbove272kTokens,
-		InputCostPerTokenAbove272kTokensUltrafast:  pricing.InputCostPerTokenAbove272kTokensUltrafast,
-		OutputCostPerTokenAbove272kTokensUltrafast: pricing.OutputCostPerTokenAbove272kTokensUltrafast,
-		InputCostPerCharacter:                      pricing.InputCostPerCharacter,
-		InputCostPerTokenAbove128kTokens:           pricing.InputCostPerTokenAbove128kTokens,
-		InputCostPerImageAbove128kTokens:           pricing.InputCostPerImageAbove128kTokens,
-		InputCostPerVideoPerSecondAbove128kTokens:  pricing.InputCostPerVideoPerSecondAbove128kTokens,
-		InputCostPerAudioPerSecondAbove128kTokens:  pricing.InputCostPerAudioPerSecondAbove128kTokens,
-		OutputCostPerTokenAbove128kTokens:          pricing.OutputCostPerTokenAbove128kTokens,
-		InputCostPerTokenAbove100kTokens:           pricing.InputCostPerTokenAbove100kTokens,
-		OutputCostPerTokenAbove100kTokens:          pricing.OutputCostPerTokenAbove100kTokens,
+		InputCostPerToken:           pricing.InputCostPerToken,
+		OutputCostPerToken:          pricing.OutputCostPerToken,
+		InputCostPerTokenBatches:    pricing.InputCostPerTokenBatches,
+		OutputCostPerTokenBatches:   pricing.OutputCostPerTokenBatches,
+		InputCostPerTokenPriority:   pricing.InputCostPerTokenPriority,
+		OutputCostPerTokenPriority:  pricing.OutputCostPerTokenPriority,
+		InputCostPerTokenUltrafast:  pricing.InputCostPerTokenUltrafast,
+		OutputCostPerTokenUltrafast: pricing.OutputCostPerTokenUltrafast,
+		InputCostPerTokenFlex:       pricing.InputCostPerTokenFlex,
+		OutputCostPerTokenFlex:      pricing.OutputCostPerTokenFlex,
+		InputCostPerTokenDecisions:  pricing.InputCostPerTokenDecisions,
+		OutputCostPerTokenDecisions: pricing.OutputCostPerTokenDecisions,
+		// Fork, TXE-7353: service-tier and 12h cache-write rates.
+		InputCostPerTokenAbove272kTokensDecisions:                    pricing.InputCostPerTokenAbove272kTokensDecisions,
+		OutputCostPerTokenAbove272kTokensDecisions:                   pricing.OutputCostPerTokenAbove272kTokensDecisions,
+		CacheReadInputTokenCostDecisions:                             pricing.CacheReadInputTokenCostDecisions,
+		CacheReadInputTokenCostAbove272kTokensDecisions:              pricing.CacheReadInputTokenCostAbove272kTokensDecisions,
+		CacheCreationInputTokenCostDecisions:                         pricing.CacheCreationInputTokenCostDecisions,
+		CacheCreationInputTokenCostAbove272kTokensDecisions:          pricing.CacheCreationInputTokenCostAbove272kTokensDecisions,
+		InputCostPerTokenAbove200kTokensFlex:                         pricing.InputCostPerTokenAbove200kTokensFlex,
+		OutputCostPerTokenAbove200kTokensFlex:                        pricing.OutputCostPerTokenAbove200kTokensFlex,
+		CacheReadInputTokenCostAbove200kTokensFlex:                   pricing.CacheReadInputTokenCostAbove200kTokensFlex,
+		CacheCreationInputTokenCostAbove12hr:                         pricing.CacheCreationInputTokenCostAbove12hr,
+		CacheCreationInputTokenCostAbove12hrAbove272kTokens:          pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokens,
+		CacheCreationInputTokenCostAbove12hrFlex:                     pricing.CacheCreationInputTokenCostAbove12hrFlex,
+		CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex:      pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex,
+		CacheCreationInputTokenCostAbove12hrPriority:                 pricing.CacheCreationInputTokenCostAbove12hrPriority,
+		CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority:  pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority,
+		CacheCreationInputTokenCostAbove12hrUltrafast:                pricing.CacheCreationInputTokenCostAbove12hrUltrafast,
+		CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast: pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast,
+		OutputCostPerImageTokenPriority:                              pricing.OutputCostPerImageTokenPriority,
+		InputCostPerAudioTokenFlex:                                   pricing.InputCostPerAudioTokenFlex,
+		InputCostPerAudioTokenPriority:                               pricing.InputCostPerAudioTokenPriority,
+		InputCostPerTokenFast:                                        pricing.InputCostPerTokenFast,
+		OutputCostPerTokenFast:                                       pricing.OutputCostPerTokenFast,
+		InputCostPerTokenAbove200kTokens:                             pricing.InputCostPerTokenAbove200kTokens,
+		InputCostPerTokenAbove200kTokensPriority:                     pricing.InputCostPerTokenAbove200kTokensPriority,
+		OutputCostPerTokenAbove200kTokens:                            pricing.OutputCostPerTokenAbove200kTokens,
+		OutputCostPerTokenAbove200kTokensPriority:                    pricing.OutputCostPerTokenAbove200kTokensPriority,
+		InputCostPerTokenAbove272kTokens:                             pricing.InputCostPerTokenAbove272kTokens,
+		InputCostPerTokenAbove272kTokensPriority:                     pricing.InputCostPerTokenAbove272kTokensPriority,
+		InputCostPerTokenFlexAbove272kTokens:                         pricing.InputCostPerTokenFlexAbove272kTokens,
+		OutputCostPerTokenAbove272kTokens:                            pricing.OutputCostPerTokenAbove272kTokens,
+		OutputCostPerTokenAbove272kTokensPriority:                    pricing.OutputCostPerTokenAbove272kTokensPriority,
+		OutputCostPerTokenFlexAbove272kTokens:                        pricing.OutputCostPerTokenFlexAbove272kTokens,
+		InputCostPerTokenAbove272kTokensUltrafast:                    pricing.InputCostPerTokenAbove272kTokensUltrafast,
+		OutputCostPerTokenAbove272kTokensUltrafast:                   pricing.OutputCostPerTokenAbove272kTokensUltrafast,
+		InputCostPerCharacter:                                        pricing.InputCostPerCharacter,
+		InputCostPerTokenAbove128kTokens:                             pricing.InputCostPerTokenAbove128kTokens,
+		InputCostPerImageAbove128kTokens:                             pricing.InputCostPerImageAbove128kTokens,
+		InputCostPerVideoPerSecondAbove128kTokens:                    pricing.InputCostPerVideoPerSecondAbove128kTokens,
+		InputCostPerAudioPerSecondAbove128kTokens:                    pricing.InputCostPerAudioPerSecondAbove128kTokens,
+		OutputCostPerTokenAbove128kTokens:                            pricing.OutputCostPerTokenAbove128kTokens,
+		InputCostPerTokenAbove100kTokens:                             pricing.InputCostPerTokenAbove100kTokens,
+		OutputCostPerTokenAbove100kTokens:                            pricing.OutputCostPerTokenAbove100kTokens,
 
 		CacheCreationInputTokenCost:                         pricing.CacheCreationInputTokenCost,
 		CacheReadInputTokenCost:                             pricing.CacheReadInputTokenCost,

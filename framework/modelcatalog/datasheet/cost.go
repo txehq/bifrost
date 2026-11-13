@@ -1024,13 +1024,14 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 	// Extract cached token counts
 	cachedReadTokens := 0
 	cachedWriteTokens := 0
-	cachedWriteTokensAbove1hr := 0
+	cachedWriteTokens1h, cachedWriteTokens12h := 0, 0
 	if usage.PromptTokensDetails != nil {
 		cachedReadTokens = usage.PromptTokensDetails.CachedReadTokens
 		cachedWriteTokens = usage.PromptTokensDetails.CachedWriteTokens
-		// Every tier longer than one hour (Anthropic's 1h, OpenAI's 12h) is priced at the
-		// above-1hr cache-write rate; 5m and 30m stay at the base cache-write rate.
-		cachedWriteTokensAbove1hr = usage.PromptTokensDetails.CachedWriteTokenDetails.TokensAbove1h()
+		// Anthropic's 1h writes are priced at the above-1hr cache-write rate and OpenAI's 12h
+		// writes at the above-12hr rate (fork, TXE-7353), which falls back to the above-1hr
+		// rate on a row without one; 5m and 30m stay at the base cache-write rate.
+		cachedWriteTokens1h, cachedWriteTokens12h = longLivedCacheWriteTokens(usage.PromptTokensDetails.CachedWriteTokenDetails)
 	}
 
 	// Long-context pricing tiers are selected by input context size. Once
@@ -1042,6 +1043,7 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 	cacheReadInputRate := tieredCacheReadInputTokenRate(pricing, tierTokens, tier)
 	cacheCreationInputRate := tieredCacheCreationInputTokenRate(pricing, tierTokens, tier)
 	cacheCreationInputAbove1hrInputRate := tieredCacheCreationInputAbove1hrTokenRate(pricing, tierTokens, tier)
+	cacheCreationInputAbove12hrInputRate := tieredCacheCreationInputAbove12hrTokenRate(pricing, tierTokens, tier)
 
 	// Clamp cached token counts to avoid negative billing on malformed provider payloads
 	if cachedReadTokens > promptTokens {
@@ -1051,9 +1053,8 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 		cachedWriteTokens = promptTokens - cachedReadTokens
 	}
 	// Should not happen, but just in case
-	if cachedWriteTokensAbove1hr > cachedWriteTokens {
-		cachedWriteTokensAbove1hr = cachedWriteTokens
-	}
+	cachedWriteTokens12h = min(cachedWriteTokens12h, cachedWriteTokens)
+	cachedWriteTokens1h = min(cachedWriteTokens1h, cachedWriteTokens-cachedWriteTokens12h)
 
 	// Input cost components, tracked separately so the breakdown reports each
 	// category; together they sum to the input token cost.
@@ -1067,10 +1068,9 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 
 	cacheWriteCost := 0.0
 	if cachedWriteTokens > 0 {
-		if cachedWriteTokensAbove1hr > 0 {
-			cacheWriteCost += float64(cachedWriteTokensAbove1hr) * cacheCreationInputAbove1hrInputRate
-		}
-		cacheWriteCost += float64(cachedWriteTokens-cachedWriteTokensAbove1hr) * cacheCreationInputRate
+		cacheWriteCost += float64(cachedWriteTokens12h) * cacheCreationInputAbove12hrInputRate
+		cacheWriteCost += float64(cachedWriteTokens1h) * cacheCreationInputAbove1hrInputRate
+		cacheWriteCost += float64(cachedWriteTokens-cachedWriteTokens12h-cachedWriteTokens1h) * cacheCreationInputRate
 	}
 
 	textOutputCost := float64(completionTokens) * outputRate
@@ -1101,11 +1101,11 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 	} else if outputAudioTokens > completionTokens {
 		outputAudioTokens = completionTokens
 	}
-	if inputAudioTokens > 0 && pricing.InputCostPerAudioToken != nil {
+	if audioRate := audioInputTokenRate(pricing, tier); inputAudioTokens > 0 && audioRate != nil {
 		if inputAudioTokens > nonCachedPrompt {
 			inputAudioTokens = nonCachedPrompt
 		}
-		inputAudioCost = float64(inputAudioTokens) * *pricing.InputCostPerAudioToken
+		inputAudioCost = float64(inputAudioTokens) * *audioRate
 		textInputCost -= float64(inputAudioTokens) * inputRate
 	}
 	if outputAudioTokens > 0 && pricing.OutputCostPerAudioToken != nil {
@@ -1182,21 +1182,23 @@ func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *s
 		promptTokens := usage.PromptTokens
 		cachedReadTokens := 0
 		cachedWriteTokens := 0
-		cachedWriteTokensAbove1hr := 0
+		cachedWriteTokens1h, cachedWriteTokens12h := 0, 0
 		if usage.PromptTokensDetails != nil {
 			cachedReadTokens = usage.PromptTokensDetails.CachedReadTokens
 			cachedWriteTokens = usage.PromptTokensDetails.CachedWriteTokens
-			cachedWriteTokensAbove1hr = usage.PromptTokensDetails.CachedWriteTokenDetails.TokensAbove1h()
+			cachedWriteTokens1h, cachedWriteTokens12h = longLivedCacheWriteTokens(usage.PromptTokensDetails.CachedWriteTokenDetails)
 		}
 		cachedReadTokens = min(max(cachedReadTokens, 0), promptTokens)
 		cachedWriteTokens = min(max(cachedWriteTokens, 0), promptTokens-cachedReadTokens)
-		cachedWriteTokensAbove1hr = min(max(cachedWriteTokensAbove1hr, 0), cachedWriteTokens)
+		cachedWriteTokens12h = min(cachedWriteTokens12h, cachedWriteTokens)
+		cachedWriteTokens1h = min(cachedWriteTokens1h, cachedWriteTokens-cachedWriteTokens12h)
 
 		batchInputRate := *resolvedInputRate
 		inputRate := batchInputRate
 		cacheReadRate := batchInputRate
 		cacheWriteRate := batchInputRate
 		cacheWriteAbove1hrRate := batchInputRate
+		cacheWriteAbove12hrRate := batchInputRate
 		// Catalog long-context tiers and cache rates describe synchronous pricing.
 		// Batch discounts stack with them, so scale each category by the same
 		// batch/input ratio instead of charging every token at the flat batch rate.
@@ -1245,13 +1247,25 @@ func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *s
 			} else {
 				cacheWriteAbove1hrRate = cacheWriteRate
 			}
+
+			// OpenAI 12h writes (fork, TXE-7353): the synchronous 12h rate for the context
+			// window, scaled like every other category; the above-1hr rate without one.
+			switch {
+			case promptTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokens != nil:
+				cacheWriteAbove12hrRate = *pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokens * batchRatio
+			case pricing.CacheCreationInputTokenCostAbove12hr != nil:
+				cacheWriteAbove12hrRate = *pricing.CacheCreationInputTokenCostAbove12hr * batchRatio
+			default:
+				cacheWriteAbove12hrRate = cacheWriteAbove1hrRate
+			}
 		}
 
 		nonCachedPrompt := promptTokens - cachedReadTokens - cachedWriteTokens
 		inputCost = float64(nonCachedPrompt)*inputRate +
 			float64(cachedReadTokens)*cacheReadRate +
-			float64(cachedWriteTokens-cachedWriteTokensAbove1hr)*cacheWriteRate +
-			float64(cachedWriteTokensAbove1hr)*cacheWriteAbove1hrRate
+			float64(cachedWriteTokens-cachedWriteTokens1h-cachedWriteTokens12h)*cacheWriteRate +
+			float64(cachedWriteTokens1h)*cacheWriteAbove1hrRate +
+			float64(cachedWriteTokens12h)*cacheWriteAbove12hrRate
 	}
 
 	outputCost := 0.0
@@ -1396,13 +1410,22 @@ func computeDecisionCost(pricing *configstoreTables.TableModelPricing, usage *sc
 		return nil
 	}
 	tierTokens := usage.PromptTokens
+	above272k := tierTokens > TokenTierAbove272K
+	// decisionRate picks a native decision rate: the above-272k rate when the context is past
+	// it and the row has one (fork, TXE-7353), else the flat decision rate.
+	decisionRate := func(above272kRate, rate *float64) *float64 {
+		if above272k && above272kRate != nil {
+			return above272kRate
+		}
+		return rate
+	}
 	inputRate := tieredInputRate(pricing, tierTokens, tier)
-	if pricing.InputCostPerTokenDecisions != nil {
-		inputRate = *pricing.InputCostPerTokenDecisions
+	if r := decisionRate(pricing.InputCostPerTokenAbove272kTokensDecisions, pricing.InputCostPerTokenDecisions); r != nil {
+		inputRate = *r
 	}
 	outputRate := tieredOutputRate(pricing, tierTokens, tier)
-	if pricing.OutputCostPerTokenDecisions != nil {
-		outputRate = *pricing.OutputCostPerTokenDecisions
+	if r := decisionRate(pricing.OutputCostPerTokenAbove272kTokensDecisions, pricing.OutputCostPerTokenDecisions); r != nil {
+		outputRate = *r
 	}
 	if inputRate < 0 || outputRate < 0 {
 		return nil
@@ -1413,7 +1436,30 @@ func computeDecisionCost(pricing *configstoreTables.TableModelPricing, usage *sc
 		pricing.Mode != "" && pricing.Mode != normalizeRequestType(schemas.DecisionRequest) {
 		return computeTextCost(pricing, usage, tier)
 	}
-	inputCost := float64(usage.PromptTokens) * inputRate
+	// Native decision rates. Cached reads and writes take the decision cache rates when the
+	// row has them (fork, TXE-7353: gpt-6-luna reads at a tenth of its input rate); without
+	// them every prompt token is priced at the decision input rate, as before.
+	cachedReadTokens, cachedWriteTokens := 0, 0
+	if usage.PromptTokensDetails != nil {
+		cachedReadTokens = min(max(usage.PromptTokensDetails.CachedReadTokens, 0), usage.PromptTokens)
+		cachedWriteTokens = min(max(usage.PromptTokensDetails.CachedWriteTokens, 0), usage.PromptTokens-cachedReadTokens)
+	}
+	cacheReadRate := decisionRate(pricing.CacheReadInputTokenCostAbove272kTokensDecisions, pricing.CacheReadInputTokenCostDecisions)
+	cacheWriteRate := decisionRate(pricing.CacheCreationInputTokenCostAbove272kTokensDecisions, pricing.CacheCreationInputTokenCostDecisions)
+	if (cacheReadRate != nil && *cacheReadRate < 0) || (cacheWriteRate != nil && *cacheWriteRate < 0) {
+		return nil
+	}
+	inputCost := 0.0
+	uncached := usage.PromptTokens
+	if cacheReadRate != nil {
+		inputCost += float64(cachedReadTokens) * *cacheReadRate
+		uncached -= cachedReadTokens
+	}
+	if cacheWriteRate != nil {
+		inputCost += float64(cachedWriteTokens) * *cacheWriteRate
+		uncached -= cachedWriteTokens
+	}
+	inputCost += float64(uncached) * inputRate
 	outputCost := float64(usage.CompletionTokens) * outputRate
 	return newInputOutputCost(inputCost, outputCost)
 }
@@ -2067,6 +2113,9 @@ func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens i
 		if totalTokens > TokenTierAbove272K && pricing.InputCostPerTokenFlexAbove272kTokens != nil {
 			return *pricing.InputCostPerTokenFlexAbove272kTokens
 		}
+		if totalTokens > TokenTierAbove200K && pricing.InputCostPerTokenAbove200kTokensFlex != nil {
+			return *pricing.InputCostPerTokenAbove200kTokensFlex
+		}
 		if pricing.InputCostPerTokenFlex != nil {
 			return *pricing.InputCostPerTokenFlex
 		}
@@ -2122,6 +2171,9 @@ func tieredOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens 
 		if totalTokens > TokenTierAbove272K && pricing.OutputCostPerTokenFlexAbove272kTokens != nil {
 			return *pricing.OutputCostPerTokenFlexAbove272kTokens
 		}
+		if totalTokens > TokenTierAbove200K && pricing.OutputCostPerTokenAbove200kTokensFlex != nil {
+			return *pricing.OutputCostPerTokenAbove200kTokensFlex
+		}
 		if pricing.OutputCostPerTokenFlex != nil {
 			return *pricing.OutputCostPerTokenFlex
 		}
@@ -2175,6 +2227,9 @@ func tieredImageInputRate(pricing *configstoreTables.TableModelPricing, totalTok
 // tieredImageOutputRate returns the effective rate for image tokens on the output side.
 // Falls back to the general tieredOutputRate when no image-specific rate is configured.
 func tieredImageOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
+	if tier.isPriority && pricing.OutputCostPerImageTokenPriority != nil {
+		return *pricing.OutputCostPerImageTokenPriority
+	}
 	if pricing.OutputCostPerImageToken != nil {
 		return *pricing.OutputCostPerImageToken
 	}
@@ -2209,10 +2264,23 @@ func tieredVideoInputPerSecondRate(pricing *configstoreTables.TableModelPricing,
 // tieredAudioTokenInputRate returns the effective per-token rate for audio input tokens.
 // Falls back to the general tieredInputRate when no audio-specific rate is configured.
 func tieredAudioTokenInputRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
-	if pricing.InputCostPerAudioToken != nil {
-		return *pricing.InputCostPerAudioToken
+	if rate := audioInputTokenRate(pricing, tier); rate != nil {
+		return *rate
 	}
 	return tieredInputRate(pricing, totalTokens, tier)
+}
+
+// audioInputTokenRate returns the audio input token rate for the served tier: the flex or
+// priority audio rate when the row has one (Gemini and Vertex publish both; fork, TXE-7353),
+// else the standard audio rate, else nil when the row prices audio as text.
+func audioInputTokenRate(pricing *configstoreTables.TableModelPricing, tier serviceTier) *float64 {
+	if tier.isFlex && pricing.InputCostPerAudioTokenFlex != nil {
+		return pricing.InputCostPerAudioTokenFlex
+	}
+	if tier.isPriority && pricing.InputCostPerAudioTokenPriority != nil {
+		return pricing.InputCostPerAudioTokenPriority
+	}
+	return pricing.InputCostPerAudioToken
 }
 
 // tieredAudioTokenOutputRate returns the effective per-token rate for audio output tokens.
@@ -2241,6 +2309,9 @@ func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing,
 	if tier.isFlex {
 		if totalTokens > TokenTierAbove272K && pricing.CacheReadInputTokenCostFlexAbove272kTokens != nil {
 			return *pricing.CacheReadInputTokenCostFlexAbove272kTokens
+		}
+		if totalTokens > TokenTierAbove200K && pricing.CacheReadInputTokenCostAbove200kTokensFlex != nil {
+			return *pricing.CacheReadInputTokenCostAbove200kTokensFlex
 		}
 		if pricing.CacheReadInputTokenCostFlex != nil {
 			return *pricing.CacheReadInputTokenCostFlex
@@ -2340,6 +2411,48 @@ func tieredCacheCreationInputAbove1hrTokenRate(pricing *configstoreTables.TableM
 		return *pricing.CacheCreationInputTokenCostAbove1hr
 	}
 	return tieredCacheCreationInputTokenRate(pricing, totalTokens, tier)
+}
+
+// tieredCacheCreationInputAbove12hrTokenRate returns the rate for an OpenAI 12h cache write
+// (ttl_12h_tokens; fork, TXE-7353): the served tier's 12h rate, above 272k when the context is,
+// then the standard 12h rate, then, on a row without 12h rates, the above-1hr rate, which was
+// how every 12h write was priced before. Precedence mirrors tieredCacheCreationInputTokenRate.
+func tieredCacheCreationInputAbove12hrTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
+	above272k := totalTokens > TokenTierAbove272K
+	pick := func(above272kRate, rate *float64) *float64 {
+		if above272k && above272kRate != nil {
+			return above272kRate
+		}
+		return rate
+	}
+	if tier.isUltrafast {
+		if r := pick(pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast, pricing.CacheCreationInputTokenCostAbove12hrUltrafast); r != nil {
+			return *r
+		}
+	}
+	if tier.isFlex {
+		if r := pick(pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex, pricing.CacheCreationInputTokenCostAbove12hrFlex); r != nil {
+			return *r
+		}
+	}
+	if tier.isPriority {
+		if r := pick(pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority, pricing.CacheCreationInputTokenCostAbove12hrPriority); r != nil {
+			return *r
+		}
+	}
+	if r := pick(pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokens, pricing.CacheCreationInputTokenCostAbove12hr); r != nil {
+		return *r
+	}
+	return tieredCacheCreationInputAbove1hrTokenRate(pricing, totalTokens, tier)
+}
+
+// longLivedCacheWriteTokens splits the cache writes priced above the base write rate into
+// Anthropic's 1h tier and OpenAI's 12h tier, each clamped at zero.
+func longLivedCacheWriteTokens(d *schemas.ChatCachedWriteTokenDetails) (tokens1h, tokens12h int) {
+	if d == nil {
+		return 0, 0
+	}
+	return max(d.CachedWriteTokens1h, 0), max(d.CachedWriteTokens12h, 0)
 }
 
 // inputTierTokens returns prompt tokens used to select a pricing tier.

@@ -44,6 +44,12 @@ describe("pricingFieldUnit", () => {
 			"cache_read_input_token_cost_above_272k_tokens_ultrafast",
 			"cache_creation_input_token_cost_above_272k_tokens_ultrafast",
 			"cache_creation_input_token_cost_above_272k_tokens_priority",
+			"cache_creation_input_token_cost_above_12hr",
+			"cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast",
+			"input_cost_per_token_above_200k_tokens_flex",
+			"cache_read_input_token_cost_above_272k_tokens_decisions",
+			"input_cost_per_audio_token_priority",
+			"output_cost_per_image_token_priority",
 		]) {
 			expect(pricingFieldUnit(key), key).toBe("token");
 		}
@@ -91,7 +97,7 @@ describe("pricingFieldUnit", () => {
 			expect(byUnit[unit], `${field.key} resolved to unexpected unit ${unit}`).toBeDefined();
 			byUnit[unit].push(field.key);
 		}
-		expect(PRICING_FIELDS).toHaveLength(119);
+		expect(PRICING_FIELDS).toHaveLength(146);
 		expect(byUnit.multiplier).toEqual(["inference_geo_us_multiplier", "off_peak_cost_multiplier"]);
 		expect(byUnit.character).toEqual(["input_cost_per_character"]);
 		// Sanity: the split is real, not everything collapsing into one bucket.
@@ -145,7 +151,16 @@ describe("request type groups", () => {
 		expect(REQUEST_TYPE_OPTIONS).toContain("decisions");
 		expect(getRequestTypeGroup("decisions")).toBe("Decisions");
 		const decisionFields = PRICING_FIELDS.filter((f) => (f.requestTypeGroups as readonly string[]).includes("decisions")).map((f) => f.key);
-		expect(decisionFields).toEqual(["input_cost_per_token_decisions", "output_cost_per_token_decisions"]);
+		expect(decisionFields).toEqual([
+			"input_cost_per_token_decisions",
+			"output_cost_per_token_decisions",
+			"input_cost_per_token_above_272k_tokens_decisions",
+			"output_cost_per_token_above_272k_tokens_decisions",
+			"cache_read_input_token_cost_decisions",
+			"cache_read_input_token_cost_above_272k_tokens_decisions",
+			"cache_creation_input_token_cost_decisions",
+			"cache_creation_input_token_cost_above_272k_tokens_decisions",
+		]);
 	});
 
 	// The decision fields are decision-only: a chat override must not offer them.

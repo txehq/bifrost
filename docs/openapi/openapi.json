@@ -139904,6 +139904,106 @@
             "minimum": 0,
             "description": "Output token cost for decision requests. A decision rate always wins over output_cost_per_token, whether it comes from the datasheet or an override; output_cost_per_token is only the fallback when no decision rate is set."
           },
+          "input_cost_per_token_above_272k_tokens_decisions": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Input token cost for decision requests whose prompt exceeds 272k tokens. Falls back to input_cost_per_token_decisions."
+          },
+          "output_cost_per_token_above_272k_tokens_decisions": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Output token cost for decision requests whose prompt exceeds 272k tokens. Falls back to output_cost_per_token_decisions."
+          },
+          "cache_read_input_token_cost_decisions": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache-read token cost for decision requests. Without it, cached reads on a native decision row are priced at the decision input rate."
+          },
+          "cache_read_input_token_cost_above_272k_tokens_decisions": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache-read token cost for decision requests whose prompt exceeds 272k tokens."
+          },
+          "cache_creation_input_token_cost_decisions": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache-write token cost for decision requests. Without it, cache writes on a native decision row are priced at the decision input rate."
+          },
+          "cache_creation_input_token_cost_above_272k_tokens_decisions": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache-write token cost for decision requests whose prompt exceeds 272k tokens."
+          },
+          "input_cost_per_token_above_200k_tokens_flex": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Input token cost for flex requests whose prompt exceeds 200k tokens."
+          },
+          "output_cost_per_token_above_200k_tokens_flex": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Output token cost for flex requests whose prompt exceeds 200k tokens."
+          },
+          "cache_read_input_token_cost_above_200k_tokens_flex": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache-read token cost for flex requests whose prompt exceeds 200k tokens."
+          },
+          "cache_creation_input_token_cost_above_12hr": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache-write token cost for OpenAI 12-hour cache writes (ttl_12h_tokens). Without it, a 12h write is priced at cache_creation_input_token_cost_above_1hr."
+          },
+          "cache_creation_input_token_cost_above_12hr_above_272k_tokens": {
+            "type": "number",
+            "minimum": 0,
+            "description": "12-hour cache-write token cost when the prompt exceeds 272k tokens."
+          },
+          "cache_creation_input_token_cost_above_12hr_flex": {
+            "type": "number",
+            "minimum": 0,
+            "description": "12-hour cache-write token cost for flex requests."
+          },
+          "cache_creation_input_token_cost_above_12hr_above_272k_tokens_flex": {
+            "type": "number",
+            "minimum": 0,
+            "description": "12-hour cache-write token cost for flex requests whose prompt exceeds 272k tokens."
+          },
+          "cache_creation_input_token_cost_above_12hr_priority": {
+            "type": "number",
+            "minimum": 0,
+            "description": "12-hour cache-write token cost for priority requests."
+          },
+          "cache_creation_input_token_cost_above_12hr_above_272k_tokens_priority": {
+            "type": "number",
+            "minimum": 0,
+            "description": "12-hour cache-write token cost for priority requests whose prompt exceeds 272k tokens."
+          },
+          "cache_creation_input_token_cost_above_12hr_ultrafast": {
+            "type": "number",
+            "minimum": 0,
+            "description": "12-hour cache-write token cost for ultrafast requests."
+          },
+          "cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast": {
+            "type": "number",
+            "minimum": 0,
+            "description": "12-hour cache-write token cost for ultrafast requests whose prompt exceeds 272k tokens."
+          },
+          "output_cost_per_image_token_priority": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Image output token cost for priority requests. Falls back to output_cost_per_image_token."
+          },
+          "input_cost_per_audio_token_flex": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Audio input token cost for flex requests. Falls back to input_cost_per_audio_token."
+          },
+          "input_cost_per_audio_token_priority": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Audio input token cost for priority requests. Falls back to input_cost_per_audio_token."
+          },
           "input_cost_per_token_fast": {
             "type": "number",
             "minimum": 0,
