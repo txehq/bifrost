@@ -175,11 +175,12 @@ func TestOutputFolderIsClaimedAndClosesWhatIsInside(t *testing.T) {
 			for name, into := range map[string]func(string) *schemas.BifrostRequest{"batch output": s.batchInto, "task output": s.videoInto} {
 				t.Run(name+" needs an exclusive location", func(t *testing.T) {
 					for location, why := range map[string]string{
-						root + "other/":            "the other key's folder",
-						root + "other":             "the same folder written without its slash",
-						root + "other/sub/":        "a folder inside it",
-						root + "other//":           "a doubled slash inside it",
-						root:                       "the bucket, which holds the other key's folder",
+						root + "other/":     "the other key's folder",
+						root + "other":      "the same folder written without its slash",
+						root + "other/sub/": "a folder inside it",
+						root + "other//":    "a doubled slash inside it",
+						// The bucket root itself is a 400 for a key with no storage list (TXE-7259,
+						// TestBucketRootIsAnOutputLocationOnlyForAKeyWithAStorageList).
 						root + "shared/":           "a folder holding another key's upload",
 						root + "shared/uploads":    "the folder that upload is in",
 						root + "jobs/":             "a folder holding another key's batch results",
@@ -445,8 +446,15 @@ func TestBucketRootIsAnOutputLocationOnlyForAKeyWithAStorageList(t *testing.T) {
 		assert.Contains(t, shortCircuit.Error.Error.Message, "allowed_storage_prefixes", name)
 	}
 	assert.Empty(t, storageFolderOwner(t, store, "gs://bare-bucket/"), "nothing is claimed")
+	// A root the key already holds (claimed before this rule, or while it had a list) is refused
+	// the same way.
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindStorageFolder, "gcs", "gs://held-bucket/", "vk-mcp-stamp")
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), vertex.batchInto("gs://held-bucket/"))
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "an existing claim does not lift the rule")
+	assert.Equal(t, 400, *shortCircuit.Error.StatusCode)
 	assert.Empty(t, storageFolderOwner(t, store, "s3://bare-bucket/"))
-	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), vertex.chatFile("gs://bare-bucket/input.pdf"))
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), vertex.chatFile("gs://bare-bucket/input.pdf"))
 	require.NoError(t, err)
 	assert.Nil(t, shortCircuit, "an object at the root is still an input")
 	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), vertex.batchInto("gs://bare-bucket/out/"))

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"testing"
 
@@ -145,4 +146,74 @@ func TestStorageFolderClaimsStayWithinTheCallersScope(t *testing.T) {
 	status, body = call(fasthttp.MethodGet, "", nil)
 	require.Equal(t, 200, status)
 	assert.EqualValues(t, 2, body["total_count"], "an unscoped admin sees the rest, the deleted key's claim included")
+}
+
+// BenchmarkStorageFolderClaims measures the management routes of TXE-7259 over 2,000 claims of
+// 50 virtual keys: one page unscoped, one page for a caller whose row scope shows 5 keys, a
+// prefix filter, and a release (the claim is put back between iterations, off the clock).
+func BenchmarkStorageFolderClaims(b *testing.B) {
+	SetLogger(&mockLogger{})
+	t := &testing.T{}
+	store := newScaleTestStore(t)
+	ctx := context.Background()
+	active := true
+	folder := configstoreTables.ProviderObjectKindStorageFolder
+	put := func(objectID, vk string) {
+		if err := store.UpsertProviderObject(ctx, &configstoreTables.TableProviderObject{
+			ID: configstoreTables.ProviderObjectID(folder, "gcs", objectID), Kind: folder, Provider: "gcs", ObjectID: objectID, VirtualKeyID: vk,
+		}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	var scoped []string
+	for k := 0; k < 50; k++ {
+		vk := fmt.Sprintf("vk-%02d", k)
+		if err := store.CreateVirtualKey(ctx, &configstoreTables.TableVirtualKey{ID: vk, Name: vk, Value: *schemas.NewSecretVar("sk-bf-" + vk), IsActive: &active}); err != nil {
+			b.Fatal(err)
+		}
+		if k < 5 {
+			scoped = append(scoped, vk)
+		}
+		for i := 0; i < 40; i++ {
+			put(fmt.Sprintf("gs://bench/%s/out-%02d/", vk, i), vk)
+		}
+	}
+	scope := queryscope.QueryScope(func(db *gorm.DB) *gorm.DB { return db.Where("governance_virtual_keys.id IN ?", scoped) })
+	r := router.New()
+	(&GovernanceHandler{configStore: store}).RegisterRoutes(r)
+	serve := func(method, query string, withScope bool) int {
+		var req fasthttp.Request
+		req.Header.SetMethod(method)
+		req.SetRequestURI("/api/governance/storage-folders?" + query)
+		var rc fasthttp.RequestCtx
+		rc.Init(&req, nil, nil)
+		if withScope {
+			rc.SetUserValue(schemas.BifrostContextKeyQueryScope, scope)
+		}
+		r.Handler(&rc)
+		return rc.Response.StatusCode()
+	}
+	for name, run := range map[string]struct {
+		method, query string
+		scoped        bool
+	}{
+		"list, unscoped":            {fasthttp.MethodGet, "limit=100", false},
+		"list, scoped to 5 keys":    {fasthttp.MethodGet, "limit=100", true},
+		"list, one key's prefix":    {fasthttp.MethodGet, "prefix=" + url.QueryEscape("gs://bench/vk-07/"), false},
+		"release, scoped to 5 keys": {fasthttp.MethodDelete, "folder=" + url.QueryEscape("gs://bench/vk-01/out-00/"), true},
+	} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if run.method == fasthttp.MethodDelete {
+					b.StopTimer()
+					put("gs://bench/vk-01/out-00/", "vk-01")
+					b.StartTimer()
+				}
+				if status := serve(run.method, run.query, run.scoped); status != 200 {
+					b.Fatalf("status %d", status)
+				}
+			}
+		})
+	}
 }

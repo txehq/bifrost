@@ -186,6 +186,15 @@ func (p *GovernancePlugin) refuseForeignStorageFolder(ctx *schemas.BifrostContex
 		folder = storageFolderOf(uri)
 		uri = folder
 	}
+	if ref.destination {
+		if bucket, root := storageBucketRoot(folder); root && !storageRestricted(ctx) {
+			// TXE-7259 (A1): a key with no storage list may not write to a bucket root, whether or
+			// not it holds a claim there (one made before this rule, or while it had a list).
+			// Claiming the root would take the whole bucket from every other key; leaving it
+			// unclaimed would leave the key's results readable by them.
+			return "", storageFolderRefusal(ctx, 400, fmt.Sprintf("output location '%s' is the root of bucket %s: name a folder inside the bucket, or give the virtual key an allowed_storage_prefixes entry that covers the bucket", ref.requestID, bucket))
+		}
+	}
 	folders, tooDeep := storageFoldersAbove(uri)
 	if tooDeep || len(folder) > maxStorageFolderLength {
 		return "", storageFolderRefusal(ctx, 400, fmt.Sprintf("file '%s' cannot be verified for this virtual key: it lies more than %d folders deep, or names an output location longer than %d characters", ref.requestID, maxStorageFolderLevels, maxStorageFolderLength))
@@ -220,12 +229,6 @@ func (p *GovernancePlugin) refuseForeignStorageFolder(ctx *schemas.BifrostContex
 	}
 	if !ref.destination {
 		return "", nil
-	}
-	if bucket, root := storageBucketRoot(folder); root && !storageRestricted(ctx) {
-		// TXE-7259 (A1): a key with no storage list may not write to a bucket root. Claiming the
-		// root would take the whole bucket from every other key; leaving it unclaimed would leave
-		// the key's results readable by them.
-		return "", storageFolderRefusal(ctx, 400, fmt.Sprintf("output location '%s' is the root of bucket %s: name a folder inside the bucket, or give the virtual key an allowed_storage_prefixes entry that covers the bucket", ref.requestID, bucket))
 	}
 	return folder, nil
 }
