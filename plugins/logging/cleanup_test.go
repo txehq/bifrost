@@ -32,7 +32,7 @@ type recordingStore struct {
 
 func (s *recordingStore) BatchCreateIfNotExists(ctx context.Context, entries []*logstore.Log) error {
 	if s.delay > 0 {
-		time.Sleep(s.delay)
+		time.Sleep(s.delay) // sleep-ok: injected store latency in a fake, not a wait
 	}
 	if err := s.LogStore.BatchCreateIfNotExists(ctx, entries); err != nil {
 		return err
@@ -83,9 +83,10 @@ func TestCleanupDrainsRecoveredBatchNoDrops(t *testing.T) {
 		plugin.enqueueLogEntry(makeTestLog(fmt.Sprintf("recovered-%d", i)), nil)
 	}
 
-	// Let batchWriter dequeue everything into its local batch. 100ms is far
-	// less than batchInterval (2s), so no automatic flush should have run.
-	time.Sleep(100 * time.Millisecond)
+	// Let batchWriter dequeue everything into its local batch: the queue is empty
+	// once it has taken the last entry. batchInterval is 2s, so no automatic flush
+	// runs in the meantime.
+	waitFor(t, "batchWriter to take every queued entry", func() bool { return len(plugin.writeQueue) == 0 })
 
 	if err := plugin.Cleanup(); err != nil {
 		t.Fatalf("Cleanup() error = %v", err)
