@@ -821,6 +821,41 @@ func (a *videoCoverageAccount) GetConfigForProvider(_ schemas.ModelProvider) (*s
 	}}, nil
 }
 
+// videoAudioPricing says, for each provider in videoProviders, how a video job's generated audio
+// reaches its price (fork, TXE-7306). Vendors bill audio on top of a silent video (Runway veo3.1
+// is $0.20/s silent and $0.40/s with audio), and a job priced at the silent rate under-charges
+// the key. Sources are the vendors' own pricing pages, read on 14 Nov 2026.
+var videoAudioPricing = map[schemas.ModelProvider]string{
+	schemas.OpenAI:    "one rate: every Sora video carries audio, and there was no silent price (developers.openai.com/api/docs/models/sora-2; the Sora 2 API was shut down on 2026-09-24)",
+	schemas.Gemini:    "audio band rates where the datasheet publishes them; Veo on the Gemini API is shut down (aistudio.google.com/docs/deprecations), and its Omni successor has one price with native audio (aistudio.google.com/docs/pricing)",
+	schemas.Vertex:    "audio band rates where the datasheet publishes them; upstream files one Veo rate, the with-audio price (veo-3.1 0.40/s, as Runway's veo3.1 audio row), so audio is not under-priced",
+	schemas.Replicate: "audio band rates (pixverse-v6 and kling-v3-video publish them upstream); the converter sends no audio flag, so the model's default applies, and an unstated flag is priced with audio",
+	schemas.Runway:    "audio defaults to true (docs.dev.runwayml.com/guides/pricing); upstream files the with-audio price as the only rate for veo3.1, veo3.1_fast and kling3.0 standard and pro, so audio is not under-priced",
+	schemas.Runware:   "the task reports its own cost, which covers audio",
+	schemas.MiniMax:   "one price whatever the audio setting (platform.minimax.io/docs/guides/pricing)",
+	schemas.BytePlus:  "Seedance 2.x is priced per video token with no audio split (ai.byteplus.com/ark/region:ap-southeast-1/docs/model-pricing)",
+	schemas.Kling:     "audio band rates where the datasheet or an override sets them; Kling bills audio on top (kling.ai/llms.txt: kling-v3 std 0.084/s silent, 0.126/s with audio), and upstream publishes no kling/ rate today",
+	schemas.DashScope: "upstream files Wan 2.7 and 3.0 at their with-audio prices, the only ones Model Studio lists (alibabacloud.com/help/en/model-studio/model-pricing); audio band rates where the datasheet publishes them",
+	schemas.XAI:       "the retrieve reports the bill itself (usage.cost_in_usd_ticks), which covers audio",
+	schemas.BFL:       "the query reports BFL's settled cost (usage.cost, TXE-7297), which covers generate_audio",
+}
+
+// TestEveryVideoProviderDeclaresHowAudioIsPriced (TXE-7306) fails when a provider is added to
+// videoProviders without saying how its generated audio is priced, or an entry outlives its
+// provider.
+func TestEveryVideoProviderDeclaresHowAudioIsPriced(t *testing.T) {
+	for provider := range videoProviders {
+		if reason := videoAudioPricing[provider]; strings.TrimSpace(reason) == "" {
+			t.Errorf("%s settles video but videoAudioPricing does not say how a job's generated audio is priced: add an entry with the vendor's source", provider)
+		}
+	}
+	for provider := range videoAudioPricing {
+		if _, settled := videoProviders[provider]; !settled {
+			t.Errorf("%s is in videoAudioPricing but not in videoProviders: remove the entry", provider)
+		}
+	}
+}
+
 // TestVideoSettlerCoversEveryProviderThatImplementsVideo (TXE-7118) reads the set of video
 // providers from the providers themselves. videoProviders is a hand-kept list, and a provider
 // missing from it has its video jobs recorded and never settled: nothing is charged to the

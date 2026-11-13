@@ -150,11 +150,20 @@ type TableModelPricing struct {
 
 	// Resolution-banded video output rates, matched on the short edge of the generated
 	// video's size. Absent band falls back to OutputCostPerVideoPerSecond, then OutputCostPerSecond.
+	OutputCostPerVideoPerSecond360p  *float64 `gorm:"default:null;column:output_cost_per_video_per_second_360p" json:"output_cost_per_video_per_second_360p,omitempty"`
 	OutputCostPerVideoPerSecond480p  *float64 `gorm:"default:null;column:output_cost_per_video_per_second_480p" json:"output_cost_per_video_per_second_480p,omitempty"`
+	OutputCostPerVideoPerSecond540p  *float64 `gorm:"default:null;column:output_cost_per_video_per_second_540p" json:"output_cost_per_video_per_second_540p,omitempty"`
 	OutputCostPerVideoPerSecond720p  *float64 `gorm:"default:null;column:output_cost_per_video_per_second_720p" json:"output_cost_per_video_per_second_720p,omitempty"`
 	OutputCostPerVideoPerSecond1024p *float64 `gorm:"default:null;column:output_cost_per_video_per_second_1024p" json:"output_cost_per_video_per_second_1024p,omitempty"`
 	OutputCostPerVideoPerSecond1080p *float64 `gorm:"default:null;column:output_cost_per_video_per_second_1080p" json:"output_cost_per_video_per_second_1080p,omitempty"`
 	OutputCostPerVideoPerSecond4k    *float64 `gorm:"default:null;column:output_cost_per_video_per_second_4k" json:"output_cost_per_video_per_second_4k,omitempty"`
+
+	// Video output rates with generated audio, per resolution band (fork, TXE-7306).
+	OutputCostPerVideoPerSecond360pAudio  *float64 `gorm:"default:null;column:output_cost_per_video_per_second_360p_audio" json:"output_cost_per_video_per_second_360p_audio,omitempty"`
+	OutputCostPerVideoPerSecond540pAudio  *float64 `gorm:"default:null;column:output_cost_per_video_per_second_540p_audio" json:"output_cost_per_video_per_second_540p_audio,omitempty"`
+	OutputCostPerVideoPerSecond720pAudio  *float64 `gorm:"default:null;column:output_cost_per_video_per_second_720p_audio" json:"output_cost_per_video_per_second_720p_audio,omitempty"`
+	OutputCostPerVideoPerSecond1080pAudio *float64 `gorm:"default:null;column:output_cost_per_video_per_second_1080p_audio" json:"output_cost_per_video_per_second_1080p_audio,omitempty"`
+	OutputCostPerVideoPerSecond4kAudio    *float64 `gorm:"default:null;column:output_cost_per_video_per_second_4k_audio" json:"output_cost_per_video_per_second_4k_audio,omitempty"`
 
 	// Costs - Other
 	SearchContextCostPerQuery     *float64 `gorm:"default:null;column:search_context_cost_per_query" json:"search_context_cost_per_query,omitempty"`

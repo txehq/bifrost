@@ -42,7 +42,9 @@ type VideoPricingDimensions struct {
 	UpscaleFactor    *int `json:"upscale_factor,omitempty"`
 	TargetMegapixels *int `json:"target_megapixels,omitempty"`
 
-	// Audio: Veo publishes distinct with- and without-audio rates.
+	// Audio is the create's audio flag. It selects a band's with-audio rate where the model
+	// publishes one (TXE-7306); nil, the vendor's default, is priced with audio
+	// (VideoPricedWithAudio).
 	Audio *bool `json:"audio,omitempty"`
 
 	// OutputCount is how many clips the job actually returned. It is 0 until the
@@ -156,7 +158,9 @@ func (s *Store) CalculateVideoCostDetails(dims VideoPricingDimensions, provider 
 	// bill on factor or megapixels instead, and no rate for those is published to
 	// the catalog yet — so they resolve to unpriced rather than being silently
 	// billed as if they were a per-second generation of the same length.
-	breakdown := computeVideoCost(pricing, nil, dims.Seconds, dims.Size, dims.OutputCount, serviceTier{})
+	// The audio flag the create captured selects a band's with-audio rate where the model has
+	// one (TXE-7306); an unstated flag is priced with audio, as the vendors default.
+	breakdown := computeVideoCost(pricing, nil, dims.Seconds, dims.Size, dims.OutputCount, VideoPricedWithAudio(dims.Audio), serviceTier{})
 	if breakdown == nil || breakdown.TotalCost <= 0 {
 		return VideoCostDetails{}
 	}

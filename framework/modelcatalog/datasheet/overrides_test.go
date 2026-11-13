@@ -459,6 +459,37 @@ func TestPatchPricing_CostPerRequest(t *testing.T) {
 	assert.Equal(t, 0.02, *patched.CostPerRequest)
 }
 
+// TestPatchPricing_VideoAudioAndSmallBandRates (TXE-7306): an override sets each of the video
+// audio rates and the 360p/540p silent bands, and the entry ↔ table conversions keep them.
+func TestPatchPricing_VideoAudioAndSmallBandRates(t *testing.T) {
+	override := Options{
+		OutputCostPerVideoPerSecond360p:       bifrost.Ptr(0.05),
+		OutputCostPerVideoPerSecond540p:       bifrost.Ptr(0.07),
+		OutputCostPerVideoPerSecond360pAudio:  bifrost.Ptr(0.07),
+		OutputCostPerVideoPerSecond540pAudio:  bifrost.Ptr(0.09),
+		OutputCostPerVideoPerSecond720pAudio:  bifrost.Ptr(0.12),
+		OutputCostPerVideoPerSecond1080pAudio: bifrost.Ptr(0.23),
+		OutputCostPerVideoPerSecond4kAudio:    bifrost.Ptr(0.42),
+	}
+	patched := patchPricing(configstoreTables.TableModelPricing{Model: "pixverse/pixverse-v6", Provider: "replicate", Mode: "video_generation"}, override)
+	for name, got := range map[string]*float64{
+		"360p": patched.OutputCostPerVideoPerSecond360p, "540p": patched.OutputCostPerVideoPerSecond540p,
+		"360p_audio": patched.OutputCostPerVideoPerSecond360pAudio, "540p_audio": patched.OutputCostPerVideoPerSecond540pAudio,
+		"720p_audio": patched.OutputCostPerVideoPerSecond720pAudio, "1080p_audio": patched.OutputCostPerVideoPerSecond1080pAudio,
+		"4k_audio": patched.OutputCostPerVideoPerSecond4kAudio,
+	} {
+		require.NotNil(t, got, name)
+	}
+	assert.Equal(t, 0.42, *patched.OutputCostPerVideoPerSecond4kAudio)
+
+	entry := convertTablePricingToEntry(&patched)
+	assert.Equal(t, override.OutputCostPerVideoPerSecond720pAudio, entry.OutputCostPerVideoPerSecond720pAudio)
+	assert.Equal(t, override.OutputCostPerVideoPerSecond540p, entry.OutputCostPerVideoPerSecond540p)
+	back := convertEntryToTablePricing("pixverse/pixverse-v6", *entry)
+	assert.Equal(t, override.OutputCostPerVideoPerSecond1080pAudio, back.OutputCostPerVideoPerSecond1080pAudio)
+	assert.Equal(t, override.OutputCostPerVideoPerSecond360p, back.OutputCostPerVideoPerSecond360p)
+}
+
 func TestPatchPricing_CostPerRequestZero(t *testing.T) {
 	base := configstoreTables.TableModelPricing{
 		CostPerRequest: bifrost.Ptr(0.02),

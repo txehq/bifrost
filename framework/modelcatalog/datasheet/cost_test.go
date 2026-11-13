@@ -422,11 +422,11 @@ func computeImageCostTotal(pricing *configstoreTables.TableModelPricing, imageUs
 }
 
 func computeVideoCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, tier serviceTier) float64 {
-	return bcTotal(computeVideoCost(pricing, usage, videoSeconds, "", 0, tier))
+	return bcTotal(computeVideoCost(pricing, usage, videoSeconds, "", 0, false, tier))
 }
 
 func computeVideoCostTotalSized(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, videoSize string, videoCount int, tier serviceTier) float64 {
-	return bcTotal(computeVideoCost(pricing, usage, videoSeconds, videoSize, videoCount, tier))
+	return bcTotal(computeVideoCost(pricing, usage, videoSeconds, videoSize, videoCount, false, tier))
 }
 
 func computeContainerCreationCostTotal(pricing *configstoreTables.TableModelPricing) float64 {
@@ -8439,5 +8439,97 @@ func TestVideoSeconds(t *testing.T) {
 	dims := VideoDimensionsFromResponse(&schemas.BifrostVideoGenerationResponse{Seconds: schemas.Ptr("5.1")})
 	if dims.Seconds == nil || *dims.Seconds != 5 {
 		t.Errorf("a response reporting 5.1 seconds gives %v, want 5", dims.Seconds)
+	}
+}
+
+// pixverseV6Pricing is replicate/pixverse/pixverse-v6 as the upstream datasheet publishes it
+// (getbifrost.ai/datasheet, 14 Nov 2026): a silent and a with-audio rate for each band, and no
+// 4K rate at all.
+func pixverseV6Pricing() configstoreTables.TableModelPricing {
+	return configstoreTables.TableModelPricing{
+		Model: "pixverse/pixverse-v6", Provider: "replicate", Mode: "video_generation",
+		OutputCostPerVideoPerSecond:           bifrost.Ptr(0.05),
+		OutputCostPerVideoPerSecond360p:       bifrost.Ptr(0.05),
+		OutputCostPerVideoPerSecond360pAudio:  bifrost.Ptr(0.07),
+		OutputCostPerVideoPerSecond540p:       bifrost.Ptr(0.07),
+		OutputCostPerVideoPerSecond540pAudio:  bifrost.Ptr(0.09),
+		OutputCostPerVideoPerSecond720p:       bifrost.Ptr(0.09),
+		OutputCostPerVideoPerSecond720pAudio:  bifrost.Ptr(0.12),
+		OutputCostPerVideoPerSecond1080p:      bifrost.Ptr(0.18),
+		OutputCostPerVideoPerSecond1080pAudio: bifrost.Ptr(0.23),
+	}
+}
+
+// TestCalculateVideoCostDetails_PricesAudioAtTheBandsAudioRate (TXE-7306): a job with generated
+// audio settles at its band's with-audio rate, an explicit audio false at the silent rate, and
+// an unstated flag with audio, as the vendors default. A band with no audio rate, or a size
+// with no band, falls back to the silent rates. Before the audio keys were parsed, every one of
+// these settled at a silent rate, and 360p and 540p at the unbanded 0.05.
+func TestCalculateVideoCostDetails_PricesAudioAtTheBandsAudioRate(t *testing.T) {
+	store := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("pixverse/pixverse-v6", "replicate", "video_generation"): pixverseV6Pricing(),
+	})
+	on, off := true, false
+	cases := []struct {
+		name  string
+		size  string
+		audio *bool
+		rate  float64
+	}{
+		{"720p with audio", "1280x720", &on, 0.12},
+		{"720p silent", "1280x720", &off, 0.09},
+		{"720p audio unstated is priced with audio", "1280x720", nil, 0.12},
+		{"portrait 720p with audio", "720x1280", &on, 0.12},
+		{"360p with audio", "640x360", &on, 0.07},
+		{"360p silent band", "640x360", &off, 0.05},
+		{"540p silent band", "960x540", &off, 0.07},
+		{"540p with audio", "960x540", &on, 0.09},
+		{"1080p with audio", "1920x1080", &on, 0.23},
+		{"4K has no rate of its own: the unbanded rate", "3840x2160", &on, 0.05},
+		{"no size names no band: the unbanded rate", "", &on, 0.05},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			seconds := 5
+			details := store.CalculateVideoCostDetails(VideoPricingDimensions{
+				Model: "pixverse/pixverse-v6", RequestType: schemas.VideoGenerationRequest,
+				Seconds: &seconds, Size: tc.size, Audio: tc.audio, OutputCount: 1,
+			}, schemas.Replicate, nil)
+			require.True(t, details.Priced)
+			assert.InDelta(t, 5*tc.rate, details.Cost, 1e-12)
+		})
+	}
+}
+
+// TestCalculateCost_VideoResponsePricesUnstatedAudioWithAudio: the per-request price of a
+// finished video reads no audio flag (a response does not carry one), so it takes the
+// with-audio rate of its band, as settlement does for an unstated flag.
+func TestCalculateCost_VideoResponsePricesUnstatedAudioWithAudio(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("pixverse/pixverse-v6", "replicate", "video_generation"): pixverseV6Pricing(),
+	})
+	resp := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			Status:  schemas.VideoStatusCompleted,
+			Seconds: bifrost.Ptr("8"),
+			Size:    "1280x720",
+			Videos:  []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL, URL: bifrost.Ptr("https://example.test/v.mp4")}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.VideoGenerationRequest,
+				RoutingInfo: routingInfoFor(schemas.Replicate, "pixverse/pixverse-v6"),
+			},
+		},
+	}
+	assert.InDelta(t, 8*0.12, s.CalculateCost(resp, nil), 1e-9)
+}
+
+// BenchmarkVideoOutputPerSecondRate is the request-path cost TXE-7306 adds: one more nil check
+// for an audio band before the silent band lookup.
+func BenchmarkVideoOutputPerSecondRate(b *testing.B) {
+	p := pixverseV6Pricing()
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = videoOutputPerSecondRate(&p, "1280x720", true)
+		_ = videoOutputPerSecondRate(&p, "1280x720", false)
 	}
 }

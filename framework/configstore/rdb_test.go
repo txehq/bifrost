@@ -3924,6 +3924,48 @@ func TestUpsertModelPricesBatch_PriorityAbove272kCacheCreation_SurvivesResync(t 
 	assert.InDelta(t, 0.00006, *got[0].CacheCreationInputTokenCostAbove272kTokensPriority, 1e-12)
 }
 
+// TestUpsertModelPricesBatch_VideoAudioRateColumns_SurviveResync (TXE-7306): the second sync of
+// an existing row updates every video audio rate and the 360p/540p bands. A column missing from
+// pricingSyncUpdateColumns keeps its first value here.
+func TestUpsertModelPricesBatch_VideoAudioRateColumns_SurviveResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	row := func(scale float64) tables.TableModelPricing {
+		return tables.TableModelPricing{
+			Model: "pixverse/pixverse-v6", Provider: "replicate", Mode: "video_generation",
+			OutputCostPerVideoPerSecond360p:       cost(0.05 * scale),
+			OutputCostPerVideoPerSecond540p:       cost(0.07 * scale),
+			OutputCostPerVideoPerSecond360pAudio:  cost(0.07 * scale),
+			OutputCostPerVideoPerSecond540pAudio:  cost(0.09 * scale),
+			OutputCostPerVideoPerSecond720pAudio:  cost(0.12 * scale),
+			OutputCostPerVideoPerSecond1080pAudio: cost(0.23 * scale),
+			OutputCostPerVideoPerSecond4kAudio:    cost(0.42 * scale),
+		}
+	}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row(1)}))
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row(2)}))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	want := row(2)
+	for name, pair := range map[string][2]*float64{
+		"360p":        {want.OutputCostPerVideoPerSecond360p, got[0].OutputCostPerVideoPerSecond360p},
+		"540p":        {want.OutputCostPerVideoPerSecond540p, got[0].OutputCostPerVideoPerSecond540p},
+		"360p_audio":  {want.OutputCostPerVideoPerSecond360pAudio, got[0].OutputCostPerVideoPerSecond360pAudio},
+		"540p_audio":  {want.OutputCostPerVideoPerSecond540pAudio, got[0].OutputCostPerVideoPerSecond540pAudio},
+		"720p_audio":  {want.OutputCostPerVideoPerSecond720pAudio, got[0].OutputCostPerVideoPerSecond720pAudio},
+		"1080p_audio": {want.OutputCostPerVideoPerSecond1080pAudio, got[0].OutputCostPerVideoPerSecond1080pAudio},
+		"4k_audio":    {want.OutputCostPerVideoPerSecond4kAudio, got[0].OutputCostPerVideoPerSecond4kAudio},
+	} {
+		require.NotNil(t, pair[1], name)
+		assert.InDelta(t, *pair[0], *pair[1], 1e-12, "%s kept its first-sync value", name)
+	}
+}
+
 func TestUpsertModelPricesBatch_WebSearchCostPerRequest_SurvivesResync(t *testing.T) {
 	s := setupRDBTestStore(t)
 	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))

@@ -723,7 +723,10 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		schemas.ImageGenerationTaskRequest, schemas.ImageEditTaskRequest:
 		cost = computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality, input.tier)
 	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest, schemas.VideoEditRequest:
-		cost = computeVideoCost(pricing, input.usage, input.videoSeconds, input.videoSize, input.videoCount, input.tier)
+		// A video response does not carry the request's audio flag, so the per-request price
+		// takes the unstated default: with audio where the model has an audio rate. Settlement
+		// prices from the captured request dimensions instead (CalculateVideoCostDetails).
+		cost = computeVideoCost(pricing, input.usage, input.videoSeconds, input.videoSize, input.videoCount, VideoPricedWithAudio(nil), input.tier)
 	case schemas.OCRRequest:
 		cost = computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
 	case schemas.ContainerCreateRequest:
@@ -1811,7 +1814,7 @@ func imageQualityRate(pricing *configstoreTables.TableModelPricing, quality stri
 
 // computeVideoCost handles video generation requests.
 // Input and output are calculated independently — tokens first, then per-second fallback.
-func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, videoSize string, videoCount int, tier serviceTier) *schemas.BifrostCost {
+func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, videoSize string, videoCount int, audio bool, tier serviceTier) *schemas.BifrostCost {
 	tierTokens := inputTierTokens(usage)
 
 	// Input: text prompt tokens first, then per-second fallback
@@ -1832,7 +1835,7 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 		// Seconds is one clip's duration, and a single job can return several clips
 		// (Veo's sampleCount). Count is 0 on a job that has not produced its outputs
 		// yet, which still owes one clip's worth rather than nothing.
-		outputCost = float64(*videoSeconds) * videoOutputPerSecondRate(pricing, videoSize) * float64(max(1, videoCount))
+		outputCost = float64(*videoSeconds) * videoOutputPerSecondRate(pricing, videoSize, audio) * float64(max(1, videoCount))
 	}
 
 	return newInputOutputCost(inputCost, outputCost)
@@ -1848,8 +1851,27 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 // Bands match exactly on the short edge rather than at-or-above: an unlisted resolution
 // falls back to the unbanded rate instead of rounding up into a more expensive band, so a
 // 480p clip is never billed at the 720p rate.
-func videoOutputPerSecondRate(pricing *configstoreTables.TableModelPricing, size string) float64 {
-	switch videoResolutionBand(size) {
+//
+// A job with generated audio takes its band's audio rate first (fork, TXE-7306): upstream
+// publishes one where the vendor bills audio on top (pixverse-v6 720p is 0.09 silent and 0.12
+// with audio). Upstream has no unbanded audio rate, so a band with no audio rate, or a size
+// that names no band, falls back to the silent rates below.
+func videoOutputPerSecondRate(pricing *configstoreTables.TableModelPricing, size string, audio bool) float64 {
+	band := videoResolutionBand(size)
+	if audio {
+		if rate := videoAudioBandRate(pricing, band); rate != nil {
+			return *rate
+		}
+	}
+	switch band {
+	case 360:
+		if pricing.OutputCostPerVideoPerSecond360p != nil {
+			return *pricing.OutputCostPerVideoPerSecond360p
+		}
+	case 540:
+		if pricing.OutputCostPerVideoPerSecond540p != nil {
+			return *pricing.OutputCostPerVideoPerSecond540p
+		}
 	case 480:
 		if pricing.OutputCostPerVideoPerSecond480p != nil {
 			return *pricing.OutputCostPerVideoPerSecond480p
@@ -1878,6 +1900,33 @@ func videoOutputPerSecondRate(pricing *configstoreTables.TableModelPricing, size
 		return *pricing.OutputCostPerSecond
 	}
 	return 0
+}
+
+// videoAudioBandRate is the with-audio per-second rate of a resolution band, or nil when the
+// model publishes none for it.
+func videoAudioBandRate(pricing *configstoreTables.TableModelPricing, band int) *float64 {
+	switch band {
+	case 360:
+		return pricing.OutputCostPerVideoPerSecond360pAudio
+	case 540:
+		return pricing.OutputCostPerVideoPerSecond540pAudio
+	case 720:
+		return pricing.OutputCostPerVideoPerSecond720pAudio
+	case 1080:
+		return pricing.OutputCostPerVideoPerSecond1080pAudio
+	case 2160:
+		return pricing.OutputCostPerVideoPerSecond4kAudio
+	}
+	return nil
+}
+
+// VideoPricedWithAudio reports whether a video job is priced at a with-audio rate. A job that
+// says nothing about audio is, because vendors render audio by default where they bill it
+// (Runway: "audio defaults to true", docs.dev.runwayml.com/guides/pricing; Replicate's
+// google/veo-3.1: generate_audio defaults to true), and pricing it at the silent rate would
+// charge less than the vendor bills. Only an explicit audio false takes the silent rate.
+func VideoPricedWithAudio(audio *bool) bool {
+	return audio == nil || *audio
 }
 
 // videoResolutionBand returns the short edge of a "WxH" size, which is the number

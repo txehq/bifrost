@@ -2580,6 +2580,55 @@ PricingPatch:
         Per-second output rate for 4K video. Matched on the short edge of the
         generated video's size; falls back to output_cost_per_video_per_second
         when unset.
+    output_cost_per_video_per_second_360p:
+      type: number
+      minimum: 0
+      description: >-
+        Per-second output rate for 360p video. Matched on the short edge of the
+        generated video's size; falls back to output_cost_per_video_per_second
+        when unset.
+    output_cost_per_video_per_second_540p:
+      type: number
+      minimum: 0
+      description: >-
+        Per-second output rate for 540p video. Matched on the short edge of the
+        generated video's size; falls back to output_cost_per_video_per_second
+        when unset.
+    output_cost_per_video_per_second_360p_audio:
+      type: number
+      minimum: 0
+      description: >-
+        Per-second output rate for 360p video with generated audio. Used when the
+        request asks for audio or does not say; falls back to the 360p rate when
+        unset.
+    output_cost_per_video_per_second_540p_audio:
+      type: number
+      minimum: 0
+      description: >-
+        Per-second output rate for 540p video with generated audio. Used when the
+        request asks for audio or does not say; falls back to the 540p rate when
+        unset.
+    output_cost_per_video_per_second_720p_audio:
+      type: number
+      minimum: 0
+      description: >-
+        Per-second output rate for 720p video with generated audio. Used when the
+        request asks for audio or does not say; falls back to the 720p rate when
+        unset.
+    output_cost_per_video_per_second_1080p_audio:
+      type: number
+      minimum: 0
+      description: >-
+        Per-second output rate for 1080p video with generated audio. Used when the
+        request asks for audio or does not say; falls back to the 1080p rate when
+        unset.
+    output_cost_per_video_per_second_4k_audio:
+      type: number
+      minimum: 0
+      description: >-
+        Per-second output rate for 4K video with generated audio. Used when the
+        request asks for audio or does not say; falls back to the 4K rate when
+        unset.
     # Costs - Other
     web_search_cost_per_request:
       type: number
