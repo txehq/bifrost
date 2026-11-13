@@ -32,7 +32,16 @@ SHELL := /usr/bin/env bash
 # via `$(USE_NODE); <your command>`.
 USE_NODE = NVM_SH="$${NVM_DIR:-$$HOME/.nvm}/nvm.sh"; \
 	[ -s "$$NVM_SH" ] || NVM_SH="$$(brew --prefix nvm 2>/dev/null)/nvm.sh"; \
-	if [ -s "$$NVM_SH" ]; then . "$$NVM_SH" >/dev/null && nvm install >/dev/null 2>&1 && nvm use >/dev/null 2>&1; fi
+	if [ -s "$$NVM_SH" ]; then . "$$NVM_SH" >/dev/null && nvm install >/dev/null 2>&1 && nvm use >/dev/null 2>&1; fi; \
+	$(PIN_NEWMAN)
+
+# Puts the pinned newman first on PATH, after nvm has put its own node bin there (TXE-7308): `nvm
+# use` made `newman` resolve to whatever nvm's global install held, which had no htmlextra
+# reporter, so an offline run refused itself with the pinned tools installed. resolve-newman.mjs
+# picks the install whose newman and reporter are the pinned versions and links that newman alone
+# into tmp/pinned-newman, so nothing else on PATH is shadowed. Silent when none matches:
+# install-newman is where a missing tool fails, by name.
+PIN_NEWMAN = if PINNED_NEWMAN_DIR="$$(node "$(CURDIR)/tests/e2e/api/runners/resolve-newman.mjs" --root "$(CURDIR)" --link-dir "$(CURDIR)/tmp/pinned-newman" 2>/dev/null)"; then PATH="$$PINNED_NEWMAN_DIR:$$PATH"; export PATH; fi
 
 # Loads secrets into the current recipe shell. Reads USE_INFISICAL env var:
 #   USE_INFISICAL=1|y|Y|yes|YES|true|TRUE  -> source secrets from Infisical (`infisical export --path <p>`)
@@ -2096,15 +2105,20 @@ list-video-costing-cases: ## List the video costing cases and which checklist li
 smoke-provider-harness-test: ## Run the curated ~100-request provider-harness smoke set (tests/e2e/api/collections/smoke-manifest.json). Same flags as run-provider-harness-test; equivalent to SMOKE=1.
 	@$(MAKE) run-provider-harness-test SMOKE=1
 
-# Versions pinned to match the CI installs in .github/workflows/release-pipeline.yml
-# (test-core, test-api-integrations, test-docker-image-*). Keep them in sync.
-NEWMAN_VERSION ?= 6.2.1
-NEWMAN_HTMLEXTRA_VERSION ?= 1.23.1
+# The pins are .github/workflows/tools/package.json's, which CI installs with `npm ci` (TXE-7308).
+# They were restated here by hand and had drifted: 6.2.1 here, 6.2.2 there.
+NEWMAN_VERSION ?= $(shell node -p "require('$(CURDIR)/.github/workflows/tools/package.json').dependencies.newman")
+NEWMAN_HTMLEXTRA_VERSION ?= $(shell node -p "require('$(CURDIR)/.github/workflows/tools/package.json').dependencies['newman-reporter-htmlextra']")
 
-# Every provider fork the harness knows how to run. Also the provider set the
-# status table lists, including the deferred cache-parity pass, so it lives in
-# one place rather than being restated per newman invocation.
-HARNESS_PROVIDERS := openai anthropic bedrock bedrock_mantle gemini vertex azure passthrough openrouter huggingface groq xai mistral cohere deepseek deepinfra vercel_ai_gateway
+# Every partition the harness sweep can fork: each registered provider (schemas.StandardProviders),
+# then the reseller custom providers and the passthrough route family. Derived, never kept by hand
+# (TXE-7308): the hand-kept list left out bfl, replicate, runware, voyage and typesafe, so their rows
+# matched no fork and a parallel sweep ran them nowhere. The sweep forks only the partitions that
+# claim a selected row (filter-collection.mjs --roster). A folder holding a row no partition claims
+# (a reset, a read-back, a management call) runs whole in the serial pass, in order.
+# tests/e2e/api/runners/lib/harness-partitions.test.mjs fails when a harness row would run nowhere.
+# Recursive (=), so only targets that read it pay for the node call.
+HARNESS_PROVIDERS = $(shell node tests/e2e/api/runners/harness-partitions.mjs)
 
 # Second parallelism axis. Each provider fork is sharded again by modality class so the run is not
 # bound by one provider's whole sequential item list: openai alone is ~1264 requests, and its
@@ -2170,20 +2184,19 @@ HARNESS_JOBS ?= 100
 # Echoes are suppressed under CI so run-provider-harness-test, which takes this
 # as a prerequisite, really does emit nothing but its status table. Install
 # failures still surface: npm's own stderr is untouched and the recipe still fails.
-install-newman: ## Install newman + htmlextra reporter if not already installed (pinned via NEWMAN_VERSION / NEWMAN_HTMLEXTRA_VERSION)
-	@: "Under scripts/test-offline.sh (BIFROST_TEST_OFFLINE=1) an install is egress the runner refuses"; \
-	: "(TXE-7083), so a missing tool is an error that says how to install it before the run."; \
+install-newman: ## Check for the pinned newman + htmlextra reporter (.github/workflows/tools/package.json), installing them with npm ci when missing and online
+	@: "The newman and reporter in use are the pinned ones, wherever nvm puts its own node: USE_NODE"; \
+	: "links the install resolve-newman.mjs chose first on PATH (TXE-7308). Under scripts/test-offline.sh"; \
+	: "(BIFROST_TEST_OFFLINE=1) an install is egress the runner refuses (TXE-7083), so a missing tool"; \
+	: "fails, naming each newman it found and what that one lacks."; \
 	$(USE_NODE); \
-	offline_missing() { $(ECHO) "$(RED)$$1 is missing and an offline run (scripts/test-offline.sh) cannot download it. Install the pinned tools first, outside the runner: (cd .github/workflows/tools && npm ci), then put .github/workflows/tools/node_modules/.bin on PATH.$(NC)" >&2; exit 1; }; \
-	if ! which newman > /dev/null 2>&1; then \
-		[ "$$BIFROST_TEST_OFFLINE" = "1" ] && offline_missing newman; \
-		[ -n "$$CI" ] || $(ECHO) "$(YELLOW)Installing newman@$(NEWMAN_VERSION)...$(NC)"; npm install -g newman@$(NEWMAN_VERSION) || exit 1; \
-	fi; \
-	: "The pinned tools install the reporter next to newman, where newman loads it from."; \
-	newman_modules="$$(cd "$$(dirname "$$(command -v newman)")/.." 2>/dev/null && pwd)"; \
-	if [ ! -d "$$newman_modules/newman-reporter-htmlextra" ] && ! npm list -g newman-reporter-htmlextra > /dev/null 2>&1; then \
-		[ "$$BIFROST_TEST_OFFLINE" = "1" ] && offline_missing newman-reporter-htmlextra; \
-		[ -n "$$CI" ] || $(ECHO) "$(YELLOW)Installing newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION)...$(NC)"; npm install -g newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION) || exit 1; \
+	mkdir -p tmp; \
+	resolve_newman() { node "$(CURDIR)/tests/e2e/api/runners/resolve-newman.mjs" --root "$(CURDIR)" --link-dir "$(CURDIR)/tmp/pinned-newman"; }; \
+	if ! resolve_newman > /dev/null 2> tmp/resolve-newman.err; then \
+		if [ "$$BIFROST_TEST_OFFLINE" = "1" ]; then $(ECHO) "$(RED)$$(cat tmp/resolve-newman.err)$(NC)" >&2; exit 1; fi; \
+		[ -n "$$CI" ] || $(ECHO) "$(YELLOW)Installing the pinned tools (newman $(NEWMAN_VERSION), newman-reporter-htmlextra $(NEWMAN_HTMLEXTRA_VERSION)) with npm ci in .github/workflows/tools...$(NC)"; \
+		(cd .github/workflows/tools && npm ci --no-audit --no-fund) || exit 1; \
+		resolve_newman > /dev/null || exit 1; \
 	fi
 	@[ -n "$$CI" ] || $(ECHO) "$(GREEN)Newman + htmlextra are ready$(NC)"
 
@@ -2210,6 +2223,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' "ALLOW_SKIPPED=1" "Fixture runs only: let the run proceed, and pass, when selected rows are skipped for a missing key."; \
 		printf '  %-18s %s\n' "" "  Without it a fixture run (under scripts/test-offline.sh) with such rows is refused: it means augment read the wrong profile."; \
 		printf '  %-18s %s\n' "VIEWER_PORT=N"   "Port for the interactive HTML viewer (default: 8090). Ignored if CI=1."; \
+		printf '  %-18s %s\n' "NO_VIEWER=1"     "Do not open the interactive viewer. It is skipped anyway in CI and when stdin is not a terminal."; \
 		printf '  %-18s %s\n' "CI=1"            "CI mode: skip the interactive viewer, emit artifacts only. Prints a one-line heartbeat every"; \
 		printf '  %-18s %s\n' ""                "  MONITOR_INTERVAL seconds and the provider status table (provider x total/pass/failed) exactly ONCE,"; \
 		printf '  %-18s %s\n' ""                "  at the end - an Actions log is append-only, so reprinting the table left hundreds of stale copies."; \
@@ -2837,7 +2851,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		: > tmp/newman-cli.log; \
 		NEWMAN_EXIT=0; \
 	elif [ "$$PARALLEL_VAL" != "0" ] && [ -n "$$PARALLEL_VAL" ]; then \
-		say "$(CYAN)Parallel mode (default): forking one newman per provider ($(HARNESS_PROVIDERS)) x modality class x sub-shard, slowest class first. Set PARALLEL=0 to disable, SUBSHARDS=0 to drop the sub-shard axis, CLASS_SHARDS=0 for one fork per provider.$(NC)"; \
+		say "$(CYAN)Parallel mode (default): forking one newman per partition the selection reaches x modality class x sub-shard, slowest class first. Set PARALLEL=0 to disable, SUBSHARDS=0 to drop the sub-shard axis, CLASS_SHARDS=0 for one fork per provider.$(NC)"; \
 		: "harness-filtered-*.json is cleaned here too, not just the reports. The monitor derives"; \
 		: "each provider's denominator by summing the leaves of every shard collection it finds in"; \
 		: "tmp/, so a previous run with a wider FEATURE/FOLDER scope leaves shard files this run"; \
@@ -2849,8 +2863,17 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		rm -f tmp/newman-report-*.json tmp/newman-cli-*.log tmp/parallel-pids tmp/parallel-status tmp/parallel-exit-* tmp/harness-filtered-*.json; \
 		: > tmp/parallel-pids; \
 		: > tmp/parallel-status; \
-		PROVIDERS="$(HARNESS_PROVIDERS)"; \
+		: "One fork per partition that claims a selected row (TXE-7308): the derived roster narrowed"; \
+		: "to the partitions this selection reaches. Folders with a row no partition claims are not"; \
+		: "here; they run whole in the serial pass. A failed roster is a failed run, never a sweep"; \
+		: "over nothing."; \
+		if ! PROVIDERS="$$(node tests/e2e/api/runners/filter-collection.mjs --source "$$COLLECTION_FILE" --roster \
+			$(if $(FEATURE),--feature "$(FEATURE)",) $(if $(FOLDER),--folder "$(FOLDER)",) 2>> "$$QUIET_LOG")"; then \
+			say "$(RED)The partition roster could not be computed (filter-collection.mjs --roster, see $$QUIET_LOG)$(NC)"; \
+			exit 1; \
+		fi; \
 		if [ -n "$(PROVIDER)" ]; then PROVIDERS="$(PROVIDER)"; fi; \
+		say "$(CYAN)Partitions: $$PROVIDERS$(NC)"; \
 		: "CLASS_SHARDS=0 collapses the class axis back to a single fork per provider. The empty"; \
 		: "string is the sentinel for 'do not pass --class', so the loop body stays one code path."; \
 		CLASSES="$(HARNESS_CLASSES)"; \
@@ -3407,8 +3430,13 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			--html tmp/newman-report.html || true; \
 		say "$(GREEN)Cache parity report: tmp/harness-cache-parity.md$(NC)"; \
 	fi; \
+	: "The viewer waits for someone to close it, so it opens only for a person at a terminal: an"; \
+	: "unattended run (CI, no terminal on stdin, NO_VIEWER=1) never returned, and the Harness"; \
+	: "summary below was printed only once someone closed it (TXE-7308)."; \
 	if [ -n "$(CI)" ] || [ -n "$$CI" ]; then \
 		say "$(CYAN)CI mode - skipping interactive viewer. Upload tmp/newman-report.html, tmp/harness-failures.md, and tmp/bifrost-dev.log as workflow artifacts.$(NC)"; \
+	elif [ -n "$(NO_VIEWER)" ] || [ ! -t 0 ]; then \
+		say "$(CYAN)Unattended run - skipping the interactive viewer (reports: tmp/newman-report.{json,html}, tmp/harness-failures.md).$(NC)"; \
 	else \
 		preempt_viewer_port; \
 		say "$(CYAN)Launching interactive viewer on http://localhost:$$VIEWER_PORT_VAL (Bifrost stays up for resend)...$(NC)"; \

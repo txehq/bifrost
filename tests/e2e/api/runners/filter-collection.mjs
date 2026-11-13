@@ -16,6 +16,9 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { readReport } from "./lib/read-report.mjs";
 import { buildHaystack } from "./lib/haystack.mjs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { Partitioner, harnessPartitions } from "./lib/harness-partitions.mjs";
 import { walkRequests, buildProducerIndex, chainedDependencies, scriptDependencies } from "./lib/chained-vars.mjs";
 import { retryableNames } from "./lib/rate-limit-retry.mjs";
 import {
@@ -100,6 +103,16 @@ const TIMINGS = args.timings && args.timings !== "true" ? args.timings : "";
 const PLAN = args.plan === "true";
 const PLAN_PROVIDERS = (args.providers || "").trim().split(/[\s,]+/).filter(Boolean);
 const PLAN_CLASSES = (args.classes || "").trim().split(/[\s,]+/).filter(Boolean);
+// --partitions is the sweep's roster of named partitions (harness-partitions.mjs, TXE-7308); by
+// default the derived one. It decides which folders hold a row no partition claims, and so run
+// whole in the serial pass (serialFolderKey).
+const PARTITIONS = (args.partitions || "").trim().split(/[\s,]+/).filter(Boolean).length
+  ? args.partitions.trim().split(/[\s,]+/).filter(Boolean)
+  : harnessPartitions(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", ".."));
+// --roster prints the partitions that claim at least one selected row, as one space-separated
+// line, then stops. The sweep forks one newman per entry; the rows no partition claims run with
+// their folders in the serial pass, so every selected row runs.
+const ROSTER = args.roster === "true";
 const PLAN_TARGET = Number(args.target) > 0 ? Number(args.target) : DEFAULT_TARGET_SECONDS;
 let SHARD_INDEX = 0;
 let SHARD_COUNT = 0;
@@ -127,9 +140,9 @@ const REPORT = args.report || "tmp/newman-report.json";
 // is the only mechanism that can reach them.
 const SMOKE = args.smoke && args.smoke !== "true" ? args.smoke : "";
 
-// --plan writes its grid to stdout, so it needs a source but no --out. Requiring one anyway would
-// mean inventing a path for a file the planner never writes.
-if (!SOURCE || (!OUT && !PLAN)) {
+// --plan and --roster write to stdout, so they need a source but no --out. Requiring one anyway
+// would mean inventing a path for a file they never write.
+if (!SOURCE || (!OUT && !PLAN && !ROSTER)) {
   console.error("[filter-collection] --source and --out are required");
   process.exit(2);
 }
@@ -141,33 +154,13 @@ if (PLAN && (!PLAN_PROVIDERS.length || !PLAN_CLASSES.length)) {
   console.error("[filter-collection] --plan needs --providers and --classes");
   process.exit(2);
 }
-if (!PLAN && !PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !EXCLUDE_FEATURE_ANY_PARTS.length && !FOLDER && !CLASS && !SHARD_COUNT && !RERUN_FAILED && !RERUN_RATE_LIMITED && !SMOKE && !ONLY_SERIAL && !EXCLUDE_SERIAL) {
+if (!PLAN && !ROSTER && !PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !EXCLUDE_FEATURE_ANY_PARTS.length && !FOLDER && !CLASS && !SHARD_COUNT && !RERUN_FAILED && !RERUN_RATE_LIMITED && !SMOKE && !ONLY_SERIAL && !EXCLUDE_SERIAL) {
   console.error(
     "[filter-collection] need at least one of: --provider, --feature, --feature-any, --exclude-feature-any, --folder, --class, --shard, --rerun-failed, --rerun-rate-limited, --smoke, --only-serial, --exclude-serial"
   );
   process.exit(2);
 }
 
-const PROVIDER_KEYWORDS = {
-  openai: ["openai", "/openai", "gpt-", "o3", "o1"],
-  anthropic: ["anthropic", "claude-"],
-  bedrock: ["bedrock", "/bedrock"],
-  bedrock_mantle: ["bedrock_mantle", "bedrock-mantle"],
-  gemini: ["gemini", "/genai", "googlesearch"],
-  vertex: ["vertex", "/genai/v1beta/models/{{vertexModel}}"],
-  azure: ["azure", "deployments"],
-  passthrough: ["_passthrough"],
-  openrouter: ["openrouter"],
-  xai: ["xai", "grok"],
-  replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
-  runware: ["runware", "runware/"],
-  voyage: ["voyage", "voyage-"],
-  typesafe: ["typesafe", "/typesafe", "jev-"],
-};
-
-// Custom providers in the harness profile that resell other vendors' models; see
-// itemMatchesProvider. Each is also a HARNESS_PROVIDERS partition in the Makefile.
-const RESELLER_PROVIDERS = ["deepinfra", "vercel_ai_gateway"];
 
 // Haystack = item JSON + ancestor folder names. Folder names encode the harness
 // taxonomy ("Structured Output cross-cut", "Vertex Features", ...) so PROVIDER and
@@ -265,11 +258,17 @@ if (CLASS && !ALL_CLASSES.includes(CLASS)) {
 //
 // This only orders the forks of one run. Two runs against the same gateway still overlap, which is
 // why every run gets its own BASE_URL.
+//
+// A top-level folder is serial without the tag (TXE-7308) when it holds a row no provider
+// partition claims, or when it reads or resets a fixture's shared state; see Partitioner in
+// lib/harness-partitions.mjs. Its steps are ordered, and the class and sub-shard axes would run
+// them in concurrent processes. Before TXE-7308 the unclaimed rows ran in no fork at all.
 const SERIAL_TAG = "[serial]";
 const serialFolderKey = (ancestorNames) => {
   const names = ancestorNames || [];
   const i = names.findIndex((name) => (name || "").toLowerCase().includes(SERIAL_TAG));
-  return i === -1 ? "" : names.slice(0, i + 1).join(" > ");
+  if (i !== -1) return names.slice(0, i + 1).join(" > ");
+  return PARTITIONER.serialPassFolders().has(names[0] || "") ? names[0] : "";
 };
 
 // Resolved against the same haystack every other predicate uses, so folder names count. Returns
@@ -301,62 +300,13 @@ const matchesKeyword = (item, ancestorNames, haystack, keyword) => {
 
 // The `provider` override exists for --plan, which sizes every (provider, class) cell in one pass
 // and so must evaluate this predicate once per provider in the roster. Defaulting to the global
-// keeps every normal call site unchanged, and routing the collision rules through the parameter
-// rather than the global is what keeps the planner's cells identical to the shards' own selection.
+// keeps every normal call site unchanged. The partition rules live in lib/harness-partitions.mjs
+// (TXE-7308), shared with the roster and its test. PARTITIONER is set once the collection is read,
+// before any predicate (or serialFolderKey) runs.
+let PARTITIONER = null;
 const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   if (!provider) return true;
-  const keywords = PROVIDER_KEYWORDS[provider] || [provider];
-  const haystack = buildHaystack(item, ancestorNames);
-  // OpenRouter rows (model "openrouter/<vendor>/<model>") embed vendor substrings like
-  // gpt-/claude-/gemini, so they'd otherwise be claimed by the openai/anthropic/gemini
-  // partitions too. Route them exclusively to the openrouter partition.
-  const isOpenRouter = haystack.includes("openrouter");
-  if (provider === "openrouter") return isOpenRouter;
-  if (isOpenRouter) return false;
-  // Bedrock Mantle rows (model "bedrock_mantle/...") contain the substring "bedrock", so they'd
-  // otherwise be claimed by the bedrock partition too. Route them exclusively to bedrock_mantle.
-  const isMantle = haystack.includes("bedrock_mantle") || haystack.includes("bedrock-mantle");
-  if (provider === "bedrock_mantle") return isMantle;
-  if (isMantle) return false;
-  // Vertex rows run Gemini models (model "vertex/gemini-..."), so they'd otherwise be claimed
-  // by the gemini partition too - same collision class as openrouter/bedrock_mantle above.
-  // Route them exclusively to vertex. Vertex Model Garden rows ("vertex/minimaxai/minimax-m2-maas")
-  // name the model vendor the same way, so minimax is excluded for the same reason.
-  const isVertex = PROVIDER_KEYWORDS.vertex.some((k) => haystack.includes(k));
-  if (provider === "vertex") return isVertex;
-  if (isVertex && (provider === "gemini" || provider === "anthropic" || provider === "minimax")) return false;
-  // Rows that send a Gemini, OpenAI or Azure model through the Anthropic Messages ingress
-  // (POST /anthropic/v1/messages with model "gemini/...", "openai/..." or "azure/...") contain
-  // "anthropic" only because of the route or folder name, yet the upstream call goes to the
-  // model's own provider - same collision class as vertex above. Keep them out of the anthropic
-  // partition; they still match their own provider's keywords through the model prefix.
-  if (provider === "anthropic" && /"model"\s*:\s*"(gemini|openai|azure)\//.test(item.request?.body?.raw || "")) return false;
-  // Runware rows name the upstream vendor inside the AIR model id ("runware/anthropic:claude@...",
-  // "runware/google:gemini@...", "runware/minimax:..."), so they'd otherwise be claimed by those
-  // partitions too - same collision class as openrouter/bedrock_mantle/vertex above. Route them
-  // exclusively to runware, so an anthropic- or gemini-filtered run does not try to reach Runware.
-  const isRunware = haystack.includes("runware");
-  if (provider === "runware") return isRunware;
-  if (isRunware) return false;
-  // OpenAI-compatible custom providers that resell other vendors' models name that vendor in the
-  // model id ("vercel_ai_gateway/cohere/embed-v4.0", "deepinfra/BAAI/bge-m3"), so a cohere- or
-  // openai-filtered run would otherwise claim their rows - same collision class as openrouter.
-  // Route each exclusively to its own partition. Matched on the body's model prefix, not a haystack
-  // substring: one folder can hold rows for several resellers, and folder names are in the haystack.
-  const model = /"model"\s*:\s*"([^"/]+)\//.exec(item.request?.body?.raw || "")?.[1];
-  for (const reseller of RESELLER_PROVIDERS) {
-    const isReseller = model === reseller;
-    if (provider === reseller) return isReseller;
-    if (isReseller) return false;
-  }
-  // bedrock_openai rows (token-parity-matrix.mjs's "one more model per provider" addition -
-  // gpt-oss-family models on Bedrock) contain "openai" in the backend key/model, so they'd
-  // otherwise be claimed by the openai partition too - same collision class as above. Route
-  // them exclusively to bedrock (they already match PROVIDER_KEYWORDS.bedrock's "bedrock"
-  // keyword with no extra logic needed for that direction).
-  const isBedrockOpenai = haystack.includes("bedrock_openai");
-  if (isBedrockOpenai && provider === "openai") return false;
-  return keywords.some((k) => haystack.includes(k));
+  return PARTITIONER.runs(item, ancestorNames, provider);
 };
 
 const itemMatchesFeature = (item, ancestorNames) => {
@@ -579,12 +529,22 @@ const withWholeSerialFolders = (selected, entries, serialKeyOf) => {
 
 const collection = JSON.parse(readFileSync(SOURCE, "utf8"));
 const entries = walkRequests(collection.item || []);
+PARTITIONER = new Partitioner(entries, PARTITIONS);
 const timings = loadTimings(TIMINGS);
 if (TIMINGS && !timings) {
   // Loud on stderr, but not fatal: the sweep ran without a timing table before this existed and
   // still has to. Silence here would let a sweep quietly go back to round-robin and read as a
   // regression in the harness rather than as a missing cache file.
   console.error(`[filter-collection] no usable timings at ${TIMINGS} - falling back to round-robin slicing`);
+}
+
+if (ROSTER) {
+  // Every predicate but the provider, so the roster covers exactly what the forks would select.
+  const selectable = entries.filter(({ item, ancestors }) => item.request && passes(item, ancestors, { provider: "" }));
+  const roster = PARTITIONER.roster(selectable);
+  process.stdout.write(`${roster.join(" ")}\n`);
+  console.error(`[filter-collection] roster: ${roster.length} partition(s) claim the ${selectable.length} selected request(s)`);
+  process.exit(0);
 }
 
 // --plan: size every (provider, class) cell and print the grid, then stop. Nothing below runs,
