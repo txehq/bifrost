@@ -223,7 +223,7 @@ func (f *bifrostVideoRetriever) RetrieveVideo(ctx context.Context, job *cstables
 // DownloadVideo implements jobaccounting.VideoDownloader: the provider's own buffered download of
 // a finished job's video, so the settler can read its rendered length (fork, TXE-7329). The
 // download is held to client.max_response_body_size_mb (TXE-7148); a file past it is final, and
-// the job is unpriceable, never priced at the seconds its create named.
+// the job is charged the seconds its create named as a floor, marked incomplete.
 func (f *bifrostVideoRetriever) DownloadVideo(ctx context.Context, job *cstables.TableProviderJob) ([]byte, error) {
 	if f == nil || f.client == nil {
 		return nil, fmt.Errorf("bifrost client is nil")

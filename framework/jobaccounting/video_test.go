@@ -1068,17 +1068,20 @@ func TestVideoPoll_MeasuresAnFFmpegMP4(t *testing.T) {
 	assert.Equal(t, 12, *payload.RenderedSeconds)
 }
 
-// A job whose rendered length cannot be measured is parked unpriceable, with no price: it is
-// never charged at the seconds its create named.
-func TestVideoPoll_UnmeasurableVideoIsNotPricedAtTheRequestedSeconds(t *testing.T) {
+// A job whose rendered length cannot be measured rendered a video all the same, so it is never
+// left uncharged: the seconds its create named are charged as a floor, and the row is marked
+// incomplete, since a model-defined input may have made the video longer. Leaving it unpriced
+// would let a caller pick an output the settler cannot read and pay nothing.
+func TestVideoSweeper_UnmeasurableVideoIsChargedTheRequestedSecondsAsAFloor(t *testing.T) {
 	whole := renderedMP4(t, 12)
 	for name, retriever := range map[string]VideoRetriever{
-		"no downloader":           &retrieveOnly{resp: silentReplicateResponse("pred_x")},
-		"not an MP4":              &fakeVideoRetriever{resp: silentReplicateResponse("pred_x"), video: []byte("<html>not a video</html>")},
-		"an empty file":           &fakeVideoRetriever{resp: silentReplicateResponse("pred_x"), video: []byte{}},
-		"a truncated MP4":         &fakeVideoRetriever{resp: silentReplicateResponse("pred_x"), video: whole[:len(whole)-20]},
-		"a file past the limit":   &fakeVideoRetriever{resp: silentReplicateResponse("pred_x"), downloadErr: fmt.Errorf("download: %w", ErrVideoDurationUnmeasurable)},
-		"a job that has no clips": &fakeVideoRetriever{resp: &schemas.BifrostVideoGenerationResponse{ID: "pred_x", Status: schemas.VideoStatusCompleted}, video: whole},
+		"no downloader":                    &retrieveOnly{resp: silentReplicateResponse("pred_x")},
+		"not an MP4":                       &fakeVideoRetriever{resp: silentReplicateResponse("pred_x"), video: []byte("<html>not a video</html>")},
+		"an empty file":                    &fakeVideoRetriever{resp: silentReplicateResponse("pred_x"), video: []byte{}},
+		"a truncated MP4":                  &fakeVideoRetriever{resp: silentReplicateResponse("pred_x"), video: whole[:len(whole)-20]},
+		"a file past the limit":            &fakeVideoRetriever{resp: silentReplicateResponse("pred_x"), downloadErr: fmt.Errorf("download: %w", ErrVideoDurationUnmeasurable)},
+		"an output the vendor has deleted": &fakeVideoRetriever{resp: silentReplicateResponse("pred_x"), downloadErr: providerErr(404, "output expired")},
+		"a job that has no clips":          &fakeVideoRetriever{resp: &schemas.BifrostVideoGenerationResponse{ID: "pred_x", Status: schemas.VideoStatusCompleted}, video: whole},
 	} {
 		t.Run(name, func(t *testing.T) {
 			job := replicateVideoJob(t, "pred_x", 5)
@@ -1086,14 +1089,20 @@ func TestVideoPoll_UnmeasurableVideoIsNotPricedAtTheRequestedSeconds(t *testing.
 			require.NoError(t, err)
 			require.NotNil(t, poll)
 			assert.True(t, poll.Terminal)
-			assert.False(t, poll.Settleable, "nothing may be priced")
-			assert.Equal(t, UnpriceableReasonVideoDurationUnmeasurable, poll.UnpriceableReason)
+			assert.True(t, poll.Settleable)
+			payload := poll.Payload.(VideoPayload)
+			assert.Nil(t, payload.RenderedSeconds)
+			assert.NotEmpty(t, payload.RenderedUnmeasurable)
 
 			store := newFakeAccountingStore()
 			reporter := sweepVideoJob(t, store, replicateVideoJob(t, "pred_x", 5), retriever)
-			assert.Empty(t, store.logs, "no cost row at the requested seconds")
-			assert.Empty(t, reporter.reports)
-			assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, store.jobs[job.ID].AccountingStatus)
+			entry := store.logs[AccountingLogID(ProviderJobKindVideo, schemas.Replicate, "pred_x")]
+			require.NotNil(t, entry, "the job is charged")
+			require.NotNil(t, entry.Cost)
+			assert.InDelta(t, 5*0.70, *entry.Cost, 1e-12, "at the requested seconds, the floor")
+			assert.True(t, entry.VideoDebugParsed.Accounting.Incomplete, "a length nobody confirmed is marked")
+			require.Len(t, reporter.reports, 1, "the budget is charged")
+			assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, store.jobs[job.ID].AccountingStatus)
 		})
 	}
 }
@@ -1107,27 +1116,28 @@ func (r *retrieveOnly) RetrieveVideo(context.Context, *cstables.TableProviderJob
 	return r.resp, nil
 }
 
-// A download the vendor refuses is classified like a refused retrieve; any other failure is
-// retried, and the job stays due.
-func TestVideoPoll_DownloadFailures(t *testing.T) {
-	job := replicateVideoJob(t, "pred_dl", 5)
-
-	gone, err := NewVideoSettler(&fakeVideoRetriever{resp: silentReplicateResponse("pred_dl"), downloadErr: providerErr(404, "output expired")}).Poll(context.Background(), job)
-	require.NoError(t, err)
-	assert.True(t, gone.Terminal)
-	assert.False(t, gone.Settleable)
-	assert.Equal(t, UnpriceableReasonVideoGone, gone.UnpriceableReason)
-
+// A download that fails for a reason a retry could change is retried for a few polls, with the job
+// still due; after renderedDurationAttempts the job settles at its floor.
+func TestVideoPoll_TransientDownloadFailureRetriesThenSettlesAtTheFloor(t *testing.T) {
 	transient := errors.New("connection reset")
-	_, err = NewVideoSettler(&fakeVideoRetriever{resp: silentReplicateResponse("pred_dl"), downloadErr: transient}).Poll(context.Background(), job)
+	retriever := &fakeVideoRetriever{resp: silentReplicateResponse("pred_dl"), downloadErr: transient}
+
+	job := replicateVideoJob(t, "pred_dl", 5)
+	_, err := NewVideoSettler(retriever).Poll(context.Background(), job)
 	require.ErrorIs(t, err, transient, "a transient download failure is retried")
 
 	store := newFakeAccountingStore()
-	sweepVideoJob(t, store, job, &fakeVideoRetriever{resp: silentReplicateResponse("pred_dl"), downloadErr: transient})
+	sweepVideoJob(t, store, job, retriever)
 	assert.Empty(t, store.logs)
 	rescheduled := store.jobs[job.ID]
 	assert.Equal(t, cstables.ProviderJobAccountingStatusPending, rescheduled.AccountingStatus)
 	assert.Equal(t, 1, rescheduled.PollAttempts)
+
+	job.PollAttempts = renderedDurationAttempts - 1
+	poll, err := NewVideoSettler(retriever).Poll(context.Background(), job)
+	require.NoError(t, err)
+	assert.True(t, poll.Settleable, "the last attempt settles at the floor rather than run out the poll cap uncharged")
+	assert.Contains(t, poll.Payload.(VideoPayload).RenderedUnmeasurable, "connection reset")
 }
 
 // A vendor that reports the duration or its own cost is priced from that, with no download.

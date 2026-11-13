@@ -274,7 +274,8 @@ func (a *replicateVideoAccount) GetConfigForProvider(_ schemas.ModelProvider) (*
 // TXE-7329: the sweeper's retriever downloads a finished Replicate prediction's video through
 // core, and the settler prices the length it rendered. The prediction was asked for 5 seconds
 // and its output is TXE-6774's 12-second ffmpeg MP4; Replicate's prediction reports neither.
-// A file past client.max_response_body_size_mb (TXE-7148) is final: the job is unpriceable.
+// A file past client.max_response_body_size_mb (TXE-7148) is final: the job is charged the
+// requested seconds as a floor, and the file is not downloaded again.
 func TestBifrostVideoRetrieverMeasuresTheRenderedReplicateVideo(t *testing.T) {
 	video, err := os.ReadFile("../../../framework/videoduration/testdata/twelve-seconds.mp4")
 	if err != nil {
@@ -335,8 +336,12 @@ func TestBifrostVideoRetrieverMeasuresTheRenderedReplicateVideo(t *testing.T) {
 	if !errors.Is(err, jobaccounting.ErrVideoDurationUnmeasurable) {
 		t.Fatalf("a video past the response body limit: got %v, want ErrVideoDurationUnmeasurable", err)
 	}
+	// Final on the first poll: settled at the requested seconds as a floor, not downloaded again.
 	poll, err = jobaccounting.NewVideoSettler(retriever).Poll(context.Background(), job)
-	if err != nil || poll.Settleable || poll.UnpriceableReason != jobaccounting.UnpriceableReasonVideoDurationUnmeasurable {
-		t.Fatalf("poll past the limit = %+v, %v; want unpriceable %s", poll, err, jobaccounting.UnpriceableReasonVideoDurationUnmeasurable)
+	if err != nil || !poll.Settleable {
+		t.Fatalf("poll past the limit = %+v, %v; want settleable at the floor", poll, err)
+	}
+	if payload, _ := poll.Payload.(jobaccounting.VideoPayload); payload.RenderedSeconds != nil || payload.RenderedUnmeasurable == "" {
+		t.Fatalf("poll past the limit measured %v (%q); want it marked unmeasurable", payload.RenderedSeconds, payload.RenderedUnmeasurable)
 	}
 }
