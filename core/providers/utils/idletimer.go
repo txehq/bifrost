@@ -34,24 +34,24 @@ func systemAfterFunc(d time.Duration, f func()) idleClockTimer {
 // successful response (TXE-7264). Settle turns every result after the fire into
 // the timer's error instead.
 type idleTimer struct {
-	timeout time.Duration
-	err     error // what every read reports once the timer has fired
-	// claim, when set, runs first when the timer fires. It returns false when
-	// another owner already closed the stream; the timer then closes nothing and
-	// does not count as fired.
-	claim func() bool
-	// closeStream unblocks a read that is waiting on the stalled stream.
-	closeStream func()
+	timeout     time.Duration
+	err         error       // what every read reports once the timer has fired
+	claim       func() bool // optional; see newIdleTimer
+	closeStream func()      // unblocks a read waiting on the stalled stream
 	timer       idleClockTimer
-
-	mu      sync.Mutex     // orders a fire's claim and fired mark; see FiredOnceClaimed
-	fired   atomic.Bool    // written under mu, read lock-free on every read
-	stopped bool           // guarded by mu
-	closing sync.WaitGroup // a fire's closeStream still running
+	mu          sync.Mutex     // orders a fire's claim and fired mark; see FiredOnceClaimed
+	fired       atomic.Bool    // written under mu, read lock-free on every read
+	stopped     bool           // guarded by mu
+	closing     sync.WaitGroup // a fire's closeStream still running
 }
 
 // newIdleTimer creates an idle timer of timeout that reports err after it fires.
-// It starts armed when armed is true; otherwise Arm starts it.
+// It starts armed when armed is true; otherwise Arm starts it. When the timer
+// fires it runs claim first, when one is given: claim returns false when another
+// owner (a cancellation or a release) already closed the stream, and the timer
+// then closes nothing and does not count as fired, so that owner's error stands.
+// Otherwise the timer marks itself fired and calls closeStream to unblock a read
+// that is waiting on the stalled stream.
 func newIdleTimer(timeout time.Duration, err error, afterFunc idleAfterFunc, armed bool, claim func() bool, closeStream func()) *idleTimer {
 	if timeout <= 0 {
 		timeout = DefaultStreamIdleTimeout
