@@ -2714,7 +2714,8 @@ func (provider *ReplicateProvider) VideoGeneration(ctx *schemas.BifrostContext, 
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
-	bifrostResponse.ID = providerUtils.AddVideoIDProviderSuffix(bifrostResponse.ID, schemas.Replicate)
+	// The suffix routes a later retrieve back to this provider: a custom provider's own name.
+	bifrostResponse.ID = providerUtils.AddVideoIDProviderSuffix(bifrostResponse.ID, provider.GetProviderKey())
 
 	// Set extra fields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
@@ -2740,7 +2741,13 @@ func (provider *ReplicateProvider) VideoRetrieve(ctx *schemas.BifrostContext, ke
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
 	}
 
-	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
+	// A custom provider reported the base's name before TXE-7085, so an id it returned then
+	// carries ":replicate"; strip that suffix too rather than send it upstream.
+	suffixOwner := providerName
+	if providerName != schemas.Replicate && strings.HasSuffix(request.ID, ":"+string(schemas.Replicate)) {
+		suffixOwner = schemas.Replicate
+	}
+	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, suffixOwner)
 	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
 	if idErr != nil {
 		return nil, idErr

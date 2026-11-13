@@ -2026,6 +2026,47 @@ func BenchmarkPredictionPollURL(b *testing.B) {
 // could not be priced. The create is refused, naming seconds; with seconds it converts. A value
 // the pricer cannot read as a duration ("0", "-3") would reach Replicate and settle unpriced, so
 // seconds must be a whole number greater than zero.
+// A Replicate-based custom provider reports its own name since TXE-7085, so the video id it
+// returns carries that name (which routes a retrieve back to it), and a retrieve strips it
+// before calling Replicate. An id returned before then carries ":replicate" and still works.
+func TestReplicateCustomProviderVideoIDSuffix(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"p123","model":"google/veo-3","status":"starting","created_at":"2026-11-14T00:00:00Z","urls":{"get":"` + "http://" + r.Host + `/v1/predictions/p123"}}`))
+	}))
+	defer server.Close()
+	provider, err := replicate.NewReplicateProvider(&schemas.ProviderConfig{
+		NetworkConfig:        schemas.NetworkConfig{BaseURL: server.URL},
+		CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "my-replicate", BaseProviderType: schemas.Replicate},
+	}, &testLogger{})
+	require.NoError(t, err)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	key := schemas.Key{Value: *schemas.NewSecretVar("r8_test_key")}
+
+	created, bifrostErr := provider.VideoGeneration(ctx, key, &schemas.BifrostVideoGenerationRequest{
+		Provider: "my-replicate", Model: "google/veo-3", Input: &schemas.VideoGenerationInput{Prompt: "p"}, Params: &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("8")},
+	})
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "p123:my-replicate", created.ID, "the id names the custom provider, so a retrieve is routed back to it")
+
+	for _, id := range []string{created.ID, "p123:replicate"} {
+		mu.Lock()
+		paths = nil
+		mu.Unlock()
+		_, bifrostErr := provider.VideoRetrieve(ctx, key, &schemas.BifrostVideoRetrieveRequest{Provider: "my-replicate", ID: id})
+		require.Nil(t, bifrostErr, "%s", id)
+		mu.Lock()
+		assert.Equal(t, []string{"GET /v1/predictions/p123"}, paths, "%s reaches the prediction without its suffix", id)
+		mu.Unlock()
+	}
+}
+
 func TestReplicateVideoCreateMustNameSeconds(t *testing.T) {
 	refused := []*schemas.VideoGenerationParameters{nil, {}}
 	for _, seconds := range []string{" ", "0", "-3", "2.5", "abc", "NaN"} {
