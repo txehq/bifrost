@@ -758,7 +758,10 @@ type VideoAccountingDebug struct {
 	// but could not be read.
 	UnmeasuredBoundSeconds *int `json:"unmeasured_bound_seconds,omitempty"`
 	// RequestedSeconds is the seconds the create named, kept beside UnmeasuredBoundSeconds when
-	// the bound was applied, so a reprice prices from what was asked for and the bound in force
-	// then (fork, TXE-7401).
+	// the bound was applied, so a reprice prices from what was asked for (fork, TXE-7401).
 	RequestedSeconds *int `json:"requested_seconds,omitempty"`
+	// UnmeasuredDefaultSeconds is the provider's default bound at settlement (fork, TXE-7401). A
+	// reprice starts from it, so a model override set or removed since takes effect; the reprice
+	// then rewrites UnmeasuredBoundSeconds and Seconds to the bound and seconds it charged.
+	UnmeasuredDefaultSeconds *int `json:"unmeasured_default_seconds,omitempty"`
 }

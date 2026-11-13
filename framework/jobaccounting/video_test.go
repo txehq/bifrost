@@ -1206,6 +1206,8 @@ func TestVideoSweeper_UnmeasurableVideoIsChargedUpToTheProvidersBound(t *testing
 			assert.Equal(t, 30, *accounting.Seconds, "the seconds charged")
 			require.NotNil(t, accounting.RequestedSeconds)
 			assert.Equal(t, 5, *accounting.RequestedSeconds, "the seconds asked for, for a reprice")
+			require.NotNil(t, accounting.UnmeasuredDefaultSeconds)
+			assert.Equal(t, 30, *accounting.UnmeasuredDefaultSeconds, "the provider's default, for a reprice")
 			require.Len(t, reporter.reports, 1, "the budget is charged")
 			assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, store.jobs[job.ID].AccountingStatus)
 		})
@@ -2025,27 +2027,57 @@ func (r *originVideoRetrieverForBound) BaseProvider(schemas.ModelProvider) schem
 	return r.base
 }
 
-// A settlement charged up to the bound reprices from the seconds asked for and the bound it
-// recorded, not from the seconds charged, so a bound lowered since can lower the bill (TXE-7401).
+// A settlement charged up to the bound reprices from the seconds asked for and the provider's default
+// it recorded, not from the seconds charged, so a model override set since takes effect; the row is
+// rewritten to the bound and seconds the reprice charged, keeping the default (TXE-7401).
 func TestVideoRepriceFromLog_UnmeasuredVideoRepricesFromTheRequestAndItsBound(t *testing.T) {
 	entry := func(requested, bound int) *logstore.Log {
 		charged := max(requested, bound)
+		providerDefault := 30
 		return &logstore.Log{
 			ID: "log_unmeasured", Model: "sora-2-pro", Provider: string(schemas.Replicate),
 			VideoDebugParsed: &schemas.BifrostVideoDebug{Status: schemas.VideoStatusCompleted, Accounting: &schemas.VideoAccountingDebug{
 				Seconds: &charged, Size: "1920x1080", RequestType: schemas.VideoGenerationRequest, Incomplete: true,
-				RequestedSeconds: &requested, UnmeasuredBoundSeconds: &bound,
+				RequestedSeconds: &requested, UnmeasuredBoundSeconds: &bound, UnmeasuredDefaultSeconds: &providerDefault,
 			}},
 		}
 	}
 	settler := NewVideoSettler(&retrieveOnly{})
-	repriced, err := settler.RepriceFromLog(entry(5, 30), fakePricing{})
+
+	// No override: the default, as settled.
+	e := entry(5, 30)
+	repriced, err := settler.RepriceFromLog(e, fakePricing{})
 	require.NoError(t, err)
 	assert.InDelta(t, 30*0.70, repriced.Cost, 1e-12)
-	repriced, err = settler.RepriceFromLog(entry(5, 10), fakePricing{})
+
+	// An 8-second override set since: charged 8, and the row says so.
+	e = entry(5, 30)
+	repriced, err = settler.RepriceFromLog(e, overrideBoundPricing{bound: 8})
 	require.NoError(t, err)
-	assert.InDelta(t, 10*0.70, repriced.Cost, 1e-12, "priced from the 5 asked for and the 10-second bound recorded")
+	assert.InDelta(t, 8*0.70, repriced.Cost, 1e-12)
+	accounting := e.VideoDebugParsed.Accounting
+	assert.Equal(t, 8, *accounting.UnmeasuredBoundSeconds, "the bound the reprice applied")
+	assert.Equal(t, 8, *accounting.Seconds, "the seconds the reprice charged")
+	assert.Equal(t, 5, *accounting.RequestedSeconds)
+	assert.Equal(t, 30, *accounting.UnmeasuredDefaultSeconds, "the provider's default is kept for the next reprice")
+	assert.Contains(t, repriced.DebugJSON, `"unmeasured_bound_seconds":8`)
+
+	// A request longer than the bound keeps what it asked for.
 	repriced, err = settler.RepriceFromLog(entry(40, 30), fakePricing{})
 	require.NoError(t, err)
 	assert.InDelta(t, 40*0.70, repriced.Cost, 1e-12)
+}
+
+// overrideBoundPricing prices like fakePricing, with a model override of bound seconds replacing the
+// unmeasured default the caller passes.
+type overrideBoundPricing struct {
+	fakePricing
+	bound int
+}
+
+func (p overrideBoundPricing) CalculateVideoCostDetails(dims modelcatalog.VideoPricingDimensions, provider schemas.ModelProvider, scopes *modelcatalog.PricingLookupScopes) modelcatalog.VideoCostDetails {
+	if dims.UnmeasuredDefaultSeconds > 0 {
+		dims.UnmeasuredDefaultSeconds = p.bound
+	}
+	return p.fakePricing.CalculateVideoCostDetails(dims, provider, scopes)
 }

@@ -558,35 +558,45 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 		// once the rate lands, rather than dropping the job's cost entirely.
 		settlement.RecordUnpriced = true
 		settlement.UnpricedModel = dims.Model
-		settlement.ApplyDebug = withUnmeasuredBound(videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, jobReq.Provider, dims.TierOnlyResolution(jobReq.Provider), true), dims.Seconds, dims.UnmeasuredDefaultSeconds)
+		settlement.ApplyDebug = withUnmeasuredBound(videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, jobReq.Provider, dims.TierOnlyResolution(jobReq.Provider), true), dims.Seconds, dims.UnmeasuredDefaultSeconds, dims.UnmeasuredDefaultSeconds)
 		return settlement, nil
 	}
 
 	settlement.Priced = true
 	settlement.Complete = true
 	settlement.Cost = details.Cost
-	settlement.ApplyDebug = withUnmeasuredBound(videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, jobReq.Provider, details.PricedResolution, unmeasured), dims.Seconds, details.UnmeasuredBoundSeconds)
+	settlement.ApplyDebug = withUnmeasuredBound(videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, jobReq.Provider, details.PricedResolution, unmeasured), dims.Seconds, details.UnmeasuredBoundSeconds, dims.UnmeasuredDefaultSeconds)
 	return settlement, nil
 }
 
 // withUnmeasuredBound records on the settlement row the bound an unmeasurable video was charged up
-// to, the seconds that charge was for, and the seconds the create named (fork, TXE-7401), so the
-// row says why it costs more than was asked for and a reprice can price it again from the request.
-func withUnmeasuredBound(apply func(*logstore.Log), requested *int, bound int) func(*logstore.Log) {
+// to, the seconds that charge was for, the seconds the create named and the provider's default
+// (fork, TXE-7401), so the row says why it costs more than was asked for and a reprice can price it
+// again from the request.
+func withUnmeasuredBound(apply func(*logstore.Log), requested *int, bound, providerDefault int) func(*logstore.Log) {
 	if bound <= 0 {
 		return apply
 	}
 	return func(entry *logstore.Log) {
 		apply(entry)
 		accounting := entry.VideoDebugParsed.Accounting
-		b := bound
-		accounting.UnmeasuredBoundSeconds = &b
 		accounting.RequestedSeconds = requested
-		if requested == nil || *requested < bound {
-			charged := bound
-			accounting.Seconds = &charged
-		}
+		d := providerDefault
+		accounting.UnmeasuredDefaultSeconds = &d
+		setUnmeasuredCharge(accounting, requested, bound)
 	}
+}
+
+// setUnmeasuredCharge records the bound applied and the seconds charged: the larger of the
+// requested seconds and the bound.
+func setUnmeasuredCharge(accounting *schemas.VideoAccountingDebug, requested *int, bound int) {
+	b := bound
+	accounting.UnmeasuredBoundSeconds = &b
+	charged := bound
+	if requested != nil && *requested > bound {
+		charged = *requested
+	}
+	accounting.Seconds = &charged
 }
 
 // videoDebugFor builds the closure that attaches video detail to the aggregate row.
@@ -673,11 +683,15 @@ func (s *VideoSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManage
 		}
 	}
 
-	// An unmeasurable video was charged up to a bound (TXE-7401): it reprices from the seconds
-	// asked for and that bound, so an override set since replaces it.
+	// An unmeasurable video was charged up to a bound (TXE-7401): it reprices from the seconds asked
+	// for and the provider's default recorded at settlement, so a model override set or removed
+	// since takes effect. Rows that recorded only the bound use it as the default.
 	seconds, unmeasuredDefault := accounting.Seconds, 0
 	if accounting.UnmeasuredBoundSeconds != nil {
 		seconds, unmeasuredDefault = accounting.RequestedSeconds, *accounting.UnmeasuredBoundSeconds
+		if accounting.UnmeasuredDefaultSeconds != nil {
+			unmeasuredDefault = *accounting.UnmeasuredDefaultSeconds
+		}
 	}
 	scopes := PricingScopesForLog(entry)
 	details := pricing.CalculateVideoCostDetails(modelcatalog.VideoPricingDimensions{
@@ -707,6 +721,12 @@ func (s *VideoSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManage
 	}, schemas.ModelProvider(entry.Provider), &scopes)
 	if !details.Priced {
 		return nil, fmt.Errorf("%w: no video rate for log %s", ErrPricingInputsUnavailable, entry.ID)
+	}
+
+	// The row says what this price is for: the bound the reprice applied and the seconds it
+	// charged (TXE-7401), not the ones settlement wrote.
+	if unmeasuredDefault > 0 && details.UnmeasuredBoundSeconds > 0 {
+		setUnmeasuredCharge(accounting, seconds, details.UnmeasuredBoundSeconds)
 	}
 
 	// Incomplete is left as settlement wrote it: it can stand for dimensions the
