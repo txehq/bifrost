@@ -8790,3 +8790,25 @@ func TestComputeDecisionCost_Above272kAndCacheRates(t *testing.T) {
 	flat := decodeEntry(t, `{"provider": "openai", "mode": "chat", "input_cost_per_token": 1e-07, "input_cost_per_token_decisions": 1e-07, "output_cost_per_token_decisions": 0}`)
 	assert.InDelta(t, 300000*1e-07, computeDecisionCostTotal(&flat, usage(300000), serviceTier{}), 1e-12)
 }
+
+// TXE-7358: input_cost_per_token_cache_hit is an older name for the cache-read rate and
+// input_cost_per_request for the flat per-request fee. A row that carries only the older name is
+// priced from it; the current name wins on a row that has both.
+func TestEntry_OlderNamesForCacheReadAndPerRequestFee(t *testing.T) {
+	p := decodeEntry(t, `{
+		"provider": "deepseek", "mode": "chat",
+		"input_cost_per_token": 1.4e-07, "output_cost_per_token": 2.8e-07,
+		"input_cost_per_token_cache_hit": 2.8e-08
+	}`)
+	require.NotNil(t, p.CacheReadInputTokenCost)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, TotalTokens: 1000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 800}}
+	assert.InDelta(t, 200*1.4e-07+800*2.8e-08, computeTextCostTotal(&p, usage, serviceTier{}), 1e-12)
+
+	both := decodeEntry(t, `{"provider": "deepseek", "mode": "chat", "cache_read_input_token_cost": 3e-08, "input_cost_per_token_cache_hit": 2.8e-08}`)
+	assert.Equal(t, 3e-08, *both.CacheReadInputTokenCost)
+
+	fee := decodeEntry(t, `{"provider": "perplexity", "mode": "chat", "input_cost_per_token": 1e-06, "input_cost_per_request": 0.005}`)
+	require.NotNil(t, fee.CostPerRequest)
+	assert.Equal(t, 0.005, *fee.CostPerRequest)
+}
