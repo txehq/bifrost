@@ -179,6 +179,12 @@ func FinalizeResponseWithLargeDetection(
 		// CheckAndDecodeBody already returns an owned copy, safe after release.
 		return body, false, nil
 	}
+	// Nothing is buffered past client.max_response_body_size_mb (TXE-7148). A threshold above it
+	// would buffer a chunked or decompressed answer up to the threshold, so the limit lowers it
+	// and a longer answer is streamed through as any large response is, never held in memory.
+	if limit := network.MaxResponseBodyBytes(); responseThreshold > limit {
+		responseThreshold = limit
+	}
 
 	contentLength := resp.Header.ContentLength()
 
