@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2651,6 +2652,8 @@ type steppedObjectStore struct {
 	objectstore.ObjectStore
 	entered chan string
 	release chan struct{}
+	puts    atomic.Int32
+	failAt  int32 // the 1-based Put that fails once released; 0 fails none
 }
 
 func newSteppedObjectStore() *steppedObjectStore {
@@ -2658,8 +2661,12 @@ func newSteppedObjectStore() *steppedObjectStore {
 }
 
 func (s *steppedObjectStore) Put(ctx context.Context, key string, data []byte, tags map[string]string) error {
+	n := s.puts.Add(1)
 	s.entered <- key
 	<-s.release
+	if n == s.failAt {
+		return fmt.Errorf("injected failure of Put %d", n)
+	}
 	return s.ObjectStore.Put(ctx, key, data, tags)
 }
 
@@ -2673,11 +2680,11 @@ func (s *steppedObjectStore) waitEntered(t *testing.T) {
 }
 
 // TestHybrid_OutstandingUploadsCountsTheUploadInProgress pins the signal the tests
-// above wait on (TXE-7315). Once the initial upload lands, the row has its object
-// and every queue is empty while a worker is still uploading the replacement. A
-// wait on "has_object and nothing queued" returned here and read the initial
-// object, which has no response body. outstandingUploads stays above zero until
-// the replacement has finished.
+// above wait on (TXE-7315). Once the initial upload lands, every queue is empty while
+// a worker is still uploading the replacement; a wait on "nothing queued" returned
+// here and read the initial object, which has no response body. outstandingUploads
+// stays above zero until the replacement has finished. The superseded initial upload
+// does not set has_object (TXE-7318), so the row serves its own previews meanwhile.
 func TestHybrid_OutstandingUploadsCountsTheUploadInProgress(t *testing.T) {
 	objects := newSteppedObjectStore()
 	hybrid, inner := newTestHybridWithObjects(t, objects)
@@ -2697,7 +2704,7 @@ func TestHybrid_OutstandingUploadsCountsTheUploadInProgress(t *testing.T) {
 	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{"response_body": `{"response":"partial"}`}))
 	assert.Equal(t, int64(2), hybrid.outstandingUploads(), "the initial upload and its queued replacement")
 
-	objects.release <- struct{}{} // the initial upload lands and sets has_object
+	objects.release <- struct{}{} // the initial upload lands
 	objects.waitEntered(t)        // the worker has taken the replacement off its queue
 	row, err := inner.FindAgentLog(ctx, entry.ID)
 	require.NoError(t, err)
@@ -2705,16 +2712,129 @@ func TestHybrid_OutstandingUploadsCountsTheUploadInProgress(t *testing.T) {
 	for _, q := range hybrid.uploadQueues {
 		queued += len(q)
 	}
-	require.True(t, row.HasObject, "the initial upload set has_object")
 	require.Zero(t, queued, "nothing is left on a queue")
 	assert.Equal(t, int64(1), hybrid.outstandingUploads(), "the replacement is still uploading")
+	assert.False(t, row.HasObject, "the superseded initial upload must not mark the row offloaded")
+	inFlight, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, inFlight.ResponseBody, "a read while the replacement uploads serves the row's update")
+	assert.Equal(t, `{"response":"partial"}`, *inFlight.ResponseBody)
 
 	objects.release <- struct{}{}
 	waitForUploads(t, func() bool { return hybrid.outstandingUploads() == 0 })
+	row, err = inner.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.True(t, row.HasObject, "the replacement, the latest upload, marks the row offloaded")
 	found, err := hybrid.FindAgentLog(ctx, entry.ID)
 	require.NoError(t, err)
 	require.NotNil(t, found.ResponseBody, "the replacement's response body")
 	assert.Equal(t, `{"response":"partial"}`, *found.ResponseBody)
+	assert.Equal(t, len(requestBody), len(*found.RequestBody))
+}
+
+// TestHybrid_DroppedAgentReplacementNeverServesTheStaleObject (TXE-7318): a body
+// update lands while the initial upload is in flight, and the replacement's Put
+// then fails. The initial upload was superseded, so the row must not point at its
+// object: a read serves the row's previews, which hold the update, rather than the
+// pre-update object for good.
+func TestHybrid_DroppedAgentReplacementNeverServesTheStaleObject(t *testing.T) {
+	objects := newSteppedObjectStore()
+	objects.failAt = 2
+	hybrid, inner := newTestHybridWithObjects(t, objects)
+	ctx := context.Background()
+	defer func() {
+		close(objects.release)
+		hybrid.Close(ctx)
+	}()
+	requestBody := `{"request":"` + strings.Repeat("x", 3*maxA2APayloadPreviewRunes) + `"}`
+	entry := &AgentLog{
+		ID: "agent-dropped-replacement", Timestamp: time.Now().UTC(), RecordKind: "request",
+		Operation: "SendMessage", Status: "processing", AgentName: "fixture", RequestID: "req-agent-dropped-replacement",
+		RequestBody: &requestBody,
+	}
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	objects.waitEntered(t)
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{"response_body": `{"response":"partial"}`}))
+
+	objects.release <- struct{}{} // the initial upload lands
+	objects.waitEntered(t)
+	objects.release <- struct{}{} // the replacement's Put fails
+	waitForUploads(t, func() bool { return hybrid.outstandingUploads() == 0 })
+	require.Equal(t, int64(1), hybrid.droppedUploads.Load(), "the replacement was dropped")
+
+	row, err := inner.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.False(t, row.HasObject, "the row must not point at the superseded object")
+	found, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.ResponseBody, "the update was lost: the read served the pre-update object")
+	assert.Equal(t, `{"response":"partial"}`, *found.ResponseBody)
+}
+
+// TestHybrid_AgentReplacementDroppedAtEnqueueSupersedesTheQueuedUpload (TXE-7318): the
+// replacement is refused at enqueue (the byte budget is spent), so it is never tracked
+// as an upload. It still supersedes the initial upload, which must not mark the row
+// offloaded when it lands.
+func TestHybrid_AgentReplacementDroppedAtEnqueueSupersedesTheQueuedUpload(t *testing.T) {
+	objects := newSteppedObjectStore()
+	hybrid, inner := newTestHybridWithObjects(t, objects)
+	ctx := context.Background()
+	defer func() {
+		close(objects.release)
+		hybrid.Close(ctx)
+	}()
+	requestBody := `{"request":"` + strings.Repeat("x", 3*maxA2APayloadPreviewRunes) + `"}`
+	entry := &AgentLog{
+		ID: "agent-replacement-over-budget", Timestamp: time.Now().UTC(), RecordKind: "request",
+		Operation: "SendMessage", Status: "processing", AgentName: "fixture", RequestID: "req-agent-replacement-over-budget",
+		RequestBody: &requestBody,
+	}
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	objects.waitEntered(t)
+
+	spent := hybrid.pendingBytes.Load()
+	hybrid.pendingBytes.Store(defaultMaxUploadQueueBytes)
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{"response_body": `{"response":"partial"}`}))
+	hybrid.pendingBytes.Store(spent)
+	require.Equal(t, int64(1), hybrid.droppedUploads.Load(), "the replacement was refused at enqueue")
+	require.Nil(t, hybrid.pendingAgentPayload(entry.ID), "a refused replacement leaves no upload that may set has_object")
+
+	objects.release <- struct{}{} // the superseded initial upload lands
+	waitForUploads(t, func() bool { return hybrid.outstandingUploads() == 0 })
+	row, err := inner.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.False(t, row.HasObject, "the row must not point at the superseded object")
+	found, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.ResponseBody, "the update was lost: the read served the pre-update object")
+	assert.Equal(t, `{"response":"partial"}`, *found.ResponseBody)
+}
+
+// TestHybrid_AgentUpdateAfterUploadLandsKeepsHasObject: the ordinary order, where the
+// initial upload has landed before the update, still ends with the row offloaded and
+// the full payload served.
+func TestHybrid_AgentUpdateAfterUploadLandsKeepsHasObject(t *testing.T) {
+	hybrid, inner, _ := newTestHybrid(t)
+	ctx := context.Background()
+	defer hybrid.Close(ctx)
+	requestBody := `{"request":"` + strings.Repeat("x", 3*maxA2APayloadPreviewRunes) + `"}`
+	entry := &AgentLog{
+		ID: "agent-update-after-upload", Timestamp: time.Now().UTC(), RecordKind: "request",
+		Operation: "SendMessage", Status: "processing", AgentName: "fixture", RequestID: "req-agent-update-after-upload",
+		RequestBody: &requestBody,
+	}
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	waitForUploads(t, func() bool { return hybrid.outstandingUploads() == 0 })
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{"response_body": `{"response":"done"}`}))
+	waitForUploads(t, func() bool { return hybrid.outstandingUploads() == 0 })
+
+	row, err := inner.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.True(t, row.HasObject)
+	found, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.ResponseBody)
+	assert.Equal(t, `{"response":"done"}`, *found.ResponseBody)
 	assert.Equal(t, len(requestBody), len(*found.RequestBody))
 }
 

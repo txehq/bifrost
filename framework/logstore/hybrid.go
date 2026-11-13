@@ -77,6 +77,7 @@ type HybridLogStore struct {
 	// instead of truncating the object it replaces.
 	pendingAgentMu sync.Mutex
 	pendingAgent   map[string]*uploadWork
+	agentRowLocks  [agentRowLockStripes]sync.Mutex // per-log locks; see agentRowLock
 	// excludedPayloadFields is the set of payload field names (DB column names) that must NOT be offloaded to object storage and must remain in the DB.
 	excludedPayloadFields map[string]struct{}
 	// excludedRequestTypes is the set of log object types that are never offloaded; their rows stay complete in the DB.
@@ -257,7 +258,12 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 		case uploadKindMCP:
 			err = h.inner.UpdateMCPToolLog(dbCtx, work.logID, map[string]interface{}{"has_object": true})
 		case uploadKindAgent:
-			err = h.inner.UpdateAgentLog(dbCtx, work.logID, map[string]interface{}{"has_object": true})
+			var superseded bool
+			superseded, err = h.markAgentLogOffloaded(dbCtx, work)
+			if superseded {
+				dbCancel()
+				return
+			}
 		default:
 			err = h.inner.Update(dbCtx, work.logID, map[string]interface{}{"has_object": true})
 		}
@@ -471,19 +477,6 @@ func (h *HybridLogStore) enqueueRawUpload(logID string, timestamp time.Time, key
 // copy was read from staleKey (the other-format key); the worker deletes that
 // copy once the new object is written.
 func (h *HybridLogStore) enqueueReplacingUpload(logID string, timestamp time.Time, key, staleKey string, kind uploadKind, status string, data []byte, tags map[string]string) {
-	if h.closed.Load() || len(data) == 0 {
-		return
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			h.droppedUploads.Add(1)
-		}
-	}()
-	if h.pendingBytes.Load()+int64(len(data)) > defaultMaxUploadQueueBytes {
-		h.droppedUploads.Add(1)
-		h.logger.Warn("objectstore: upload queue memory limit reached, dropping upload for log %s", logID)
-		return
-	}
 	work := &uploadWork{
 		logID:     logID,
 		timestamp: timestamp,
@@ -494,7 +487,10 @@ func (h *HybridLogStore) enqueueReplacingUpload(logID string, timestamp time.Tim
 		tags:      tags,
 		staleKey:  staleKey,
 	}
-	// Recorded before the send, so a worker that settles it at once cannot run first.
+	// Recorded before the send, so a worker that settles it at once cannot run first,
+	// and before every drop below: an Agent upload dropped here still supersedes the
+	// one queued before it, whose object is now older than the row (TXE-7318). The
+	// cleanup then forgets it, leaving no upload that may set has_object.
 	h.trackPendingAgentUpload(work)
 	// Counted before the send for the same reason; processUpload releases it.
 	h.outstanding.Add(1)
@@ -505,6 +501,20 @@ func (h *HybridLogStore) enqueueReplacingUpload(logID string, timestamp time.Tim
 			h.settlePendingAgentUpload(work)
 		}
 	}()
+	// Deferred after the cleanup, so it runs first and the cleanup still runs.
+	defer func() {
+		if r := recover(); r != nil {
+			h.droppedUploads.Add(1)
+		}
+	}()
+	if h.closed.Load() || len(data) == 0 {
+		return
+	}
+	if h.pendingBytes.Load()+int64(len(data)) > defaultMaxUploadQueueBytes {
+		h.droppedUploads.Add(1)
+		h.logger.Warn("objectstore: upload queue memory limit reached, dropping upload for log %s", logID)
+		return
+	}
 	select {
 	case h.uploadShard(logID) <- work:
 		sent = true
@@ -539,6 +549,41 @@ func (h *HybridLogStore) settlePendingAgentUpload(work *uploadWork) {
 		delete(h.pendingAgent, work.logID)
 	}
 	h.pendingAgentMu.Unlock()
+}
+
+// agentRowLockStripes is the number of locks agentRowLocks spreads Agent logs over.
+const agentRowLockStripes = 64
+
+// agentRowLock returns the lock, striped by log id, that serialises id's payload update
+// against the has_object write of its uploads. UpdateAgentLog holds it across its row
+// write and the enqueue that tracks its upload; markAgentLogOffloaded holds it across
+// its "latest upload?" check and the has_object write. Only the latest tracked upload
+// may set has_object. Without the lock, a superseded upload could pass the check, lose
+// the race to the update, and then mark the row as offloaded to an object older than
+// the row (TXE-7318).
+func (h *HybridLogStore) agentRowLock(id string) *sync.Mutex {
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(id))
+	return &h.agentRowLocks[hash.Sum32()%agentRowLockStripes]
+}
+
+// markAgentLogOffloaded sets has_object for work's Agent log when work is still the
+// log's latest tracked upload. A later update wrote newer previews to the row and
+// queued its own upload, which sets the flag when it lands; this one's object is
+// already older than the row, so it reports superseded and leaves the flag alone. If
+// that later upload is dropped, the row keeps has_object false and serves its own
+// previews instead of the older object (TXE-7318).
+func (h *HybridLogStore) markAgentLogOffloaded(ctx context.Context, work *uploadWork) (superseded bool, err error) {
+	lock := h.agentRowLock(work.logID)
+	lock.Lock()
+	defer lock.Unlock()
+	h.pendingAgentMu.Lock()
+	latest := h.pendingAgent[work.logID] == work
+	h.pendingAgentMu.Unlock()
+	if !latest {
+		return true, nil
+	}
+	return false, h.inner.UpdateAgentLog(ctx, work.logID, map[string]interface{}{"has_object": true})
 }
 
 // pendingAgentPayload returns the full payload of id's queued upload, or nil.
@@ -2245,6 +2290,13 @@ func (h *HybridLogStore) UpdateAgentLog(ctx context.Context, id string, entry an
 	if !payloadUpdate {
 		return h.inner.UpdateAgentLog(ctx, id, entry)
 	}
+
+	// Held through the enqueue below, so a worker's has_object write sees either the
+	// row before this update or the row with this update's upload already tracked as
+	// the latest (TXE-7318). It also orders two payload updates of the same log.
+	lock := h.agentRowLock(id)
+	lock.Lock()
+	defer lock.Unlock()
 
 	// Read before the row: a queued upload settles only after has_object is set, so
 	// a row still without its object is covered by this payload.
