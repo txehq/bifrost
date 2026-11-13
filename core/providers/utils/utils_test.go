@@ -4732,6 +4732,45 @@ func BenchmarkGetResourceRequestPath(b *testing.B) {
 	}
 }
 
+// BenchmarkResourceRequestURL measures building the URL of a call that names a batch or a file
+// on the anthropic, gemini, modelark, volcengine and replicate bases (TXE-7085). "before" is
+// what those call sites did until now, baseURL + defaultPath whatever the overrides said; the
+// built-in provider and a custom provider without a matching override must stay as cheap.
+func BenchmarkResourceRequestURL(b *testing.B) {
+	const baseURL, defaultPath, id = "https://api.anthropic.com", "/v1/messages/batches/msgbatch_01HkcTjaV5uDC8jWR4ZsDV8d", "msgbatch_01HkcTjaV5uDC8jWR4ZsDV8d"
+	var sink string
+	// Runtime strings, as at the call sites: two constants would be concatenated at compile time.
+	parts := []string{baseURL, defaultPath}
+	b.Run("before: concatenation", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			sink = parts[0] + parts[1]
+		}
+	})
+	for _, bc := range []struct {
+		name   string
+		config *schemas.CustomProviderConfig
+	}{
+		{"built-in provider", nil},
+		{"custom provider without overrides", &schemas.CustomProviderConfig{}},
+		{"override for another request type", &schemas.CustomProviderConfig{RequestPathOverrides: map[schemas.RequestType]string{schemas.BatchCreateRequest: "/moved/batches"}}},
+		{"path template", &schemas.CustomProviderConfig{RequestPathOverrides: map[schemas.RequestType]string{schemas.BatchRetrieveRequest: "/moved/batches/{batch_id}"}}},
+		{"full URL template", &schemas.CustomProviderConfig{RequestPathOverrides: map[schemas.RequestType]string{schemas.BatchRetrieveRequest: "https://vendor.example/moved/batches/{batch_id}"}}},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				url, err := ResourceRequestURL(baseURL, defaultPath, bc.config, id, schemas.BatchRetrieveRequest)
+				if err != nil {
+					b.Fatal(err)
+				}
+				sink = url
+			}
+		})
+	}
+	_ = sink
+}
+
 func BenchmarkSetExtraHeaders(b *testing.B) {
 	b.Setenv("BF_BENCH_EXTRA_HEADER", "from-env")
 	cases := []struct {
