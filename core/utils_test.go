@@ -917,11 +917,7 @@ func TestWrapConvertedStreamPostHookRunnerMarksConvertedChunks(t *testing.T) {
 // customProviderKeyPending lists the bases whose custom providers still report the base's
 // name, each with the ticket that fixes it. The test below fails on a stale entry, so the
 // map empties as those fixes land and is meant to stay empty.
-var customProviderKeyPending = map[schemas.ModelProvider]string{
-	schemas.Replicate:  "TXE-7085",
-	schemas.ModelArk:   "TXE-7085",
-	schemas.Volcengine: "TXE-7085",
-}
+var customProviderKeyPending = map[schemas.ModelProvider]string{}
 
 // A custom provider reports its own name from GetProviderKey, on every base a custom
 // provider can be built on. Core finds a provider by that name (getProviderByKey) and picks
