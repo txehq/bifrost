@@ -393,8 +393,18 @@ func (p *GovernancePlugin) claimBatchOutputFolder(ctx *schemas.BifrostContext, l
 	}
 	owners, err := p.storageFolderOwners(ctx, folders)
 	if err == nil && len(owners) == 0 {
+		// Another key's output at a folder above (an earlier batch's output directory, recorded
+		// as a file or on its job row, which no folder claim covers) also stands in the way: the
+		// claim would hide what that key could reach until now.
+		above := make([]string, 0, 2*len(folders))
+		for _, ancestor := range folders[:len(folders)-1] {
+			above = append(above, ancestor, strings.TrimSuffix(ancestor, "/"))
+		}
 		var foreign bool
-		if foreign, err = p.foreignRecordBeneath(ctx, folder, owner); err == nil && !foreign {
+		if foreign, err = p.configStore.HasForeignRecordAt(ctx, above, owner); err == nil && !foreign {
+			foreign, err = p.foreignRecordBeneath(ctx, folder, owner)
+		}
+		if err == nil && !foreign {
 			_, err = p.configStore.InsertProviderObject(ctx, &configstoreTables.TableProviderObject{
 				ID:           configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindStorageFolder, storageFolderProvider(folder), folder),
 				Kind:         configstoreTables.ProviderObjectKindStorageFolder,

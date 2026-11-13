@@ -503,6 +503,19 @@ func TestBatchOutputFolderIsClaimedOnRetrieve(t *testing.T) {
 	assert.Empty(t, storageFolderOwner(t, store, "s3://ret/shared/"), "another key has a record beneath it")
 	retrieve("batch-old", "s3://root-only/")
 	assert.Empty(t, storageFolderOwner(t, store, "s3://root-only/"), "a bucket root is never claimed this way")
+	// Another key's earlier batch wrote into a folder above (its job row, or the file row its
+	// retrieve recorded, names that directory; no folder claim covers it): claiming beneath it
+	// would hide what that key could reach until now.
+	otherVK := other
+	require.NoError(t, store.UpsertProviderJob(context.Background(), &configstoreTables.TableProviderJob{
+		ID: configstoreTables.ProviderJobID(configstoreTables.ProviderJobKindBatch, "bedrock", "job-hist"), Kind: configstoreTables.ProviderJobKindBatch,
+		Provider: "bedrock", JobID: "job-hist", OutputFileID: schemas.Ptr("s3://ret/hist"), VirtualKeyID: &otherVK, AccountingStatus: configstoreTables.ProviderJobAccountingStatusPending,
+	}))
+	retrieve("batch-old", "s3://ret/hist/sub")
+	assert.Empty(t, storageFolderOwner(t, store, "s3://ret/hist/sub/"), "another key's earlier batch wrote into the folder above (job row)")
+	seedProviderObject(t, store, fileKind, "bedrock", "s3://ret/hist2/", other)
+	retrieve("batch-old", "s3://ret/hist2/deeper/sub")
+	assert.Empty(t, storageFolderOwner(t, store, "s3://ret/hist2/deeper/sub/"), "another key's earlier batch wrote into a folder above (file row)")
 	retrieve("batch-nobody", "s3://ret/nobody/job-4")
 	assert.Empty(t, storageFolderOwner(t, store, "s3://ret/nobody/job-4/"), "a batch nobody recorded hands its results to no one")
 }
@@ -527,6 +540,13 @@ func BenchmarkBatchRetrieveRecording(b *testing.B) {
 			resp := &schemas.BifrostBatchRetrieveResponse{ID: "batch-bench", OutputFileID: schemas.Ptr(output)}
 			for i := 0; i < b.N; i++ {
 				plugin.recordBatchFiles(presentCtx(mcpTestVKValue), "bedrock", resp)
+			}
+			b.StopTimer()
+			if strings.HasPrefix(output, "s3://") && storageFolderOwner(t, store, "s3://bench/tenant/out/") != "vk-mcp-stamp" {
+				b.Fatal("the key's folder is gone")
+			}
+			if output == "s3://bench/unclaimed/job-1" && storageFolderOwner(t, store, output+"/") != "vk-mcp-stamp" {
+				b.Fatalf("the output directory was not claimed")
 			}
 		})
 	}
