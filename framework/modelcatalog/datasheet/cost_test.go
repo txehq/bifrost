@@ -8954,8 +8954,23 @@ func TestVideoPricingDimensions_BandSizePrecedence(t *testing.T) {
 	captured := VideoPricingDimensions{Size: "3840x2160", Resolution: "4k"}
 	merged := captured.MergedWith(VideoDimensionsFromResponse(&schemas.BifrostVideoGenerationResponse{Size: "1280x720"}))
 	assert.Equal(t, "1280x720", band(merged, schemas.Gemini))
-	assert.Equal(t, "", merged.PricedResolution())
-	assert.Equal(t, "4k", captured.PricedResolution())
+	assert.Equal(t, "", merged.TierOnlyResolution())
+	assert.Equal(t, "4k", VideoPricingDimensions{Resolution: "4k"}.TierOnlyResolution())
+	assert.Equal(t, "", captured.TierOnlyResolution(), "with both named, an unpriced record leaves the choice to the size")
+}
+
+// The details name the tier that set the band, so the settlement records it for a reprice.
+func TestCalculateVideoCostDetails_ReportsTheTierThatSetTheBand(t *testing.T) {
+	store, rows := resolutionBandStore(t)
+	row := rows["gemini/veo-3.1-generate-001"]
+	seconds := 8
+	priced := func(d VideoPricingDimensions, provider schemas.ModelProvider) VideoCostDetails {
+		d.Model, d.RequestType, d.Seconds, d.OutputCount = row.Model, schemas.VideoGenerationRequest, &seconds, 1
+		return store.CalculateVideoCostDetails(d, provider, nil)
+	}
+	assert.Equal(t, "1080p", priced(VideoPricingDimensions{Size: "3840x2160", Resolution: "1080p"}, schemas.Gemini).PricedResolution)
+	assert.Equal(t, "", priced(VideoPricingDimensions{Size: "3840x2160"}, schemas.Gemini).PricedResolution)
+	assert.Equal(t, "", priced(VideoPricingDimensions{Size: "3840x2160", SizeReported: true, Resolution: "1080p"}, schemas.Gemini).PricedResolution)
 }
 
 func TestVideoResolutionBand_TierLabels(t *testing.T) {

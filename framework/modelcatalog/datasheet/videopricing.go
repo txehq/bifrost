@@ -142,6 +142,11 @@ type VideoCostDetails struct {
 	Priced           bool
 	ProviderCostUsed bool
 	Breakdown        *schemas.BifrostCost
+	// PricedResolution is the resolution tier that selected the rate band, or "" when a size
+	// did (or nothing banded the job). The settlement records it, so a reprice prices from
+	// the tier alone, or the size alone, exactly as settlement chose (TXE-7349): a reprice
+	// cannot resolve a custom provider's base, so it must not rerun that choice.
+	PricedResolution string
 }
 
 // CalculateVideoCostDetails prices a video job from its merged dimensions.
@@ -180,11 +185,16 @@ func (s *Store) CalculateVideoCostDetails(dims VideoPricingDimensions, provider 
 	// The audio flag the create captured selects a band's with-audio rate where the model has
 	// one (TXE-7306); an unstated flag takes the provider's audio default.
 	audio := VideoPricedWithAudio(provider, dims.Audio)
-	breakdown := computeVideoCost(pricing, nil, dims.Seconds, dims.bandSize(provider, pricing, audio), dims.OutputCount, audio, serviceTier{})
+	band := dims.bandSize(provider, pricing, audio)
+	breakdown := computeVideoCost(pricing, nil, dims.Seconds, band, dims.OutputCount, audio, serviceTier{})
 	if breakdown == nil || breakdown.TotalCost <= 0 {
 		return VideoCostDetails{}
 	}
-	return VideoCostDetails{Cost: breakdown.TotalCost, Priced: true, Breakdown: breakdown}
+	details := VideoCostDetails{Cost: breakdown.TotalCost, Priced: true, Breakdown: breakdown}
+	if band != dims.Size {
+		details.PricedResolution = band
+	}
+	return details
 }
 
 // BandResolution returns the resolution tier label that names a rate band: Resolution,
@@ -243,11 +253,12 @@ func (d VideoPricingDimensions) bandSize(provider schemas.ModelProvider, pricing
 	return d.Size
 }
 
-// PricedResolution returns the tier the settlement records for a reprice: "" when a reported
-// size set the band, else the requested tier. A reprice has no SizeReported, so recording no
-// tier leaves the size to decide; a recorded tier reruns the same choice bandSize made.
-func (d VideoPricingDimensions) PricedResolution() string {
-	if d.SizeReported && videoResolutionBand(d.Size) > 0 {
+// TierOnlyResolution is the tier a settlement that could not be priced records: the tier when
+// no size names a band, since the tier alone then sets the band whatever the provider, and ""
+// otherwise. With both named, the choice needs the rates and the base provider, so the record
+// leaves it to the size; a reprice then never takes a cheaper tier the provider may ignore.
+func (d VideoPricingDimensions) TierOnlyResolution() string {
+	if videoResolutionBand(d.Size) > 0 {
 		return ""
 	}
 	return d.BandResolution()

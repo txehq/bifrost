@@ -846,7 +846,7 @@ func TestVideoReprice_KeepsTheSettlementsAudioFlag(t *testing.T) {
 			settled := &logstore.Log{ID: "log-1", Provider: string(schemas.DashScope), Model: "wan2.5-t2v-preview"}
 			videoDebugFor("ds-audio-off", schemas.VideoStatusCompleted, modelcatalog.VideoPricingDimensions{
 				RequestType: schemas.VideoGenerationRequest, Seconds: &seconds, Size: "1280x720", Audio: audio, OutputCount: 1,
-			}, false)(settled)
+			}, "", false)(settled)
 			// The row as the store keeps it: video_debug serialized, read back by the reprice.
 			stored, err := json.Marshal(settled.VideoDebugParsed)
 			require.NoError(t, err)
@@ -1547,11 +1547,18 @@ func TestVertexVeoWithoutSecondsGetsVeosDefault(t *testing.T) {
 type dimsRecordingPricing struct {
 	fakePricing
 	seen []modelcatalog.VideoPricingDimensions
+	// tierWins makes the requested tier set the band even beside a banded size, as the real
+	// catalog does for a provider that renders the requested tier.
+	tierWins bool
 }
 
 func (p *dimsRecordingPricing) CalculateVideoCostDetails(dims modelcatalog.VideoPricingDimensions, provider schemas.ModelProvider, scopes *modelcatalog.PricingLookupScopes) modelcatalog.VideoCostDetails {
 	p.seen = append(p.seen, dims)
-	return p.fakePricing.CalculateVideoCostDetails(dims, provider, scopes)
+	details := p.fakePricing.CalculateVideoCostDetails(dims, provider, scopes)
+	if p.tierWins && details.Priced {
+		details.PricedResolution = dims.BandResolution()
+	}
+	return details
 }
 
 // A tier-only request (Veo "4k", Wan "480P") has no size, so the tier is the only record of its
@@ -1594,17 +1601,17 @@ func TestVideoSettle_ResolutionTierSurvivesSettlementAndReprice(t *testing.T) {
 	}
 }
 
-// A custom provider on a Veo base renders the requested tier like Gemini does, so settlement and
-// reprice hand pricing the base provider to choose the band by (TXE-7349). The custom name still
-// prices the job.
+// A custom provider on a Veo base renders the requested tier like Gemini does, so settlement hands
+// pricing the base provider to choose the band by, and records the tier that won. A reprice runs
+// with no resolver (RepriceLog builds NewVideoSettler(nil)), so it prices from that recorded tier
+// alone rather than choosing again (TXE-7349).
 func TestVideoSettle_CustomProviderPricesWithItsBaseProvider(t *testing.T) {
 	retriever := &resolvingVideoRetriever{bases: map[schemas.ModelProvider]schemas.ModelProvider{"my-veo": schemas.Gemini}}
-	settler := NewVideoSettler(retriever)
 	dims := generationDims("sora-2-pro", "3840x2160", 8)
 	dims.Resolution = "1080p"
 	job := videoJob(t, "vid_custom_veo", dims)
-	pricing := &dimsRecordingPricing{}
-	settlement, err := settler.Settle(context.Background(), pricing, JobRequest{
+	pricing := &dimsRecordingPricing{tierWins: true}
+	settlement, err := NewVideoSettler(retriever).Settle(context.Background(), pricing, JobRequest{
 		Provider: "my-veo", ProviderJobID: job.JobID, FallbackModel: job.Model, Job: job,
 		Payload: VideoPayload{Response: &schemas.BifrostVideoGenerationResponse{
 			Status: schemas.VideoStatusCompleted, Seconds: bifrost.Ptr("8"),
@@ -1617,9 +1624,37 @@ func TestVideoSettle_CustomProviderPricesWithItsBaseProvider(t *testing.T) {
 
 	entry := &logstore.Log{Model: "sora-2-pro", Provider: "my-veo"}
 	settlement.ApplyDebug(entry)
-	_, err = settler.RepriceFromLog(entry, pricing)
+	assert.Equal(t, "1080p", entry.VideoDebugParsed.Accounting.Resolution)
+
+	repricing := &dimsRecordingPricing{}
+	_, err = NewVideoSettler(nil).RepriceFromLog(entry, repricing)
 	require.NoError(t, err)
-	require.Len(t, pricing.seen, 2)
-	assert.Equal(t, schemas.Gemini, pricing.seen[1].BaseProvider)
-	assert.Equal(t, "1080p", pricing.seen[1].Resolution)
+	require.Len(t, repricing.seen, 1)
+	assert.Equal(t, "1080p", repricing.seen[0].Resolution)
+	assert.Equal(t, "", repricing.seen[0].Size, "the recorded tier prices alone; the size must not reopen the choice")
+}
+
+// Without a winning tier the settlement records none, and a reprice prices from the size alone.
+func TestVideoSettle_SizeThatSetTheBandRepricesBySize(t *testing.T) {
+	dims := generationDims("sora-2-pro", "1920x1080", 8)
+	dims.Resolution = "480p"
+	job := videoJob(t, "vid_size_band", dims)
+	settlement, err := NewVideoSettler(nil).Settle(context.Background(), &dimsRecordingPricing{}, JobRequest{
+		Provider: schemas.OpenAI, ProviderJobID: job.JobID, FallbackModel: job.Model, Job: job,
+		Payload: VideoPayload{Response: &schemas.BifrostVideoGenerationResponse{
+			Status: schemas.VideoStatusCompleted, Seconds: bifrost.Ptr("8"),
+			Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+		}},
+	})
+	require.NoError(t, err)
+	entry := &logstore.Log{Model: "sora-2-pro", Provider: string(schemas.OpenAI)}
+	settlement.ApplyDebug(entry)
+	assert.Equal(t, "", entry.VideoDebugParsed.Accounting.Resolution)
+
+	repricing := &dimsRecordingPricing{}
+	_, err = NewVideoSettler(nil).RepriceFromLog(entry, repricing)
+	require.NoError(t, err)
+	require.Len(t, repricing.seen, 1)
+	assert.Equal(t, "1920x1080", repricing.seen[0].Size)
+	assert.Equal(t, "", repricing.seen[0].Resolution)
 }
