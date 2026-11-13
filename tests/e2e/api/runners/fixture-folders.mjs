@@ -127,6 +127,40 @@ export const GROUPS = [
 		config: "tests/e2e/api/provider_config/azure-stream-preamble.config.json",
 		vars: () => ({ azureStreamPreambleFixture: "1" }),
 	},
+	{
+		// Folder 186 (TXE-7290): the same fixture, behind OpenAI with one retry and request logging
+		// on, since the rows read back the log row of a stream that failed once and was retried.
+		id: "stream-retry",
+		variables: ["streamRetryFixture"],
+		ports: { main: 8789 },
+		fixture: (p) => ({ script: "azure-stream-preamble-fixture.mjs", args: [], env: { AZURE_STREAM_FIXTURE_PORT: p.main } }),
+		config: "tests/e2e/api/provider_config/stream-retry.config.json",
+		vars: () => ({ streamRetryFixture: "1", setupToken: SETUP_TOKEN }),
+	},
+	{
+		// Folder 208 (TXE-7290): the rows create the databricks provider with the token fixture as
+		// its proxy, and fall back to openai/gpt-4o-mini, which the config aliases to the
+		// provider-error fixture's upstream-ok. Its second row is [PREVIEW], hence include_preview.
+		id: "databricks-oauth",
+		variables: ["databricksTokenFixtureUrl"],
+		ports: { main: 8795, error: 8791, errorStall: 8799, errorTls: 8793, errorTunnel: 8788 },
+		fixture: (p) => [
+			{ script: "databricks-token-fixture.mjs", args: ["--port", String(p.main)], env: {}, port: p.main },
+			{ ...providerError.fixture({ main: p.error, stall: p.errorStall, tls: p.errorTls, tunnel: p.errorTunnel }), port: p.error },
+		],
+		config: "tests/e2e/api/provider_config/databricks-oauth.config.json",
+		vars: (p) => ({ databricksTokenFixtureUrl: `http://127.0.0.1:${p.main}`, include_preview: "1", setupToken: SETUP_TOKEN }),
+	},
+	{
+		// Folders 266 and 267 (TXE-7290): the A2A push fixture is the upstream agent and the
+		// client's push callback, on loopback, so the config allows private push callbacks.
+		id: "a2a-push",
+		variables: ["a2aPushFixtureUrl", "a2aFixtureBase"],
+		ports: { main: 18091 },
+		fixture: (p) => ({ script: "a2a-push-fixture.mjs", args: [String(p.main)], env: {} }),
+		config: "tests/e2e/api/provider_config/a2a-push.config.json",
+		vars: (p) => ({ a2aPushFixtureUrl: `http://127.0.0.1:${p.main}`, setupToken: SETUP_TOKEN }),
+	},
 ];
 
 export function loadData(path = DATA_FILE) {
@@ -338,13 +372,17 @@ async function runGroup(group, folders, { gateway, workDir }) {
 		for (const d of (group.span || [0]).filter((d) => d !== 0)) mapping.push([def + d, ports[key] + d]);
 	}
 	const datasheets = await serveEmptyDatasheets();
-	let fixture;
+	const fixtures = [];
 	let gw;
 	try {
 		if (group.config) writeCheckedInFixtureConfig(dir, { source: join(REPO, group.config), mapping, datasheetOrigin: datasheets.url });
-		const fx = group.fixture(ports, dir);
-		fixture = start(process.execPath, [join(HERE, fx.script), ...fx.args], { env: fx.env, log: join(dir, "fixture.log") });
-		await until(`${group.id} fixture`, () => tcpOpen(ports.main), 30);
+		// A group may start more than one fixture; each is waited for on its own port.
+		const specs = [group.fixture(ports, dir)].flat();
+		for (const [i, fx] of specs.entries()) {
+			const log = join(dir, specs.length === 1 ? "fixture.log" : `fixture-${i}.log`);
+			fixtures.push(start(process.execPath, [join(HERE, fx.script), ...fx.args], { env: fx.env, log }));
+			await until(`${group.id} fixture ${fx.script}`, () => tcpOpen(fx.port ?? ports.main), 30);
+		}
 		if (!existsSync(join(dir, "config.json"))) await until(`${group.id} fixture's gateway config`, async () => existsSync(join(dir, "config.json")), 30);
 		const gwPort = await freePort();
 		// No proxy tripwire here: scripts/test-offline.sh refuses every non-loopback dial and names
@@ -373,7 +411,7 @@ async function runGroup(group, folders, { gateway, workDir }) {
 		return { ...rowsFromReport(JSON.parse(readFileSync(report, "utf8"))), newmanExit: code, selected: requestNames(collection) };
 	} finally {
 		await stop(gw);
-		await stop(fixture);
+		for (const f of fixtures) await stop(f);
 		datasheets.server.close();
 	}
 }

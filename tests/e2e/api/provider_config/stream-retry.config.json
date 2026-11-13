@@ -1,0 +1,50 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "setup_token": "bifrost-e2e-setup-token",
+  "client": {
+    "enforce_auth_on_inference": false,
+    "enable_logging": true
+  },
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "local-stream-fixture",
+          "value": "test-key",
+          "models": [
+            "preamble-retry"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8789",
+        "max_retries": 1,
+        "default_request_timeout_in_seconds": 10,
+        "stream_idle_timeout_in_seconds": 5,
+        "retry_backoff_initial": 10,
+        "retry_backoff_max": 50
+      }
+    },
+    "egress_probe": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai"
+      },
+      "network_config": {
+        "base_url": "https://203.0.113.10",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    }
+  }
+}
