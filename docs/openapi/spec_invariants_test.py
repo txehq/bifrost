@@ -128,7 +128,8 @@ def test_no_orphaned_fragments():
             text = other.read_text(encoding="utf-8")
             for frag in defined:
                 cross_file = f"{stem}.yaml#/{frag}/" in text
-                same_file = other == source and f"'#/{frag}/" in text
+                # Either YAML quote style: logging.yaml writes "#/_histogram-parameters/period".
+                same_file = other == source and (f"'#/{frag}/" in text or f'"#/{frag}/' in text)
                 if cross_file or same_file:
                     composed.add(frag)
         unused = sorted(defined - referenced - composed - KNOWN_ORPHANS.get(source.name, set()))
@@ -484,9 +485,14 @@ def test_warp_chat_response_contract_is_current():
     # a constant that stops being emitted must not linger in the published enum.
     agent = (REPO_ROOT / "framework" / "warp" / "agent.go").read_text(encoding="utf-8")
     constants = dict(re.findall(r'(Err[A-Za-z]+)\s+=\s+"([a-z_]+)"', agent))
+    # A code reaches an event directly (`Code: ErrTimeout`) or through a variable the
+    # governance refusal sets (`code = ErrBudgetExceeded`, `return ErrAccessDenied, ...`)
+    # and an event then carries (`Code: code`); all three forms count.
     emitted = sorted({
         constants[name]
-        for name in re.findall(r"Code:\s+(Err[A-Za-z]+)", agent)
+        for name in re.findall(
+            r"(?:Code:\s+|\bcode\s*=\s*|\breturn\s+)(Err[A-Za-z]+)\b", agent
+        )
         if name in constants
     })
     if not emitted:

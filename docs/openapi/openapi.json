@@ -51951,79 +51951,6 @@
         }
       }
     },
-    "/api/governance/virtual-keys/{vk_id}/rotate": {
-      "post": {
-        "operationId": "rotateVirtualKey",
-        "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `VirtualKeys:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
-        },
-        "summary": "Rotate virtual key",
-        "description": "Generates a new value for the virtual key. When the client vk_rotation_cooldown setting is non-zero, the retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.\n",
-        "tags": [
-          "Governance"
-        ],
-        "parameters": [
-          {
-            "name": "vk_id",
-            "in": "path",
-            "required": true,
-            "description": "Virtual key ID",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "security": [
-          {
-            "ManagementBearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Virtual key rotated successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "message",
-                    "virtual_key"
-                  ],
-                  "properties": {
-                    "message": {
-                      "type": "string"
-                    },
-                    "virtual_key": {
-                      "$ref": "#/components/schemas/VirtualKey"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Virtual key not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override": {
       "put": {
         "operationId": "updateVirtualKeyBudgetOverride",
@@ -52642,6 +52569,79 @@
                       }
                     }
                   }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/virtual-keys/{vk_id}/rotate": {
+      "post": {
+        "operationId": "rotateVirtualKey",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `VirtualKeys:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Rotate virtual key",
+        "description": "Generates a new value for the virtual key. When the client vk_rotation_cooldown setting is non-zero, the retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.\n\nIn a clustered deployment, peers learn of the rotation asynchronously: until a peer has\nreloaded the virtual key, it may still accept the previous value. Wait for cluster\nconvergence before treating the previous value as revoked cluster-wide.\n\nThe new value is returned in `virtual_key.value`. Store it securely and update the clients\nthat use the previous value.\n",
+        "tags": [
+          "Governance"
+        ],
+        "parameters": [
+          {
+            "name": "vk_id",
+            "in": "path",
+            "required": true,
+            "description": "Virtual key ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Virtual key rotated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message",
+                    "virtual_key"
+                  ],
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "virtual_key": {
+                      "$ref": "#/components/schemas/VirtualKey"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Virtual key not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -81180,7 +81180,7 @@
           },
           "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/governance/users/{user_id}/virtual-keys` instead.\n</Warning>\n<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n<Warning>\n  **Deprecated.** Use [`POST /api/governance/users/{user_id}/virtual-keys`](/api-reference/governance/mint-an-extra-virtual-key-for-a-user)\n  instead. This path still works and behaves identically, but will be removed in a future major release.\n</Warning>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AccessProfiles:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
-        "summary": "Add an extra virtual key under a user's access profile (deprecated) (deprecated path)",
+        "summary": "Add an extra virtual key under a user's access profile (legacy /api/users path) (deprecated path)",
         "description": "Issues an additional virtual key for the user.\n\nVirtual keys are scoped to the **user**, not to one access profile: what a request may do with\nthe key is resolved at request time from whichever of the user's active profiles grant it. So\n`profile_id` is ignored — the key minted is the same whichever profile is named, and it is not\nbound to that profile or removed with it. The user must hold at least one access profile.\n",
         "tags": [
           "Access Profiles"

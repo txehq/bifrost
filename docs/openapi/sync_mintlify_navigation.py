@@ -44,6 +44,7 @@ SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "Containers",
             "Async Jobs",
             "Realtime",
+            "Decisions",
         ),
     ),
     (
@@ -58,6 +59,7 @@ SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "LiteLLM Integration",
             "LangChain Integration",
             "PydanticAI Integration",
+            "Typesafe Integration",
         ),
     ),
     (
@@ -67,6 +69,8 @@ SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "Configuration",
             "Session",
             "Providers",
+            "Routing",
+            "Adaptive Routing",
             "Plugins",
             "MCP",
             "MCP Tool Groups",
@@ -78,6 +82,8 @@ SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "Skills",
             "Cache",
             "Vault",
+            "API Keys",
+            "Background Jobs",
             "Audit Logs",
             "Infrastructure",
             "Webhooks",
