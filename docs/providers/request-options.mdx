@@ -695,6 +695,8 @@ On image, video, embedding, speech and transcription requests, an extra paramete
 
 A provider's own name for one of these fields is treated as the field where the provider's converter reads it: `ratio` on BytePlus and MiniMax video and `aspectRatio` on Gemini and Vertex video are `aspect_ratio`, `taskType` on Gemini embeddings is `task_type`, `outputFormat` on Runware video is `output_format`, `references` on Runway video is `reference_images`, and on Sarvam `speaker`, `pace` and `target_language_code` are `voice`, `speed` and `language_code` for speech and `language_code` is `language` for transcription. Such a name is accepted only when the request also sends the unified field with the same value.
 
+On `/v1/audio/speech`, the unified fields `language_code`, `pronunciation_dictionary_locators`, `enable_logging`, `optimize_streaming_latency`, `with_timestamps` and `max_output_tokens` are request fields, not extra parameters. When a provider delivers one of them under the vendor's own name (Google Cloud Text-to-Speech sends `language_code` as `voice.languageCode`, Sarvam as `target_language_code`, Gemini sends `max_output_tokens` as `generationConfig.maxOutputTokens`, ElevenLabs sends `enable_logging` and `optimize_streaming_latency` as query parameters and uses `with_timestamps` to pick the endpoint), the vendor receives it that way only, never a second time as a raw body field.
+
 How parameters are collected depends on the entrypoint:
 
 - Standard inference routes such as `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`, and `/v1/images/generations` collect all unknown top-level JSON fields as extra parameters.

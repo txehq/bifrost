@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"bytes"
+	"encoding"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -616,12 +617,22 @@ func checkExtraParamPriceFields(baseProvider ModelProvider, req *BifrostRequest,
 	// The common request names no C4 field among its extra params: nothing is sorted
 	// or allocated for it.
 	var refused, refusedField string
+	// Made when the first extra param names a field: the common request names none.
+	var sentFields *sentUnifiedFields
 	for key, value := range extraParams {
 		field := priceFieldNamed(baseProvider, req.RequestType, table, key)
 		if field == "" || extraParamIsEmpty(value) {
 			continue
 		}
-		if sent, isSet := unifiedFieldSent(req, params, field); isSet {
+		if sentFields == nil {
+			sentFields = &sentUnifiedFields{}
+		}
+		sent := sentFields.known(field)
+		if sent == nil {
+			value, isSet := unifiedFieldSent(req, params, field)
+			sent = sentFields.record(field, value, isSet)
+		}
+		if sent.isSet {
 			// The request sent the field, and the handlers keep a copy among the extra
 			// params for the converters that read it there. A copy that says something
 			// else is not a copy: the converter would send the vendor a value the
@@ -679,30 +690,364 @@ type sentUnifiedField struct {
 // sent. Two strings are compared directly, which is the copy the handlers keep. Anything
 // else is compared as JSON, so 2 and 2.0, or a []string and the []interface{} a JSON body
 // decodes to, are the same value; a value that cannot be compared is not a copy.
+//
+// The comparison walks the two values (sameAsJSONValue) and encodes neither: the copy of a
+// large field (a list of pronunciation dictionaries) once cost two JSON round trips of the
+// whole value on every request (TXE-7077). Only a value whose JSON form the walk cannot
+// know is encoded and decoded.
 func (f sentUnifiedField) sameValueAs(extra interface{}) bool {
-	if planted, isString := extra.(string); isString && f.isText {
-		return planted == f.text
+	if same, decided := f.sameWithoutEncoding(extra); decided {
+		return same
 	}
-	var sent interface{} = f.text
-	if !f.isText {
-		if !f.value.IsValid() || !f.value.CanInterface() {
-			return false
+	sentValue, ok := f.asJSONValue()
+	if !ok {
+		return false
+	}
+	extraValue, ok := jsonValueOf(extra)
+	return ok && reflect.DeepEqual(sentValue, extraValue)
+}
+
+// sameWithoutEncoding compares the sent value with an extra param's value by walking them.
+// decided is false when the walk cannot tell, and the caller compares the encoded forms.
+func (f sentUnifiedField) sameWithoutEncoding(extra interface{}) (same, decided bool) {
+	if f.isText {
+		if planted, isString := extra.(string); isString {
+			return planted == f.text, true
 		}
-		sent = f.value.Interface()
+		// A string never equals a decoded JSON value of another kind.
+		return false, isDecodedJSONValue(extra)
 	}
-	sentJSON, err := MarshalSorted(sent)
+	if !f.value.IsValid() {
+		return false, true
+	}
+	return sameAsJSONValue(f.value, extra, 0)
+}
+
+// isDecodedJSONValue reports whether v is of a type a JSON document decodes to in an
+// interface{} (or the plain int a handler may put there), so its JSON kind is known
+// without encoding it.
+func isDecodedJSONValue(v interface{}) bool {
+	switch v.(type) {
+	case nil, string, bool, float64, int, int64, []interface{}, map[string]interface{}:
+		return true
+	}
+	return false
+}
+
+var (
+	jsonMarshalerType = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+	textMarshalerType = reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
+)
+
+// jsonShape is what sameAsJSONValue needs to know of a type: whether it writes its own JSON,
+// and for a struct the fields encoding/json writes.
+type jsonShape struct {
+	ownForm bool // the type, or a pointer to it, marshals itself
+	plain   bool // a struct whose fields are all listed below, with no embedding or other options
+	fields  []jsonShapeField
+}
+
+type jsonShapeField struct {
+	name      string
+	index     int
+	omitEmpty bool
+}
+
+var jsonShapeByType sync.Map // reflect.Type -> *jsonShape
+
+func jsonShapeOf(t reflect.Type) *jsonShape {
+	if cached, ok := jsonShapeByType.Load(t); ok {
+		return cached.(*jsonShape)
+	}
+	shape := &jsonShape{}
+	pointer := reflect.PointerTo(t)
+	shape.ownForm = t.Implements(jsonMarshalerType) || pointer.Implements(jsonMarshalerType) ||
+		t.Implements(textMarshalerType) || pointer.Implements(textMarshalerType)
+	if t.Kind() == reflect.Struct && !shape.ownForm {
+		shape.plain = true
+		seen := map[string]bool{}
+		for i := 0; i < t.NumField(); i++ {
+			sf := t.Field(i)
+			if sf.Anonymous {
+				shape.plain = false
+				break
+			}
+			if !sf.IsExported() {
+				continue
+			}
+			tag := sf.Tag.Get("json")
+			if tag == "-" {
+				continue
+			}
+			name, options, _ := strings.Cut(tag, ",")
+			if name == "" {
+				name = sf.Name
+			}
+			if (options != "" && options != "omitempty") || seen[name] {
+				shape.plain = false
+				break
+			}
+			seen[name] = true
+			shape.fields = append(shape.fields, jsonShapeField{name: name, index: i, omitEmpty: options == "omitempty"})
+		}
+	}
+	actual, _ := jsonShapeByType.LoadOrStore(t, shape)
+	return actual.(*jsonShape)
+}
+
+// The largest integer a float64 holds exactly: past it a JSON number and an integer are
+// compared in their encoded forms.
+const maxExactFloatInteger = 1 << 53
+
+// sameAsJSONValue reports whether v, encoded as JSON, is the JSON value extra holds, without
+// encoding either. extra is what a JSON body decodes to (nil, string, bool, float64,
+// []interface{}, map[string]interface{}) or a plain int. decided is false when the answer
+// depends on an encoding the walk does not reproduce: a type that marshals itself, an
+// embedded struct, a tag option other than omitempty, bytes, a float32, an integer past
+// 2^53, a map keyed by anything but a string, or an extra of another Go type.
+func sameAsJSONValue(v reflect.Value, extra interface{}, depth int) (same, decided bool) {
+	if depth > 64 || !isDecodedJSONValue(extra) {
+		return false, false
+	}
+	// A nil list or object is null in JSON, as a nil interface is.
+	switch held := extra.(type) {
+	case []interface{}:
+		if held == nil {
+			extra = nil
+		}
+	case map[string]interface{}:
+		if held == nil {
+			extra = nil
+		}
+	}
+	shape := jsonShapeOf(v.Type())
+	if shape.ownForm {
+		return false, false
+	}
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if v.IsNil() {
+			return extra == nil, true
+		}
+		return sameAsJSONValue(v.Elem(), extra, depth+1)
+	case reflect.String:
+		text, ok := extra.(string)
+		return ok && text == v.String(), true
+	case reflect.Bool:
+		flag, ok := extra.(bool)
+		return ok && flag == v.Bool(), true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		n := v.Int()
+		switch number := extra.(type) {
+		case float64:
+			if n > maxExactFloatInteger || n < -maxExactFloatInteger {
+				return false, false
+			}
+			return number == float64(n), true
+		case int:
+			return int64(number) == n, true
+		case int64:
+			return number == n, true
+		}
+		return false, true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		n := v.Uint()
+		if n > maxExactFloatInteger {
+			return false, false
+		}
+		switch number := extra.(type) {
+		case float64:
+			return number == float64(n), true
+		case int:
+			return number >= 0 && uint64(number) == n, true
+		case int64:
+			return number >= 0 && uint64(number) == n, true
+		}
+		return false, true
+	case reflect.Float64:
+		f := v.Float()
+		if f != f || f > maxExactFloatInteger || f < -maxExactFloatInteger {
+			return false, false
+		}
+		switch number := extra.(type) {
+		case float64:
+			return number == f, true
+		case int:
+			return float64(number) == f, true
+		case int64:
+			if number > maxExactFloatInteger || number < -maxExactFloatInteger {
+				return false, false
+			}
+			return float64(number) == f, true
+		}
+		return false, true
+	case reflect.Slice, reflect.Array:
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			return false, false
+		}
+		if v.Kind() == reflect.Slice && v.IsNil() {
+			return extra == nil, true
+		}
+		list, ok := extra.([]interface{})
+		if !ok || len(list) != v.Len() {
+			return false, true
+		}
+		for i := range list {
+			if same, decided := sameAsJSONValue(v.Index(i), list[i], depth+1); !same || !decided {
+				return same, decided
+			}
+		}
+		return true, true
+	case reflect.Map:
+		if v.Type().Key().Kind() != reflect.String || jsonShapeOf(v.Type().Key()).ownForm {
+			return false, false
+		}
+		if v.IsNil() {
+			return extra == nil, true
+		}
+		object, ok := extra.(map[string]interface{})
+		if !ok || len(object) != v.Len() {
+			return false, true
+		}
+		iter := v.MapRange()
+		for iter.Next() {
+			member, has := object[iter.Key().String()]
+			if !has {
+				return false, true
+			}
+			if same, decided := sameAsJSONValue(iter.Value(), member, depth+1); !same || !decided {
+				return same, decided
+			}
+		}
+		return true, true
+	case reflect.Struct:
+		if !shape.plain {
+			return false, false
+		}
+		object, ok := extra.(map[string]interface{})
+		if !ok {
+			return false, true
+		}
+		written := 0
+		for _, field := range shape.fields {
+			fv := v.Field(field.index)
+			member, has := object[field.name]
+			if field.omitEmpty && isEmptyJSONValue(fv) {
+				if has {
+					return false, true
+				}
+				continue
+			}
+			if !has {
+				return false, true
+			}
+			if same, decided := sameAsJSONValue(fv, member, depth+1); !same || !decided {
+				return same, decided
+			}
+			written++
+		}
+		return written == len(object), true
+	}
+	return false, false
+}
+
+// isEmptyJSONValue is encoding/json's omitempty rule.
+func isEmptyJSONValue(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Array, reflect.Map, reflect.Slice, reflect.String:
+		return v.Len() == 0
+	case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64, reflect.Interface, reflect.Pointer:
+		return v.IsZero()
+	}
+	return false
+}
+
+// asJSONValue is the sent value as a JSON document decodes it, the form sameValueAs
+// compares in.
+func (f sentUnifiedField) asJSONValue() (interface{}, bool) {
+	if f.isText {
+		return f.text, true
+	}
+	if !f.value.IsValid() || !f.value.CanInterface() {
+		return nil, false
+	}
+	return jsonValueOf(f.value.Interface())
+}
+
+// jsonValueOf encodes v and decodes it again, so two values that are the same JSON compare
+// equal whatever Go types held them.
+func jsonValueOf(v interface{}) (interface{}, bool) {
+	encoded, err := MarshalSorted(v)
 	if err != nil {
+		return nil, false
+	}
+	var decoded interface{}
+	if Unmarshal(encoded, &decoded) != nil {
+		return nil, false
+	}
+	return decoded, true
+}
+
+// sentUnifiedFields keeps, for one request, each unified field its caller looked up, and
+// encodes the field's value for comparison at most once, however many extra params name it. A request may spell one
+// field in many cases among its extra params (Voice, VOICE, ...), and every spelling is
+// compared with the same sent value: without this a large sent value was encoded once per
+// spelling, so a body of about 1 MB cost seconds of CPU and gigabytes of allocation before
+// any upstream call (TXE-7077).
+type sentUnifiedFields struct {
+	entries []sentUnifiedFieldEntry
+	// The first fields are kept here, so they cost no allocation of their own.
+	buf [4]sentUnifiedFieldEntry
+}
+
+type sentUnifiedFieldEntry struct {
+	field     string
+	sent      sentUnifiedField
+	isSet     bool
+	jsonValue interface{}
+	jsonOK    bool
+	jsonDone  bool
+}
+
+// known returns the record of field, or nil when the field has not been looked up yet.
+func (s *sentUnifiedFields) known(field string) *sentUnifiedFieldEntry {
+	for i := range s.entries {
+		if s.entries[i].field == field {
+			return &s.entries[i]
+		}
+	}
+	return nil
+}
+
+// record keeps what the lookup of field returned.
+func (s *sentUnifiedFields) record(field string, sent sentUnifiedField, isSet bool) *sentUnifiedFieldEntry {
+	if s.entries == nil {
+		s.entries = s.buf[:0]
+	}
+	s.entries = append(s.entries, sentUnifiedFieldEntry{field: field, sent: sent, isSet: isSet})
+	return &s.entries[len(s.entries)-1]
+}
+
+// sameValueAs reports whether the request sent the field and extra is a copy of its value,
+// by the rule of sentUnifiedField.sameValueAs.
+func (e *sentUnifiedFieldEntry) sameValueAs(extra interface{}) bool {
+	if !e.isSet {
 		return false
 	}
-	extraJSON, err := MarshalSorted(extra)
-	if err != nil {
+	if same, decided := e.sent.sameWithoutEncoding(extra); decided {
+		return same
+	}
+	if !e.jsonDone {
+		e.jsonValue, e.jsonOK = e.sent.asJSONValue()
+		e.jsonDone = true
+	}
+	if !e.jsonOK {
 		return false
 	}
-	var sentValue, extraValue interface{}
-	if Unmarshal(sentJSON, &sentValue) != nil || Unmarshal(extraJSON, &extraValue) != nil {
-		return false
-	}
-	return reflect.DeepEqual(sentValue, extraValue)
+	extraValue, ok := jsonValueOf(extra)
+	return ok && reflect.DeepEqual(e.jsonValue, extraValue)
 }
 
 // unifiedFieldSent reports whether the request sent the unified field named field (a
@@ -716,6 +1061,12 @@ func unifiedFieldSent(req *BifrostRequest, params reflect.Value, field string) (
 		}
 		return sentUnifiedField{text: *input.InputReference, isText: true}, true
 	}
+	return paramsFieldSent(params, field)
+}
+
+// paramsFieldSent reports whether the Params struct params has the field with JSON name
+// field set, and its value.
+func paramsFieldSent(params reflect.Value, field string) (sentUnifiedField, bool) {
 	for _, f := range unifiedParamFields(params.Type()) {
 		if f.name != field {
 			continue
@@ -736,6 +1087,94 @@ func unifiedFieldSent(req *BifrostRequest, params reflect.Value, field string) (
 		return sentUnifiedField{value: fv}, true
 	}
 	return sentUnifiedField{}, false
+}
+
+// ExtraParamsLessMapped is the one rule for a unified field that also sits among the extra
+// params (TXE-7077). The HTTP handlers parse some unified fields into the typed Params and
+// leave the same value among the extra params under the unified name
+// (UnifiedSpeechFieldsKeptAsExtraParams). A converter that has mapped the typed field to the
+// vendor's own field forwards the extra params through this function, naming the fields it
+// mapped, so the copy is not merged into the vendor's body as a second, raw field.
+//
+// params is a pointer to a Params struct and extraParams its ExtraParams. A key is left out
+// when it names one of mapped (ASCII letters compared without regard to case), the request
+// sent that field, and the key's value is that field's value. Anything else stays: a key
+// naming a field the request did not send, or carrying another value, is not the handler's
+// copy and travels, or is refused, as it did before. extraParams is never modified; it is
+// returned as it is when nothing is left out, and copied otherwise.
+func ExtraParamsLessMapped(params any, extraParams map[string]interface{}, mapped ...string) map[string]interface{} {
+	if len(extraParams) == 0 || len(mapped) == 0 {
+		return extraParams
+	}
+	var paramsValue reflect.Value
+	var kept map[string]interface{}
+	// Made when the first extra param names a field: the common request names none.
+	var sentFields *sentUnifiedFields
+	for key, value := range extraParams {
+		field := ""
+		for _, candidate := range mapped {
+			if equalFoldASCII(key, candidate) {
+				field = candidate
+				break
+			}
+		}
+		if field == "" {
+			continue
+		}
+		if !paramsValue.IsValid() {
+			paramsValue = reflect.ValueOf(params)
+			if paramsValue.Kind() != reflect.Pointer || paramsValue.IsNil() || paramsValue.Elem().Kind() != reflect.Struct {
+				return extraParams
+			}
+			paramsValue = paramsValue.Elem()
+		}
+		if sentFields == nil {
+			sentFields = &sentUnifiedFields{}
+		}
+		sent := sentFields.known(field)
+		if sent == nil {
+			fieldValue, isSet := paramsFieldSent(paramsValue, field)
+			sent = sentFields.record(field, fieldValue, isSet)
+		}
+		if !sent.sameValueAs(value) {
+			continue
+		}
+		if kept == nil {
+			kept = make(map[string]interface{}, len(extraParams))
+			for k, v := range extraParams {
+				kept[k] = v
+			}
+		}
+		delete(kept, key)
+	}
+	if kept == nil {
+		return extraParams
+	}
+	return kept
+}
+
+// equalFoldASCII reports whether a and b are the same ASCII string, comparing letters
+// without regard to case. A string with a byte outside ASCII equals nothing.
+func equalFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		x, y := a[i], b[i]
+		if x >= 0x80 || y >= 0x80 {
+			return false
+		}
+		if 'A' <= x && x <= 'Z' {
+			x += 'a' - 'A'
+		}
+		if 'A' <= y && y <= 'Z' {
+			y += 'a' - 'A'
+		}
+		if x != y {
+			return false
+		}
+	}
+	return true
 }
 
 // unifiedFieldWouldHold reports whether the unified field named field would have taken

@@ -177,26 +177,6 @@ func indexFoldASCII(s, needle string) int {
 	return -1
 }
 
-// languageCodeField is the unified name of voice.languageCode. The speech route parses it
-// into the typed parameter and also leaves it among the extra params under its own name.
-const languageCodeField = "language_code"
-
-// vendorExtraParams returns the extra params to merge into the text:synthesize body: all of
-// them except language_code, which the provider has already mapped to voice.languageCode and
-// which is not a text:synthesize field. The map is copied only when it carries that key.
-func vendorExtraParams(extraParams map[string]interface{}) map[string]interface{} {
-	if _, ok := extraParams[languageCodeField]; !ok {
-		return extraParams
-	}
-	vendor := make(map[string]interface{}, len(extraParams)-1)
-	for key, value := range extraParams {
-		if key != languageCodeField {
-			vendor[key] = value
-		}
-	}
-	return vendor
-}
-
 // protectedBodyFields are the text:synthesize objects the provider checks before sending:
 // voice (the family) and input (the SSML voices). The extra-params channel merges caller
 // fields into the body after those checks, so it may not carry either.
@@ -300,7 +280,9 @@ func ToGoogleCloudTTSSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *Go
 	if params == nil {
 		return synthesizeReq
 	}
-	synthesizeReq.ExtraParams = vendorExtraParams(params.ExtraParams)
+	// language_code is voice.languageCode here; the speech route's copy of it among the
+	// extra params is not a text:synthesize field and is not forwarded.
+	synthesizeReq.ExtraParams = params.UnmappedExtraParams(supportedSpeechFields...)
 
 	if params.VoiceConfig != nil && params.VoiceConfig.Voice != nil {
 		synthesizeReq.Voice.Name = *params.VoiceConfig.Voice

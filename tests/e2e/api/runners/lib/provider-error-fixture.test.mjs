@@ -990,3 +990,25 @@ test("seedream answers a 200 that mixes delivered images with per-image refusals
     }
   }
 });
+
+// Folder 473 (TXE-7077): the Sarvam and ElevenLabs speech stand-ins answer and keep the request on the wire.
+test("Sarvam and ElevenLabs speech are answered and recorded with their query", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}`;
+  await fetch(`${base}/__reset`, { method: "POST" });
+  const sarvam = await post({ text: "hi", target_language_code: "hi-IN" }, "/pp/sarvam/text-to-speech");
+  assert.equal(sarvam.status, 200);
+  assert.equal((await sarvam.json()).audios.length, 1);
+  const plain = await post({ text: "hi", model_id: "eleven_v3" }, "/pp/elevenlabs/v1/text-to-speech/voice-1?enable_logging=false");
+  assert.equal(plain.status, 200);
+  assert.equal(await plain.text(), "fixture-elevenlabs-audio");
+  const timed = await post({ text: "hi", model_id: "eleven_v3" }, "/pp/elevenlabs/v1/text-to-speech/voice-1/with-timestamps");
+  assert.equal(timed.status, 200);
+  assert.deepEqual((await timed.json()).alignment.characters, ["h", "i"]);
+  const calls = (await (await fetch(`${base}/__wire`)).json()).data[0].calls;
+  assert.deepEqual(calls.map((c) => c.path + c.query), [
+    "/pp/sarvam/text-to-speech",
+    "/pp/elevenlabs/v1/text-to-speech/voice-1?enable_logging=false",
+    "/pp/elevenlabs/v1/text-to-speech/voice-1/with-timestamps",
+  ]);
+});

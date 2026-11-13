@@ -6,6 +6,11 @@ import (
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
+// speechMappedUnifiedFields are the unified speech fields this provider delivers itself:
+// language_code and pronunciation_dictionary_locators in the body, enable_logging and
+// optimize_streaming_latency as query parameters, with_timestamps as the endpoint.
+var speechMappedUnifiedFields = []string{"language_code", "pronunciation_dictionary_locators", "enable_logging", "optimize_streaming_latency", "with_timestamps"}
+
 func ToElevenlabsSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *ElevenlabsSpeechRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
@@ -24,8 +29,11 @@ func ToElevenlabsSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *Eleven
 
 		if len(bifrostReq.Params.ExtraParams) > 0 {
 			// Work on a copy: the keys consumed below are deleted from it, and the caller's
-			// map must stay whole for any later use of the same request.
-			extra := maps.Clone(bifrostReq.Params.ExtraParams)
+			// map must stay whole for any later use of the same request. The speech route's
+			// copies of the unified fields delivered here or in the URL are left out first
+			// (TXE-7077): enable_logging and optimize_streaming_latency are query parameters
+			// and with_timestamps picks the endpoint, so none of them is a body field.
+			extra := maps.Clone(bifrostReq.Params.UnmappedExtraParams(speechMappedUnifiedFields...))
 			elevenlabsReq.ExtraParams = extra
 
 			if stability, ok := schemas.SafeExtractFloat64Pointer(extra["stability"]); ok {
