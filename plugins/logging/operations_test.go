@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -5309,6 +5311,74 @@ func TestVideoDimensionsFromEntryParams_CapturesResolutionTier(t *testing.T) {
 			}
 			if tc.wantExtra != nil && dims.Extra["resolution"] != tc.wantExtra {
 				t.Fatalf("extra resolution = %v, want %v", dims.Extra["resolution"], tc.wantExtra)
+			}
+		})
+	}
+}
+
+// TestRecalculatedResponsesUsageKeepsEveryInputDetail fails when the Responses rebuild a cost
+// recalculation prices drops an input detail the logged usage carries (TXE-7357: video tokens
+// were dropped, so recalculating a video log repriced it at the text rate). Every field the chat
+// prompt details and the Responses input details share by name and type is set to its own value
+// and must reach the rebuilt response, for the ordinary and the streamed request type.
+func TestRecalculatedResponsesUsageKeepsEveryInputDetail(t *testing.T) {
+	details := &schemas.ChatPromptTokensDetails{}
+	src := reflect.ValueOf(details).Elem()
+	dstType := reflect.TypeOf(schemas.ResponsesResponseInputTokens{})
+	shared := 0
+	for i := 0; i < src.NumField(); i++ {
+		f := src.Type().Field(i)
+		if df, ok := dstType.FieldByName(f.Name); ok && df.Type == f.Type && f.Type.Kind() == reflect.Int {
+			src.Field(i).SetInt(int64(100 + i))
+			shared++
+		}
+	}
+	if shared < 7 {
+		t.Fatalf("only %d shared int fields found; the structs changed shape, update this check", shared)
+	}
+	for _, rt := range []schemas.RequestType{schemas.ResponsesRequest, schemas.ResponsesStreamRequest} {
+		resp := buildResponseForRequestType(rt, &schemas.BifrostLLMUsage{PromptTokens: 1000, PromptTokensDetails: details},
+			schemas.BifrostResponseExtraFields{}, servedTier{})
+		if resp == nil || resp.ResponsesResponse == nil || resp.ResponsesResponse.Usage == nil || resp.ResponsesResponse.Usage.InputTokensDetails == nil {
+			t.Fatalf("%s: no Responses input details rebuilt", rt)
+		}
+		dst := reflect.ValueOf(resp.ResponsesResponse.Usage.InputTokensDetails).Elem()
+		for i := 0; i < src.NumField(); i++ {
+			f := src.Type().Field(i)
+			if df, ok := dstType.FieldByName(f.Name); ok && df.Type == f.Type && f.Type.Kind() == reflect.Int {
+				if got, want := dst.FieldByName(f.Name).Int(), src.Field(i).Int(); got != want {
+					t.Errorf("%s: the rebuild drops PromptTokensDetails.%s: got %d, want %d", rt, f.Name, got, want)
+				}
+			}
+		}
+	}
+}
+
+// A Vertex multimodalembedding log is priced by the seconds of video it embedded at the
+// interval the request asked for (TXE-7357). Recalculation rebuilt only the usage, so it either
+// skipped the row (no token usage) or dropped the video charge; it now restores the stored
+// segments and the requested interval, and lets a segment-backed row past the no-usage guard.
+func TestRecalculatedVideoEmbeddingKeepsItsVideoCharge(t *testing.T) {
+	plugin := &LoggerPlugin{pricingManager: newTestPricingManager(t)}
+	// Two 10 s segments at a requested 10 s interval: 20 s at the above-8s rate, $0.001/s.
+	output := `[{"index":0,"object":"embedding","modality":"video","video_segment":{"start_offset_sec":0,"end_offset_sec":10},"embedding":[0.1]},
+		{"index":1,"object":"embedding","modality":"video","video_segment":{"start_offset_sec":10,"end_offset_sec":20},"embedding":[0.2]}]`
+	input := `[{"content":[{"type":"video","video":{"url":"gs://bucket/clip.mp4"},"video_config":{"interval_sec":10}}]}]`
+	for name, usage := range map[string]string{
+		"no token usage":   "",
+		"with token usage": `{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			entry := &logstore.Log{
+				ID: "log-embed-video", Provider: string(schemas.Vertex), Model: "multimodalembedding@001",
+				Object: string(schemas.EmbeddingRequest), EmbeddingOutput: output, EmbeddingInput: input, TokenUsage: usage,
+			}
+			cost, err := plugin.calculateCostBreakdownForLog(entry)
+			if err != nil {
+				t.Fatalf("recalculation failed: %v", err)
+			}
+			if cost == nil || math.Abs(cost.TotalCost-20*0.001) > 1e-12 {
+				t.Fatalf("recalculated cost %+v, want 20 s × $0.001", cost)
 			}
 		})
 	}

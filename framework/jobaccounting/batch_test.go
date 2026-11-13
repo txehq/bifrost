@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
+	"github.com/capsohq/bifrost/core/providers/gemini"
 	"github.com/capsohq/bifrost/core/schemas"
 	cstables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/capsohq/bifrost/framework/logstore"
@@ -1446,6 +1448,37 @@ func TestUsageFromValue_CacheTokenConventions(t *testing.T) {
 		require.NotNil(t, usage.PromptTokensDetails)
 		assert.Equal(t, 400, usage.PromptTokensDetails.CachedReadTokens)
 	})
+}
+
+// A Gemini batch line that took a video reports its prompt by modality, and the video tokens
+// take input_cost_per_video_token's batch rate. Settlement decoded only cached_tokens from
+// prompt_tokens_details, so they were billed at the text batch rate (TXE-7357). The case runs
+// the vendor's line through the provider's converter and the settlement extractor.
+func TestBatchSettlementKeepsPromptModalities(t *testing.T) {
+	var native gemini.GenerateContentResponse
+	require.NoError(t, sonic.UnmarshalString(`{"candidates":[{"content":{"role":"model","parts":[{"text":"a cat"}]},"finishReason":"STOP"}],
+		"usageMetadata":{"promptTokenCount":1300,"candidatesTokenCount":20,"totalTokenCount":1320,
+		"promptTokensDetails":[{"modality":"TEXT","tokenCount":42},{"modality":"VIDEO","tokenCount":1258}]},
+		"modelVersion":"gemini-3.1-flash"}`, &native))
+	item := gemini.BatchResultItemFromGeminiResponse("line-1", schemas.BatchEndpointChatCompletions, &native, nil, false)
+	extracted, err := extractUsage(schemas.Gemini, "gemini-3.1-flash", item)
+	require.NoError(t, err)
+	require.True(t, extracted.hasUsage)
+	require.NotNil(t, extracted.usage.PromptTokensDetails, "the modality split was dropped at settlement")
+	assert.Equal(t, 1300, extracted.usage.PromptTokens)
+	assert.Equal(t, 1258, extracted.usage.PromptTokensDetails.VideoTokens)
+	assert.Equal(t, 42, extracted.usage.PromptTokensDetails.TextTokens)
+
+	// The image and Responses name for the same split is read the same way, and cache counts still apply.
+	usage, err := usageFromValue(map[string]interface{}{
+		"input_tokens": 500, "output_tokens": 10,
+		"input_tokens_details":  map[string]interface{}{"text_tokens": 100, "video_tokens": 400},
+		"prompt_tokens_details": map[string]interface{}{"cached_tokens": 50},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 400, usage.PromptTokensDetails.VideoTokens)
+	assert.Equal(t, 100, usage.PromptTokensDetails.TextTokens)
+	assert.Equal(t, 50, usage.PromptTokensDetails.CachedReadTokens)
 }
 
 // When unpriced usage mixes a missing-model row with a known model, the row must
