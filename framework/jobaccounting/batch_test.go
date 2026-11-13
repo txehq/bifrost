@@ -2504,6 +2504,49 @@ func TestSummarizeResultsDoesNotPriceImageLinesAsText(t *testing.T) {
 
 // textOnlyBatchPricing prices text request types at a flat per-token rate and nothing else,
 // as the catalog does for batches.
+// TXE-7354: a batch whose lines ran different operations (created outside this gateway) is
+// reported as schemas.BatchEndpointMixed and left unpriced. Image lines are priced now, so
+// reporting it as image generation, as before, would price its chat lines as image lines.
+func TestSummarizeResultsLeavesAMixedBatchUnpriced(t *testing.T) {
+	if got := BatchRequestType(schemas.BatchEndpointMixed); got != batchRequestTypeMixed {
+		t.Fatalf("BatchRequestType(mixed) = %s, want %s", got, batchRequestTypeMixed)
+	}
+	chatLine := schemas.BatchResultItem{CustomID: "c-1", Status: schemas.BatchResultStatusSucceeded, Response: &schemas.BatchResultResponse{StatusCode: 200, Body: map[string]interface{}{
+		"model": "gemini-2.5-flash-image",
+		"usage": map[string]interface{}{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+	}}}
+	imageLine := schemas.BatchResultItem{CustomID: "img-1", Status: schemas.BatchResultStatusSucceeded, Response: &schemas.BatchResultResponse{StatusCode: 200, Body: map[string]interface{}{
+		"model": "gemini-2.5-flash-image",
+		"usage": map[string]interface{}{"input_tokens": 8, "output_tokens": 1290, "total_tokens": 1298},
+	}}}
+	// A pricing manager that prices chat and image lines alike, as the catalog does since
+	// TXE-7354: a mixed batch must still not reach it as either.
+	settlement, err := summarizeResults(chatAndImageBatchPricing{}, batchInput{
+		Provider:     schemas.Gemini,
+		BatchID:      "batches/mixed",
+		BatchPayload: BatchPayload{Endpoint: schemas.BatchEndpointMixed, Results: []schemas.BatchResultItem{chatLine, imageLine}},
+	})
+	if err != nil {
+		t.Fatalf("summarizeResults: %v", err)
+	}
+	if settlement.PricedCount != 0 || settlement.Cost != 0 || settlement.Complete {
+		t.Fatalf("a mixed batch was priced: %+v", settlement)
+	}
+	if settlement.UnpriceableReason != UnpriceableReasonMissingBatchPricing {
+		t.Fatalf("UnpriceableReason = %q, want %q", settlement.UnpriceableReason, UnpriceableReasonMissingBatchPricing)
+	}
+}
+
+type chatAndImageBatchPricing struct{ fakePricing }
+
+func (chatAndImageBatchPricing) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.BatchCostDetails {
+	switch requestType {
+	case schemas.BatchResultsRequest, schemas.ChatCompletionRequest, schemas.ImageGenerationRequest, schemas.ImageEditRequest:
+		return modelcatalog.BatchCostDetails{Cost: float64(usage.TotalTokens) * 0.000001, Priced: true}
+	}
+	return modelcatalog.BatchCostDetails{}
+}
+
 type textOnlyBatchPricing struct{ fakePricing }
 
 func (textOnlyBatchPricing) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.BatchCostDetails {

@@ -9540,6 +9540,10 @@ func TestBatchCost_ImageLinesTakeTheImageBatchRates(t *testing.T) {
 		assert.InDelta(t, tc.want, got.Cost, 1e-12, tc.name)
 	}
 
+	// A batch of mixed operations reaches pricing under jobaccounting's mixed request type,
+	// which no pricing path handles: unpriced, never priced as image or chat lines.
+	assert.False(t, s.CalculateBatchCostDetailsForUsage(usage, schemas.Gemini, "gemini-2.5-flash-image", schemas.RequestType("batch_results_mixed"), nil).Priced)
+
 	// A row priced per image has no token rate for the image tokens: still unpriced.
 	perImage := batchStore(t, "openai", "dall-e-3", "image_generation", `{"provider": "openai", "mode": "image_generation", "output_cost_per_image": 0.04}`)
 	assert.False(t, perImage.CalculateBatchCostDetailsForUsage(usage, schemas.OpenAI, "dall-e-3", schemas.ImageGenerationRequest, nil).Priced)

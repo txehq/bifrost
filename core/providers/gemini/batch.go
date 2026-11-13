@@ -743,14 +743,16 @@ func CheckBatchLineOperation(batchOperation *schemas.BatchEndpoint, item schemas
 // AccumulateBatchResultsEndpoint folds one result line's endpoint into the endpoint reported
 // for the batch's results, which is what settlement prices the batch as. Lines created
 // through this gateway share one operation. Results that still mix operations (a batch
-// created elsewhere) are reported as image generation, for which there are no batch text
-// rates, so such a batch is left unpriced rather than priced at the wrong rates.
+// created elsewhere) are reported as schemas.BatchEndpointMixed, which settlement leaves
+// unpriced rather than price one operation's lines at another's rates. Before TXE-7354 they
+// were reported as image generation, which then had no batch rates; image lines are priced
+// now, so that would price a mixed batch's chat lines as image lines.
 func AccumulateBatchResultsEndpoint(current, lineEndpoint schemas.BatchEndpoint) schemas.BatchEndpoint {
 	operation := batchLineOperation(lineEndpoint)
 	if current == "" || current == operation {
 		return operation
 	}
-	return schemas.BatchEndpointImageGeneration
+	return schemas.BatchEndpointMixed
 }
 
 // normalizeBatchBody converts camelCase usage keys (promptTokens, completionTokens,

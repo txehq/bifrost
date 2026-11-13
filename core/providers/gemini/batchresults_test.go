@@ -838,11 +838,13 @@ func TestGeminiBatchResultsReturnOpenAIShapeLines(t *testing.T) {
 	require.Nil(t, bifrostErr, "a JOB_STATE_SUCCEEDED batch is finished")
 	require.Len(t, resp.Results, 3)
 	// This batch mixes chat and image lines, which a create through this gateway refuses. Its
-	// results are reported as image generation, which has no batch text rates, so settlement
-	// leaves it unpriced rather than price image lines as text.
-	assert.Equal(t, schemas.BatchEndpointImageGeneration, resp.Endpoint)
+	// results are reported as mixed, which settlement leaves unpriced rather than price one
+	// operation's lines at another's rates (TXE-7354: image lines are priced now, so reporting
+	// it as image generation would price the chat line as an image line).
+	assert.Equal(t, schemas.BatchEndpointMixed, resp.Endpoint)
 	assert.Equal(t, schemas.BatchEndpointChatCompletions, AccumulateBatchResultsEndpoint(AccumulateBatchResultsEndpoint("", ""), schemas.BatchEndpointChatCompletions))
 	assert.Equal(t, schemas.BatchEndpointImageGeneration, AccumulateBatchResultsEndpoint("", schemas.BatchEndpointImageGeneration))
+	assert.Equal(t, schemas.BatchEndpointMixed, AccumulateBatchResultsEndpoint(schemas.BatchEndpointMixed, schemas.BatchEndpointChatCompletions), "once mixed, a batch stays mixed")
 	assert.False(t, resp.HasMore)
 	assert.Equal(t, []string{"GET /v1beta/batches/abc123"}, vendor.calls, "results are one upstream call")
 

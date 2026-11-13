@@ -617,6 +617,10 @@ func summarizeResults(pricing PricingManager, in batchInput) (*Settlement, error
 	return settlement, nil
 }
 
+// batchRequestTypeMixed is the request type of a batch whose lines ran different operations.
+// No pricing path handles it, so every line reports unpriced.
+const batchRequestTypeMixed schemas.RequestType = "batch_results_mixed"
+
 // BatchRequestType maps a batch endpoint to the request type its results price
 // under. Exported because the aggregate row records only the endpoint (its Object
 // column is always "batch_results"), so a later repricing pass outside this package
@@ -640,6 +644,10 @@ func BatchRequestType(endpoint schemas.BatchEndpoint) schemas.RequestType {
 		return schemas.ImageGenerationRequest
 	case schemas.BatchEndpointImageEdit:
 		return schemas.ImageEditRequest
+	case schemas.BatchEndpointMixed:
+		// Lines of different operations (TXE-7354): no one request type prices them all, so
+		// the batch is reported unpriced and parked with its usage kept.
+		return batchRequestTypeMixed
 	default:
 		return schemas.BatchResultsRequest
 	}
