@@ -544,7 +544,9 @@ Supports text and multimodal embeddings (text, image, audio, video, and PDF via 
 **Request Parameters**:
 - `input` → `ToGeminiEmbeddingRequest` maps each `EmbeddingInputItem.Content` to a separate `requests[]` entry (batch). Each content's parts map to `content.parts[]`.
 - `dimensions` → `outputDimensionality`
-- Extra task type and title via `extra_params`
+- `task_type` → `taskType` on every `requests[]` entry
+- `title` → `title` on every `requests[]` entry; Gemini's own `title` is also read from `extra_params`
+- Gemini's own `taskType` in `extra_params` is accepted only beside a `task_type` with the same value, and refused with a 400 otherwise: `task_type` affects the price of the request, so it is sent as the request's own field ([request options](/providers/request-options))
 
 **Response Mapping**:
 - `embeddings[].values` → Bifrost embedding array
