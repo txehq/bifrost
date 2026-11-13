@@ -1,0 +1,448 @@
+{
+  "name": "591. A file another virtual key uploaded is refused through a provider whose full-URL override reaches its upstream (file ownership across override aliases) [SERIAL]",
+  "description": "TXE-7368. Local fixture regression, no live provider call: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. Governance binds a file to the virtual key that uploaded it and looks the binding up under every provider that reaches the same upstream. Before TXE-7368 two providers were one upstream only when their base URLs matched, so a custom provider on another base URL whose full-URL request_path_overrides entry sends file calls to that upstream saw no owner and served another key's file. The fixture's openai provider is the fixture root; file_owner_override is an OpenAI-based provider on /pp/fileowner whose file_content override is the root's /v1/files/{file_id}/content. 591.1 and 591.2 create key A, allowed on both providers, and key B, allowed only on file_owner_override. 591.3 uploads a file under key A through openai. 591.4 reads its content under key B through file_owner_override: a 404 naming the file. 591.5 reads it under key A through file_owner_override and is served, which shows the override reaches the upload's upstream. 591.6 reads the fixture's counters: one upload and one content read, the served one; the refused read never reached the provider. 591.7 and 591.8 delete the keys.",
+  "item": [
+    {
+      "name": "591.1 [setup] virtual key A (owner) on openai and the override provider",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('ovrOwnVkOwner'); pm.collectionVariables.unset('ovrOwnVkOwnerId');",
+              "pm.collectionVariables.unset('ovrOwnFileId');",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('the fixture was reset', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the virtual key was created', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var created = (pm.response.json() || {}).virtual_key || {};",
+              "pm.test('it has an id and a value', function () { pm.expect(created.id, pm.response.text()).to.be.a('string').and.not.equal(''); pm.expect(created.value, pm.response.text()).to.be.a('string').and.not.equal(''); });",
+              "pm.collectionVariables.set('ovrOwnVkOwner', created.value || ''); pm.collectionVariables.set('ovrOwnVkOwnerId', created.id || '');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"name\": \"harness-591-a-{{$guid}}\", \"provider_configs\": [{\"provider\": \"openai\", \"weight\": 1, \"allowed_models\": [\"*\"], \"key_ids\": [\"*\"]}, {\"provider\": \"file_owner_override\", \"weight\": 1, \"allowed_models\": [\"*\"], \"key_ids\": [\"*\"]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "591.2 [setup] virtual key B (other) on the override provider only",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('ovrOwnVkOther'); pm.collectionVariables.unset('ovrOwnVkOtherId');"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the virtual key was created', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var created = (pm.response.json() || {}).virtual_key || {};",
+              "pm.test('it has an id and a value', function () { pm.expect(created.id, pm.response.text()).to.be.a('string').and.not.equal(''); pm.expect(created.value, pm.response.text()).to.be.a('string').and.not.equal(''); });",
+              "pm.collectionVariables.set('ovrOwnVkOther', created.value || ''); pm.collectionVariables.set('ovrOwnVkOtherId', created.id || '');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"name\": \"harness-591-b-{{$guid}}\", \"provider_configs\": [{\"provider\": \"file_owner_override\", \"weight\": 1, \"allowed_models\": [\"*\"], \"key_ids\": [\"*\"]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "591.3 the owning key uploads a file through openai",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('ovrOwnVkOwner') || !pm.collectionVariables.get('ovrOwnVkOther')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('the upload under the owning key is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200); });",
+              "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+              "pm.test('the upload has a file id', function () { pm.expect(j.id, txt.slice(0, 400)).to.be.a('string').and.not.equal(''); });",
+              "if (j.id) { pm.collectionVariables.set('ovrOwnFileId', j.id); }"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{ovrOwnVkOwner}}"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/sample.jsonl",
+              "type": "file"
+            },
+            {
+              "key": "purpose",
+              "value": "batch",
+              "type": "text"
+            },
+            {
+              "key": "provider",
+              "value": "openai",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/files",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files"
+          ]
+        }
+      }
+    },
+    {
+      "name": "591.4 [EXPECT-404] another key cannot read the file's content through a provider whose full-URL override reaches openai",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('ovrOwnVkOther') || !pm.collectionVariables.get('ovrOwnFileId')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "// Refused at governance, before the provider is called: 404 on the file, never the content and never a",
+              "// 401/403/500 that would mean the request was refused for another reason.",
+              "pm.test('the content read under the other key is 404', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404); });",
+              "pm.test('the 404 names the file as not found', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.error && body.error.message, 'unexpected 404 body: ' + txt.slice(0, 400)).to.be.a('string');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include(pm.collectionVariables.get('ovrOwnFileId')).and.to.include('not found');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{ovrOwnVkOther}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/files/{{ovrOwnFileId}}/content?provider=file_owner_override",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files",
+            "{{ovrOwnFileId}}",
+            "content"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "file_owner_override"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "591.5 the owning key reads the file's content through the override provider and is served",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('ovrOwnVkOwner') || !pm.collectionVariables.get('ovrOwnFileId')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('the content read under the owning key is 200', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{ovrOwnVkOwner}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/files/{{ovrOwnFileId}}/content?provider=file_owner_override",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files",
+            "{{ovrOwnFileId}}",
+            "content"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "file_owner_override"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "591.6 one upload and one content read reached the provider; the refused read did not",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('ovrOwnFileId')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var hits = (((pm.response.json() || {}).data || [])[0] || {}).hits || {};",
+              "pm.test('one upload and one content read, the served one', function () {",
+              "  pm.expect({ upload: hits['file.upload'] || 0, content: hits['file.content'] || 0 }, JSON.stringify(hits)).to.eql({ upload: 1, content: 1 });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__hits"
+      }
+    },
+    {
+      "name": "591.7 [cleanup] virtual key A is deleted",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('ovrOwnVkOwnerId')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the virtual key was deleted', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.collectionVariables.unset('ovrOwnVkOwner'); pm.collectionVariables.unset('ovrOwnVkOwnerId'); pm.collectionVariables.unset('ovrOwnFileId');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys/{{ovrOwnVkOwnerId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{ovrOwnVkOwnerId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "591.8 [cleanup] virtual key B is deleted",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('ovrOwnVkOtherId')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the virtual key was deleted', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.collectionVariables.unset('ovrOwnVkOther'); pm.collectionVariables.unset('ovrOwnVkOtherId');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys/{{ovrOwnVkOtherId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{ovrOwnVkOtherId}}"
+          ]
+        }
+      }
+    }
+  ]
+}

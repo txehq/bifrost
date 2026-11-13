@@ -960,6 +960,67 @@ func (p *GovernancePlugin) equivalentProviders(kind, provider string) []string {
 	return append(names, aliases...)
 }
 
+// sameCallProviders returns the provider names whose requestType call reaches the same upstream as
+// provider's own: provider itself, and every configured provider on the same base whose call of
+// that one request type goes to the same place (callTarget). It is narrower than
+// equivalentProviders, which is the right set for refusing access. Forgetting a deleted object
+// must not reach an upstream the delete was not sent to: a provider that moved only its file
+// retrieve to another upstream still deletes on its own, and the object there survives (TXE-7368).
+func (p *GovernancePlugin) sameCallProviders(requestType schemas.RequestType, provider string) []string {
+	names := []string{provider}
+	if p.inMemoryStore == nil {
+		return names
+	}
+	configured := p.inMemoryStore.GetConfiguredProviders()
+	if len(configured) == 0 {
+		return names
+	}
+	self := schemas.ModelProvider(provider)
+	base := baseProviderOf(self, configured)
+	own := callTarget(requestType, self, configured)
+	var aliases []string
+	for name := range configured {
+		if name != self && baseProviderOf(name, configured) == base && own.sameAs(callTarget(requestType, name, configured)) {
+			aliases = append(aliases, string(name))
+		}
+	}
+	sort.Strings(aliases)
+	return append(names, aliases...)
+}
+
+// callUpstream is where one request type's call of a provider goes: its full-URL override, or
+// else its base URL.
+type callUpstream struct {
+	endpoint string
+	override string
+}
+
+func callTarget(requestType schemas.RequestType, name schemas.ModelProvider, configured map[schemas.ModelProvider]configstore.ProviderConfig) callUpstream {
+	target := callUpstream{endpoint: providerEndpoint(name, configured)}
+	if config, ok := configured[name]; ok && config.CustomProviderConfig != nil {
+		url := strings.TrimRight(strings.ToLower(strings.TrimSpace(config.CustomProviderConfig.RequestPathOverrides[requestType])), "/")
+		if strings.HasPrefix(url, "https://") || strings.HasPrefix(url, "http://") {
+			target.override = url
+		}
+	}
+	return target
+}
+
+// sameAs reports whether two providers' calls of one request type reach the same upstream.
+func (a callUpstream) sameAs(b callUpstream) bool {
+	under := func(url, endpoint string) bool { return endpoint != "" && strings.HasPrefix(url, endpoint+"/") }
+	switch {
+	case a.override == "" && b.override == "":
+		return a.endpoint == b.endpoint
+	case a.override != "" && b.override != "":
+		return a.override == b.override
+	case a.override != "":
+		return under(a.override, b.endpoint)
+	default:
+		return under(b.override, a.endpoint)
+	}
+}
+
 // objectKindPlaceholders is the request_path_overrides placeholder that names an object of each
 // kind in the calls that address it (providerUtils.ResourcePathPlaceholders).
 var objectKindPlaceholders = map[string]string{
@@ -1902,7 +1963,9 @@ func (p *GovernancePlugin) recordProviderObjectLifecycle(ctx *schemas.BifrostCon
 	}
 	// The object is forgotten under every provider name that reaches the same upstream: the delete
 	// was admitted through one of them, and a row recorded through another would otherwise linger.
-	aliases := p.equivalentProviders(deletedKind, provider)
+	// Only where this delete call went: an alias that reaches the same objects through another
+	// call (a full-URL retrieve override) keeps its rows, since the object there may survive.
+	aliases := p.sameCallProviders(requestType, provider)
 	for _, alias := range aliases {
 		for _, id := range providerObjectIDForms(deletedKind, schemas.ModelProvider(alias), deletedID) {
 			if err := p.configStore.DeleteProviderObject(ctx, configstoreTables.ProviderObjectID(deletedKind, alias, id)); err != nil {

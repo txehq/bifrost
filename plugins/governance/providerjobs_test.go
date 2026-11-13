@@ -2512,6 +2512,43 @@ func TestPostLLMHookForgetsDeletedObjectsUnderEveryAlias(t *testing.T) {
 	assert.Empty(t, rows, "the binding recorded under openai is forgotten by a delete through my-openai")
 }
 
+// A provider that moved only its file retrieve to OpenAI with a full-URL override still deletes
+// on its own upstream. A delete through it forgets the file there and nowhere else: the binding of
+// the file of the same id on OpenAI stays, so that file, which still exists, is still owned and
+// still refused to other keys (TXE-7368).
+func TestPostLLMHookForgetsADeleteOnlyWhereItWent(t *testing.T) {
+	store := newProviderObjectConfigStore(t)
+	vk := buildVKForMCPStamping(nil)
+	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("split-openai", []string{"*"}))
+	plugin := newAccessTestPlugin(t, vk, nil)
+	plugin.configStore = store
+	plugin.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {},
+		"split-openai": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.FileRetrieveRequest: "https://api.openai.com/v1/files/{file_id}",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://gateway.split.example/v1"},
+		},
+	}}
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-twice", "vk-mcp-stamp")
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "split-openai", "file-twice", "vk-mcp-stamp")
+
+	ctx := presentCtx(mcpTestVKValue)
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.FileDeleteRequest, FileDeleteRequest: &schemas.BifrostFileDeleteRequest{Provider: "split-openai", FileID: "file-twice"}})
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{FileDeleteResponse: &schemas.BifrostFileDeleteResponse{ID: "file-twice", Deleted: true,
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.FileDeleteRequest, Provider: "split-openai"}}}, nil)
+	require.NoError(t, err)
+	gone, err := store.GetProviderObjectsByIDs(context.Background(), []string{configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindFile, "split-openai", "file-twice")})
+	require.NoError(t, err)
+	assert.Empty(t, gone, "the file the delete reached is forgotten")
+	kept, err := store.GetProviderObjectsByIDs(context.Background(), []string{configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindFile, "openai", "file-twice")})
+	require.NoError(t, err)
+	assert.Len(t, kept, 1, "the OpenAI file the delete did not reach keeps its binding")
+}
+
 // suffixCountingStore is the real store with the suffix lookups observed.
 type suffixCountingStore struct {
 	configstore.ConfigStore
