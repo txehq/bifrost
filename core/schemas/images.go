@@ -203,8 +203,10 @@ func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
 }
 
 // getImageResolutionAndStepsFromRequest returns the resolution tier and inference step count the
-// image request asked for (fork, TXE-7356). Steps come from the unified num_inference_steps, or
-// from a "steps" extra param (the native name on Stability's Bedrock API) when that is unset.
+// image request asked for (fork, TXE-7356). Resolution is the unified field, or the "resolution"
+// extra param when that is unset. Steps are the larger of the unified num_inference_steps and a
+// "steps" extra param (the native name on Stability's Bedrock API, which forwards the extra and
+// ignores the unified field), so a request cannot be billed for fewer steps than the vendor ran.
 func getImageResolutionAndStepsFromRequest(req *BifrostRequest) (resolution string, steps *int) {
 	if req == nil {
 		return "", nil
@@ -220,13 +222,17 @@ func getImageResolutionAndStepsFromRequest(req *BifrostRequest) (resolution stri
 	default:
 		return "", nil
 	}
-	if steps == nil {
-		if n, ok := SafeExtractIntPointer(extra["steps"]); ok {
-			steps = n
+	if strings.TrimSpace(resolution) == "" {
+		if r, ok := extra["resolution"].(string); ok {
+			resolution = r
 		}
 	}
 	if steps != nil {
 		copied := *steps
+		steps = &copied
+	}
+	if n, ok := SafeExtractIntPointer(extra["steps"]); ok && n != nil && (steps == nil || *n > *steps) {
+		copied := *n
 		steps = &copied
 	}
 	return strings.TrimSpace(resolution), steps

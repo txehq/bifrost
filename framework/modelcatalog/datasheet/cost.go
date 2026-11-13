@@ -1764,8 +1764,8 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 	}
 	// A request that names no resolution gets the vendor's default tier, 1K, on a row priced
 	// only by tier (xAI's grok-imagine-image-quality publishes 1K and 2K and nothing else; xAI,
-	// Gemini and Replicate's nano-banana all default to 1K). A tier the request named that the
-	// row does not price stays unpriced instead.
+	// Gemini and Replicate's nano-banana all default to 1K). A named tier was resolved above,
+	// rounding up to the next priced tier.
 	if perImageRate == nil && shape.resolution == "" {
 		perImageRate = pricing.OutputCostPerImage1K
 	}
@@ -1777,24 +1777,36 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 }
 
 // imageResolutionRate returns the per-image rate for the resolution tier the request named
-// (fork, TXE-7356), or nil when the request named none or the row does not price it. Tiers
-// are matched case-insensitively, so xAI's "2k" and Gemini's "2K" select the same rate.
+// (fork, TXE-7356), or nil when the request named none. Tiers are matched case-insensitively,
+// so xAI's "2k" and Gemini's "2K" select the same rate. A tier the row does not price takes the
+// next larger tier it does (xAI's "1.5k" bills at 2K), never a smaller one; a tier above every
+// priced one, or one that is not a tier at all, is nil and leaves the image unpriced.
 func imageResolutionRate(pricing *configstoreTables.TableModelPricing, resolution string) *float64 {
-	switch strings.ToUpper(strings.TrimSpace(resolution)) {
-	case "0.5K":
-		return pricing.OutputCostPerImageHalfK
-	case "1K":
-		return pricing.OutputCostPerImage1K
-	case "2K":
-		return pricing.OutputCostPerImage2K
-	case "4K":
-		return pricing.OutputCostPerImage4K
-	case "512":
-		return pricing.OutputCostPerImageRes512
-	case "1024":
-		return pricing.OutputCostPerImageRes1024
-	case "1536":
-		return pricing.OutputCostPerImageRes1536
+	tiers := []struct {
+		size float64
+		rate *float64
+	}{
+		// The K tiers in thousands of pixels on the long edge, the numeric tiers in pixels.
+		{0.5, pricing.OutputCostPerImageHalfK},
+		{1, pricing.OutputCostPerImage1K},
+		{2, pricing.OutputCostPerImage2K},
+		{4, pricing.OutputCostPerImage4K},
+		{512, pricing.OutputCostPerImageRes512},
+		{1024, pricing.OutputCostPerImageRes1024},
+		{1536, pricing.OutputCostPerImageRes1536},
+	}
+	label := strings.ToUpper(strings.TrimSpace(resolution))
+	k := strings.HasSuffix(label, "K")
+	size, err := strconv.ParseFloat(strings.TrimSuffix(label, "K"), 64)
+	if label == "" || err != nil || size <= 0 {
+		return nil
+	}
+	for _, t := range tiers {
+		// The K tiers and the numeric tiers are separate families; never round across them.
+		if (t.size < 10) != k || t.size < size || t.rate == nil {
+			continue
+		}
+		return t.rate
 	}
 	return nil
 }
@@ -1804,7 +1816,9 @@ func imageResolutionRate(pricing *configstoreTables.TableModelPricing, resolutio
 // steps (_50_steps) apart from more (_max_steps); a request that names no steps runs the
 // vendor default of 30, so it takes the 50-step rate. Within that, SDXL 0.9 prices 512x512 or
 // smaller (above_512_and_512) apart from anything larger (above_max_and_max), and SDXL 1.0
-// publishes one size (above_1024_and_1024) that prices every image it makes.
+// publishes one size (above_1024_and_1024) that prices every image it makes. An unknown size
+// (the request named none) is the vendor default, 512x512 on SDXL 0.9, so it takes the
+// smaller rate.
 func imageStepsRate(pricing *configstoreTables.TableModelPricing, steps *int, pixels int) *float64 {
 	small, square1024, larger := pricing.OutputCostPerImageAbove512x512Pixels50Steps,
 		pricing.OutputCostPerImageAbove1024x1024Pixels50Steps, pricing.OutputCostPerImageAboveMaxPixels50Steps

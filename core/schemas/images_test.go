@@ -148,6 +148,18 @@ func TestImageBackfillsPricedRequestShape(t *testing.T) {
 		t.Fatalf("edit response params = %+v, want quality standard and 40 steps", ep)
 	}
 
+	// Stability forwards the "steps" extra and ignores num_inference_steps, so the larger one is
+	// billed: a caller cannot set 10 typed steps, run 100 at the vendor and pay the 50-step rate.
+	both := &BifrostRequest{ImageGenerationRequest: &BifrostImageGenerationRequest{
+		Params: &ImageGenerationParameters{NumInferenceSteps: new(10), ExtraParams: map[string]interface{}{"steps": 100, "resolution": "4K"}},
+	}}
+	bothResp := &BifrostImageGenerationResponse{}
+	bothResp.BackfillParams(both)
+	bp := bothResp.ImageGenerationResponseParameters
+	if bp == nil || bp.NumInferenceSteps == nil || *bp.NumInferenceSteps != 100 || bp.Resolution != "4K" {
+		t.Fatalf("params = %+v, want 100 steps and the extra's 4K resolution", bp)
+	}
+
 	// A value the vendor reported wins over the request's.
 	vendor := &BifrostImageGenerationResponse{ImageGenerationResponseParameters: &ImageGenerationResponseParameters{Resolution: "1K"}}
 	vendor.BackfillParams(req)

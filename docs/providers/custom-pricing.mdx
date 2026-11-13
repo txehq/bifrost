@@ -482,8 +482,9 @@ When several per-image rates could apply, the most specific one wins: a size and
 first, then a joint size and quality rate, then the resolution tier the request named, then a
 quality-only rate, then a size-only rate, then the flat `output_cost_per_image`. A model priced
 only by resolution tier bills a request that names no `resolution` at its `1K` rate, the
-default tier of the vendors that publish one; a tier the model does not price leaves the image
-unpriced. When a model prices only one orientation of a 1536×1024 or 1792×1024 pair, the other
+default tier of the vendors that publish one. A tier the model does not price takes the next
+larger tier it does (`1.5K` bills at `2K`), never a smaller one; a tier above every priced one
+leaves the image unpriced. When a model prices only one orientation of a 1536×1024 or 1792×1024 pair, the other
 orientation takes the same rate.
 The 1024×1536 and 1536×1024 thresholds have the same pixel count, so they are matched on width
 and height rather than on the total. An image that clears both (width at least 1536 and height at
