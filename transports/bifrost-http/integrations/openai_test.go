@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -1728,6 +1729,24 @@ func TestOpenAIVideoMultipartDeliversEveryField(t *testing.T) {
 		{name: "a file field the create does not read", param: "mask", files: []file{{"mask", "mask.png"}}},
 		{name: "last_frame as both a URL and a file", param: "last_frame", values: [][2]string{{"last_frame", "https://img.example.test/last.png"}}, files: []file{{"last_frame", "last.png"}}},
 	}
+	// A refusal names a field the caller sent, bounded: a megabyte-scale or invalid UTF-8 name
+	// does not make a megabyte-scale response.
+	t.Run("refuses a huge invalid field name with a bounded refusal", func(t *testing.T) {
+		huge := strings.Repeat("\xff\x00a", 300000)
+		for _, f := range []struct {
+			values [][2]string
+			files  []file
+		}{{values: [][2]string{{huge, "x"}}}, {files: []file{{huge, "x.png"}}}} {
+			status, resp := post(t, false, f.values, f.files)
+			require.Equal(t, http.StatusBadRequest, status)
+			errField, _ := resp["error"].(map[string]any)
+			param, _ := errField["param"].(string)
+			message, _ := errField["message"].(string)
+			assert.LessOrEqual(t, len(param), schemas.MaxEchoedNameBytes)
+			assert.Less(t, len(message), 512, "message: %.200s", message)
+			assert.Empty(t, upstream.take())
+		}
+	})
 	for _, tc := range refused {
 		t.Run("refuses "+tc.name, func(t *testing.T) {
 			status, resp := post(t, false, tc.values, tc.files)

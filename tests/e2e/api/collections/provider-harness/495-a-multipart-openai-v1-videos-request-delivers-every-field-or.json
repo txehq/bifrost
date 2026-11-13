@@ -239,6 +239,69 @@
           ]
         }
       }
+    },
+    {
+      "name": "495.4 [EXPECT-400] byteplus multipart POST /openai/v1/videos refuses a 100 KB unknown field name with a bounded error (fork openai video multipart)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }",
+              "// TXE-7142: a refusal echoes at most a bounded amount of the caller's own input.",
+              "pm.request.body.formdata.add({ key: 'x'.repeat(100000), value: 'v', type: 'text' });"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text();",
+              "pm.test('refused with 400 caller_unsupported_parameter', function () {",
+              "  pm.expect(pm.response.code, text.slice(0, 600)).to.eql(400);",
+              "  pm.expect(pm.response.json().extra_fields.error_type, text.slice(0, 600)).to.eql('caller_unsupported_parameter');",
+              "});",
+              "pm.test('the refusal is bounded, not a copy of the 100 KB name', function () {",
+              "  pm.expect(text.length, 'response is ' + text.length + ' bytes').to.be.below(8192);",
+              "  pm.expect(String(pm.response.json().error.param).length).to.be.at.most(256);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "byteplus/dreamina-seedance-2-5-260628",
+              "type": "text"
+            },
+            {
+              "key": "prompt",
+              "value": "a paper boat",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "videos"
+          ]
+        }
+      }
     }
   ]
 }

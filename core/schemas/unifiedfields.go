@@ -37,14 +37,49 @@ type UnifiedFieldDeclarer interface {
 // check never rejects it. prompt is listed for operations whose Params carry it.
 var UnpricedUnifiedFields = []string{"prompt", "seed", "negative_prompt"}
 
+// MaxEchoedNameBytes and MaxRefusalMessageBytes bound what a refusal echoes back of the caller's
+// own request (fork, TXE-7142). A refusal runs before governance, so a megabyte-scale field name
+// or value, quoted into error.param and error.message (often growing four times under %q, and
+// again in the JSON encoding), must not make a megabyte-scale response.
+const (
+	MaxEchoedNameBytes     = 256
+	MaxRefusalMessageBytes = 4096
+)
+
+// BoundEchoedName is a caller's field name, or a short caller value, as a refusal shows it: at
+// most MaxEchoedNameBytes bytes, cut back to valid UTF-8. Apply it to caller input before
+// formatting it into a message, so the long string is never built.
+func BoundEchoedName(name string) string {
+	return boundUTF8(name, MaxEchoedNameBytes)
+}
+
+// BoundRefusalMessage is a refusal message cut to at most MaxRefusalMessageBytes bytes of valid
+// UTF-8. The refusal constructors apply it, so a message that quotes caller input stays bounded
+// even where the input was not bounded first.
+func BoundRefusalMessage(message string) string {
+	return boundUTF8(message, MaxRefusalMessageBytes)
+}
+
+func boundUTF8(s string, limit int) string {
+	if len(s) > limit {
+		s = s[:limit]
+	} else if utf8.ValidString(s) {
+		return s
+	}
+	return strings.ToValidUTF8(s, "")
+}
+
 // NewUnsupportedParameterError is the error for a unified field the provider cannot
 // deliver as given: 400, error_type caller_unsupported_parameter, error.param = param.
 // message says why, for the caller; empty gives a default naming the field. Providers
 // return it for an out-of-range value instead of clamping it.
 func NewUnsupportedParameterError(param, message string) *BifrostError {
+	// param and message often carry the caller's own field name or value: both are bounded.
+	param = BoundEchoedName(param)
 	if message == "" {
 		message = fmt.Sprintf("parameter %q is not supported by this provider for this operation", param)
 	}
+	message = BoundRefusalMessage(message)
 	return &BifrostError{
 		StatusCode: Ptr(400),
 		Error: &ErrorField{
