@@ -13,6 +13,11 @@ const (
 	ProviderObjectKindContainerFile = "container_file"
 	ProviderObjectKindLiveSession   = "live_session"
 	ProviderObjectKindImageTask     = "image_task" // fork (TXE-6431): a task of the image task routes
+	// ProviderObjectKindStorageFolder (fork, TXE-7121) is a folder in object storage a virtual
+	// key writes its output into, recorded when the key first names it as an output location.
+	// Its object id is the folder's storage URI ending in "/". Unlike a file row it answers
+	// for every object beneath it that has no closer record of its own.
+	ProviderObjectKindStorageFolder = "storage_folder"
 )
 
 // TableProviderObject records which virtual key created a provider-side object.

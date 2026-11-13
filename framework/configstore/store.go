@@ -1051,6 +1051,17 @@ type ConfigStore interface {
 	// GetProviderObjectsByObjectID returns the provider objects of kind recorded for
 	// objectID under any provider name, in no particular order.
 	GetProviderObjectsByObjectID(ctx context.Context, kind, objectID string) ([]*tables.TableProviderObject, error)
+	// InsertProviderObject is UpsertProviderObject that reports whether this call wrote the row.
+	InsertProviderObject(ctx context.Context, object *tables.TableProviderObject) (bool, error)
+	// GetProviderObjectsByObjectIDs returns the provider objects of kind recorded for any of
+	// objectIDs under any provider name.
+	GetProviderObjectsByObjectIDs(ctx context.Context, kind string, objectIDs []string) ([]*tables.TableProviderObject, error)
+	// HasForeignProviderObjectUnderPrefix reports whether a provider object of one of kinds has
+	// an object id starting with prefix, byte for byte, and a creator other than virtualKeyID.
+	HasForeignProviderObjectUnderPrefix(ctx context.Context, kinds []string, prefix, virtualKeyID string) (bool, error)
+	// HasForeignProviderJobFileUnderPrefix reports whether a job row of another virtual key
+	// names an output or error file starting with prefix.
+	HasForeignProviderJobFileUnderPrefix(ctx context.Context, prefix, virtualKeyID string) (bool, error)
 	DeleteProviderObject(ctx context.Context, id string) error
 	// DeleteProviderObjectsByObjectIDSuffix forgets the provider objects of kind on
 	// provider that virtualKeyID created and whose provider-side id ends in

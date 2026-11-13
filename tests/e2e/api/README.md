@@ -433,6 +433,10 @@ with no virtual key is forwarded for it. Folder 496 (TXE-7088) uses it for a vir
 allowlists: a key limited to one folder is served inside it and refused outside it, as an input, by an https URL, as
 a task's or a batch's output location and for another topic, while a key with no lists is not restricted. Its rows use the management API, so run the augmented collection with
 `--env-var setupToken=<the config's setup_token>`.
+Folder 497 (TXE-7121) uses it for the folder rule: a key's first batch into an output folder claims the folder, and a
+second key is refused with 404 when it names a result file there as an input, or writes a batch or a task's output into
+that folder, a folder inside it or the folder that holds it, while a sibling folder is free. The folder names carry a
+per-run suffix, because a claim outlives the key that made it. It needs the same `setupToken`.
 
 The same fixture and gateway serve folder 416 (Kling video on the contract). The config's built-in
 `kling` provider points at the fixture with two keys, `kling-key-a` and `kling-key-b`
