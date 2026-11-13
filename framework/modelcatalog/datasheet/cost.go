@@ -2040,29 +2040,33 @@ func VideoPricedWithAudio(provider schemas.ModelProvider, audio *bool) bool {
 // Wan 2.7+ and MiniMax take a resolution instead of a size (TXE-7349). Returns 0 when
 // the size is absent or malformed.
 func videoResolutionBand(size string) int {
-	if edge, ok := videoResolutionTierEdges[strings.ToLower(strings.TrimSpace(size))]; ok {
-		return edge
+	if width, height := parseImageDimensions(size); width > 0 && height > 0 {
+		return min(width, height)
 	}
-	width, height := parseImageDimensions(size)
-	if width <= 0 || height <= 0 {
+	if size == "" {
 		return 0
 	}
-	return min(width, height)
+	// The spellings providers document are in the map as written, so the common case
+	// neither trims nor lowercases (each would allocate on a hit).
+	if edge, ok := videoResolutionTierEdges[size]; ok {
+		return edge
+	}
+	return videoResolutionTierEdges[strings.ToLower(strings.TrimSpace(size))]
 }
 
 // videoResolutionTierEdges maps a resolution tier label to the short edge its band is
 // keyed on. 2K is 2560x1440, the short edge MiniMax documents for its 2K tier
 // (core/providers/minimax miniMaxVideoShortEdges); 4K is 3840x2160.
 var videoResolutionTierEdges = map[string]int{
-	"480p":  480,
-	"720p":  720,
-	"768p":  768,
-	"1024p": 1024,
-	"1080p": 1080,
-	"2k":    1440,
-	"1440p": 1440,
-	"4k":    2160,
-	"2160p": 2160,
+	"360p": 360, "360P": 360,
+	"480p": 480, "480P": 480,
+	"540p": 540, "540P": 540,
+	"720p": 720, "720P": 720,
+	"768p": 768, "768P": 768,
+	"1024p": 1024, "1024P": 1024,
+	"1080p": 1080, "1080P": 1080,
+	"2k": 1440, "2K": 1440, "1440p": 1440, "1440P": 1440,
+	"4k": 2160, "4K": 2160, "2160p": 2160, "2160P": 2160,
 }
 
 // computeLiveCost bills GPT Live voice duration: session seconds × input_cost_per_second.
@@ -2546,15 +2550,16 @@ func parseImageDimensions(size string) (int, int) {
 	if size == "" {
 		return 0, 0
 	}
-	parts := strings.SplitN(size, "x", 2)
-	if len(parts) != 2 {
+	// Cut splits at the first "x" as SplitN(size, "x", 2) did, without allocating the slice.
+	wPart, hPart, ok := strings.Cut(size, "x")
+	if !ok {
 		return 0, 0
 	}
-	w, err := strconv.Atoi(parts[0])
+	w, err := strconv.Atoi(wPart)
 	if err != nil || w <= 0 {
 		return 0, 0
 	}
-	h, err := strconv.Atoi(parts[1])
+	h, err := strconv.Atoi(hPart)
 	if err != nil || h <= 0 {
 		return 0, 0
 	}

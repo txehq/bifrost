@@ -8924,7 +8924,7 @@ func TestVideoResolutionBand_TierLabels(t *testing.T) {
 	for label, want := range map[string]int{
 		"480p": 480, "480P": 480, "720p": 720, "768P": 768, "1080p": 1080,
 		"2K": 1440, "2k": 1440, "4k": 2160, "4K": 2160, " 4k ": 2160,
-		"540p": 0, "auto": 0, "": 0,
+		"540p": 540, "360P": 360, "576p": 0, "auto": 0, "": 0,
 	} {
 		assert.Equal(t, want, videoResolutionBand(label), label)
 	}
@@ -8946,5 +8946,81 @@ func TestComputeVideoCost_UpstreamBandKeys(t *testing.T) {
 		"2560x1440": 0.13, "3840x2160": 0.60, "1792x1024": 0.40, "640x360": 0.40,
 	} {
 		assert.InDelta(t, 10*rate, computeVideoCostTotalSized(&p, nil, &seconds, size, 1, serviceTier{}), 1e-12, size)
+	}
+}
+
+// BenchmarkVideoBandRate measures the per-second rate lookup every video settlement runs
+// (TXE-7349), for a model with no bands, a banded size, and a size that names no band. The
+// same cases run unchanged on main, which is the before figure in the PR.
+func BenchmarkVideoBandRate(b *testing.B) {
+	unbanded := configstoreTables.TableModelPricing{OutputCostPerSecond: bifrost.Ptr(0.40)}
+	banded := configstoreTables.TableModelPricing{
+		OutputCostPerSecond:              bifrost.Ptr(0.40),
+		OutputCostPerVideoPerSecond1080p: bifrost.Ptr(0.70),
+		OutputCostPerVideoPerSecond4k:    bifrost.Ptr(0.60),
+	}
+	for _, tc := range []struct {
+		name    string
+		pricing *configstoreTables.TableModelPricing
+		size    string
+	}{
+		{"unbanded_model/1920x1080", &unbanded, "1920x1080"},
+		{"unbanded_model/no_size", &unbanded, ""},
+		{"banded_model/3840x2160", &banded, "3840x2160"},
+		{"banded_model/640x360_no_band", &banded, "640x360"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if videoOutputPerSecondRate(tc.pricing, tc.size, false) <= 0 {
+					b.Fatal("no rate")
+				}
+			}
+		})
+	}
+	store := newVideoDimensionTestStore(&testing.T{})
+	seconds := 8
+	b.Run("settlement/sora-2-pro_1920x1080", func(b *testing.B) {
+		b.ReportAllocs()
+		dims := VideoPricingDimensions{Model: "sora-2-pro", RequestType: schemas.VideoGenerationRequest, Seconds: &seconds, Size: "1920x1080", OutputCount: 1}
+		for b.Loop() {
+			if !store.CalculateVideoCostDetails(dims, schemas.OpenAI, nil).Priced {
+				b.Fatal("unpriced")
+			}
+		}
+	})
+}
+
+// BenchmarkVideoBandRateTier measures the tier-label path TXE-7349 adds: a job that names
+// "4k" or "2K" instead of a size, and an older job row holding the tier only in Extra.
+func BenchmarkVideoBandRateTier(b *testing.B) {
+	banded := configstoreTables.TableModelPricing{OutputCostPerSecond: bifrost.Ptr(0.40), OutputCostPerSecond4k: bifrost.Ptr(0.60), OutputCostPerSecond2k: bifrost.Ptr(0.13)}
+	for label, want := range map[string]float64{"4k": 0.60, "2K": 0.13} {
+		b.Run("rate/"+label, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if videoOutputPerSecondRate(&banded, label, false) != want {
+					b.Fatal("band not selected")
+				}
+			}
+		})
+	}
+	store := newVideoDimensionTestStore(&testing.T{})
+	seconds := 8
+	for _, tc := range []struct {
+		name string
+		dims VideoPricingDimensions
+	}{
+		{"settlement/resolution_4k", VideoPricingDimensions{Model: "sora-2-pro", RequestType: schemas.VideoGenerationRequest, Seconds: &seconds, Resolution: "4k", OutputCount: 1}},
+		{"settlement/extra_resolution_4k", VideoPricingDimensions{Model: "sora-2-pro", RequestType: schemas.VideoGenerationRequest, Seconds: &seconds, Extra: map[string]any{"resolution": "4k"}, OutputCount: 1}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if !store.CalculateVideoCostDetails(tc.dims, schemas.OpenAI, nil).Priced {
+					b.Fatal("unpriced")
+				}
+			}
+		})
 	}
 }
