@@ -451,6 +451,8 @@ least 1536) is billed at the 1536×1024 rate, which is checked first.
 
 The resolution-banded video rates are matched on the short edge of the generated video's size, so `1920x1080` and `1080x1920` both resolve to `output_cost_per_video_per_second_1080p`. A size matching no band falls back to `output_cost_per_video_per_second`, then `output_cost_per_second`. The resolved rate is multiplied by the number of clips the job returned.
 
+The seconds a video rate is multiplied by are the ones the provider's finished task reports. A provider that reports neither a duration nor a cost (Replicate, for one) is charged for the length of the video it rendered, read from the MP4 header and rounded to the nearest second. When that length cannot be read, the job is charged the seconds its create asked for, and its log row is marked `incomplete`.
+
 ### Other costs
 
 <Info>`input_cost_per_query` and `cost_per_request` are available in **Bifrost v2.0.0 and above**.</Info>

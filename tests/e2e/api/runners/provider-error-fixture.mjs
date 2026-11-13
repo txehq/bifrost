@@ -4,7 +4,8 @@ import http from "node:http";
 import https from "node:https";
 import net from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { createS3ObjectFixture } from "./lib/s3-object-fixture.mjs";
 
@@ -37,6 +38,9 @@ const mediaTunnelSockets = new Set();
 // The address a fixture task names its file at: TEST-NET-3 (RFC 5737), public to the gateway's SSRF check and
 // routed nowhere, so the file is reachable through the media tunnel only.
 const MEDIA_PUBLIC_HOST = "203.0.113.10";
+// TXE-7329 (folder 520): the output of a Replicate prediction whose hosted model rendered a longer video than
+// the create asked for. It is TXE-6774's 12-second ffmpeg MP4, the reader's own test file.
+const RENDERED_LONGER_MP4 = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../../../framework/videoduration/testdata/twelve-seconds.mp4"));
 
 // Per-model behaviour for POST /v1/chat/completions. The model name in the request
 // body selects the response, so one fixture serves every case. A model may carry a
@@ -362,6 +366,9 @@ const openRouterDecisionAnswer = () => ({ model: "typesafe/jev-1.13.0", answers:
 const turnRates = { mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, input_cost_per_token_above_272k_tokens: 0.00001, output_cost_per_token_above_272k_tokens: 0.00002, input_cost_per_token_priority: 0.000002, output_cost_per_token_priority: 0.000004 };
 const fixturePricing = {
 	"turns-priced": { provider: "openai_turns", ...turnRates },
+	// Folder 520 (TXE-7329): $0.10 a second, so the 12 rendered seconds settle at $1.20 and the 5 asked for at $0.50.
+	// The sheet's key drops its first segment, as for every provider-prefixed key, leaving the Replicate model name.
+	"replicate/fixture/rendered-longer": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
 	"turns-tiered": { provider: "openai_turns", ...turnRates },
 	"turns-fail": { provider: "openai_turns", ...turnRates },
 	"gpt-6-luna": { provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, input_cost_per_token_decisions: 0.000003, output_cost_per_token_decisions: 0.000004, supports_decisions: true },
@@ -1117,6 +1124,12 @@ const wireAnswer = (path, body, bytes) => {
 	// provider's origin and answer with an output image at a public-looking address (reached through the
 	// media tunnel) and at the fixture's loopback address. A gateway follows the origin and public ones and
 	// must refuse the loopback ones without asking for them.
+	// Folder 520 (TXE-7329): a prediction of fixture/rendered-longer, polled on the provider's own origin. Its
+	// output is RENDERED_LONGER_MP4, whatever duration the create sent.
+	if (path === "/pp/replicate/v1/models/fixture/rendered-longer/predictions") {
+		const id = "pred_rendered_longer";
+		return { status: 201, body: JSON.stringify({ id, status: "starting", urls: { get: `http://127.0.0.1:${port}/pp/replicate/v1/predictions/${id}` } }) };
+	}
 	const replicateNamed = /^\/pp\/replicate\/.*\/(poll|stream|picture)-(origin|loopback|public)\/predictions$/.exec(path);
 	if (replicateNamed) {
 		const [, what, where] = replicateNamed;
@@ -1786,6 +1799,17 @@ const handleRequest = (req, res) => {
 			res.end(VIDEO_HALF);
 		}, VIDEO_GAP_MS);
 		return undefined;
+	}
+	// Folder 520 (TXE-7329): the fixture/rendered-longer prediction has succeeded, with its video on the
+	// provider's own origin, so the gateway downloads it with the provider's client. Each read is counted.
+	if (req.method === "GET" && path === "/pp/replicate/v1/predictions/pred_rendered_longer") {
+		countHit("replicate.rendered-longer.poll");
+		return send(200, {}, JSON.stringify({ id: "pred_rendered_longer", status: "succeeded", output: `http://127.0.0.1:${port}/pp/replicate/v1/files/rendered-longer.mp4` }));
+	}
+	if (req.method === "GET" && path === "/pp/replicate/v1/files/rendered-longer.mp4") {
+		countHit("replicate.rendered-longer.download");
+		res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": RENDERED_LONGER_MP4.length });
+		return res.end(RENDERED_LONGER_MP4);
 	}
 	// The poll of a folder 490 prediction, counted under the Host it was asked at. A picture prediction's
 	// output is at the address its name says; any other prediction's is a delivery URL nobody fetches.
