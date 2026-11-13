@@ -1,8 +1,11 @@
 package utils
 
 import (
+	"net"
 	"net/url"
 	"strings"
+
+	"golang.org/x/net/idna"
 )
 
 // KeySecretMaySignFor reports whether a delivery to target may be signed with a secret the key
@@ -29,7 +32,7 @@ func KeySecretMaySignFor(target string, trustedPrefixes []string) bool {
 		if !ok || p.User != nil {
 			continue
 		}
-		if !strings.EqualFold(t.Scheme, p.Scheme) || !strings.EqualFold(t.Host, p.Host) {
+		if !strings.EqualFold(t.Scheme, p.Scheme) || !sameSigningHost(t, p) {
 			continue
 		}
 		if pathUnderPrefix(t.Path, p.Path) {
@@ -53,6 +56,38 @@ func parseSigningURL(raw string) (*url.URL, bool) {
 		return u, true
 	}
 	return nil, false
+}
+
+// sameSigningHost reports whether two URLs name the same host and port, compared as the names
+// a resolver dials: an IP literal in its canonical form, any other name as its IDNA ASCII
+// (punycode) form. Comparing Unicode names with a case fold would be wrong: σ and ς fold
+// together, but resolve as different domains (xn--4xa and xn--3xa), so a caller could pass a
+// twin of the trusted host. A name that does not convert matches nothing.
+func sameSigningHost(a, b *url.URL) bool {
+	if a.Port() != b.Port() {
+		return false
+	}
+	ha, ok := canonicalSigningHost(a.Hostname())
+	if !ok {
+		return false
+	}
+	hb, ok := canonicalSigningHost(b.Hostname())
+	return ok && ha == hb
+}
+
+// canonicalSigningHost is host as a resolver sees it, or false when it has none.
+func canonicalSigningHost(host string) (string, bool) {
+	if host == "" {
+		return "", false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String(), true
+	}
+	ascii, err := idna.Lookup.ToASCII(host)
+	if err != nil || ascii == "" {
+		return "", false
+	}
+	return strings.ToLower(ascii), true
 }
 
 // hasAmbiguousPath reports a path a receiver might resolve differently from its literal text.

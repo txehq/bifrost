@@ -1020,6 +1020,53 @@ func TestBFLKeyWebhookSecret(t *testing.T) {
 	}
 }
 
+// TXE-7310 (Codex review): the image edit task route takes its own conversion, so it pins the same
+// rule: a trusted callback_url gets the key's secret, any other gets none, and the request's own
+// secret still wins.
+func TestBFLKeyWebhookSecretOnEditTasks(t *testing.T) {
+	key := schemas.Key{Value: *schemas.NewSecretVar("k"), BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar("key-secret"), WebhookURLPrefixes: trustedHooks}}
+	cases := []struct {
+		name  string
+		cb    string
+		extra map[string]any
+		want  any // the webhook_secret BFL receives; nil for none
+	}{
+		{"a trusted callback gets the key's secret", "https://hooks.example.test/v/edit_1", nil, "key-secret"},
+		{"an untrusted host gets none", "https://attacker.example/v/edit_1", nil, nil},
+		{"a path climbing out of the prefix gets none", "https://hooks.example.test/v/../admin", nil, nil},
+		{"the request's own secret wins", "https://attacker.example/v/edit_1", map[string]any{"webhook_secret": "request-secret"}, "request-secret"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &bflRecorder{submit: `{"id":"t1"}`}
+			server := httptest.NewServer(http.HandlerFunc(rec.serve))
+			defer server.Close()
+			provider := newTestProvider(t, schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true})
+			req := &schemas.BifrostImageEditRequest{
+				Model:       "flux-kontext-pro",
+				Input:       &schemas.ImageEditInput{Prompt: "make it night", Images: []schemas.ImageInput{{URL: "https://example.com/a.png"}}},
+				TaskControl: &schemas.TaskControlParameters{CallbackURL: schemas.Ptr(tc.cb)},
+			}
+			if tc.extra != nil {
+				req.Params = &schemas.ImageEditParameters{ExtraParams: tc.extra}
+			}
+			if _, bifrostErr := provider.ImageEditTask(imageTaskCtx(t), key, req); bifrostErr != nil {
+				t.Fatalf("submit: %+v", bifrostErr.Error)
+			}
+			var sent map[string]any
+			if err := json.Unmarshal(rec.bodies[0], &sent); err != nil {
+				t.Fatal(err)
+			}
+			if sent["webhook_url"] != tc.cb {
+				t.Fatalf("webhook_url = %v, want %s", sent["webhook_url"], tc.cb)
+			}
+			if got, ok := sent["webhook_secret"]; tc.want == nil && ok || tc.want != nil && got != tc.want {
+				t.Fatalf("webhook_secret = %v (present %v), want %v", got, ok, tc.want)
+			}
+		})
+	}
+}
+
 // TXE-7062 review: BFL receives the key's webhook secret, but no copy Bifrost keeps does: the
 // raw_request of a create and of an error carry it redacted. The caller never sent that secret,
 // so echoing it back would expose a credential from the key configuration.
