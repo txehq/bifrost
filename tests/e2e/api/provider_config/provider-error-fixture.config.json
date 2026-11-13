@@ -1465,6 +1465,144 @@
         "default_request_timeout_in_seconds": 10
       }
     },
+    "gate_deepseek": {
+      "keys": [
+        {
+          "name": "gate-deepseek-key",
+          "value": "gate-deepseek-secret",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "deepseek",
+        "allowed_requests": {
+          "embedding": true
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/ownkey",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "gate_glm": {
+      "keys": [
+        {
+          "name": "gate-glm-key",
+          "value": "gate-glm-secret",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "glm",
+        "allowed_requests": {
+          "embedding": true
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/ownkey",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "gate_moonshot": {
+      "keys": [
+        {
+          "name": "gate-moonshot-key",
+          "value": "gate-moonshot-secret",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "moonshot",
+        "allowed_requests": {
+          "embedding": true
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/ownkey",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "gate_qwen": {
+      "keys": [
+        {
+          "name": "gate-qwen-key",
+          "value": "gate-qwen-secret",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "qwen",
+        "allowed_requests": {
+          "embedding": true
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/ownkey",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "gate_xai": {
+      "keys": [
+        {
+          "name": "gate-xai-key",
+          "value": "gate-xai-secret",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "xai",
+        "allowed_requests": {
+          "embedding": true
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/ownkey",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "gate_deepseek_chat": {
+      "keys": [
+        {
+          "name": "gate-deepseek-chat-key",
+          "value": "gate-deepseek-chat-secret",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "deepseek",
+        "allowed_requests": {
+          "chat_completion": true
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/ownkey",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
     "egress_probe": {
       "keys": [
         {
