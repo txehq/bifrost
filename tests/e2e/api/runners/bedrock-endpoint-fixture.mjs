@@ -45,6 +45,13 @@ const endpoints = createTlsEndpoints({
 		if (/\/agents\/AGENTSLOW001\//.test(url)) {
 			return { status: 200, headers: { "Content-Type": "application/vnd.amazon.eventstream", "X-Amzn-Requestid": "req-slow" }, chunks: [1, 2, 3, 4, 5].map((n) => ({ delayMs: n === 1 ? 0 : 1000, data: Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from(`slow-chunk-${n}|`)]) })) };
 		}
+		// A model stream that stalls at a message boundary: the headers, then nothing for 8s. The gateway below sets a
+		// 2s stream idle timeout, so the idle timer closes the body while the read waits; the case asserts the caller
+		// gets the idle-timeout error, not a clean end (TXE-7264: a read the close ended with io.EOF ended the stream
+		// as complete).
+		if (/\/model\/[^/]*stall[^/]*\/converse-stream$/.test(url)) {
+			return { status: 200, headers: { "Content-Type": "application/vnd.amazon.eventstream", "X-Amzn-Requestid": "req-stall" }, chunks: [{ delayMs: 0, data: Buffer.alloc(0) }, { delayMs: 8000, data: Buffer.alloc(0) }] };
+		}
 		if (/\/agents\/[^/]+\/agentAliases\/[^/]+\/sessions\/[^/]+\/text$/.test(url)) {
 			return { status: 200, headers: { "Content-Type": "application/vnd.amazon.eventstream", "X-Amzn-Requestid": "req-agent" }, body: eventStream };
 		}
@@ -99,7 +106,8 @@ const configPath = writeFixtureGatewayConfig(appDir, {
 					},
 				},
 			],
-			network_config: { max_retries: 0, default_request_timeout_in_seconds: 3, ca_cert_pem: endpoints.caPem },
+			// The 2s stream idle timeout cuts the stalled model stream above; the slow agent's 1s gaps stay under it.
+			network_config: { max_retries: 0, default_request_timeout_in_seconds: 3, stream_idle_timeout_in_seconds: 2, ca_cert_pem: endpoints.caPem },
 		},
 	},
 });

@@ -228,8 +228,7 @@ func OpenResultStream(
 			_ = closer.CloseWithError(cause)
 		}
 	}
-	idleTimeout := GetStreamIdleTimeout(ctx)
-	idleTimer := time.AfterFunc(idleTimeout, func() { closeBody(errResultStreamIdle) })
+	idle := newIdleTimer(GetStreamIdleTimeout(ctx), errResultStreamIdle, systemAfterFunc, true, nil, func() { closeBody(errResultStreamIdle) })
 	done := make(chan struct{})
 	watcherDone := make(chan struct{})
 	go func() {
@@ -242,11 +241,11 @@ func OpenResultStream(
 	}()
 	var releaseOnce sync.Once
 	stream := &ResultStream{
-		Reader:  &resultBodyReader{ctx: ctx, reader: reader, timer: idleTimer, timeout: idleTimeout},
+		Reader:  &resultBodyReader{ctx: ctx, reader: reader, idle: idle},
 		Latency: latency,
 		release: func() {
 			releaseOnce.Do(func() {
-				idleTimer.Stop()
+				idle.Stop()
 				close(done)
 				<-watcherDone
 				releaseGzip()
@@ -282,22 +281,26 @@ func OpenResultStream(
 // resultBodyReader reads a result download's body. It restarts the idle timer on every
 // read, so a download is ended only when the upstream stops sending, not because the file
 // is large, and it counts the time blocked on the socket as upstream latency: the request
-// helper measures only up to the response headers.
+// helper measures only up to the response headers. Once the idle timer fires, every read
+// fails with errResultStreamIdle: an io.EOF from the closed connection would otherwise
+// end a truncated result file as if it were complete.
 type resultBodyReader struct {
-	ctx     *schemas.BifrostContext
-	reader  io.Reader
-	timer   *time.Timer
-	timeout time.Duration
+	ctx    *schemas.BifrostContext
+	reader io.Reader
+	idle   *idleTimer
 }
 
 func (r *resultBodyReader) Read(p []byte) (int, error) {
+	if r.idle.Fired() {
+		return 0, errResultStreamIdle
+	}
 	start := time.Now()
 	n, err := r.reader.Read(p)
 	schemas.AddUpstreamLatency(r.ctx, time.Since(start))
 	if n > 0 {
-		r.timer.Reset(r.timeout)
+		r.idle.Arm()
 	}
-	return n, err
+	return r.idle.Settle(n, err)
 }
 
 // BatchResultsSource opens one ordered source of result lines at a byte offset. A nil

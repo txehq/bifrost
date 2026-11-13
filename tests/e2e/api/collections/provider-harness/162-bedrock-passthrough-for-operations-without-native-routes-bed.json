@@ -1,6 +1,6 @@
 {
   "name": "162. Bedrock passthrough for operations without native routes (bedrock passthrough fixture)",
-  "description": "Local fixture regression, no network traffic leaves the machine. Run tests/e2e/api/runners/bedrock-endpoint-fixture.mjs --app-dir <dir> (it writes config.json: one Bedrock key with throwaway credentials in us-west-2, every Bedrock service endpoint overridden to the fixture, the fixture CA as network_config.ca_cert_pem, and the pricing datasheet URLs pointed at the fixture so the gateway starts offline), then start an isolated gateway with -app-dir <dir> and HTTPS_PROXY set to a dead port as a tripwire (the Bedrock client honours HTTPS_PROXY, and loopback is exempt, so only an accidental external call would fail), and run with bedrockEndpointFixture=1; every case is skipped otherwise. /bedrock_passthrough forwards exactly three AWS operations Bifrost has no native route for: InvokeAgent and knowledge-base Retrieve (bedrock-agent-runtime, fixture port 8796) and ApplyGuardrail (bedrock-runtime, fixture port 8798). The cases assert the request is SigV4 signed by the gateway for the key region and the bedrock service, that caller credentials and x-bf headers are not forwarded, that the upstream body, status, Content-Type and AWS error headers come back verbatim, and that every other path, a traversal and a non-POST method are refused with a 400 before any request is built. The /bedrock_passthrough/ bodies are carved out of the generic shape check in __skipShape because they are not inference responses.",
+  "description": "Local fixture regression, no network traffic leaves the machine. Run tests/e2e/api/runners/bedrock-endpoint-fixture.mjs --app-dir <dir> (it writes config.json: one Bedrock key with throwaway credentials in us-west-2, every Bedrock service endpoint overridden to the fixture, the fixture CA as network_config.ca_cert_pem, and the pricing datasheet URLs pointed at the fixture so the gateway starts offline), then start an isolated gateway with -app-dir <dir> and HTTPS_PROXY set to a dead port as a tripwire (the Bedrock client honours HTTPS_PROXY, and loopback is exempt, so only an accidental external call would fail), and run with bedrockEndpointFixture=1; every case is skipped otherwise. /bedrock_passthrough forwards exactly three AWS operations Bifrost has no native route for: InvokeAgent and knowledge-base Retrieve (bedrock-agent-runtime, fixture port 8796) and ApplyGuardrail (bedrock-runtime, fixture port 8798). The cases assert the request is SigV4 signed by the gateway for the key region and the bedrock service, that caller credentials and x-bf headers are not forwarded, that the upstream body, status, Content-Type and AWS error headers come back verbatim, and that every other path, a traversal and a non-POST method are refused with a 400 before any request is built. The /bedrock_passthrough/ bodies are carved out of the generic shape check in __skipShape because they are not inference responses. 162.14 is the stream idle timeout on a native Bedrock stream: the fixture answers ConverseStream for a model id containing \"stall\" with headers and then nothing for 8 seconds, the fixture gateway sets stream_idle_timeout_in_seconds to 2, and the caller must get the idle-timeout error after about 2 seconds; a read that the timer's close ended with io.EOF used to end the stream as complete (TXE-7264).",
   "item": [
     {
       "name": "162.1 bedrock passthrough InvokeAgent is signed, forwarded to agent-runtime and the event stream returns untouched (bedrock agents)",
@@ -799,6 +799,57 @@
             "exec": [
               "pm.test('the 4s Retrieve is cut off by the 3s request timeout, not streamed through', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); var j = pm.response.json(); pm.expect(j.is_bifrost_error, pm.response.text()).to.equal(true); pm.expect(j.error.error, pm.response.text()).to.include('context deadline exceeded'); });",
               "pm.test('it was refused before the 4s upstream finished', function () { pm.expect(pm.response.responseTime, 'finished in ' + pm.response.responseTime + 'ms').to.be.below(3900); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "162.14 [EXPECT-500] bedrock chat completion stream whose upstream stalls after the headers ends with the stream idle timeout error, never as a clean end (bedrock stream idle timeout)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/fixture.stall-v1\",\n  \"stream\": true,\n  \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the request reached the fixture model stream that stalls', function () { pm.expect(pm.response.headers.get('X-Amzn-Requestid'), pm.response.text()).to.equal('req-stall'); });",
+              "pm.test('the caller gets the stream idle timeout error, not a clean, complete stream', function () { var body = pm.response.json(); pm.expect(body.error && body.error.message, pm.response.text()).to.include('stream idle timeout'); });",
+              "pm.test('the 2s stream idle timeout cut the stream, well before the fixture would have ended it at 8s', function () { pm.expect(pm.response.responseTime, 'finished in ' + pm.response.responseTime + 'ms').to.be.within(1500, 7000); });"
             ]
           }
         }

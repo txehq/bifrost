@@ -13,7 +13,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/capsohq/bifrost/core/network"
@@ -237,28 +236,25 @@ func (g *gzipMediaStreamBody) Close() error {
 // mediaStreamBody guards a streamed media body: a read that waits longer than the idle
 // timeout, or past the end of the context, closes the vendor connection and fails. The
 // timer runs only while a read is waiting on the vendor, so a slow reader of the file is
-// never mistaken for a stalled vendor.
+// never mistaken for a stalled vendor. Once the idle timer fires, every read fails with
+// ErrStreamIdleTimeout, even one the closed connection ends with io.EOF.
 type mediaStreamBody struct {
 	ctx       context.Context
 	body      io.ReadCloser
-	idle      time.Duration
-	timer     *time.Timer
+	idle      *idleTimer
 	stopCtx   func() bool
-	idleFired atomic.Bool
 	closeOnce sync.Once
 	redacted  string
 }
 
 func newMediaStreamBody(ctx context.Context, body io.ReadCloser, idle time.Duration, redacted string) *mediaStreamBody {
-	if idle <= 0 {
-		idle = DefaultStreamIdleTimeout
-	}
-	b := &mediaStreamBody{ctx: ctx, body: body, idle: idle, redacted: redacted}
-	b.timer = time.AfterFunc(idle, func() {
-		b.idleFired.Store(true)
-		b.closeBody()
-	})
-	b.timer.Stop()
+	return newMediaStreamBodyWithTimer(ctx, body, idle, redacted, systemAfterFunc)
+}
+
+// newMediaStreamBodyWithTimer is newMediaStreamBody with the timer source injected.
+func newMediaStreamBodyWithTimer(ctx context.Context, body io.ReadCloser, idle time.Duration, redacted string, afterFunc idleAfterFunc) *mediaStreamBody {
+	b := &mediaStreamBody{ctx: ctx, body: body, redacted: redacted}
+	b.idle = newIdleTimer(idle, ErrStreamIdleTimeout, afterFunc, false, nil, b.closeBody)
 	b.stopCtx = context.AfterFunc(ctx, b.closeBody)
 	return b
 }
@@ -268,14 +264,17 @@ func (b *mediaStreamBody) closeBody() {
 }
 
 func (b *mediaStreamBody) Read(p []byte) (int, error) {
-	b.timer.Reset(b.idle)
+	if b.idle.Fired() {
+		return 0, ErrStreamIdleTimeout
+	}
+	b.idle.Arm()
 	n, err := b.body.Read(p)
-	b.timer.Stop()
+	b.idle.Disarm()
+	if b.idle.Fired() {
+		return b.idle.Settle(n, err)
+	}
 	if err == nil || err == io.EOF {
 		return n, err
-	}
-	if b.idleFired.Load() {
-		return n, ErrStreamIdleTimeout
 	}
 	if ctxErr := b.ctx.Err(); ctxErr != nil {
 		return n, ctxErr
@@ -284,7 +283,7 @@ func (b *mediaStreamBody) Read(p []byte) (int, error) {
 }
 
 func (b *mediaStreamBody) Close() error {
-	b.timer.Stop()
+	b.idle.Stop()
 	b.stopCtx()
 	b.closeBody()
 	return nil
