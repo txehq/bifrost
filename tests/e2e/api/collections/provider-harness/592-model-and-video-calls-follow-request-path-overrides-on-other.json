@@ -1,0 +1,357 @@
+{
+  "name": "592. Model and video calls that name their target follow request_path_overrides on the other bases, and gemini and kling refuse their video ones (resource path overrides) [SERIAL]",
+  "description": "TXE-7096 regression. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. Every row is skipped otherwise. Before TXE-7096 only the openai base read request_path_overrides on model and video calls: the other bases sent their vendors' own paths, or the override with its placeholder still in it. tkp_ovr_anthropic and tkp_ovr_gemini move model_retrieve to /moved/model_retrieve/{model}, and tkp_ovr_moved_volcengine moves video_retrieve, video_download and video_delete to /moved/<request type>/{video_id}. The fixture answers only those paths, for om-7096 and cgt-ovr-video. Each of 592.1 to 592.5 resets the fixture, makes one call, and reads GET /__wire: exactly one call reached the moved path with the id in place and the provider's own key. 592.6 and 592.7 write a gemini-based provider with a video_retrieve override and a kling-based one with a video_download override: each is a 400 naming the override, the base and the reason, and nothing is stored. A gemini video id names an operation or an Interactions task, two APIs with different paths, and Kling queries a task by a query parameter on one fixed path, so neither has a path for a template to place the id in.",
+  "item": [
+    {
+      "name": "592.1 tkp_ovr_anthropic model_retrieve: GET /v1/models/{model} reaches /moved/model_retrieve/{model} on the anthropic base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the model was retrieved from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(String(body.id), pm.response.text()).to.include('om-7096');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/ovr/') === 0; });",
+              "  pm.test('one call reached GET /pp/ovr/anthropic/moved/model_retrieve/om-7096 with tk-key-ovr-anthropic', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/anthropic/moved/model_retrieve/om-7096 tk-key-ovr-anthropic']);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/v1/models/tkp_ovr_anthropic/om-7096"
+      }
+    },
+    {
+      "name": "592.2 tkp_ovr_gemini model_retrieve: GET /v1/models/{model} reaches /moved/model_retrieve/{model} on the gemini base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the model was retrieved from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(String(body.id), pm.response.text()).to.include('om-7096');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/ovr/') === 0; });",
+              "  pm.test('one call reached GET /pp/ovr/gemini/moved/model_retrieve/om-7096 with tk-key-ovr-gemini', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/gemini/moved/model_retrieve/om-7096 tk-key-ovr-gemini']);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/v1/models/tkp_ovr_gemini/om-7096"
+      }
+    },
+    {
+      "name": "592.3 tkp_ovr_moved_volcengine video_retrieve: GET /v1/videos/{id} reaches /moved/video_retrieve/{video_id} on the volcengine base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the video was retrieved from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.id, pm.response.text()).to.equal('cgt-ovr-video:tkp_ovr_moved_volcengine');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/ovr/') === 0; });",
+              "  pm.test('one call reached GET /pp/ovr/volcengine/moved/video_retrieve/cgt-ovr-video with tk-key-ovr-moved-volcengine', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/volcengine/moved/video_retrieve/cgt-ovr-video tk-key-ovr-moved-volcengine']);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/v1/videos/cgt-ovr-video:tkp_ovr_moved_volcengine"
+      }
+    },
+    {
+      "name": "592.4 [NO-CONTENT] tkp_ovr_moved_volcengine video_download: GET /v1/videos/{id}/content reaches /moved/video_download/{video_id} on the volcengine base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the video bytes came from the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.text()).to.equal('ovr moved video bytes');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/ovr/') === 0; });",
+              "  pm.test('one call reached GET /pp/ovr/volcengine/moved/video_download/cgt-ovr-video with tk-key-ovr-moved-volcengine', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/volcengine/moved/video_download/cgt-ovr-video tk-key-ovr-moved-volcengine']);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/v1/videos/cgt-ovr-video:tkp_ovr_moved_volcengine/content"
+      }
+    },
+    {
+      "name": "592.5 tkp_ovr_moved_volcengine video_delete: DELETE /v1/videos/{id} reaches /moved/video_delete/{video_id} on the volcengine base (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('resource path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the video was deleted at the moved path', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.deleted, pm.response.text()).to.equal(true);",
+              "  pm.expect(body.id, pm.response.text()).to.equal('cgt-ovr-video:tkp_ovr_moved_volcengine');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/ovr/') === 0; });",
+              "  pm.test('one call reached DELETE /pp/ovr/volcengine/moved/video_delete/cgt-ovr-video with tk-key-ovr-moved-volcengine', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }), JSON.stringify(calls)).to.eql(['DELETE /pp/ovr/volcengine/moved/video_delete/cgt-ovr-video tk-key-ovr-moved-volcengine']);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": "{{baseUrl}}/v1/videos/cgt-ovr-video:tkp_ovr_moved_volcengine"
+      }
+    },
+    {
+      "name": "592.6 [EXPECT-400] POST /api/providers: a gemini-based provider with a video_retrieve override is refused when it is written (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the provider is refused with a 400 naming the override, the base and the reason', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+              "  pm.expect(pm.response.text()).to.include('request_path_overrides.video_retrieve is not supported on the gemini base');",
+              "  pm.expect(pm.response.text()).to.include('Interactions');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/providers/harness-gemini-video-path-override', method: 'GET' }, function (err, res) { pm.test('nothing was stored', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(404); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"provider\": \"harness-gemini-video-path-override\",\n  \"keys\": [],\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"gemini\",\n    \"allowed_requests\": {\n      \"video_retrieve\": true\n    },\n    \"request_path_overrides\": {\n      \"video_retrieve\": \"/moved/videos/{video_id}\"\n    }\n  }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/providers",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "providers"
+          ]
+        }
+      }
+    },
+    {
+      "name": "592.7 [EXPECT-400] POST /api/providers: a kling-based provider with a video_download override is refused when it is written (resource path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the provider is refused with a 400 naming the override, the base and the reason', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+              "  pm.expect(pm.response.text()).to.include('request_path_overrides.video_download is not supported on the kling base');",
+              "  pm.expect(pm.response.text()).to.include('task_ids');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/providers/harness-kling-video-path-override', method: 'GET' }, function (err, res) { pm.test('nothing was stored', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(404); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"provider\": \"harness-kling-video-path-override\",\n  \"keys\": [],\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"kling\",\n    \"allowed_requests\": {\n      \"video_download\": true\n    },\n    \"request_path_overrides\": {\n      \"video_download\": \"/moved/videos/{video_id}/content\"\n    }\n  }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/providers",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "providers"
+          ]
+        }
+      }
+    }
+  ]
+}

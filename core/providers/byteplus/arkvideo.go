@@ -28,6 +28,10 @@ type ArkVideoAPI struct {
 	// every other call: /api/v3/contents/generations/tasks on a bare host, or
 	// /contents/generations/tasks on a base URL that already ends in /api/v3.
 	TasksPath string
+	// CustomProviderConfig, on a custom provider, carries the request_path_overrides templates
+	// the task query and delete follow ({video_id} in place of the task id, TXE-7096). Nil on a
+	// built-in provider, whose calls go to TasksPath.
+	CustomProviderConfig *schemas.CustomProviderConfig
 	// ProviderName is the name the returned task ids carry.
 	ProviderName schemas.ModelProvider
 	// BaseProvider, when set, is a second suffix accepted on an incoming id: a custom provider
@@ -74,6 +78,13 @@ func (api *ArkVideoAPI) withBareDraftTaskID(request *schemas.BifrostVideoGenerat
 // do sends one call to the task API and returns the decoded body of a 2xx answer.
 func (api *ArkVideoAPI) do(ctx *schemas.BifrostContext, key schemas.Key, method, path, rawQuery string, jsonData []byte, sendBackRawRequest, sendBackRawResponse bool) ([]byte, time.Duration, *schemas.BifrostError) {
 	return doArkRequest(ctx, api.Client, api.NetworkConfig, key, method, path, rawQuery, jsonData, sendBackRawRequest, sendBackRawResponse)
+}
+
+// taskURL is where a call on one task goes: the task's path under the base URL, or the first of
+// requestTypes' request_path_overrides templates with the task id in place, unless a passthrough
+// route set the path in ctx (ResourceRequestURLInContext).
+func (api *ArkVideoAPI) taskURL(ctx *schemas.BifrostContext, escapedTaskID string, requestTypes ...schemas.RequestType) (string, *schemas.BifrostError) {
+	return providerUtils.ResourceRequestURLInContext(ctx, api.NetworkConfig.BaseURL, api.TasksPath+"/"+escapedTaskID, api.CustomProviderConfig, escapedTaskID, requestTypes...)
 }
 
 // Generate creates a Seedance video generation task. Extra params pass through so Seedance
@@ -131,15 +142,25 @@ func (api *ArkVideoAPI) Generate(ctx *schemas.BifrostContext, key schemas.Key, r
 
 // Retrieve queries the status of a Seedance video generation task.
 func (api *ArkVideoAPI) Retrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	return api.retrieve(ctx, key, request, schemas.VideoRetrieveRequest)
+}
+
+// retrieve queries a task, following the first of requestTypes' overrides: a download names its
+// own list (providerUtils.OverrideRequestTypes), since its upstream call is this query.
+func (api *ArkVideoAPI) retrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest, requestTypes ...schemas.RequestType) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	providerName := api.ProviderName
 	taskID := api.taskID(request.ID)
 	escapedTaskID, idErr := providerUtils.EscapeResourceID(taskID, "video_id")
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := api.taskURL(ctx, escapedTaskID, requestTypes...)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	sendBackRawResponse := api.SendBackRawResponse
-	body, latency, bifrostErr := api.do(ctx, key, http.MethodGet, api.TasksPath+"/"+escapedTaskID, "", nil, false, sendBackRawResponse)
+	body, latency, bifrostErr := doArkRequestURL(ctx, api.Client, api.NetworkConfig, key, http.MethodGet, requestURL, nil, false, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -167,7 +188,7 @@ func (api *ArkVideoAPI) Retrieve(ctx *schemas.BifrostContext, key schemas.Key, r
 
 // Download fetches the generated video from the time-limited URL on a succeeded task.
 func (api *ArkVideoAPI) Download(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
-	task, bifrostErr := api.Retrieve(ctx, key, &schemas.BifrostVideoRetrieveRequest{Provider: request.Provider, ID: request.ID})
+	task, bifrostErr := api.retrieve(ctx, key, &schemas.BifrostVideoRetrieveRequest{Provider: request.Provider, ID: request.ID}, providerUtils.OverrideRequestTypes(api.BaseProvider, schemas.VideoDownloadRequest)...)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -206,7 +227,11 @@ func (api *ArkVideoAPI) Delete(ctx *schemas.BifrostContext, key schemas.Key, req
 		return nil, idErr
 	}
 
-	_, latency, bifrostErr := api.do(ctx, key, http.MethodDelete, api.TasksPath+"/"+escapedTaskID, "", nil, false, false)
+	requestURL, urlErr := api.taskURL(ctx, escapedTaskID, schemas.VideoDeleteRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
+	_, latency, bifrostErr := doArkRequestURL(ctx, api.Client, api.NetworkConfig, key, http.MethodDelete, requestURL, nil, false, false)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
