@@ -371,6 +371,36 @@ func BenchmarkVideoGenerationForm(b *testing.B) {
 	b.Run("passthrough_one_extra", func(b *testing.B) { benchmarkVideoGenerationForm(b, map[string]any{"vendor_hint": "high"}, true) })
 }
 
+// BenchmarkHandleOpenAIVideoDeleteRequest measures a video delete against a local upstream for
+// each success body a vendor sends (TXE-7366): OpenAI's populated object, Ark's documented empty
+// object, and no body. The success path does not log, so no logger is needed.
+func BenchmarkHandleOpenAIVideoDeleteRequest(b *testing.B) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/videos/video_populated":
+			_, _ = w.Write([]byte(`{"id":"video_populated","object":"video.deleted","deleted":true}`))
+		case "/v1/videos/video_empty_object":
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer srv.Close()
+	client := &fasthttp.Client{}
+	for _, name := range []string{"populated", "empty_object", "no_body"} {
+		videoID := "video_" + name
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				resp, bifrostErr := HandleOpenAIVideoDeleteRequest(ctx, client, srv.URL+"/v1/videos/"+videoID, videoID,
+					schemas.Key{Value: *schemas.NewSecretVar("k")}, nil, nil, schemas.OpenAI, false, false, nil)
+				if bifrostErr != nil || !resp.Deleted {
+					b.Fatalf("delete %s: %+v, %+v", name, resp, bifrostErr)
+				}
+			}
+		})
+	}
+}
+
 // Every unified video field an /openai/v1/videos request sets is also kept in ExtraParams under
 // its own name, as the native /v1/videos handler keeps it, for the converters that still read it
 // there (fork, TXE-7126). The loop runs over schemas.UnifiedVideoGenerationFields, so a unified
