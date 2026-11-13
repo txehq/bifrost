@@ -351,7 +351,9 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 	if resp != nil {
 		videoStatus = resp.Status
 	}
-	settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, dims.TierOnlyResolution(), false)
+	// The base provider names the converter that rendered a custom provider's job (TXE-7349).
+	dims.BaseProvider = s.baseProvider(jobReq.Provider)
+	settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, dims.TierOnlyResolution(jobReq.Provider), false)
 
 	if resp != nil && resp.ContentFilter != nil && resp.ContentFilter.FilteredCount > 0 {
 		settlement.UnpriceableReason = UnpriceableReasonContentFiltered
@@ -377,7 +379,6 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 		return settlement, nil
 	}
 
-	dims.BaseProvider = s.baseProvider(jobReq.Provider)
 	details := pricing.CalculateVideoCostDetails(dims, jobReq.Provider, jobReq.Scopes)
 	if !details.Priced {
 		settlement.UnpriceableReason = UnpriceableReasonMissingVideoPricing
@@ -385,7 +386,7 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 		// once the rate lands, rather than dropping the job's cost entirely.
 		settlement.RecordUnpriced = true
 		settlement.UnpricedModel = dims.Model
-		settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, dims.TierOnlyResolution(), true)
+		settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, dims.TierOnlyResolution(jobReq.Provider), true)
 		return settlement, nil
 	}
 

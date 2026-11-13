@@ -1581,19 +1581,25 @@ func TestVideoSettle_ResolutionTierSurvivesSettlementAndReprice(t *testing.T) {
 		}()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Veo reads the tier from both the typed field and extra_params.
 			job := videoJob(t, "vid_tier", tc.dims)
-			settlement := settleVideoRendered(t, job, &schemas.BifrostVideoGenerationResponse{
-				Status: schemas.VideoStatusCompleted,
-				Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
-			}, 8)
+			renderedSeconds := 8
+			settlement, err := NewVideoSettler(nil).Settle(context.Background(), fakePricing{}, JobRequest{
+				Provider: schemas.Gemini, ProviderJobID: job.JobID, FallbackModel: job.Model, Job: job,
+				Payload: VideoPayload{Response: &schemas.BifrostVideoGenerationResponse{
+					Status: schemas.VideoStatusCompleted,
+					Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+				}, RenderedSeconds: &renderedSeconds},
+			})
+			require.NoError(t, err)
 			require.NotNil(t, settlement.ApplyDebug)
-			entry := &logstore.Log{Model: "sora-2-pro", Provider: string(schemas.OpenAI)}
+			entry := &logstore.Log{Model: "sora-2-pro", Provider: string(schemas.Gemini)}
 			settlement.ApplyDebug(entry)
 			require.NotNil(t, entry.VideoDebugParsed.Accounting)
 			assert.Equal(t, "4k", entry.VideoDebugParsed.Accounting.Resolution)
 
 			pricing := &dimsRecordingPricing{}
-			_, err := NewVideoSettler(nil).RepriceFromLog(entry, pricing)
+			_, err = NewVideoSettler(nil).RepriceFromLog(entry, pricing)
 			require.NoError(t, err)
 			require.Len(t, pricing.seen, 1)
 			assert.Equal(t, "4k", pricing.seen[0].Resolution)
@@ -1657,4 +1663,19 @@ func TestVideoSettle_SizeThatSetTheBandRepricesBySize(t *testing.T) {
 	require.Len(t, repricing.seen, 1)
 	assert.Equal(t, "1920x1080", repricing.seen[0].Size)
 	assert.Equal(t, "", repricing.seen[0].Resolution)
+}
+
+// A tier the provider never reads is not recorded as the band, so a reprice cannot take it
+// either: OpenAI reads no resolution tier (TXE-7349).
+func TestVideoSettle_TierTheProviderIgnoresIsNotRecorded(t *testing.T) {
+	dims := generationDims("sora-2-pro", "", 8)
+	dims.Resolution = "480p"
+	job := videoJob(t, "vid_ignored_tier", dims)
+	settlement := settleVideoRendered(t, job, &schemas.BifrostVideoGenerationResponse{
+		Status: schemas.VideoStatusCompleted,
+		Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+	}, 8)
+	entry := &logstore.Log{Model: "sora-2-pro", Provider: string(schemas.OpenAI)}
+	settlement.ApplyDebug(entry)
+	assert.Equal(t, "", entry.VideoDebugParsed.Accounting.Resolution)
 }

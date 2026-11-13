@@ -211,40 +211,74 @@ func (d VideoPricingDimensions) BandResolution() string {
 	return ""
 }
 
-// videoProvidersRenderingRequestedTier are the providers whose create converter renders the
-// requested resolution tier even when the request also names a size, with the code that does
-// it. For them the tier is the rendered resolution. A provider is added here only from its
-// converter: a caller-supplied tier that the provider ignores must not choose a cheaper band.
-var videoProvidersRenderingRequestedTier = map[schemas.ModelProvider]string{
-	schemas.Gemini:  "gemini.ToGeminiVideoGenerationRequest reads size only for aspectRatio and sends resolution as parameters.resolution",
-	schemas.Vertex:  "vertex sends Veo through gemini.ToGeminiVideoGenerationRequest",
-	schemas.MiniMax: "minimax video create: a requested resolution replaces the tier derived from size",
+// videoTierReader says where a provider's create converter reads the resolution tier from, so a
+// tier the provider renders can set the band and one it never reads cannot (TXE-7349). Typed is
+// the unified field (VideoGenerationParameters.Resolution); extra is extra_params.resolution.
+// The HTTP adapters fill both; a Go SDK caller may set one. Each entry names the code that reads
+// it, and a provider is added only from its converter.
+type videoTierReader struct {
+	typed, extra bool
+	source       string
+}
+
+var videoTierReaders = map[schemas.ModelProvider]videoTierReader{
+	schemas.Gemini:    {typed: true, extra: true, source: "gemini.ToGeminiVideoGenerationRequest: parameters.resolution from extra_params.resolution, else the typed field; size sets only aspectRatio"},
+	schemas.Vertex:    {typed: true, extra: true, source: "vertex sends Veo through gemini.ToGeminiVideoGenerationRequest"},
+	schemas.MiniMax:   {extra: true, source: "minimax video create: extra_params.resolution replaces the tier derived from size"},
+	schemas.DashScope: {typed: true, source: "dashscope video create: parameters.resolution from the typed field (Wan 2.7+, and image-to-video before it)"},
+	schemas.Kling:     {typed: true, source: "kling video create: settings.resolution from the typed field"},
+	schemas.BytePlus:  {typed: true, source: "byteplus video create: the typed field overrides the tier a size implies"},
+}
+
+// requestedTier is the resolution tier the request named and whether the provider that rendered
+// the job reads it from where it was named. A tier the provider reads from either source counts
+// as rendered.
+func (d VideoPricingDimensions) requestedTier(renderer schemas.ModelProvider) (string, bool) {
+	reader := videoTierReaders[renderer]
+	typed := ""
+	if videoResolutionBand(d.Resolution) > 0 {
+		typed = d.Resolution
+	}
+	extra := ""
+	if resolution, ok := d.Extra["resolution"].(string); ok && videoResolutionBand(resolution) > 0 {
+		extra = resolution
+	}
+	switch {
+	case typed != "" && reader.typed:
+		return typed, true
+	case extra != "" && reader.extra:
+		return extra, true
+	case typed != "":
+		return typed, false
+	default:
+		return extra, false
+	}
+}
+
+func (d VideoPricingDimensions) renderer(provider schemas.ModelProvider) schemas.ModelProvider {
+	if d.BaseProvider != "" {
+		return d.BaseProvider
+	}
+	return provider
 }
 
 // bandSize returns what the rate band is read from (TXE-7349):
 //   - a size the provider reported, which is what it rendered;
-//   - else, when the request named only one of a tier and a size, that one;
-//   - else, when it named both, the tier for a provider that renders the requested tier
-//     (Veo with size 3840x2160 and resolution 1080p renders 1080p), and otherwise whichever
-//     of the two bands costs more. A provider that ignores the tier may render the size, so
-//     a caller cannot lower the price by adding a cheaper tier the provider never reads.
+//   - else a requested tier the provider reads (see videoTierReaders), which is what it
+//     rendered whatever size was also asked for (Veo with size 3840x2160 and resolution 1080p
+//     renders 1080p);
+//   - else the requested size, or the unbanded rate when there is none, unless a tier the
+//     provider may ignore costs more. A caller cannot lower the price with a tier the provider
+//     never reads: the job is priced at the dearer of that tier and what it would cost without it.
 func (d VideoPricingDimensions) bandSize(provider schemas.ModelProvider, pricing *configstoreTables.TableModelPricing, audio bool) string {
-	sizeBand := videoResolutionBand(d.Size) > 0
-	if d.SizeReported && sizeBand {
+	if d.SizeReported && videoResolutionBand(d.Size) > 0 {
 		return d.Size
 	}
-	tier := d.BandResolution()
+	tier, rendered := d.requestedTier(d.renderer(provider))
 	if tier == "" {
 		return d.Size
 	}
-	if !sizeBand {
-		return tier
-	}
-	renderer := provider
-	if d.BaseProvider != "" {
-		renderer = d.BaseProvider
-	}
-	if _, ok := videoProvidersRenderingRequestedTier[renderer]; ok {
+	if rendered {
 		return tier
 	}
 	if videoOutputPerSecondRate(pricing, tier, audio) > videoOutputPerSecondRate(pricing, d.Size, audio) {
@@ -253,15 +287,18 @@ func (d VideoPricingDimensions) bandSize(provider schemas.ModelProvider, pricing
 	return d.Size
 }
 
-// TierOnlyResolution is the tier a settlement that could not be priced records: the tier when
-// no size names a band, since the tier alone then sets the band whatever the provider, and ""
-// otherwise. With both named, the choice needs the rates and the base provider, so the record
-// leaves it to the size; a reprice then never takes a cheaper tier the provider may ignore.
-func (d VideoPricingDimensions) TierOnlyResolution() string {
+// TierOnlyResolution is the tier a settlement that could not be priced records: a tier the
+// provider reads, when no size names a band, and "" otherwise. Without rates the dearer of an
+// unread tier and the size cannot be told, so the record leaves the choice to the size; a reprice
+// then never takes a cheaper tier the provider may ignore.
+func (d VideoPricingDimensions) TierOnlyResolution(provider schemas.ModelProvider) string {
 	if videoResolutionBand(d.Size) > 0 {
 		return ""
 	}
-	return d.BandResolution()
+	if tier, rendered := d.requestedTier(d.renderer(provider)); rendered {
+		return tier
+	}
+	return ""
 }
 
 // videoClipCount counts the billable clips in outputs, skipping image outputs such as a task's last frame.

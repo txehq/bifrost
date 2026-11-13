@@ -928,13 +928,9 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 			return dims
 		}
 		dims.Size = params.Size
+		// The typed tier only. A tier in extra_params stays in Extra (captured below), so pricing
+		// can tell which one the provider reads (TXE-7349).
 		dims.Resolution = string(params.Resolution)
-		if dims.Resolution == "" {
-			// Veo reads its tier from extra_params, where the unified field also stays.
-			if resolution, ok := params.ExtraParams["resolution"].(string); ok {
-				dims.Resolution = resolution
-			}
-		}
 		dims.Type = params.Type
 		dims.Audio = params.Audio
 		dims.UpscaleFactor = params.UpscaleFactor

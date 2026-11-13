@@ -265,7 +265,7 @@ func (fakePricing) CalculateVideoCostDetails(dims modelcatalog.VideoPricingDimen
 		Cost:   float64(*dims.Seconds) * rate * float64(max(1, dims.OutputCount)),
 		Priced: true,
 		// A tier with no banded size beside it sets the band whatever the provider (TXE-7349).
-		PricedResolution: dims.TierOnlyResolution(),
+		PricedResolution: dims.TierOnlyResolution(provider),
 	}
 }
 

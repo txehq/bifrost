@@ -8932,7 +8932,16 @@ func TestVideoPricingDimensions_BandSizePrecedence(t *testing.T) {
 	// Only one of the two named: that one.
 	assert.Equal(t, "1920x1080", band(VideoPricingDimensions{Size: "1920x1080"}, schemas.OpenAI))
 	assert.Equal(t, "4k", band(VideoPricingDimensions{Size: "auto", Resolution: "4k"}, schemas.OpenAI))
-	assert.Equal(t, "2K", band(VideoPricingDimensions{Extra: map[string]any{"resolution": "2K"}}, schemas.OpenAI))
+	// A tier alone: one the provider reads sets the band; one it never reads cannot price the
+	// job below what it would cost without it (the unbanded 0.40 here).
+	assert.Equal(t, "2K", band(VideoPricingDimensions{Extra: map[string]any{"resolution": "2K"}}, schemas.MiniMax))
+	assert.Equal(t, "480p", band(VideoPricingDimensions{Resolution: "480p"}, schemas.DashScope))
+	assert.Equal(t, "", band(VideoPricingDimensions{Resolution: "480p"}, schemas.OpenAI))
+	assert.Equal(t, "", band(VideoPricingDimensions{Extra: map[string]any{"resolution": "480p"}}, schemas.DashScope),
+		"DashScope reads the typed tier, not extra_params")
+	assert.Equal(t, "", band(VideoPricingDimensions{Resolution: "480p"}, schemas.MiniMax),
+		"MiniMax reads extra_params, not the typed tier")
+	assert.Equal(t, "4k", band(VideoPricingDimensions{Resolution: "4k"}, schemas.OpenAI), "an unread tier that costs more still bills")
 	// Both named, a provider that renders the requested tier: the tier, cheaper or dearer.
 	assert.Equal(t, "1080p", band(VideoPricingDimensions{Size: "3840x2160", Resolution: "1080p"}, schemas.Gemini))
 	assert.Equal(t, "1080p", band(VideoPricingDimensions{Size: "3840x2160", Resolution: "1080p"}, schemas.Vertex))
@@ -8954,9 +8963,10 @@ func TestVideoPricingDimensions_BandSizePrecedence(t *testing.T) {
 	captured := VideoPricingDimensions{Size: "3840x2160", Resolution: "4k"}
 	merged := captured.MergedWith(VideoDimensionsFromResponse(&schemas.BifrostVideoGenerationResponse{Size: "1280x720"}))
 	assert.Equal(t, "1280x720", band(merged, schemas.Gemini))
-	assert.Equal(t, "", merged.TierOnlyResolution())
-	assert.Equal(t, "4k", VideoPricingDimensions{Resolution: "4k"}.TierOnlyResolution())
-	assert.Equal(t, "", captured.TierOnlyResolution(), "with both named, an unpriced record leaves the choice to the size")
+	assert.Equal(t, "", merged.TierOnlyResolution(schemas.Gemini))
+	assert.Equal(t, "4k", VideoPricingDimensions{Resolution: "4k"}.TierOnlyResolution(schemas.Gemini))
+	assert.Equal(t, "", VideoPricingDimensions{Resolution: "4k"}.TierOnlyResolution(schemas.OpenAI), "a tier the provider never reads is not recorded")
+	assert.Equal(t, "", captured.TierOnlyResolution(schemas.Gemini), "with both named, an unpriced record leaves the choice to the size")
 }
 
 // The details name the tier that set the band, so the settlement records it for a reprice.
