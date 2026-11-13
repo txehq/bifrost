@@ -535,7 +535,7 @@ func summarizeResults(pricing PricingManager, in batchInput) (*Settlement, error
 		}
 		breakdowns[extracted.model] = breakdown
 
-		costDetails := pricing.CalculateBatchCostDetailsForUsage(extracted.usage, in.Provider, extracted.model, BatchRequestType(in.Endpoint), in.Scopes)
+		costDetails := pricing.CalculateBatchCostDetailsForUsage(extracted.usage, in.Provider, extracted.model, lineRequestType(in.Endpoint, item), in.Scopes)
 		if !costDetails.Priced {
 			missingPricingSeen = true
 			unpricedCount++
@@ -617,9 +617,27 @@ func summarizeResults(pricing PricingManager, in batchInput) (*Settlement, error
 	return settlement, nil
 }
 
-// batchRequestTypeMixed is the request type of a batch whose lines ran different operations.
-// No pricing path handles it, so every line reports unpriced.
+// batchRequestTypeMixed is the request type of a batch whose lines ran different operations,
+// read from its aggregate row. No pricing path handles it: the aggregate cannot say which
+// usage was which operation.
 const batchRequestTypeMixed schemas.RequestType = "batch_results_mixed"
+
+// lineRequestType is the request type one result line prices under. A batch of one operation
+// prices every line as that operation. A mixed batch (schemas.BatchEndpointMixed: lines of
+// different operations, which a native-route caller can create) prices each line by the shape
+// of its own result: an image line carries data, and any other line is a chat line. Leaving a
+// mixed batch unpriced would park it before its spend reached budgets (TXE-7354).
+func lineRequestType(endpoint schemas.BatchEndpoint, item schemas.BatchResultItem) schemas.RequestType {
+	if endpoint != schemas.BatchEndpointMixed {
+		return BatchRequestType(endpoint)
+	}
+	if item.Response != nil {
+		if _, ok := item.Response.Body["data"]; ok {
+			return schemas.ImageGenerationRequest
+		}
+	}
+	return schemas.ChatCompletionRequest
+}
 
 // BatchRequestType maps a batch endpoint to the request type its results price
 // under. Exported because the aggregate row records only the endpoint (its Object
@@ -645,8 +663,9 @@ func BatchRequestType(endpoint schemas.BatchEndpoint) schemas.RequestType {
 	case schemas.BatchEndpointImageEdit:
 		return schemas.ImageEditRequest
 	case schemas.BatchEndpointMixed:
-		// Lines of different operations (TXE-7354): no one request type prices them all, so
-		// the batch is reported unpriced and parked with its usage kept.
+		// Lines of different operations (TXE-7354). Settlement prices each line by its own
+		// result (lineRequestType). Repricing reads only the per-model aggregate, which
+		// cannot split them, so it reports the row unpriceable and the settled cost stands.
 		return batchRequestTypeMixed
 	default:
 		return schemas.BatchResultsRequest

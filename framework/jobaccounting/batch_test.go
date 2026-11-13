@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -2504,23 +2505,24 @@ func TestSummarizeResultsDoesNotPriceImageLinesAsText(t *testing.T) {
 
 // textOnlyBatchPricing prices text request types at a flat per-token rate and nothing else,
 // as the catalog does for batches.
-// TXE-7354: a batch whose lines ran different operations (created outside this gateway) is
-// reported as schemas.BatchEndpointMixed and left unpriced. Image lines are priced now, so
-// reporting it as image generation, as before, would price its chat lines as image lines.
-func TestSummarizeResultsLeavesAMixedBatchUnpriced(t *testing.T) {
+// TXE-7354: a batch whose lines ran different operations (a native-route caller can create
+// one) is reported as schemas.BatchEndpointMixed, and settlement prices each line by its own
+// result: an image line (it carries data) at image rates, a chat line at chat rates. Leaving it
+// unpriced would park it before its spend reached budgets.
+func TestSummarizeResultsPricesAMixedBatchPerLine(t *testing.T) {
 	if got := BatchRequestType(schemas.BatchEndpointMixed); got != batchRequestTypeMixed {
 		t.Fatalf("BatchRequestType(mixed) = %s, want %s", got, batchRequestTypeMixed)
 	}
 	chatLine := schemas.BatchResultItem{CustomID: "c-1", Status: schemas.BatchResultStatusSucceeded, Response: &schemas.BatchResultResponse{StatusCode: 200, Body: map[string]interface{}{
-		"model": "gemini-2.5-flash-image",
-		"usage": map[string]interface{}{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+		"object": "chat.completion",
+		"model":  "gemini-2.5-flash-image",
+		"usage":  map[string]interface{}{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
 	}}}
 	imageLine := schemas.BatchResultItem{CustomID: "img-1", Status: schemas.BatchResultStatusSucceeded, Response: &schemas.BatchResultResponse{StatusCode: 200, Body: map[string]interface{}{
 		"model": "gemini-2.5-flash-image",
+		"data":  []interface{}{map[string]interface{}{"b64_json": "aW1hZ2U="}},
 		"usage": map[string]interface{}{"input_tokens": 8, "output_tokens": 1290, "total_tokens": 1298},
 	}}}
-	// A pricing manager that prices chat and image lines alike, as the catalog does since
-	// TXE-7354: a mixed batch must still not reach it as either.
 	settlement, err := summarizeResults(chatAndImageBatchPricing{}, batchInput{
 		Provider:     schemas.Gemini,
 		BatchID:      "batches/mixed",
@@ -2529,11 +2531,12 @@ func TestSummarizeResultsLeavesAMixedBatchUnpriced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("summarizeResults: %v", err)
 	}
-	if settlement.PricedCount != 0 || settlement.Cost != 0 || settlement.Complete {
-		t.Fatalf("a mixed batch was priced: %+v", settlement)
+	if settlement.PricedCount != 2 || !settlement.Complete {
+		t.Fatalf("a mixed batch was not priced line by line: %+v", settlement)
 	}
-	if settlement.UnpriceableReason != UnpriceableReasonMissingBatchPricing {
-		t.Fatalf("UnpriceableReason = %q, want %q", settlement.UnpriceableReason, UnpriceableReasonMissingBatchPricing)
+	// chatAndImageBatchPricing charges 1e-06 a token on a chat line and 1e-05 on an image line.
+	if want := 15*1e-06 + 1298*1e-05; math.Abs(settlement.Cost-want) > 1e-12 {
+		t.Fatalf("Cost = %v, want %v (each line at its own operation's rate)", settlement.Cost, want)
 	}
 }
 
@@ -2541,8 +2544,10 @@ type chatAndImageBatchPricing struct{ fakePricing }
 
 func (chatAndImageBatchPricing) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.BatchCostDetails {
 	switch requestType {
-	case schemas.BatchResultsRequest, schemas.ChatCompletionRequest, schemas.ImageGenerationRequest, schemas.ImageEditRequest:
-		return modelcatalog.BatchCostDetails{Cost: float64(usage.TotalTokens) * 0.000001, Priced: true}
+	case schemas.BatchResultsRequest, schemas.ChatCompletionRequest:
+		return modelcatalog.BatchCostDetails{Cost: float64(usage.TotalTokens) * 1e-06, Priced: true}
+	case schemas.ImageGenerationRequest, schemas.ImageEditRequest:
+		return modelcatalog.BatchCostDetails{Cost: float64(usage.TotalTokens) * 1e-05, Priced: true}
 	}
 	return modelcatalog.BatchCostDetails{}
 }

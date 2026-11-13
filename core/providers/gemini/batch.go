@@ -741,18 +741,28 @@ func CheckBatchLineOperation(batchOperation *schemas.BatchEndpoint, item schemas
 }
 
 // AccumulateBatchResultsEndpoint folds one result line's endpoint into the endpoint reported
-// for the batch's results, which is what settlement prices the batch as. Lines created
-// through this gateway share one operation. Results that still mix operations (a batch
-// created elsewhere) are reported as schemas.BatchEndpointMixed, which settlement leaves
-// unpriced rather than price one operation's lines at another's rates. Before TXE-7354 they
-// were reported as image generation, which then had no batch rates; image lines are priced
-// now, so that would price a mixed batch's chat lines as image lines.
+// for the batch's results. Lines created through the OpenAI-shaped batch route share one
+// operation. Results that still mix operations (a native-route batch whose lines name
+// different operations) are reported as schemas.BatchEndpointMixed, and settlement prices
+// each of their lines by its own result (TXE-7354). Before, they were reported as image
+// generation, which then had no batch rates, so a mixed batch was parked unpriced.
 func AccumulateBatchResultsEndpoint(current, lineEndpoint schemas.BatchEndpoint) schemas.BatchEndpoint {
-	operation := batchLineOperation(lineEndpoint)
+	operation := batchResultLineOperation(lineEndpoint)
 	if current == "" || current == operation {
 		return operation
 	}
 	return schemas.BatchEndpointMixed
+}
+
+// batchResultLineOperation reads a result line's echoed endpoint as one of the two operations a
+// generateContent batch runs. The value comes back as the create sent it in the line's
+// metadata, which a native-route caller controls, so anything but image generation is a chat
+// line: a line cannot name the mixed sentinel, or an operation settlement does not price.
+func batchResultLineOperation(endpoint schemas.BatchEndpoint) schemas.BatchEndpoint {
+	if endpoint == schemas.BatchEndpointImageGeneration {
+		return endpoint
+	}
+	return schemas.BatchEndpointChatCompletions
 }
 
 // normalizeBatchBody converts camelCase usage keys (promptTokens, completionTokens,
