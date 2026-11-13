@@ -339,7 +339,9 @@ func setRealtimeIncurredTextMessages(ctx *schemas.BifrostContext, textMessages i
 	if ctx == nil || textMessages <= 0 {
 		return
 	}
-	ctx.SetValue(schemas.BifrostContextKeyRealtimeIncurredUsage, &schemas.BifrostLLMUsage{TextMessages: &textMessages})
+	// A copy, so the parameter does not escape on the common path that returns above.
+	n := textMessages
+	ctx.SetValue(schemas.BifrostContextKeyRealtimeIncurredUsage, &schemas.BifrostLLMUsage{TextMessages: &n})
 }
 
 // applyRealtimeTurnErrorTextMessages puts the text messages sent before a turn that failed, or

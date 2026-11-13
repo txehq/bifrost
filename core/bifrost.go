@@ -5677,6 +5677,10 @@ func attachRealtimeIncurredUsage(ctx *schemas.BifrostContext, bifrostErr *schema
 	if !ok || incurred == nil {
 		return
 	}
+	// A realtime unit is a stream to the plugins, and governance charges a stream only on its
+	// final chunk. A refusal ends the unit, so it is the final chunk; without the mark, the
+	// usage it carries would be passed over.
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 	if bifrostErr.ExtraFields.BilledUsage == nil {
 		bifrostErr.ExtraFields.BilledUsage = incurred.DeepCopy()
 		return

@@ -860,6 +860,31 @@ func BenchmarkAgentContinuationChecksOnPlainRequest(b *testing.B) {
 	}
 }
 
+// BenchmarkAttachRealtimeIncurredUsage is what TXE-7383 adds to a realtime admission refusal: a
+// context lookup when the settlement carries nothing (every ordinary refusal), and the final-chunk
+// mark plus a deep copy of the incurred usage when it carries text messages.
+func BenchmarkAttachRealtimeIncurredUsage(b *testing.B) {
+	for _, tc := range []struct {
+		name     string
+		incurred *schemas.BifrostLLMUsage
+	}{
+		{"nothing_incurred", nil},
+		{"text_messages_incurred", &schemas.BifrostLLMUsage{TextMessages: Ptr(2)}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tc.incurred != nil {
+				ctx.SetValue(schemas.BifrostContextKeyRealtimeIncurredUsage, tc.incurred)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				refusal := &schemas.BifrostError{}
+				attachRealtimeIncurredUsage(ctx, refusal)
+			}
+		})
+	}
+}
+
 // BenchmarkDrainAndAttachPluginLogsNoLogs measures the drain RunRealtimeTurnPreHooks now
 // runs on every realtime or Live turn (upstream #8738), on a turn where no plugin logged.
 func BenchmarkDrainAndAttachPluginLogsNoLogs(b *testing.B) {
@@ -10471,6 +10496,9 @@ func TestRealtimeAdmissionRejectionBillsIncurredUsage(t *testing.T) {
 	}
 	if got := *plugin.seen.ExtraFields.BilledUsage.TextMessages; got != 2 {
 		t.Fatalf("billed text messages = %d, want 2", got)
+	}
+	if final, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !final {
+		t.Fatal("the refusal that ends the unit is not marked its final chunk, so governance would not charge it")
 	}
 	*plugin.seen.ExtraFields.BilledUsage.TextMessages = 99
 	if *incurred.TextMessages != 2 {

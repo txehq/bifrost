@@ -2,13 +2,19 @@ package governance
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/capsohq/bifrost/framework/jobaccounting"
+	"github.com/capsohq/bifrost/framework/modelcatalog"
+	"github.com/capsohq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/capsohq/bifrost/plugins/governance/internal/testtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -793,4 +799,96 @@ func BenchmarkResponseTokensUsed(b *testing.B) {
 			responseTokensUsedSink = responseTokensUsed(processed)
 		}
 	})
+}
+
+// emptyAccount configures no provider: a realtime settlement runs admission and its hooks only,
+// and never calls one.
+type emptyAccount struct{}
+
+func (emptyAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) { return nil, nil }
+func (emptyAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
+	return nil, nil
+}
+func (emptyAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	return &schemas.ProviderConfig{}, nil
+}
+
+// TestRealtimeSettlementRefusedOnItsBudgetIsStillCharged (TXE-7383): an xAI realtime session that
+// sent text messages closes with no turn in flight, and its settlement reruns admission through
+// core's RunRealtimeTurnPreHooks against a budget already spent. Governance refuses the new turn,
+// but the messages were billed when sent: core puts them on the refusal's BilledUsage and marks
+// the refusal the unit's final chunk, and governance charges them to the budget it refused on.
+// Without the incurred-usage mark, a refusal is charged nothing, as before.
+func TestRealtimeSettlementRefusedOnItsBudgetIsStillCharged(t *testing.T) {
+	sheet := filepath.Join(t.TempDir(), "pricing.json")
+	require.NoError(t, os.WriteFile(sheet, []byte(`{"grok-voice-3.0":{"provider":"xai","mode":"realtime","input_cost_per_second":0.001333333333333,"input_cost_per_text_message":0.004}}`), 0o600))
+	ds := datasheet.New(nil, NewMockLogger(), datasheet.Config{URL: "file://" + sheet})
+	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
+	catalog := modelcatalog.NewTestCatalogWithDatasheet(ds)
+
+	for _, marked := range []bool{true, false} {
+		logger := NewMockLogger()
+		budget := buildBudgetWithUsage("budget-rt", 1.0, 1.0, "1d") // spent in full elsewhere
+		vk := buildVirtualKeyWithBudget("vk-rt", "sk-bf-rt", "Realtime VK", budget)
+		vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{{Provider: "xai", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true}}
+		store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+			VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+			Budgets:     []configstoreTables.TableBudget{*budget},
+		}, nil, nil)
+		require.NoError(t, err)
+		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, catalog, nil, nil)
+		require.NoError(t, err)
+		client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+			Account: emptyAccount{}, Logger: logger, LLMPlugins: []schemas.LLMPlugin{plugin},
+		})
+		require.NoError(t, err)
+
+		ctx := resolverCtx(store, "sk-bf-rt")
+		ctx.SetValue(schemas.BifrostContextKeyStreamStartTime, time.Now())
+		if marked {
+			ctx.SetValue(schemas.BifrostContextKeyRealtimeIncurredUsage, &schemas.BifrostLLMUsage{TextMessages: schemas.Ptr(2)})
+		}
+		_, preErr := client.RunRealtimeTurnPreHooks(ctx, &schemas.BifrostRequest{
+			RequestType:      schemas.RealtimeRequest,
+			ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.XAI, Model: "grok-voice-3.0"},
+		})
+		require.NotNil(t, preErr, "marked=%t: the spent budget admits the settlement", marked)
+		require.NotNil(t, preErr.Type)
+		assert.Equal(t, string(DecisionBudgetExceeded), *preErr.Type)
+		plugin.wg.Wait()
+
+		want := 1.0
+		if marked {
+			want += 2 * 0.004
+		}
+		assert.EventuallyWithT(t, func(c *assert.CollectT) {
+			got := store.GetGovernanceData(context.Background()).Budgets["budget-rt"].CurrentUsage
+			assert.InDelta(c, want, got, 1e-12, "marked=%t", marked)
+		}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
+		client.Shutdown()
+	}
+}
+
+// BenchmarkSettlesIncurredUsage is what TXE-7383 adds to the post-hook of every request governance
+// refused: an ordinary refusal carries no billed usage and returns at once; a settlement refusal
+// reads the incurred-usage mark and the decision.
+func BenchmarkSettlesIncurredUsage(b *testing.B) {
+	budgetExceeded := string(DecisionBudgetExceeded)
+	settling := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	settling.SetValue(schemas.BifrostContextKeyRealtimeIncurredUsage, &schemas.BifrostLLMUsage{TextMessages: schemas.Ptr(2)})
+	for _, tc := range []struct {
+		name string
+		ctx  *schemas.BifrostContext
+		err  *schemas.BifrostError
+	}{
+		{"ordinary_refusal", schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostError{Type: &budgetExceeded}},
+		{"settlement_refusal", settling, &schemas.BifrostError{Type: &budgetExceeded, ExtraFields: schemas.BifrostErrorExtraFields{BilledUsage: &schemas.BifrostLLMUsage{TextMessages: schemas.Ptr(2)}}}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = settlesIncurredUsage(tc.ctx, tc.err)
+			}
+		})
+	}
 }

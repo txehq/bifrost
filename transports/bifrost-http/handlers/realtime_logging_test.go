@@ -808,6 +808,24 @@ func TestRealtimeTextMessageCountedOnlyOnceSentUpstream(t *testing.T) {
 	}
 }
 
+// BenchmarkSetRealtimeIncurredTextMessages is what TXE-7383 adds to a realtime settlement that
+// reruns admission: nothing when no text message is pending (every non-xAI session), and one
+// small usage plus a context write when some are.
+func BenchmarkSetRealtimeIncurredTextMessages(b *testing.B) {
+	for _, tc := range []struct {
+		name    string
+		pending int
+	}{{"none_pending", 0}, {"two_pending", 2}} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			b.ReportAllocs()
+			for b.Loop() {
+				setRealtimeIncurredTextMessages(ctx, tc.pending)
+			}
+		})
+	}
+}
+
 // refusingRealtimePlugin refuses admission, as governance does once a budget is spent, and
 // records the error its own post-hook sees.
 type refusingRealtimePlugin struct{ seen *schemas.BifrostError }
