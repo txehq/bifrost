@@ -4819,6 +4819,56 @@ func BenchmarkResourceRequestURL(b *testing.B) {
 	_ = sink
 }
 
+// BenchmarkResourceRequestURLInContext measures building the URL of a model or video call that
+// names one resource on the anthropic, cohere, gemini, xai, volcengine, minimax and replicate
+// bases (TXE-7096), with a real BifrostContext as at the call sites. "before" is what those call
+// sites did until now: baseURL plus GetRequestPath, which read a context path and an override
+// but placed no id in it. The built-in provider without a context path is the common case and
+// must stay as cheap.
+func BenchmarkResourceRequestURLInContext(b *testing.B) {
+	const baseURL, defaultPath, id = "https://api.anthropic.com", "/v1/models/claude-sonnet-4-5", "claude-sonnet-4-5"
+	var sink string
+	for _, bc := range []struct {
+		name        string
+		config      *schemas.CustomProviderConfig
+		contextPath string
+	}{
+		{"built-in provider", nil, ""},
+		{"custom provider without overrides", &schemas.CustomProviderConfig{}, ""},
+		{"override for another request type", &schemas.CustomProviderConfig{RequestPathOverrides: map[schemas.RequestType]string{schemas.ListModelsRequest: "/moved/models"}}, ""},
+		{"path template", &schemas.CustomProviderConfig{RequestPathOverrides: map[schemas.RequestType]string{schemas.ModelRetrieveRequest: "/moved/models/{model}"}}, ""},
+		{"full URL template", &schemas.CustomProviderConfig{RequestPathOverrides: map[schemas.RequestType]string{schemas.ModelRetrieveRequest: "https://vendor.example/moved/models/{model}"}}, ""},
+		{"path in context", nil, "/passthrough/v1/models/claude-sonnet-4-5"},
+	} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if bc.contextPath != "" {
+			ctx.SetValue(schemas.BifrostContextKeyURLPath, bc.contextPath)
+		}
+		b.Run("before/"+bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				path, isCompleteURL := GetRequestPath(ctx, defaultPath, bc.config, schemas.ModelRetrieveRequest)
+				if isCompleteURL {
+					sink = path
+					continue
+				}
+				sink = baseURL + path
+			}
+		})
+		b.Run("after/"+bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				url, err := ResourceRequestURLInContext(ctx, baseURL, defaultPath, bc.config, id, schemas.ModelRetrieveRequest)
+				if err != nil {
+					b.Fatal(err)
+				}
+				sink = url
+			}
+		})
+	}
+	_ = sink
+}
+
 func BenchmarkSetExtraHeaders(b *testing.B) {
 	b.Setenv("BF_BENCH_EXTRA_HEADER", "from-env")
 	cases := []struct {
