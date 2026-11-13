@@ -1,0 +1,133 @@
+{
+  "name": "590. VolcEngine video delete answers deleted for Ark's empty 200 (volcengine empty delete body)",
+  "description": "Pins TXE-7366 for the volcengine provider on DELETE /v1/videos/{id}. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. Ark documents a successful task DELETE as 200 whose result is an empty object (docs.volcengine.com/docs/82379/1521720), and the fixture's /pp/volcengine task route answers cgt-volc-empty-object with {} and any other id with no body. Before the change the gateway answered the first with deleted false and no id, and the second with 500 empty response, although Ark had deleted the task. Rows 1 and 2: each answers 200 with the caller's id, object video.deleted and deleted true. Row 3: each delete reached Ark exactly once.",
+  "item": [
+    {
+      "name": "590.1 volcengine DELETE /v1/videos/{id} with Ark's documented {} answers deleted true and the caller's id (volcengine empty delete body)",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/cgt-volc-empty-object:volcengine",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "cgt-volc-empty-object:volcengine"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200 deleted true for the id asked for', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('cgt-volc-empty-object:volcengine');",
+              "  pm.expect(j.object, 'object: ' + pm.response.text()).to.eql('video.deleted');",
+              "  pm.expect(j.deleted, 'deleted: ' + pm.response.text()).to.eql(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "590.2 volcengine DELETE /v1/videos/{id} with a 200 and no body answers deleted true, not 500 (volcengine empty delete body)",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/cgt-volc-no-body:volcengine",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "cgt-volc-no-body:volcengine"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200 deleted true for the id asked for', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('cgt-volc-no-body:volcengine');",
+              "  pm.expect(j.object, 'object: ' + pm.response.text()).to.eql('video.deleted');",
+              "  pm.expect(j.deleted, 'deleted: ' + pm.response.text()).to.eql(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "590.3 fixture hit counts prove each delete reached Ark once (volcengine empty delete body)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__hits"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var h = pm.response.json().data[0].hits;",
+              "var deletes = {};",
+              "Object.keys(h).forEach(function (k) { if (k.indexOf('volcengine.delete ') === 0) { deletes[k] = h[k]; } });",
+              "pm.test('one DELETE per task reached Ark', function () {",
+              "  pm.expect(deletes, JSON.stringify(h)).to.eql({ 'volcengine.delete cgt-volc-empty-object': 1, 'volcengine.delete cgt-volc-no-body': 1 });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

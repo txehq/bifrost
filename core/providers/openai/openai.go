@@ -5080,6 +5080,14 @@ func HandleOpenAIVideoRetrieveRequest(
 	return response, nil
 }
 
+// openAIVideoDeleteAnswer is the body of a delete as a vendor may answer it: every field is
+// optional, and an absent deleted is not a refusal.
+type openAIVideoDeleteAnswer struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Deleted *bool  `json:"deleted"`
+}
+
 // HandleOpenAIVideoDeleteRequest handles video deletion requests for OpenAI-compatible APIs.
 func HandleOpenAIVideoDeleteRequest(
 	ctx *schemas.BifrostContext,
@@ -5124,9 +5132,11 @@ func HandleOpenAIVideoDeleteRequest(
 	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 
-	// Handle error response
-	if resp.StatusCode() != fasthttp.StatusOK {
-		logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
+	// Any 2xx is the vendor's acceptance of the delete. OpenAI answers 200 with the video's id,
+	// object and deleted; Ark answers 200 with an empty object (docs.volcengine.com/docs/82379/1521720),
+	// and a vendor may answer 204 or 200 with no body at all (TXE-7366).
+	if status := resp.StatusCode(); status < fasthttp.StatusOK || status >= fasthttp.StatusMultipleChoices {
+		logger.Debug("error from %s provider: status %d", providerName, status)
 		return nil, providerUtils.SetErrorLatency(ParseOpenAIError(resp), latency)
 	}
 
@@ -5135,15 +5145,28 @@ func HandleOpenAIVideoDeleteRequest(
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 	}
 
-	// Parse OpenAI's video response
-	response := &schemas.BifrostVideoDeleteResponse{}
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, nil, sendBackRawRequest, sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, bifrostErr
+	// What the vendor's body leaves out comes from the request: the id asked for, object
+	// video.deleted, and deleted true unless the vendor said otherwise.
+	var answered openAIVideoDeleteAnswer
+	var rawRequest, rawResponse interface{}
+	if len(bytes.TrimSpace(body)) > 0 {
+		rawRequest, rawResponse, bifrostErr = providerUtils.HandleProviderResponse(body, &answered, nil, sendBackRawRequest, sendBackRawResponse)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
 	}
-	if response.ID != "" {
-		response.ID = providerUtils.AddVideoIDProviderSuffix(response.ID, providerName)
+	response := &schemas.BifrostVideoDeleteResponse{
+		ID:      answered.ID,
+		Object:  answered.Object,
+		Deleted: answered.Deleted == nil || *answered.Deleted,
 	}
+	if response.ID == "" {
+		response.ID = videoID
+	}
+	if response.Object == "" {
+		response.Object = "video.deleted"
+	}
+	response.ID = providerUtils.AddVideoIDProviderSuffix(response.ID, providerName)
 
 	response.ExtraFields = schemas.BifrostResponseExtraFields{
 		Latency:                 latency.Milliseconds(),

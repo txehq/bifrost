@@ -477,10 +477,15 @@ func (provider *MiniMaxProvider) VideoDelete(ctx *schemas.BifrostContext, key sc
 		return nil, bifrostErr
 	}
 
-	var deleteResp MiniMaxVideoDeleteResponse
-	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &deleteResp, nil, false, sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
+	// doMiniMaxRequest has refused a non-2xx answer and a base_resp error. A 2xx with no body is
+	// the vendor's acceptance too; there is nothing to decode (TXE-7366).
+	var rawResponse interface{}
+	if len(bytes.TrimSpace(body)) > 0 {
+		var deleteResp MiniMaxVideoDeleteResponse
+		_, rawResponse, bifrostErr = providerUtils.HandleProviderResponseCtx(ctx, body, &deleteResp, nil, false, sendBackRawResponse)
+		if bifrostErr != nil {
+			return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
+		}
 	}
 
 	bifrostResp := &schemas.BifrostVideoDeleteResponse{

@@ -1053,3 +1053,21 @@ test("the vidvendor upstream answers only under /api/v3 with each id in its plac
     "GET /pp/vidvendor/api/v3/items/cfile_477/in/cntr_477 tk-key-vidvendor",
   ]);
 });
+
+// Folder 590 (TXE-7366): VolcEngine's task DELETE answers 200 with Ark's documented empty object for
+// cgt-volc-empty-object and 200 with no body for any other id, and counts each.
+test("VolcEngine task DELETE answers {} or no body and is counted", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}`;
+  const tasks = `${base}/pp/volcengine/contents/generations/tasks`;
+
+  const object = await fetch(`${tasks}/cgt-volc-empty-object`, { method: "DELETE" });
+  assert.equal(object.status, 200);
+  assert.equal(await object.text(), "{}");
+  const empty = await fetch(`${tasks}/cgt-volc-no-body`, { method: "DELETE" });
+  assert.equal(empty.status, 200);
+  assert.equal(await empty.text(), "");
+
+  const hits = (await (await fetch(`${base}/__hits`)).json()).data[0].hits;
+  assert.deepEqual(hits, { "volcengine.delete cgt-volc-empty-object": 1, "volcengine.delete cgt-volc-no-body": 1 });
+});

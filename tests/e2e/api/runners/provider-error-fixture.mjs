@@ -959,6 +959,11 @@ const isBedrockConversePath = (path) => /^\/model\/[^/]+\/converse$/.test(path);
 // DELETE is counted as "seedance.retrieve <id>" or "seedance.delete <id>", so a cancel row can prove that a
 // queued task was queried once and deleted once, and that a finished one was never deleted.
 const SEEDANCE_TASKS = "/pp/byteplus/api/v3/contents/generations/tasks";
+
+// VolcEngine's task DELETE, TXE-7366, served on /pp/volcengine/contents/generations/tasks (folder 590). Ark documents a
+// successful delete as 200 with an empty object (docs.volcengine.com/docs/82379/1521720), and a stand-in may answer 200
+// with no body: cgt-volc-empty-object gets {}, any other id gets no body. Each is counted as "volcengine.delete <id>".
+const VOLCENGINE_TASKS = "/pp/volcengine/contents/generations/tasks";
 const seedanceTask = (id) => {
 	const status = id.replace(/^cgt-fixture-/, "");
 	const task = { id, model: "dreamina-seedance-2-0-fast-260128", status, created_at: 1762700000, updated_at: 1762700090 };
@@ -2158,6 +2163,13 @@ const handleRequest = (req, res) => {
 		}
 		countHit(`seedance.retrieve ${id}`);
 		return send(200, {}, JSON.stringify(seedanceTask(id)));
+	}
+	if (req.method === "DELETE" && path.startsWith(VOLCENGINE_TASKS + "/")) {
+		const id = decodeURIComponent(path.slice(VOLCENGINE_TASKS.length + 1));
+		req.resume();
+		countHit(`volcengine.delete ${id}`);
+		if (id === "cgt-volc-empty-object") return send(200, {}, "{}");
+		return send(200, {}, "");
 	}
 	if (req.method === "POST" && (path.startsWith("/pp/") || path === "/v1/embeddings" || path === "/anthropic/v1/messages" || isOpenAIImagePath(path) || isBedrockConversePath(path))) {
 		const body = [];
