@@ -28,6 +28,10 @@ name: API collections offline
 # invariants must hold. Only openapi.json was checked, after the merge (openapi-bundle.yml); the
 # catalog fell 86 operations behind and the navigation sync and invariants failed on main while
 # every PR passed. Same job, same reason.
+#
+# And the JavaScript and TypeScript unit tests no other job ran (TXE-7371): the ui vitest suite,
+# the CI tools' shims and the security-audit skill's validators. check-js-tests-are-run.py, run
+# by the offline suites above, fails a test file that no runner it knows of picks up.
 
 on:
   pull_request:
@@ -53,7 +57,7 @@ jobs:
     # scripts/test-approval-environment.py.
     environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
@@ -100,6 +104,26 @@ jobs:
 
       - name: Run the offline API collection suites
         run: bash .github/workflows/scripts/test-api-collections-offline.sh
+
+      # The newman compatibility shims' tests, on the install above (TXE-7371).
+      - name: Test the CI tools' newman compatibility shims
+        run: npm test
+        working-directory: .github/workflows/tools
+
+      # The ui vitest suite (TXE-7371). It ran in no job, so pricingFields.test.ts pinned a field
+      # count two pricing PRs changed from the same base, and main was red with nobody seeing it.
+      # npm ci against ui/package-lock.json, whose every package resolves from registry.npmjs.org.
+      - name: Install the UI's dependencies (lockfile)
+        run: npm ci --no-audit --no-fund
+        working-directory: ui
+
+      - name: Run the UI unit tests (vitest)
+        run: npx vitest run
+        working-directory: ui
+
+      # The security-audit skill's validators (TXE-7371): node:test files, no dependencies.
+      - name: Test the security-audit skill's validators
+        run: node --test .claude/skills/security-audit/*.test.cjs
 
       # The Go the chart release and release pipeline run schemasync with.
       - name: Set up Go

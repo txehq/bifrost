@@ -27,9 +27,12 @@ set -euo pipefail
 #   check-check-scripts-are-run.py            every check or test script in this directory is
 #       run by a workflow, an action, the Makefile or a script they run (TXE-7111): a check
 #       nothing runs rots unseen, as validate-go-config-fields.sh did.
+#   check-js-tests-are-run.py                 every tracked *.test.* / *.spec.* JavaScript or
+#       TypeScript file is matched by a runner that a CI job runs (TXE-7371): the ui vitest
+#       suite ran in no job, and pricingFields.test.ts went red on main unseen.
 #   test-migration-fixtures.py                 the v2.0.0 migration seed SQL; needs no service.
 #       It ran in no job until the check above found it.
-#   every other tests/e2e/api/**/*.test.mjs     found, not listed (TXE-7067): the runners/lib
+#   every other tests/e2e/api/**/*.test.{mjs,js,cjs}  found, not listed (TXE-7067): the runners/lib
 #       script tests and any test added later. A test under tests/e2e/api runs here by
 #       existing; none was run by any job before, so a renamed harness row the smoke manifest
 #       lists went unnoticed (smoke-manifest.test.mjs, folder 19). A test that needs a network
@@ -72,10 +75,16 @@ python3 "$SCRIPT_DIR/check-check-scripts-are-run.py" --self-test
 python3 "$SCRIPT_DIR/check-check-scripts-are-run.py"
 
 echo ""
+echo "🧪 check-js-tests-are-run.py (every JavaScript and TypeScript test file has a CI runner, TXE-7371)"
+python3 "$SCRIPT_DIR/check-js-tests-are-run.py" --self-test
+python3 "$SCRIPT_DIR/check-js-tests-are-run.py"
+
+echo ""
 echo "🧪 test-migration-fixtures.py (migration seed SQL; ran in no job before TXE-7111)"
 python3 "$SCRIPT_DIR/test-migration-fixtures.py"
 
-# Every other *.test.mjs under tests/e2e/api, found rather than listed, one at a time (some
+# Every other *.test.mjs, *.test.js and *.test.cjs under tests/e2e/api (lib/pricing.test.js ran
+# in no job while the loop found .mjs only, TXE-7371), found rather than listed, one at a time (some
 # start a loopback server on a fixed port). Each runs with plain node, which also runs a
 # node:test file and exits non-zero when one of its tests fails. Output is shown only for a
 # failure. test-api-collections-offline-callers.py keeps this loop, and the exclusions'
@@ -108,9 +117,9 @@ while IFS= read -r -d '' suite; do
     tail -n 60 "$suite_log" | sed 's/^/      /'
     suite_failures+=("$rel")
   fi
-done < <(find "$SUITES_DIR" -name '*.test.mjs' -not -path '*/node_modules/*' -print0 | sort -z)
+done < <(find "$SUITES_DIR" \( -name '*.test.mjs' -o -name '*.test.js' -o -name '*.test.cjs' \) -not -path '*/node_modules/*' -print0 | sort -z)
 if [ "$suite_count" -eq 0 ]; then
-  echo "❌ no *.test.mjs found under $SUITES_DIR: the discovery no longer matches" >&2
+  echo "❌ no *.test.mjs, *.test.js or *.test.cjs found under $SUITES_DIR: the discovery no longer matches" >&2
   exit 1
 fi
 if [ "${#suite_failures[@]}" -gt 0 ]; then

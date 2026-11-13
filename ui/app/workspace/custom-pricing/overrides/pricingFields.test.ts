@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { getRequestTypeGroup, PRICING_FIELDS, pricingFieldError, pricingFieldUnit, REQUEST_TYPE_OPTIONS } from "./pricingFields";
@@ -96,12 +98,28 @@ describe("pricingFieldUnit", () => {
 			expect(byUnit[unit], `${field.key} resolved to unexpected unit ${unit}`).toBeDefined();
 			byUnit[unit].push(field.key);
 		}
-		expect(PRICING_FIELDS).toHaveLength(194);
 		expect(byUnit.multiplier).toEqual(["inference_geo_us_multiplier", "off_peak_cost_multiplier"]);
 		expect(byUnit.character).toEqual(["input_cost_per_character"]);
 		// Sanity: the split is real, not everything collapsing into one bucket.
 		expect(byUnit.token.length).toBeGreaterThan(20);
 		expect(byUnit.currency.length).toBeGreaterThan(20);
+	});
+
+	// The form offers exactly the numeric fields the API's PricingPatch documents (TXE-7371). This
+	// used to pin a count, which every pricing PR changed and two PRs changed from the same base, so
+	// main went red unseen. The list comes from the bundled spec that check-api-artifacts.sh keeps
+	// in step with the OpenAPI sources; peak_hours is the one non-numeric field, carried through
+	// preservedPatch.
+	it("offers exactly the numeric fields of the API's PricingPatch", () => {
+		const spec = JSON.parse(readFileSync(fileURLToPath(new URL("../../../../../docs/openapi/openapi.json", import.meta.url)), "utf8"));
+		const properties: Record<string, { type?: string }> = spec.components.schemas.PricingPatch.properties;
+		const numeric = Object.entries(properties)
+			.filter(([, schema]) => schema.type === "number")
+			.map(([key]) => key)
+			.sort();
+		const nonNumeric = Object.keys(properties).filter((key) => properties[key].type !== "number");
+		expect(nonNumeric).toEqual(["peak_hours"]);
+		expect(PRICING_FIELDS.map((field) => field.key).sort()).toEqual(numeric);
 	});
 });
 
