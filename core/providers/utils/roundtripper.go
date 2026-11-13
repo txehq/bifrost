@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/capsohq/bifrost/core/network"
 	schemas "github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -238,7 +239,10 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 			hc.CloseConn(cc)
 			return retryOn(err), watcher.classify(err)
 		}
-		err = readBufferedBody(resp, br, hc.MaxResponseBodySize)
+		// Every buffered body is read under a limit (fork, TXE-7148): the client's own tighter
+		// cap when it set one, otherwise client.max_response_body_size_mb. A fasthttp client
+		// left at MaxResponseBodySize 0 would otherwise buffer whatever the upstream sends.
+		err = readBufferedBody(resp, br, network.EffectiveMaxResponseBodySize(hc.MaxResponseBodySize))
 		hc.ReleaseReader(br)
 		if err != nil {
 			hc.CloseConn(cc)
@@ -494,6 +498,11 @@ func readBufferedBody(resp *fasthttp.Response, br *bufio.Reader, maxBodySize int
 		return nil
 	}
 	if err := resp.ReadBody(br, maxBodySize); err != nil {
+		if errors.Is(err, fasthttp.ErrBodyTooLarge) {
+			// Name the limit, so the caller's error says why the answer was refused. The
+			// error still matches fasthttp.ErrBodyTooLarge.
+			return &network.ResponseBodyTooLargeError{Limit: int64(maxBodySize)}
+		}
 		return err
 	}
 	if resp.Header.ContentLength() == -1 {

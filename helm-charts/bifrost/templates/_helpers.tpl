@@ -470,6 +470,9 @@ false
 {{- if hasKey .Values.bifrost.client "disableEncryptedReasoningRetry" }}
 {{- $_ := set $client "disable_encrypted_reasoning_retry" .Values.bifrost.client.disableEncryptedReasoningRetry }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "maxResponseBodySizeMb" }}
+{{- $_ := set $client "max_response_body_size_mb" .Values.bifrost.client.maxResponseBodySizeMb }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "deleteExpiredVirtualKeys" }}
 {{- $_ := set $client "delete_expired_virtual_keys" .Values.bifrost.client.deleteExpiredVirtualKeys }}
 {{- end }}

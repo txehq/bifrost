@@ -97,6 +97,7 @@ Controls the worker pool, logging pipeline, security, and SDK shims. All fields 
 | `allow_direct_keys` | boolean | `false` | Let callers bypass the key pool with `x-bf-direct-key: true` + a raw provider key |
 | `delete_expired_virtual_keys` | boolean | `false` | Daily cleanup job deletes expired virtual keys; a key's `delete_after_expire` overrides it |
 | `max_request_body_size_mb` | integer | `100` | Maximum request body in MB |
+| `max_response_body_size_mb` | integer | `512` | Largest buffered upstream response body in MB, after decompression; a larger answer fails with `bifrost_internal` and is never cut short |
 | `whitelisted_routes` | array | `[]` | Routes that bypass auth middleware |
 | `allowed_headers` | array | `[]` | Additional headers permitted for CORS/WebSocket |
 | `required_headers` | array | `[]` | Headers that must be present on every request |

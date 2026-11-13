@@ -1273,6 +1273,8 @@ export const coreConfigSchema = z.object({
 	// Fork (TXE-6527) deployment switch: optional with no default, so a save never sends a value
 	// the API did not return.
 	disable_encrypted_reasoning_retry: z.boolean().optional(),
+	// Fork (TXE-7148): optional with no default, like the switches above.
+	max_response_body_size_mb: z.number().int().min(0).optional(),
 	extra_fields_placement: z.enum(["body", "headers"]).default("body"),
 	hidden_request_types: z.array(z.string()).default([]),
 	allowed_origins: z.array(z.string()).default(["*"]),

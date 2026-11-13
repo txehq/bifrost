@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
+	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -223,7 +224,7 @@ func FinalizeResponseWithLargeDetection(
 
 	// Known small response — read from stream, return body for normal parsing
 	if contentLength > 0 && int64(contentLength) <= responseThreshold {
-		bodyBytes, readErr := io.ReadAll(reader)
+		bodyBytes, readErr := network.ReadAllBounded(reader)
 		cleanup()
 		if readErr != nil {
 			return nil, false, largeResponseReadError(readErr)

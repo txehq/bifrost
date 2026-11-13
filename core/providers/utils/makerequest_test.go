@@ -17,6 +17,7 @@ import (
 
 	"github.com/capsohq/bifrost/core/internal/testtime"
 
+	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -1463,6 +1464,83 @@ func TestContextTransport_HonorsDoDeadline(t *testing.T) {
 			case <-time.After(testtime.Scale(3 * time.Second)):
 				t.Fatal("per-request deadline ignored: request still blocked 3s past a 200ms deadline, bounded only by the client's 10s ReadTimeout")
 			}
+		})
+	}
+}
+
+// writeIgnoringClose writes s to conn and ignores the error: a client that refuses an over-limit
+// body closes the connection while the server is still writing it.
+func writeIgnoringClose(conn net.Conn, s string) {
+	_, _ = io.WriteString(conn, s)
+}
+
+// TXE-7148: a client left at fasthttp's MaxResponseBodySize 0 (every provider client) reads a
+// buffered body under client.max_response_body_size_mb. Before the bound, the transport read
+// whatever the upstream sent: the over-limit cases below succeeded with the whole body in memory.
+func TestContextTransport_BufferedBodyIsBoundedByTheResponseLimit(t *testing.T) {
+	network.SetMaxResponseBodySizeMB(1)
+	t.Cleanup(func() { network.SetMaxResponseBodySizeMB(0) })
+
+	overBody := strings.Repeat("x", 1<<20+1)
+	underBody := strings.Repeat("y", 1<<20)
+	chunked := func(body string) string {
+		var b strings.Builder
+		for len(body) > 0 {
+			n := min(len(body), 64<<10)
+			fmt.Fprintf(&b, "%x\r\n%s\r\n", n, body[:n])
+			body = body[n:]
+		}
+		b.WriteString("0\r\n\r\n")
+		return b.String()
+	}
+	cases := []struct {
+		name      string
+		response  string
+		clientMax int
+		wantBody  string // "" when the read must fail
+		wantLimit int64
+	}{
+		{"content-length over the limit", fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s", len(overBody), overBody), 0, "", 1 << 20},
+		{"chunked over the limit", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" + chunked(overBody), 0, "", 1 << 20},
+		{"an error status over the limit", fmt.Sprintf("HTTP/1.1 500 Internal Server Error\r\nContent-Length: %d\r\n\r\n%s", len(overBody), overBody), 0, "", 1 << 20},
+		{"exactly at the limit", fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s", len(underBody), underBody), 0, underBody, 0},
+		{"chunked at the limit", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" + chunked(underBody), 0, underBody, 0},
+		{"a client's own tighter cap wins", "HTTP/1.1 200 OK\r\nContent-Length: 200\r\n\r\n" + strings.Repeat("z", 200), 100, "", 100},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newScriptedServer(t, func(conn net.Conn, br *bufio.Reader) {
+				for readRequest(br) {
+					writeIgnoringClose(conn, tc.response)
+				}
+			})
+			client := srv.client(5 * time.Second)
+			client.MaxResponseBodySize = tc.clientMax
+			req := fasthttp.AcquireRequest()
+			resp := fasthttp.AcquireResponse()
+			defer fasthttp.ReleaseRequest(req)
+			defer fasthttp.ReleaseResponse(resp)
+			req.SetRequestURI("http://scripted/v1/chat/completions")
+			req.Header.SetMethod(http.MethodPost)
+			req.SetBodyString(`{}`)
+
+			_, bifrostErr, wait := MakeRequestWithContext(context.Background(), client, req, resp)
+			wait()
+			if tc.wantBody != "" {
+				require.Nil(t, bifrostErr, "a body at the limit must be read")
+				require.Equal(t, len(tc.wantBody), len(resp.Body()))
+				return
+			}
+			require.NotNil(t, bifrostErr, "an over-limit body must fail the request, not be returned")
+			require.True(t, bifrostErr.IsBifrostError, "the gateway refused the body: is_bifrost_error")
+			require.Equal(t, schemas.ErrorTypeBifrostInternal, bifrostErr.ExtraFields.ErrorType)
+			require.Nil(t, bifrostErr.StatusCode, "no vendor status: Bifrost itself refused (contract C6)")
+			require.Contains(t, bifrostErr.Error.Message, "client.max_response_body_size_mb")
+			var tooLarge *network.ResponseBodyTooLargeError
+			require.True(t, errors.As(bifrostErr.Error.Error, &tooLarge), "error chain %v", bifrostErr.Error.Error)
+			require.Equal(t, tc.wantLimit, tooLarge.Limit)
+			// The stale-connection retry must not send the request again for the same answer.
+			require.EqualValues(t, 1, srv.accepted.Load(), "connections accepted")
 		})
 	}
 }

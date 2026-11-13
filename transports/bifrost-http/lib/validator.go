@@ -6,7 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
+	"github.com/capsohq/bifrost/core/network"
 	"net/http"
 	"net/url"
 	"os"
@@ -40,7 +40,7 @@ func loadSchemaFromLocation(location string) ([]byte, error) {
 		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 			return nil, fmt.Errorf("unexpected HTTP status %d fetching schema", resp.StatusCode)
 		}
-		return io.ReadAll(resp.Body)
+		return network.ReadAllBounded(resp.Body)
 	}
 	return os.ReadFile(filePathFromSchemaLocation(location))
 }

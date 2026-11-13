@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"github.com/capsohq/bifrost/core/network"
 	"net/http"
 	"net/url"
 	"os"
@@ -150,7 +150,7 @@ func (s *Store) loadModelParametersFromURL(ctx context.Context) (map[string]json
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("failed to download model parameters data: HTTP %d", resp.StatusCode)
 		}
-		data, err = io.ReadAll(resp.Body)
+		data, err = network.ReadAllBounded(resp.Body)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read model parameters response: %w", err)
 		}

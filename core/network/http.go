@@ -286,16 +286,19 @@ func (f *HTTPClientFactory) currentFasthttpClient(purpose ClientPurpose) *fastht
 
 // currentFasthttpClientFor returns the inner fasthttp client for key, building it on first use.
 func (f *HTTPClientFactory) currentFasthttpClientFor(key fasthttpClientKey) *fasthttp.Client {
+	// An inner client reads buffered bodies under the response limit it was built with
+	// (TXE-7148); a saved change to client.max_response_body_size_mb rebuilds it.
+	limit := EffectiveMaxResponseBodySize(0)
 	f.mu.RLock()
 	client, ok := f.fasthttpClients[key]
 	f.mu.RUnlock()
-	if ok {
+	if ok && client.MaxResponseBodySize == limit {
 		return client
 	}
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if client, ok := f.fasthttpClients[key]; ok {
+	if client, ok := f.fasthttpClients[key]; ok && client.MaxResponseBodySize == limit {
 		return client
 	}
 	client = f.createFasthttpClient(key.purpose)
@@ -678,6 +681,8 @@ func (f *HTTPClientFactory) newFasthttpBaseClient(purpose ClientPurpose) *fastht
 		MaxConnWaitTimeout:  DefaultClientConfig.ReadTimeout,
 		ConnPoolStrategy:    fasthttp.FIFO,
 		RetryIfErr:          StaleConnectionRetryIfErr,
+		// fasthttp's default of 0 buffers a body of any size (TXE-7148).
+		MaxResponseBodySize: EffectiveMaxResponseBodySize(0),
 		// The offline egress guard (TXE-7083). configureFasthttpProxy's DialTimeout, which
 		// fasthttp prefers when set, is guarded on its own.
 		Dial: GuardedFasthttpDial,

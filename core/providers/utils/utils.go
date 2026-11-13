@@ -437,6 +437,11 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 				}
 				return latency, contextDoneError(ctxErr, latency), noop
 			}
+			// The upstream answered with more than the gateway holds in memory (TXE-7148). It
+			// is no connection failure: retrying would fetch, and may bill, the same answer.
+			if errors.Is(err, network.ErrResponseBodyTooLarge) || errors.Is(err, fasthttp.ErrBodyTooLarge) {
+				return latency, SetErrorLatency(NewResponseBodyTooLargeError(err), latency), noop
+			}
 			// Check for timeout errors first before checking net.OpError to avoid misclassification.
 			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 				return latency, SetErrorLatency(NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency), noop
@@ -3658,10 +3663,20 @@ func CheckOperationAllowed(defaultProvider schemas.ModelProvider, config *schema
 // It returns an owned body to avoid races when the response is released back to
 // fasthttp's buffer pool. Content codings are decoded in reverse application order,
 // as required by RFC 9110, using the shared pooled readers.
+//
+// Both the body as received and every decoded stage are held to
+// network.MaxResponseBodyBytes (fork, TXE-7148): a small gzip body that expands
+// past the limit fails with *network.ResponseBodyTooLargeError instead of being
+// decompressed in full. The body is never cut short.
 func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
 	body := resp.Body()
 	if len(body) == 0 {
 		return nil, nil
+	}
+	limit := network.MaxResponseBodyBytes()
+	// The transport already refuses a longer body; this covers a response filled any other way.
+	if int64(len(body)) > limit {
+		return nil, &network.ResponseBodyTooLargeError{Limit: limit}
 	}
 
 	result := append([]byte(nil), body...)
@@ -3688,7 +3703,7 @@ func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
 				ReleaseGzipReader(gz)
 				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
 			}
-			result, err = io.ReadAll(gz)
+			result, err = network.ReadAllLimit(gz, limit)
 			ReleaseGzipReader(gz)
 			if err != nil {
 				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
@@ -3699,7 +3714,7 @@ func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
 				ReleaseFlateReader(fr)
 				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
 			}
-			result, err = io.ReadAll(fr)
+			result, err = network.ReadAllLimit(fr, limit)
 			ReleaseFlateReader(fr)
 			if err != nil {
 				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
@@ -3707,7 +3722,7 @@ func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
 		case "br":
 			br := AcquireBrotliReader(reader)
 			var err error
-			result, err = io.ReadAll(br)
+			result, err = network.ReadAllLimit(br, limit)
 			ReleaseBrotliReader(br)
 			if err != nil {
 				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
@@ -3718,7 +3733,7 @@ func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
 				ReleaseZstdDecoder(dec)
 				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
 			}
-			result, err = io.ReadAll(dec)
+			result, err = network.ReadAllLimit(dec, limit)
 			ReleaseZstdDecoder(dec)
 			if err != nil {
 				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
@@ -3912,7 +3927,14 @@ func NewConfigurationError(message string) *schemas.BifrostError {
 
 // NewBifrostOperationError creates a standardized error for bifrost operation errors.
 // This helper reduces code duplication across providers that have bifrost operation errors.
+//
+// An err that wraps network.ErrResponseBodyTooLarge becomes NewResponseBodyTooLargeError
+// instead, whatever message the caller passed, so every place that wraps a body read
+// (CheckAndDecodeBody, network.ReadAllBounded) reports the limit the same way (TXE-7148).
 func NewBifrostOperationError(message string, err error) *schemas.BifrostError {
+	if err != nil && errors.Is(err, network.ErrResponseBodyTooLarge) {
+		return NewResponseBodyTooLargeError(err)
+	}
 	return &schemas.BifrostError{
 		IsBifrostError: true,
 		Error: &schemas.ErrorField{
@@ -3920,6 +3942,36 @@ func NewBifrostOperationError(message string, err error) *schemas.BifrostError {
 			Error:   err,
 		},
 	}
+}
+
+// NewResponseBodyTooLargeError is the error for an upstream response body larger than the
+// gateway holds in memory (client.max_response_body_size_mb, fork TXE-7148). It is Bifrost's
+// own refusal, so it is is_bifrost_error with error_type bifrost_internal (contract C6: Tokun
+// does not charge the caller) and core neither retries it nor rotates the key: the same
+// request gets the same answer. The vendor may already have billed the request; that cost is
+// the gateway's.
+func NewResponseBodyTooLargeError(err error) *schemas.BifrostError {
+	limit := network.MaxResponseBodyBytes()
+	var tooLarge *network.ResponseBodyTooLargeError
+	if errors.As(err, &tooLarge) && tooLarge.Limit > 0 {
+		limit = tooLarge.Limit
+	}
+	return &schemas.BifrostError{
+		IsBifrostError: true,
+		Error: &schemas.ErrorField{
+			Message: fmt.Sprintf("%s: %s, client.max_response_body_size_mb", schemas.ErrProviderResponseTooLarge, formatByteLimit(limit)),
+			Error:   err,
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeBifrostInternal},
+	}
+}
+
+// formatByteLimit writes a limit in MiB when it is a whole number of them, else in bytes.
+func formatByteLimit(limit int64) string {
+	if limit > 0 && limit%(1<<20) == 0 {
+		return fmt.Sprintf("limit %d MiB", limit>>20)
+	}
+	return fmt.Sprintf("limit %d bytes", limit)
 }
 
 // NewBifrostTimeoutError creates a standardized error for provider request timeout errors.

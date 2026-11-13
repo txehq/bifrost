@@ -365,6 +365,7 @@ bifrost:
     # enforceVkObjectOwnership: true         # false lets every virtual key reach provider objects (files, batches, videos, ...) another key created
     # a2aStoreRawRequestResponse: false      # true captures upstream A2A transport bodies (base64, 1 MiB per direction), under the content logging policy
     # disableEncryptedReasoningRetry: false  # Fork: true makes no second upstream call after a 400 on replayed encrypted reasoning; the caller gets the vendor's 400
+    # maxResponseBodySizeMb: 512              # Fork: largest buffered upstream response body read into memory, in MB, after decompression; a larger one fails with bifrost_internal
     # deleteExpiredVirtualKeys: false        # Daily job deletes virtual keys past expires_at (per-key delete_after_expire overrides)
     # whitelistedRoutes: []                  # Routes that bypass auth middleware
     # routingChainMaxDepth: 10               # Maximum depth for routing rule chain evaluation

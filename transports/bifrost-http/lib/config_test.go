@@ -27786,3 +27786,20 @@ func BenchmarkShouldSendPassthroughSSEHeartbeat(b *testing.B) {
 		}
 	}
 }
+
+// TXE-7148: a negative max_response_body_size_mb from config.json or an old row fails the load;
+// 0 and a positive value are valid.
+func TestValidateClientConfig_MaxResponseBodySizeMB(t *testing.T) {
+	for _, tc := range []struct {
+		mb      int
+		wantErr bool
+	}{{0, false}, {1, false}, {512, false}, {-1, true}} {
+		err := validateClientConfig(&configstore.ClientConfig{MaxResponseBodySizeMB: tc.mb})
+		if tc.wantErr {
+			require.Error(t, err, "max_response_body_size_mb %d", tc.mb)
+			require.Contains(t, err.Error(), "max_response_body_size_mb")
+		} else {
+			require.NoError(t, err, "max_response_body_size_mb %d", tc.mb)
+		}
+	}
+}

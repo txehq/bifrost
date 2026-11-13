@@ -399,6 +399,8 @@ func TestPriorFormatClientConfigHashSeesFieldsItLeavesOut(t *testing.T) {
 		`{"disable_provider_job_accounting":true}`:                      false,
 		`{"disable_passthrough_sse_heartbeat":true}`:                    false,
 		`{"disable_encrypted_reasoning_retry":true}`:                    false,
+		`{"max_response_body_size_mb":64}`:                              false,
+		`{"max_response_body_size_mb":0}`:                               true,
 		`{"mcp_max_instructions_per_client":100}`:                       false,
 		`{"mcp_max_instructions_total":100}`:                            false,
 		`{"mcp_code_mode_limits":{"max_tool_calls":3}}`:                 false,

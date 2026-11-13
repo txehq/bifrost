@@ -879,6 +879,9 @@ export interface CoreConfig {
 	// Fork (TXE-6527): a 400 on a request that replays encrypted reasoning is returned as is,
 	// not retried once without the token. Optional: the dashboard sends it only when the API did.
 	disable_encrypted_reasoning_retry?: boolean;
+	// Fork (TXE-7148): the largest upstream response body read into memory, in MB; 0 means 512.
+	// Optional: the dashboard sends it only when the API did.
+	max_response_body_size_mb?: number;
 	// Request types excluded from Logs and Dashboard reads. Logs are still stored.
 	hidden_request_types: string[];
 	// Fork (TXE-6519): no video or batch accounting sweeper and no provider job rows; the

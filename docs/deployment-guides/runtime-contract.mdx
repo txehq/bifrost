@@ -206,6 +206,7 @@ The HTTP frontend should:
 - Support WebSocket upgrades when the Realtime or WebSocket APIs are used.
 - Preserve `Host`, `X-Forwarded-For`, and `X-Forwarded-Proto` when it terminates TLS.
 - Accept the configured request size. `client.max_request_body_size_mb` defaults to `100` MB. Compressed request bodies are decompressed by Bifrost itself, bounded to 100 times their compressed size (1 MiB floor, the cap as ceiling) and to four times the cap of decompressed bytes in flight across the process (each body counts what it actually inflates to, not its ceiling), so a proxy does not need to inflate them first.
+- Size memory for the response limit. `client.max_response_body_size_mb` defaults to `512` MB: the largest buffered provider answer, after decompression, that one request holds in memory. A larger answer fails with a `bifrost_internal` error. The vendor may already have billed that request.
 
 Bifrost serves HTTP inside the container. Terminate TLS at the platform endpoint, ingress, gateway, or reverse proxy before exposing it to users.
 
