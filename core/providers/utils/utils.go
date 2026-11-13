@@ -4639,7 +4639,7 @@ func (r *idleTimeoutReader) connectionClosed() bool {
 }
 
 func (r *idleTimeoutReader) closedReadError() error {
-	if r.idle.Fired() {
+	if r.idle.FiredOnceClaimed() {
 		return ErrStreamIdleTimeout
 	}
 	return ErrStreamClosed

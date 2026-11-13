@@ -1141,3 +1141,26 @@ func TestResultBodyReader_FiredReadNeverEndsCleanly(t *testing.T) {
 		})
 	}
 }
+
+// endlessBody answers every read in full without allocating, so the benchmark
+// below measures only the idle-timeout wrapper's per-read cost.
+type endlessBody struct{}
+
+func (endlessBody) Read(p []byte) (int, error) { return len(p), nil }
+
+// BenchmarkIdleTimeoutReader_Read is the per-read cost every provider stream
+// pays on the common path: the timer never fires, and each read that brings data
+// restarts it.
+func BenchmarkIdleTimeoutReader_Read(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	r, cleanup := NewIdleTimeoutReader(endlessBody{}, endlessBody{}, DefaultStreamIdleTimeout, ctx)
+	defer cleanup()
+	buf := make([]byte, 4096)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := r.Read(buf); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

@@ -2,6 +2,7 @@ package utils
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -43,11 +44,9 @@ type idleTimer struct {
 	closeStream func()
 	timer       idleClockTimer
 
-	// mu orders a fire's claim and its fired mark against readers of fired, so a
-	// read that sees the stream claimed as closed also sees why it was closed.
-	mu      sync.Mutex
-	fired   bool
-	stopped bool
+	mu      sync.Mutex     // orders a fire's claim and fired mark; see FiredOnceClaimed
+	fired   atomic.Bool    // written under mu, read lock-free on every read
+	stopped bool           // guarded by mu
 	closing sync.WaitGroup // a fire's closeStream still running
 }
 
@@ -70,7 +69,7 @@ func newIdleTimer(timeout time.Duration, err error, afterFunc idleAfterFunc, arm
 
 func (t *idleTimer) fire() {
 	t.mu.Lock()
-	if t.fired || t.stopped {
+	if t.fired.Load() || t.stopped {
 		t.mu.Unlock()
 		return
 	}
@@ -80,7 +79,7 @@ func (t *idleTimer) fire() {
 		t.mu.Unlock()
 		return
 	}
-	t.fired = true
+	t.fired.Store(true)
 	t.closing.Add(1)
 	t.mu.Unlock()
 	defer t.closing.Done()
@@ -94,7 +93,7 @@ func (t *idleTimer) fire() {
 func (t *idleTimer) Arm() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.fired || t.stopped {
+	if t.fired.Load() || t.stopped {
 		return
 	}
 	t.timer.Reset(t.timeout)
@@ -105,11 +104,21 @@ func (t *idleTimer) Disarm() {
 	t.timer.Stop()
 }
 
-// Fired reports whether the timer fired and closed the stream.
+// Fired reports whether the timer fired and closed the stream. It takes no lock:
+// a read that a fire's close unblocked always sees the mark, because the mark is
+// set before the close starts.
 func (t *idleTimer) Fired() bool {
+	return t.fired.Load()
+}
+
+// FiredOnceClaimed is Fired for a reader that learned the stream was claimed as
+// closed some other way (the BifrostContextKeyConnectionClosed flag a fire's claim
+// sets): it waits out a fire between its claim and its mark, so that reader
+// reports the idle timeout rather than a plain close.
+func (t *idleTimer) FiredOnceClaimed() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.fired
+	return t.fired.Load()
 }
 
 // Settle is the result a read reports, given what the wrapped read returned.
