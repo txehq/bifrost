@@ -11614,6 +11614,10 @@ type guardUpstream struct {
 	leaves map[string]*tls.Certificate
 	// respond, when set, answers a request in place of the default JSON object.
 	respond func(w http.ResponseWriter, body []byte)
+	// respondTo, when set, is asked first and also sees the request; it reports whether it
+	// answered, so a test can answer one method and leave the rest (a token exchange) to the
+	// default.
+	respondTo func(w http.ResponseWriter, r *http.Request, body []byte) bool
 }
 
 type guardRequest struct {
@@ -11707,8 +11711,11 @@ func (u *guardUpstream) answer(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	u.mu.Lock()
 	u.seen = append(u.seen, guardRequest{target: r.Method + " " + r.Host + r.URL.RequestURI(), body: body})
-	respond := u.respond
+	respond, respondTo := u.respond, u.respondTo
 	u.mu.Unlock()
+	if respondTo != nil && respondTo(w, r, body) {
+		return
+	}
 	if respond != nil {
 		respond(w, body)
 		return
@@ -14431,5 +14438,119 @@ func TestCustomProviderResourcePathOverrides(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// videoDeleteProviders are the providers whose video delete reaches the vendor. The test
+// below finds this out from the wire and fails when it differs, so the table is a record,
+// not the source: a provider that starts or stops deleting has to be looked at.
+var videoDeleteProviders = []schemas.ModelProvider{
+	schemas.OpenAI, schemas.Azure, schemas.Volcengine, schemas.ModelArk, schemas.BytePlus, schemas.MiniMax, schemas.Runway,
+}
+
+// A video delete that the vendor accepted answers the caller's success shape whatever the
+// vendor's 2xx carried (TXE-7366). Ark documents its task DELETE as 200 with an empty object
+// (docs.volcengine.com/docs/82379/1521720: "成功时 HTTP 状态码为 200，返回结构中 Result 为空对象
+// {}"), a stand-in may send no body at all, and Runway documents 204. VolcEngine's delete went
+// through the OpenAI handler, which wanted 200 and a JSON body naming the video: no body was a
+// 500 and {} was deleted:false with no id.
+//
+// For every standard provider and each such answer the test sends a delete through a local
+// upstream that answers the DELETE with it (anything else, such as a token exchange, gets the
+// usual JSON). A provider that sent a DELETE must answer deleted:true, object video.deleted
+// and the id the caller asked to delete.
+func TestEveryVideoDeleteAcceptsAnEmptySuccessBody(t *testing.T) {
+	upstream := newGuardUpstream(t)
+	client := &Bifrost{logger: NewNoOpLogger()}
+	const videoID = "video_guard_7366"
+
+	answers := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"200 without a body", http.StatusOK, ""},
+		{"200 with an empty object", http.StatusOK, "{}"},
+		{"204", http.StatusNoContent, ""},
+	}
+
+	deleting := map[schemas.ModelProvider]bool{}
+	for _, providerKey := range schemas.StandardProviders {
+		t.Run(string(providerKey), func(t *testing.T) {
+			config := &schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{BaseURL: "http://" + guardUpstreamHost, DefaultRequestTimeoutInSeconds: 10},
+				ProxyConfig: &schemas.ProxyConfig{
+					Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(upstream.proxyURL), CACertPEM: schemas.NewSecretVar(upstream.caPEM),
+				},
+			}
+			provider, err := client.createBaseProvider(providerKey, config)
+			if err != nil {
+				t.Fatalf("construct %s: %v", providerKey, err)
+			}
+			key := guardKey(providerKey)
+
+			for _, answer := range answers {
+				upstream.take()
+				upstream.mu.Lock()
+				upstream.respondTo = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+					if r.Method != http.MethodDelete {
+						return false
+					}
+					if answer.body != "" {
+						w.Header().Set("Content-Type", "application/json")
+					}
+					w.WriteHeader(answer.status)
+					_, _ = w.Write([]byte(answer.body))
+					return true
+				}
+				upstream.mu.Unlock()
+
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				var resp *schemas.BifrostVideoDeleteResponse
+				var bifrostErr *schemas.BifrostError
+				func() {
+					defer func() { _ = recover() }()
+					resp, bifrostErr = provider.VideoDelete(ctx, key, &schemas.BifrostVideoDeleteRequest{
+						Provider: providerKey, ID: providerUtils.AddVideoIDProviderSuffix(videoID, providerKey),
+					})
+				}()
+
+				sentDelete := false
+				for _, request := range upstream.take() {
+					if strings.HasPrefix(request.target, http.MethodDelete+" ") {
+						sentDelete = true
+					}
+				}
+				if !sentDelete {
+					continue
+				}
+				deleting[providerKey] = true
+				switch {
+				case bifrostErr != nil:
+					msg := ""
+					if bifrostErr.Error != nil {
+						msg = bifrostErr.Error.Message
+					}
+					t.Errorf("%s: the vendor accepted the delete, but the caller got an error: %s", answer.name, msg)
+				case resp == nil:
+					t.Errorf("%s: the vendor accepted the delete, but the caller got no response", answer.name)
+				case !resp.Deleted || resp.Object != "video.deleted" || providerUtils.StripVideoIDProviderSuffix(resp.ID, providerKey) != videoID:
+					t.Errorf("%s: answered id %q, object %q, deleted %v; want id %q, object video.deleted, deleted true", answer.name, resp.ID, resp.Object, resp.Deleted, videoID)
+				}
+			}
+		})
+	}
+	upstream.mu.Lock()
+	upstream.respondTo = nil
+	upstream.mu.Unlock()
+
+	want := map[schemas.ModelProvider]bool{}
+	for _, p := range videoDeleteProviders {
+		want[p] = true
+	}
+	for _, p := range schemas.StandardProviders {
+		if deleting[p] != want[p] {
+			t.Errorf("%s sends a video delete to the vendor: %v; videoDeleteProviders says %v: update the table", p, deleting[p], want[p])
+		}
 	}
 }

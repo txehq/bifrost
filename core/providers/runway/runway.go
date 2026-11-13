@@ -635,12 +635,13 @@ func (provider *RunwayProvider) VideoDelete(ctx *schemas.BifrostContext, key sch
 		return nil, bifrostErr
 	}
 
-	// Handle error response - Runway returns 204 No Content on success
-	if resp.StatusCode() != fasthttp.StatusNoContent {
+	// Runway documents 204 No Content on success; any 2xx is the vendor's acceptance of the
+	// delete, whatever body it carries (TXE-7366).
+	if status := resp.StatusCode(); status < fasthttp.StatusOK || status >= fasthttp.StatusMultipleChoices {
 		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp), nil, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
-	// Build response - Runway returns empty body on 204
+	// Build response; the vendor's body names nothing the caller needs
 	response := &schemas.BifrostVideoDeleteResponse{
 		ID:      request.ID, // Return with provider prefix
 		Object:  "video.deleted",
