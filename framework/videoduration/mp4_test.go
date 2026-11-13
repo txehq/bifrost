@@ -193,6 +193,9 @@ func TestTimingTablesBoundTheMediaDuration(t *testing.T) {
 		})
 	}
 	offsets := &mp4.Ctts{EntryCount: 2, Entries: []mp4.CttsEntry{{SampleCount: 11, SampleOffsetV0: 500}, {SampleCount: 1, SampleOffsetV0: 2000}}}
+	reordered := &mp4.Ctts{FullBox: mp4.FullBox{Version: 1}, EntryCount: 4, Entries: []mp4.CttsEntry{
+		{SampleCount: 1, SampleOffsetV1: 0}, {SampleCount: 1, SampleOffsetV1: 2000}, {SampleCount: 2, SampleOffsetV1: -1000}, {SampleCount: 8, SampleOffsetV1: 0},
+	}}
 	for name, c := range map[string]struct {
 		data   []byte
 		wantMS int64
@@ -200,6 +203,9 @@ func TestTimingTablesBoundTheMediaDuration(t *testing.T) {
 		"mdhd shortened to 1 s":             {data: build(1000, 12, nil), wantMS: 12000},
 		"mdhd longer than the samples":      {data: build(15000, 12, nil), wantMS: 15000},
 		"a composition offset past the end": {data: build(12000, 12, offsets), wantMS: 14000},
+		// TXE-7334: the second sample presents 2 s late, until 4 s, and the two after it 1 s early; the
+		// last sample still ends the clip at 12 s. The largest offset added to the decode end gave 14 s.
+		"a reordered sample does not lengthen the clip": {data: build(1000, 12, reordered), wantMS: 12000},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := Read(context.Background(), &rangeCounter{data: c.data}, int64(len(c.data)))
@@ -215,7 +221,8 @@ func TestTimingTablesBoundTheMediaDuration(t *testing.T) {
 }
 
 // TestFragmentCompositionOffsetsExtendTheDuration checks that a fragment run's composition offsets
-// count: its last sample presents up to the largest offset after the run's decode end.
+// count, sample by sample: the three samples present until 4, 9.5 and 12.5 seconds, so the clip lasts
+// 12.5 s. Adding the largest offset to the run's decode end gave 13.5 s (TXE-7334).
 func TestFragmentCompositionOffsetsExtendTheDuration(t *testing.T) {
 	data := buildMP4(t, func(w *mp4.Writer) {
 		box(t, w, mp4.BoxTypeMoov(), func() {
@@ -232,8 +239,8 @@ func TestFragmentCompositionOffsetsExtendTheDuration(t *testing.T) {
 		})
 	})
 	got, err := Read(context.Background(), &rangeCounter{data: data}, int64(len(data)))
-	if err != nil || got.VideoMS != 13500 {
-		t.Fatalf("got %+v, %v; want video 13500 ms", got, err)
+	if err != nil || got.VideoMS != 12500 {
+		t.Fatalf("got %+v, %v; want video 12500 ms", got, err)
 	}
 }
 
