@@ -44,7 +44,8 @@ var exposedSDKBridgeMounts = map[string]struct{}{
 }
 
 // destructiveOperationIDs lists state-changing non-DELETE operations that
-// should require explicit confirmation in the CLI. DELETE operations are
+// should require explicit confirmation in the CLI. DELETE operations and
+// cancellations (a path ending in /cancel or :cancel, see isCancellation) are
 // classified automatically. Keeping the exceptional operation IDs here makes
 // the policy reviewable instead of relying on names or HTTP verbs at runtime.
 var destructiveOperationIDs = map[string]struct{}{
@@ -117,12 +118,24 @@ func collectOperations(document openAPIDocument) ([]operation, error) {
 			operations = append(operations, operation{
 				ID: source.OperationID, Method: strings.ToUpper(method), Path: path,
 				Summary: source.Summary, Tags: source.Tags, Deprecated: source.Deprecated,
-				Destructive: method == "delete" || explicitlyDestructive,
+				Destructive: method == "delete" || explicitlyDestructive || isCancellation(method, path),
 			})
 		}
 	}
 	sort.Slice(operations, func(i, j int) bool { return operations[i].ID < operations[j].ID })
 	return operations, nil
+}
+
+// isCancellation reports whether an operation cancels running work: a non-GET
+// whose path ends in /cancel or :cancel (the gateway's and the A2A form). A
+// cancellation cannot be undone, so the CLI asks for --yes before it, and a
+// new cancel route is covered without a list entry (TXE-7296: five were
+// exposed without one).
+func isCancellation(method, path string) bool {
+	if method == "get" || method == "head" || method == "options" {
+		return false
+	}
+	return strings.HasSuffix(path, "/cancel") || strings.HasSuffix(path, ":cancel")
 }
 
 // includeInCatalog keeps canonical operations and explicitly exposed SDK

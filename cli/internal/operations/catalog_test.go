@@ -50,6 +50,19 @@ func TestCatalogMatchesOpenAPI(t *testing.T) {
 	}
 }
 
+// TestCatalogCancellationsAreDestructive keeps every cancellation behind the CLI's
+// --yes confirmation, the generated ones included (TXE-7296).
+func TestCatalogCancellationsAreDestructive(t *testing.T) {
+	for _, operation := range Catalog {
+		if operation.Method == "GET" {
+			continue
+		}
+		if (strings.HasSuffix(operation.Path, "/cancel") || strings.HasSuffix(operation.Path, ":cancel")) && !operation.Destructive {
+			t.Errorf("%s %s (%s) cancels work but is not Destructive", operation.Method, operation.Path, operation.ID)
+		}
+	}
+}
+
 // TestSearch filters operations by text and exact tag.
 func TestSearch(t *testing.T) {
 	matches := Search("virtual", "Virtual Keys")
