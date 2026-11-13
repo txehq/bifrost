@@ -5664,6 +5664,31 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 // unit. The request type comes from req. Unlike generic stream hooks, turns do not
 // support short-circuit responses in v1 because the transports cannot yet emit a
 // fully synthetic assistant turn without an upstream generation.
+// attachRealtimeIncurredUsage puts the usage a realtime settlement already incurred
+// (BifrostContextKeyRealtimeIncurredUsage) on an admission rejection's BilledUsage, so the
+// rejecting plugin's post-hook and every one after it charge it (fork, TXE-7383). A rejection
+// refuses a new turn; it cannot refuse what the vendor already billed. Usage the error already
+// carries is kept; the incurred fields fill in beside it.
+func attachRealtimeIncurredUsage(ctx *schemas.BifrostContext, bifrostErr *schemas.BifrostError) {
+	if ctx == nil || bifrostErr == nil {
+		return
+	}
+	incurred, ok := ctx.Value(schemas.BifrostContextKeyRealtimeIncurredUsage).(*schemas.BifrostLLMUsage)
+	if !ok || incurred == nil {
+		return
+	}
+	if bifrostErr.ExtraFields.BilledUsage == nil {
+		bifrostErr.ExtraFields.BilledUsage = incurred.DeepCopy()
+		return
+	}
+	billed := bifrostErr.ExtraFields.BilledUsage.DeepCopy()
+	if billed.TextMessages == nil && incurred.TextMessages != nil {
+		n := *incurred.TextMessages
+		billed.TextMessages = &n
+	}
+	bifrostErr.ExtraFields.BilledUsage = billed
+}
+
 func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*RealtimeTurnHooks, *schemas.BifrostError) {
 	if req == nil {
 		bifrostErr := newBifrostErrorFromMsg("realtime turn request is nil")
@@ -5716,6 +5741,7 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 	if shortCircuit != nil {
 		if shortCircuit.Error != nil {
 			shortCircuit.Error.PopulateExtraFields(requestType, provider, model, model)
+			attachRealtimeIncurredUsage(ctx, shortCircuit.Error)
 			_, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
 			drainAndAttachPluginLogs(ctx)
 			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && strings.TrimSpace(traceID) != "" {

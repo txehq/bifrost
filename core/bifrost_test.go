@@ -10424,6 +10424,68 @@ func (p *turnLogPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.B
 	return resp, err, nil
 }
 
+// incurredCapturePlugin refuses every realtime unit and records the error its post-hook sees.
+type incurredCapturePlugin struct {
+	catalogProbePlugin
+	seen *schemas.BifrostError
+}
+
+func (p *incurredCapturePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, &schemas.LLMPluginShortCircuit{Error: newBifrostErrorFromMsg("budget exhausted")}, nil
+}
+
+func (p *incurredCapturePlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	p.seen = err
+	return resp, err, nil
+}
+
+// TestRealtimeAdmissionRejectionBillsIncurredUsage (TXE-7383): a realtime settlement reruns
+// admission, and a rejection there (a budget spent elsewhere) must not drop usage the vendor
+// already billed. The incurred usage on the context reaches the rejection's BilledUsage, which
+// the rejecting plugin's own post-hook sees; the caller's usage is not written through. With
+// no incurred usage, the rejection carries none.
+func TestRealtimeAdmissionRejectionBillsIncurredUsage(t *testing.T) {
+	plugin := &incurredCapturePlugin{}
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: NewMockAccount(), Logger: NewNoOpLogger(), LLMPlugins: []schemas.LLMPlugin{plugin},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Shutdown)
+	req := func() *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{
+			RequestType:      schemas.RealtimeRequest,
+			ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.XAI, Model: "grok-voice-3.0"},
+		}
+	}
+
+	incurred := &schemas.BifrostLLMUsage{TextMessages: Ptr(2)}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRealtimeIncurredUsage, incurred)
+	if _, preErr := client.RunRealtimeTurnPreHooks(ctx, req()); preErr == nil {
+		t.Fatal("expected the refusal")
+	}
+	if plugin.seen == nil || plugin.seen.ExtraFields.BilledUsage == nil || plugin.seen.ExtraFields.BilledUsage.TextMessages == nil {
+		t.Fatalf("the rejection's post-hook saw no incurred usage: %#v", plugin.seen)
+	}
+	if got := *plugin.seen.ExtraFields.BilledUsage.TextMessages; got != 2 {
+		t.Fatalf("billed text messages = %d, want 2", got)
+	}
+	*plugin.seen.ExtraFields.BilledUsage.TextMessages = 99
+	if *incurred.TextMessages != 2 {
+		t.Fatal("the rejection's BilledUsage aliases the caller's incurred usage")
+	}
+
+	plugin.seen = nil
+	if _, preErr := client.RunRealtimeTurnPreHooks(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req()); preErr == nil {
+		t.Fatal("expected the refusal")
+	}
+	if plugin.seen == nil || plugin.seen.ExtraFields.BilledUsage != nil {
+		t.Fatalf("a rejection with nothing incurred carries billed usage: %#v", plugin.seen)
+	}
+}
+
 // TestRealtimeTurnPluginLogsSurviveContextHandoff checks ordered logs and isolation across units.
 func TestRealtimeTurnPluginLogsSurviveContextHandoff(t *testing.T) {
 	for _, requestType := range []schemas.RequestType{schemas.RealtimeRequest, schemas.LiveRequest} {

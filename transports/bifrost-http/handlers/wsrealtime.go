@@ -743,11 +743,10 @@ func (h *WSRealtimeHandler) processRealtimeClientMessage(
 	// session.update events must not affect later turn logs.
 	updateRealtimeSessionFromEvent(session, event)
 
-	// A text message the vendor bills per message (TXE-7363), counted once it passed translation.
-	// Only a provider that bills per message pays for the check.
-	if schemas.RealtimeProviderBillsTextMessages(provider) && isRealtimeClientTextMessage(event) {
-		session.CountRealtimeTextMessage()
-	}
+	// A text message the vendor bills per message (TXE-7363). Only a provider that bills per
+	// message pays for the check. It is counted once the upstream write succeeds (TXE-7383): a
+	// message the vendor never received is not billed.
+	textMessage := schemas.RealtimeProviderBillsTextMessages(provider) && isRealtimeClientTextMessage(event)
 
 	// Record tool output / input only after the event passed validation.
 	if !startsTurn {
@@ -773,6 +772,9 @@ func (h *WSRealtimeHandler) processRealtimeClientMessage(
 		)
 		clientConn.writeRealtimeError(newRealtimeWireBifrostError(502, "server_error", "failed to write realtime event upstream"))
 		return true, err
+	}
+	if textMessage {
+		session.CountRealtimeTextMessage()
 	}
 	return false, nil
 }
