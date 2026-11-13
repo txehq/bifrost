@@ -160,6 +160,17 @@ func TestImageBackfillsPricedRequestShape(t *testing.T) {
 		t.Fatalf("params = %+v, want 100 steps and the extra's 4K resolution", bp)
 	}
 
+	// The unified resolution and the extra one disagree: the larger tier is billed either way round.
+	for _, tc := range []struct{ typed, extra, want string }{{"1K", "2K", "2K"}, {"2K", "1K", "2K"}, {"2k", "", "2k"}, {"", "1536", "1536"}} {
+		r := &BifrostRequest{ImageGenerationRequest: &BifrostImageGenerationRequest{
+			Params: &ImageGenerationParameters{Resolution: TolerantString(tc.typed), ExtraParams: map[string]interface{}{"resolution": tc.extra}},
+		}}
+		got, _ := getImageResolutionAndStepsFromRequest(r)
+		if got != tc.want {
+			t.Fatalf("typed %q extra %q: resolution = %q, want %q", tc.typed, tc.extra, got, tc.want)
+		}
+	}
+
 	// A value the vendor reported wins over the request's.
 	vendor := &BifrostImageGenerationResponse{ImageGenerationResponseParameters: &ImageGenerationResponseParameters{Resolution: "1K"}}
 	vendor.BackfillParams(req)

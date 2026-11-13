@@ -3,6 +3,7 @@ package schemas
 import (
 	"bytes"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -203,8 +204,8 @@ func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
 }
 
 // getImageResolutionAndStepsFromRequest returns the resolution tier and inference step count the
-// image request asked for (fork, TXE-7356). Resolution is the unified field, or the "resolution"
-// extra param when that is unset. Steps are the larger of the unified num_inference_steps and a
+// image request asked for (fork, TXE-7356). Resolution is the larger tier of the unified field and
+// the "resolution" extra param. Steps are the larger of the unified num_inference_steps and a
 // "steps" extra param (the native name on Stability's Bedrock API, which forwards the extra and
 // ignores the unified field), so a request cannot be billed for fewer steps than the vendor ran.
 func getImageResolutionAndStepsFromRequest(req *BifrostRequest) (resolution string, steps *int) {
@@ -222,8 +223,10 @@ func getImageResolutionAndStepsFromRequest(req *BifrostRequest) (resolution stri
 	default:
 		return "", nil
 	}
-	if strings.TrimSpace(resolution) == "" {
-		if r, ok := extra["resolution"].(string); ok {
+	// Some providers forward the "resolution" extra and others the unified field, so when both are
+	// set and differ, the larger tier is billed: never less than the vendor may have rendered.
+	if r, ok := extra["resolution"].(string); ok && strings.TrimSpace(r) != "" {
+		if strings.TrimSpace(resolution) == "" || imageResolutionTierPixels(r) > imageResolutionTierPixels(resolution) {
 			resolution = r
 		}
 	}
@@ -330,6 +333,21 @@ func getNumInputImagesSizeQualityAndAspectRatioFromRequest(req *BifrostRequest) 
 		}
 	}
 	return numInputImages, size, quality, aspectRatio
+}
+
+// imageResolutionTierPixels orders resolution tiers by their long edge in pixels: "2K" is 2000,
+// "1.5k" 1500, "1024" 1024. A value that is not a tier is 0.
+func imageResolutionTierPixels(tier string) float64 {
+	label := strings.ToUpper(strings.TrimSpace(tier))
+	scale := 1.0
+	if strings.HasSuffix(label, "K") {
+		label, scale = strings.TrimSuffix(label, "K"), 1000
+	}
+	n, err := strconv.ParseFloat(label, 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n * scale
 }
 
 // normalizeImageQuality returns the quality string only if the datasheet prices it: low, medium,
