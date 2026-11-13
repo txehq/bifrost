@@ -3348,6 +3348,11 @@ func handleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 
 	// Decode body
 	decodedBody, err := CheckAndDecodeBody(resp)
+	if err != nil && errors.Is(err, network.ErrResponseBodyTooLarge) {
+		// An error body past the gateway's limit is Bifrost's refusal, not the vendor's status:
+		// reporting the vendor's 5xx would let core retry it or try a fallback (TXE-7148).
+		return NewResponseBodyTooLargeError(err)
+	}
 	if err != nil {
 		// Decode failed - still capture raw body for RawResponse
 		rawBody := resp.Body()
@@ -3958,6 +3963,8 @@ func NewResponseBodyTooLargeError(err error) *schemas.BifrostError {
 	}
 	return &schemas.BifrostError{
 		IsBifrostError: true,
+		// A fallback would send another request that may be billed and answered just as large.
+		AllowFallbacks: schemas.Ptr(false),
 		Error: &schemas.ErrorField{
 			Message: fmt.Sprintf("%s: %s, client.max_response_body_size_mb", schemas.ErrProviderResponseTooLarge, formatByteLimit(limit)),
 			Error:   err,

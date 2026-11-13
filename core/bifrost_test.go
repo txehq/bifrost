@@ -47,6 +47,7 @@ import (
 	"github.com/capsohq/bifrost/core/internal/memtest"
 	"github.com/capsohq/bifrost/core/keyselectors"
 	"github.com/capsohq/bifrost/core/mcp"
+	"github.com/capsohq/bifrost/core/network"
 	mistralprovider "github.com/capsohq/bifrost/core/providers/mistral"
 	openaiprovider "github.com/capsohq/bifrost/core/providers/openai"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
@@ -13396,5 +13397,30 @@ func TestNoUnboundedUpstreamBodyReads(t *testing.T) {
 		if !usedAllowlist[key] {
 			t.Errorf("unboundedReadAllowlist entry %q matches no read any more; remove it", key)
 		}
+	}
+}
+
+// TXE-7148: an answer past the response limit ends the request, on the primary and on a
+// fallback alike: another provider would be another request that may be billed. Core neither
+// retries it nor rotates the key either (ClassifyFailure: is_bifrost_error is Unknown).
+func TestResponseBodyTooLargeStopsFallbacksAndRetries(t *testing.T) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	tooLarge := providerUtils.NewResponseBodyTooLargeError(&network.ResponseBodyTooLargeError{Limit: 1 << 20})
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI, Model: "gpt-4o",
+			Fallbacks: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-sonnet-4-5"}},
+		},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if bifrost.shouldTryFallbacks(ctx, req, tooLarge) {
+		t.Fatal("a primary answer past the response limit must not fall back")
+	}
+	if bifrost.shouldContinueWithFallbacks(schemas.Fallback{Provider: schemas.Anthropic}, tooLarge) {
+		t.Fatal("a fallback answer past the response limit must end the fallback chain")
+	}
+	if class := ClassifyFailure(tooLarge); class == schemas.FailureClassTransient || class.IsPerKey() {
+		t.Fatalf("ClassifyFailure = %q: the same request gets the same answer, so it is neither retried nor rotated", class)
 	}
 }

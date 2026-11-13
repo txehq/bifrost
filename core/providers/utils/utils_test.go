@@ -5074,3 +5074,31 @@ func BenchmarkCheckAndDecodeBody_Gzip64KiB(b *testing.B) {
 		}
 	}
 }
+
+// TXE-7148: a vendor error body that fits on the wire but decompresses past the limit is the
+// gateway's refusal. Before, the provider error parser kept the vendor's 500 and dropped the
+// error chain, so core could retry the request or try a fallback.
+func TestHandleProviderAPIError_ErrorBodyPastTheLimitIsBifrostsRefusal(t *testing.T) {
+	network.SetMaxResponseBodySizeMB(1)
+	t.Cleanup(func() { network.SetMaxResponseBodySizeMB(0) })
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+	resp.SetStatusCode(fasthttp.StatusInternalServerError)
+	resp.Header.Set("Content-Encoding", "gzip")
+	resp.SetBody(compressGzip([]byte(`{"error":{"message":"` + strings.Repeat("x", 2<<20) + `"}}`)))
+
+	var errorResp map[string]any
+	bifrostErr := HandleProviderAPIError(resp, &errorResp)
+	if bifrostErr == nil || !bifrostErr.IsBifrostError || bifrostErr.StatusCode != nil {
+		t.Fatalf("error = %+v, want is_bifrost_error with no vendor status", bifrostErr)
+	}
+	if bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeBifrostInternal {
+		t.Fatalf("error_type = %q, want bifrost_internal", bifrostErr.ExtraFields.ErrorType)
+	}
+	if bifrostErr.AllowFallbacks == nil || *bifrostErr.AllowFallbacks {
+		t.Fatal("an error body past the limit must not allow fallbacks")
+	}
+	if !errors.Is(bifrostErr.Error.Error, network.ErrResponseBodyTooLarge) {
+		t.Fatalf("error chain %v lost the limit error", bifrostErr.Error.Error)
+	}
+}

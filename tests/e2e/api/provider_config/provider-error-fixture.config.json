@@ -110,7 +110,11 @@
             "gpt-image-1.5",
             "gpt-image-blocked",
             "gpt-image-drop",
-            "upstream-cut"
+            "upstream-cut",
+            "upstream-oversize",
+            "upstream-oversize-gzip-500",
+            "upstream-ok~rbl-fallback",
+            "upstream-ok~rbl-under"
           ],
           "use_for_batch_api": true,
           "weight": 1
