@@ -744,7 +744,8 @@ func (h *WSRealtimeHandler) processRealtimeClientMessage(
 	updateRealtimeSessionFromEvent(session, event)
 
 	// A text message the vendor bills per message (TXE-7363), counted once it passed translation.
-	if isRealtimeClientTextMessage(event) {
+	// Only a provider that bills per message pays for the check.
+	if schemas.RealtimeProviderBillsTextMessages(provider) && isRealtimeClientTextMessage(event) {
 		session.CountRealtimeTextMessage()
 	}
 

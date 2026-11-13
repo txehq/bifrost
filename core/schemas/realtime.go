@@ -193,6 +193,21 @@ type RealtimeProvider interface {
 	ShouldAccumulateRealtimeOutput(eventType RealtimeEventType) bool
 }
 
+// RealtimeTextMessageBiller is an optional interface for realtime providers whose vendor bills
+// each text message a client sends, apart from tokens (xAI voice, fork TXE-7363). Only the
+// sessions of such a provider count text messages; every other session skips the check.
+// Checked via type assertion: RealtimeProviderBillsTextMessages(provider).
+type RealtimeTextMessageBiller interface {
+	BillsRealtimeTextMessages() bool
+}
+
+// RealtimeProviderBillsTextMessages reports whether provider's vendor bills realtime text
+// messages per message.
+func RealtimeProviderBillsTextMessages(provider RealtimeProvider) bool {
+	biller, ok := provider.(RealtimeTextMessageBiller)
+	return ok && biller.BillsRealtimeTextMessages()
+}
+
 // RealtimeLegacyWebRTCProvider is an optional interface for providers that
 // support the beta WebRTC handshake (e.g., OpenAI's /v1/realtime).
 // Only checked for legacy integration routes via type assertion.

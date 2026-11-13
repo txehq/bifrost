@@ -621,20 +621,47 @@ func TestIsRealtimeClientTextMessage(t *testing.T) {
 	}
 }
 
+// TestOnlyAPerMessageBillerCountsTextMessages (TXE-7363): xAI bills each text message and its
+// sessions count them; OpenAI does not, and its sessions never reach the classifier.
+func TestOnlyAPerMessageBillerCountsTextMessages(t *testing.T) {
+	t.Parallel()
+	if !schemas.RealtimeProviderBillsTextMessages(&xai.XAIProvider{}) {
+		t.Fatal("xAI bills realtime text messages per message, but its sessions do not count them")
+	}
+	if schemas.RealtimeProviderBillsTextMessages(&openai.OpenAIProvider{}) {
+		t.Fatal("OpenAI does not bill realtime text messages per message, but its sessions count them")
+	}
+	if schemas.RealtimeProviderBillsTextMessages(nil) {
+		t.Fatal("a nil provider counts text messages")
+	}
+}
+
 // BenchmarkIsRealtimeClientTextMessage is the per-client-event cost TXE-7363 adds to a realtime
-// session: a user text item (the one shape that decodes content parts), a response.create and an
-// audio item (the common events that return before decoding).
+// session, gate included: on an xAI session, a user text item (the one shape that decodes content
+// parts), a response.create and an audio item (the common events that return before decoding);
+// on an OpenAI session, the same user text item, which the gate stops before the classifier.
 func BenchmarkIsRealtimeClientTextMessage(b *testing.B) {
 	textItem := &schemas.BifrostRealtimeEvent{Type: schemas.RTEventConversationItemCreate, Item: &schemas.RealtimeItem{
 		Type: "message", Role: "user", Content: json.RawMessage(`[{"type":"input_text","text":"What's the weather in Lisbon tomorrow?"}]`),
 	}}
 	responseCreate := &schemas.BifrostRealtimeEvent{Type: schemas.RTEventResponseCreate}
 	audioAppend := &schemas.BifrostRealtimeEvent{Type: schemas.RTEventInputAudioAppend}
-	for name, event := range map[string]*schemas.BifrostRealtimeEvent{"user_text_item": textItem, "response_create": responseCreate, "audio_append": audioAppend} {
-		b.Run(name, func(b *testing.B) {
+	xaiProvider, openaiProvider := schemas.RealtimeProvider(&xai.XAIProvider{}), schemas.RealtimeProvider(&openai.OpenAIProvider{})
+	cases := []struct {
+		name     string
+		provider schemas.RealtimeProvider
+		event    *schemas.BifrostRealtimeEvent
+	}{
+		{"xai/user_text_item", xaiProvider, textItem},
+		{"xai/response_create", xaiProvider, responseCreate},
+		{"xai/audio_append", xaiProvider, audioAppend},
+		{"openai/user_text_item", openaiProvider, textItem},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
-				_ = isRealtimeClientTextMessage(event)
+				_ = schemas.RealtimeProviderBillsTextMessages(tc.provider) && isRealtimeClientTextMessage(tc.event)
 			}
 		})
 	}

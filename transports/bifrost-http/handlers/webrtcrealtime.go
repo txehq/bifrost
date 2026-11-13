@@ -586,8 +586,9 @@ func (m *realtimeWebRTCMessages) fromBrowser(r *webrtcRelay, msg webrtc.DataChan
 	if inputSummary != "" {
 		m.session.RecordRealtimeInput(inputItemID, inputSummary, string(msg.Data))
 	}
-	// A text message the vendor bills per message (TXE-7363).
-	if isRealtimeClientTextMessage(event) {
+	// A text message the vendor bills per message (TXE-7363). Only a provider that bills per
+	// message pays for the check.
+	if schemas.RealtimeProviderBillsTextMessages(m.provider) && isRealtimeClientTextMessage(event) {
 		m.session.CountRealtimeTextMessage()
 	}
 	startsTurn := m.provider.ShouldStartRealtimeTurn(event)
