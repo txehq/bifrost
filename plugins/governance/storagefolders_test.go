@@ -423,3 +423,72 @@ func BenchmarkStorageFolderCheck(b *testing.B) {
 		})
 	}
 }
+
+// TXE-7259 (A2): a key with no allowed_storage_prefixes writes to a bare bucket unclaimed, so
+// one request cannot take the whole bucket from every other key. A key whose list covers the
+// root claims it as any other folder.
+func TestBucketRootIsClaimedOnlyByAKeyWithAStorageList(t *testing.T) {
+	plugin, store := newStorageFolderTestPlugin(t)
+	for _, location := range []string{"gs://bare-bucket/", "gs://bare-bucket"} {
+		_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), storageFolderSurfaces{provider: schemas.Vertex}.batchInto(location))
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit, "the request goes on: %s", location)
+	}
+	assert.Empty(t, storageFolderOwner(t, store, "gs://bare-bucket/"), "the root is not claimed")
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), storageFolderSurfaces{provider: schemas.Vertex}.batchInto("gs://bare-bucket/out/"))
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	assert.Equal(t, "vk-mcp-stamp", storageFolderOwner(t, store, "gs://bare-bucket/out/"), "a folder inside the bucket still is")
+
+	vk := buildVKForMCPStamping(nil)
+	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("vertex", []string{"*"}))
+	vk.AllowedStoragePrefixes = []string{"gs://listed-bucket/"}
+	listed := newAccessTestPlugin(t, vk, nil)
+	listed.configStore = store
+	_, shortCircuit, err = listed.PreLLMHook(presentCtx(mcpTestVKValue), storageFolderSurfaces{provider: schemas.Vertex}.batchInto("gs://listed-bucket/"))
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	assert.Equal(t, "vk-mcp-stamp", storageFolderOwner(t, store, "gs://listed-bucket/"), "a key whose list covers the root claims it")
+
+	for folder, want := range map[string]string{"gs://b/": "gs://b", "s3://b/": "s3://b", "gs://b/x/": "", "gs://b//": "", "gs:///": ""} {
+		bucket, root := storageBucketRoot(folder)
+		assert.Equal(t, want != "", root, folder)
+		assert.Equal(t, want, bucket, folder)
+	}
+}
+
+// TXE-7259: a batch created before output folders were claimed at create time has results
+// nobody owns. Its retrieve names the output directory, and that directory is claimed for the
+// batch's recorded creator, but only when it is exclusive.
+func TestBatchOutputFolderIsClaimedOnRetrieve(t *testing.T) {
+	plugin, store := newStorageFolderTestPlugin(t)
+	own, other := "vk-mcp-stamp", "vk-someone-else"
+	folderKind, fileKind := configstoreTables.ProviderObjectKindStorageFolder, configstoreTables.ProviderObjectKindFile
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindBatch, "bedrock", "batch-old", own)
+	seedProviderObject(t, store, folderKind, "s3", "s3://ret/mine/", own)
+	seedProviderObject(t, store, folderKind, "s3", "s3://ret/theirs/", other)
+	seedProviderObject(t, store, fileKind, "bedrock", "s3://ret/shared/x/a.jsonl", other)
+	retrieve := func(batchID, output string) {
+		t.Helper()
+		plugin.recordBatchFiles(presentCtx(mcpTestVKValue), "bedrock", &schemas.BifrostBatchRetrieveResponse{ID: batchID, OutputFileID: schemas.Ptr(output)})
+	}
+
+	plugin.objectOwnershipEnforcedFn = func() bool { return false }
+	retrieve("batch-old", "s3://ret/out/job-1")
+	assert.Empty(t, storageFolderOwner(t, store, "s3://ret/out/job-1/"), "nothing is claimed with enforcement off")
+	plugin.objectOwnershipEnforcedFn = nil
+
+	retrieve("batch-old", "s3://ret/out/job-1")
+	assert.Equal(t, own, storageFolderOwner(t, store, "s3://ret/out/job-1/"), "the output directory follows the batch's creator")
+
+	retrieve("batch-old", "s3://ret/mine/job-2")
+	assert.Empty(t, storageFolderOwner(t, store, "s3://ret/mine/job-2/"), "the key's own folder already covers it")
+	retrieve("batch-old", "s3://ret/theirs/job-3")
+	assert.Empty(t, storageFolderOwner(t, store, "s3://ret/theirs/job-3/"), "another key's folder is above it")
+	retrieve("batch-old", "s3://ret/shared")
+	assert.Empty(t, storageFolderOwner(t, store, "s3://ret/shared/"), "another key has a record beneath it")
+	retrieve("batch-old", "s3://root-only/")
+	assert.Empty(t, storageFolderOwner(t, store, "s3://root-only/"), "a bucket root is never claimed this way")
+	retrieve("batch-nobody", "s3://ret/nobody/job-4")
+	assert.Empty(t, storageFolderOwner(t, store, "s3://ret/nobody/job-4/"), "a batch nobody recorded hands its results to no one")
+}

@@ -43,9 +43,16 @@ import (
 // beneath it. Such a name is checked both ways, as an object and as a folder, and claims
 // nothing. The extra params known to be output locations (outputLocationKey) are locations.
 //
-// A claim is never released, not even when the request that made it fails: a batch's results
-// outlive the batch, other requests of the key may already rely on the folder, and withdrawing
-// it under them would leave what they write unclaimed.
+// A claim is never released by a request, not even when the request that made it fails: a
+// batch's results outlive the batch, other requests of the key may already rely on the
+// folder, and withdrawing it under them would leave what they write unclaimed. An operator
+// lists and releases claims through /api/governance/storage-folders (TXE-7259), and a
+// deleted key's claims stay until one is released: dropping them would hand the folder's
+// contents to every key with no storage list.
+//
+// A bucket root is claimed only by a key with allowed_storage_prefixes, whose list then covers
+// it (TXE-7259). A key with no list writes to a bare bucket unclaimed: one request would
+// otherwise take the whole bucket from every other key.
 //
 // Two keys that claim nested folders in the same instant can both pass the exclusivity check.
 // Both claims then stand, and the closest one decides for every object, so neither key reaches
@@ -60,14 +67,10 @@ const maxStorageFolderLevels = 64
 // (provider_objects.object_id).
 const maxStorageFolderLength = 512
 
-// storageFolderProvider is the provider name folder rows are recorded under: the storage
-// system, not the provider the request went to. A bucket is the same bucket through every
-// provider name configured on it, and one row per folder is what makes a claim exclusive.
+// storageFolderProvider is the provider name folder rows are recorded under
+// (configstoreTables.StorageFolderProvider).
 func storageFolderProvider(uri string) string {
-	if strings.HasPrefix(uri, "gs://") {
-		return "gcs"
-	}
-	return "s3"
+	return configstoreTables.StorageFolderProvider(uri)
 }
 
 // storageURIForm returns the storage URI among the forms of an object reference.
@@ -217,7 +220,35 @@ func (p *GovernancePlugin) refuseForeignStorageFolder(ctx *schemas.BifrostContex
 	if !ref.destination {
 		return "", nil
 	}
+	if bucket, root := storageBucketRoot(folder); root && !storageRestricted(ctx) {
+		// TXE-7259 (A2): a key with no storage list does not take a whole bucket. The request
+		// goes on, and its output is shared as it was before folders were claimed.
+		p.logger.Info("virtual key %s writes output to the root of bucket %s: not claimed, since the key has no allowed_storage_prefixes", vkID, bucket)
+		return "", nil
+	}
 	return folder, nil
+}
+
+// storageBucketRoot reports whether folder is the root of its bucket ("gs://b/", "s3://b/"),
+// and names the bucket.
+func storageBucketRoot(folder string) (bucket string, root bool) {
+	start := strings.Index(folder, "://")
+	if start < 0 {
+		return "", false
+	}
+	rest := folder[start+len("://"):]
+	slash := strings.IndexByte(rest, '/')
+	if slash <= 0 || slash != len(rest)-1 {
+		return "", false
+	}
+	return folder[:start+len("://")+slash], true
+}
+
+// storageRestricted reports whether the request's virtual key has allowed_storage_prefixes
+// (TXE-7088); a key that has them can name only storage inside them.
+func storageRestricted(ctx *schemas.BifrostContext) bool {
+	prefixes, ok := ctx.Value(governanceAllowedStoragePrefixesContextKey).([]string)
+	return ok && len(prefixes) > 0
 }
 
 // storageFolderLookupChunk bounds the folders read in one lookup of a list page.
@@ -334,4 +365,45 @@ func (p *GovernancePlugin) claimStorageFolders(ctx *schemas.BifrostContext, fold
 		}
 	}
 	return nil
+}
+
+// claimBatchOutputFolder claims, for the batch's recorded creator, the output directory a batch
+// retrieve names (Vertex's gcsOutputDirectory, Bedrock's output S3 URI), when nothing claims it
+// yet (TXE-7259). A batch created since output folders are claimed at create time lies in its
+// key's folder already; this covers one created before, whose results would otherwise have no
+// owner. The folder is claimed only when it is exclusive: no folder of any key at or above it,
+// no record of another key beneath it, and not a bucket root. Anything less leaves it as it was.
+func (p *GovernancePlugin) claimBatchOutputFolder(ctx *schemas.BifrostContext, location, owner string) {
+	// Claimed only under enforcement, as at create time: a claim changes what other keys reach.
+	if p.configStore == nil || owner == "" || !p.objectOwnershipEnforced() {
+		return
+	}
+	uri, stored := storageURIForm([]string{location})
+	if !stored {
+		return
+	}
+	folder := storageFolderOf(uri)
+	if _, root := storageBucketRoot(folder); root || len(folder) > maxStorageFolderLength {
+		return
+	}
+	folders, tooDeep := storageFoldersAbove(folder)
+	if tooDeep || len(folders) == 0 {
+		return
+	}
+	owners, err := p.storageFolderOwners(ctx, folders)
+	if err == nil && len(owners) == 0 {
+		var foreign bool
+		if foreign, err = p.foreignRecordBeneath(ctx, folder, owner); err == nil && !foreign {
+			_, err = p.configStore.InsertProviderObject(ctx, &configstoreTables.TableProviderObject{
+				ID:           configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindStorageFolder, storageFolderProvider(folder), folder),
+				Kind:         configstoreTables.ProviderObjectKindStorageFolder,
+				Provider:     storageFolderProvider(folder),
+				ObjectID:     folder,
+				VirtualKeyID: owner,
+			})
+		}
+	}
+	if err != nil {
+		p.logger.Warn("failed to claim the output folder of a batch for virtual key %s: %v", owner, err)
+	}
 }

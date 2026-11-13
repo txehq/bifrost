@@ -1957,6 +1957,7 @@ func (p *GovernancePlugin) recordBatchFiles(ctx *schemas.BifrostContext, provide
 	}
 	for _, fileID := range fileIDs {
 		p.recordProviderObjectCreator(ctx, configstoreTables.ProviderObjectKindFile, provider, fileID, owner)
+		p.claimBatchOutputFolder(ctx, fileID, owner)
 	}
 }
 
