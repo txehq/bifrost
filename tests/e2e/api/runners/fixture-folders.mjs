@@ -167,17 +167,34 @@ export function verdict(rows, quarantine) {
 
 // rowsFromReport reads a newman JSON report into the verdict's row map. A row that newman ran
 // more than once (a retry folder) fails when any execution failed.
+//
+// A script that throws outside pm.test (a pre-request script, or a test script that fails before
+// its first assertion) leaves no failed assertion on the execution: newman records it only under
+// run.failures, with the request as its source (as countRun in lib/harness-skips.mjs reads it).
+// Such a row fails. A script error whose source is no request (a folder or collection script) is
+// returned in `unattributed`, which fails the group: no quarantine entry can excuse it.
 export function rowsFromReport(report) {
 	const rows = new Map();
+	const nameById = new Map();
 	for (const e of report.run.executions || []) {
 		const name = e.item.name;
+		if (e.item.id) nameById.set(e.item.id, name);
 		const r = rows.get(name) || { failed: [], ran: false };
 		r.ran = r.ran || Boolean(e.response);
 		if (e.requestError) r.failed.push(`request error: ${e.requestError.message || e.requestError}`);
 		for (const a of e.assertions || []) if (a.error && !a.skipped) r.failed.push(`${a.assertion}: ${String(a.error.message).replace(/\s+/g, " ").slice(0, 300)}`);
 		rows.set(name, r);
 	}
-	return rows;
+	const unattributed = [];
+	for (const f of report.run.failures || []) {
+		// A failed assertion is on its execution already.
+		if (f?.error?.name === "AssertionError") continue;
+		const message = `${f?.at || "script"}: ${f?.error?.name || "Error"}: ${String(f?.error?.message || "").replace(/\s+/g, " ").slice(0, 300)}`;
+		const name = f?.source?.id && nameById.get(f.source.id);
+		if (name) rows.get(name).failed.push(message);
+		else unattributed.push(`${f?.source?.name || "collection"}: ${message}`);
+	}
+	return { rows, unattributed };
 }
 
 export function readFolders(dir = PROVIDER_HARNESS_DIR) {
@@ -301,7 +318,7 @@ async function runGroup(group, folders, { gateway, workDir }) {
 		const newman = start(newmanBin(), args, { log: join(dir, "newman.log") });
 		const { code } = await newman.exited;
 		if (!existsSync(report)) throw new Error(`newman exited ${code} without a report\n${newman.tail()}`);
-		return rowsFromReport(JSON.parse(readFileSync(report, "utf8")));
+		return { ...rowsFromReport(JSON.parse(readFileSync(report, "utf8"))), newmanExit: code };
 	} finally {
 		await stop(gw);
 		await stop(fixture);
@@ -352,11 +369,14 @@ async function main() {
 		const folders = members.get(g.id);
 		console.log(`▶ ${g.id}: ${folders.length} folders`);
 		try {
-			const got = await runGroup(g, folders, { gateway: resolve(args.gateway), workDir });
+			const { rows: got, unattributed, newmanExit } = await runGroup(g, folders, { gateway: resolve(args.gateway), workDir });
 			const ran = [...got.values()].filter((r) => r.ran).length;
 			const failed = [...got.values()].filter((r) => r.failed.length).length;
 			console.log(`  ${got.size} rows, ${ran} answered, ${failed} failing`);
 			if (ran === 0) failures.push(`${g.id}: no row was answered; the group's switch or gateway is broken`);
+			for (const u of unattributed) failures.push(`${g.id}: script error outside any row: ${u}`);
+			// newman exits non-zero for a failure it saw. One the report explains no row of is a failure too.
+			if (newmanExit !== 0 && failed === 0 && unattributed.length === 0) failures.push(`${g.id}: newman exited ${newmanExit} and no row failed; see ${join(workDir, g.id, "newman.log")}`);
 			for (const [k, v] of got) {
 				const prev = rows.get(k);
 				rows.set(k, prev ? { failed: [...prev.failed, ...v.failed], ran: prev.ran || v.ran } : v);

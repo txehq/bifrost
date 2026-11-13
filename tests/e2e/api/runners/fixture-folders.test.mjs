@@ -1,11 +1,14 @@
-// Tests for fixture-folders.mjs (TXE-7285). Run directly: `node fixture-folders.test.mjs`; no
-// gateway, no newman, no network, no credentials. The offline API-collection suites find and run it,
+// Tests for fixture-folders.mjs (TXE-7285). Run directly: `node fixture-folders.test.mjs`; needs
+// `newman` on PATH (or the pinned one in .github/workflows/tools), no gateway, no network, no
+// credentials. The offline API-collection suites find and run it,
 // so this is where a new fixture folder that no runner group starts fails on its pull request.
 //
 // The run itself (fixture, gateway, newman) is the `harness fixture folders` job in
 // go-unit-tests.yml; these tests pin the rules that decide what it runs and what fails it.
 import assert from "node:assert";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
@@ -95,7 +98,7 @@ check("verdict: a failing row fails the run unless quarantined; a quarantined ro
 });
 
 check("rowsFromReport: a row fails on a failed assertion or a request error, and a skipped row neither ran nor failed", () => {
-	const rows = rowsFromReport({
+	const { rows } = rowsFromReport({
 		run: {
 			executions: [
 				{ item: { name: "a" }, response: { code: 200 }, assertions: [{ assertion: "ok" }] },
@@ -141,5 +144,64 @@ check("every group's checked-in gateway config passes writeCheckedInFixtureConfi
 	for (const g of GROUPS.filter((g) => g.config)) writeCheckedInFixtureConfig(path.join(dir, g.id), { source: path.join(REPO, g.config), datasheetOrigin: "http://127.0.0.1:1" });
 	fs.rmSync(dir, { recursive: true, force: true });
 });
+
+check("rowsFromReport: a script that threw outside pm.test fails its row from run.failures; one outside any row is unattributed", () => {
+	const { rows, unattributed } = rowsFromReport({
+		run: {
+			executions: [
+				{ item: { id: "1", name: "pre throws" }, response: { code: 200 }, assertions: [] },
+				{ item: { id: "2", name: "asserts" }, response: { code: 400 }, assertions: [{ assertion: "Status code is 200", error: { name: "AssertionError", message: "expected 400 to equal 200" } }] },
+			],
+			failures: [
+				{ at: "prerequest-script", source: { id: "1", name: "pre throws" }, error: { name: "TypeError", message: "Cannot read properties of undefined" } },
+				{ at: "assertion:0 in test-script", source: { id: "2", name: "asserts" }, error: { name: "AssertionError", message: "expected 400 to equal 200" } },
+				{ at: "test-script", source: { id: "folder-9", name: "9. folder" }, error: { name: "ReferenceError", message: "x is not defined" } },
+			],
+		},
+	});
+	assert.deepStrictEqual(rows.get("pre throws").failed, ["prerequest-script: TypeError: Cannot read properties of undefined"]);
+	// The assertion is counted once, from the execution.
+	assert.deepStrictEqual(rows.get("asserts").failed, ["Status code is 200: expected 400 to equal 200"]);
+	assert.deepStrictEqual(unattributed, ["9. folder: test-script: ReferenceError: x is not defined"]);
+});
+
+// The same with the real newman: a row whose pre-request script throws, and a row whose test
+// script throws before its first assertion, each leave no failed assertion on the execution.
+{
+	const pinned = path.join(REPO, ".github/workflows/tools/node_modules/.bin/newman");
+	const newman = fs.existsSync(pinned) ? pinned : execFileSync("sh", ["-c", "command -v newman"], { encoding: "utf8" }).trim();
+	const server = http.createServer((req, res) => res.end("not json"));
+	await new Promise((r) => server.listen(0, "127.0.0.1", r));
+	const url = `http://127.0.0.1:${server.address().port}/x`;
+	const row = (name, listen, exec) => ({ name, event: [{ listen, script: { type: "text/javascript", exec } }], request: { method: "GET", url } });
+	const collection = {
+		info: { name: "fixture-folders script errors", schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json" },
+		item: [
+			{
+				name: "1. folder",
+				item: [
+					row("pre-request throws", "prerequest", ["undefined.x;"]),
+					row("test throws before asserting", "test", ["var j = pm.response.json();", "pm.test('never reached', function () {});"]),
+					row("passes", "test", ["pm.test('ok', function () {});"]),
+				],
+			},
+		],
+	};
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fixture-folders-newman-"));
+	fs.writeFileSync(path.join(dir, "c.json"), JSON.stringify(collection));
+	const reportPath = path.join(dir, "report.json");
+	const { spawn } = await import("node:child_process");
+	const exit = await new Promise((r) => spawn(newman, ["run", path.join(dir, "c.json"), "--reporters", "json", "--reporter-json-export", reportPath], { stdio: "ignore" }).once("exit", r));
+	server.close();
+	check("real newman: rows whose scripts threw outside pm.test fail, and the row that passed does not", () => {
+		assert.notStrictEqual(exit, 0, "newman reports the script errors in its exit status");
+		const { rows, unattributed } = rowsFromReport(JSON.parse(fs.readFileSync(reportPath, "utf8")));
+		assert.match(rows.get("pre-request throws").failed.join("\n"), /prerequest-script: TypeError/);
+		assert.match(rows.get("test throws before asserting").failed.join("\n"), /test-script: JSONError/);
+		assert.deepStrictEqual(rows.get("passes").failed, []);
+		assert.deepStrictEqual(unattributed, []);
+	});
+	fs.rmSync(dir, { recursive: true, force: true });
+}
 
 console.log(`\n${passed} passed, 0 failed`);
