@@ -2265,23 +2265,43 @@ func guardrailRatesOf(p *configstoreTables.TableModelPricing) (guardrailRateSet,
 	return r, r != guardrailRateSet{}
 }
 
-// guardrailUnitRates returns the per-unit rates of a provider-side guardrail for a request: the
-// request model's own row when it sets any (a pricing override), else the provider's guardrails
-// row, which upstream publishes as bedrock/guardrails (mode "guardrail"). Only the eight rate
+// orElse returns r with every rate it leaves unset taken from fallback. A rate r sets, an explicit
+// zero included, is kept.
+func (r guardrailRateSet) orElse(fallback guardrailRateSet) guardrailRateSet {
+	pick := func(own, other *float64) *float64 {
+		if own != nil {
+			return own
+		}
+		return other
+	}
+	return guardrailRateSet{
+		pick(r.content, fallback.content), pick(r.contentImage, fallback.contentImage),
+		pick(r.topic, fallback.topic), pick(r.word, fallback.word),
+		pick(r.sensitive, fallback.sensitive), pick(r.sensitiveFree, fallback.sensitiveFree),
+		pick(r.grounding, fallback.grounding), pick(r.reasoning, fallback.reasoning),
+	}
+}
+
+// guardrailUnitRates returns the per-unit rates of a provider-side guardrail for a request, rate by
+// rate: the request model's own row where it sets one (a pricing override, which may set only some
+// of the eight), else the provider's guardrails row, which upstream publishes as bedrock/guardrails
+// (mode "guardrail"). A partial override therefore changes only the rates it names; every unit
+// kind it leaves out is still charged at the provider's rate, never at nothing. Only the eight rate
 // pointers are copied out of the store, under its read lock.
 func (s *Store) guardrailUnitRates(pricing *configstoreTables.TableModelPricing, provider string) (guardrailRateSet, bool) {
+	var own guardrailRateSet
 	if pricing != nil {
-		if rates, ok := guardrailRatesOf(pricing); ok {
-			return rates, true
-		}
+		own, _ = guardrailRatesOf(pricing)
 	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	row, ok := s.pricingData[makeKey("guardrails", normalizeProvider(provider), "guardrail")]
-	if !ok {
-		return guardrailRateSet{}, false
+	var providerRates guardrailRateSet
+	if ok {
+		providerRates, _ = guardrailRatesOf(&row)
 	}
-	return guardrailRatesOf(&row)
+	s.mu.RUnlock()
+	rates := own.orElse(providerRates)
+	return rates, rates != guardrailRateSet{}
 }
 
 // addProviderGuardrailCost adds the charge for the policy units a provider-side guardrail consumed

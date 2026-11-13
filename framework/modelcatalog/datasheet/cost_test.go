@@ -1559,12 +1559,30 @@ func TestCalculateCost_BedrockGuardrailUnitsAreBilled(t *testing.T) {
 	assert.InDelta(t, guardrail, breakdown.AdditionalCostDetails.GuardrailCost, 1e-12)
 	assert.InDelta(t, tokens, s.CalculateCost(chat(nil), nil), 1e-12, "no guardrail units, tokens only")
 
-	// A pricing override on the model's own row sets its own guardrail rates, which win.
+	// A pricing override on the model's own row sets its own guardrail rates, which win rate by
+	// rate. One that sets only the content rate changes only content units: every other kind is
+	// still charged at bedrock/guardrails' rate, never at nothing (the partial patch the UI and API
+	// send).
 	model.GuardrailCostPerContentPolicyUnit = bifrost.Ptr(0.001)
 	s = testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey(model.Model, "bedrock", "chat"):       model,
 		makeKey("guardrails", "bedrock", "guardrail"): guardrails,
 	})
+	rest := 1*0.00075 + 1*0.00015 + 1*0.0 + 1*0.0001 + 3*0.0001
+	assert.InDelta(t, tokens+4*0.001+rest, s.CalculateCost(chat(units), nil), 1e-12,
+		"a content-only override keeps the provider's rates for the other unit kinds")
+
+	// An explicit zero in the override is a rate, kept rather than replaced by the provider's.
+	model.GuardrailCostPerTopicPolicyUnit = bifrost.Ptr(0.0)
+	s = testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(model.Model, "bedrock", "chat"):       model,
+		makeKey("guardrails", "bedrock", "guardrail"): guardrails,
+	})
+	assert.InDelta(t, tokens+4*0.001+rest-1*0.00015, s.CalculateCost(chat(units), nil), 1e-12,
+		"an override's explicit zero topic rate charges topic units nothing")
+
+	// With no provider guardrails row, the model's own rates are all there is.
+	s = testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey(model.Model, "bedrock", "chat"): model})
 	assert.InDelta(t, tokens+4*0.001, s.CalculateCost(chat(units), nil), 1e-12)
 }
 
