@@ -13,6 +13,15 @@ func ToReplicateVideoGenerationInput(bifrostReq *schemas.BifrostVideoGenerationR
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil, fmt.Errorf("bifrost request or input is nil")
 	}
+	// Replicate has no common input for a source video: each hosted model names its own, and the
+	// converter maps none of them. A video_uri was dropped without a word, so the job rendered
+	// without the video the caller sent, and a model priced higher with a video input was billed
+	// for one it never received (TXE-7374). It is refused before any upstream call; the caller can
+	// send the model's own video field through extra params, which reach the model as they are.
+	if bifrostReq.Input.VideoURI != nil && strings.TrimSpace(*bifrostReq.Input.VideoURI) != "" {
+		return nil, providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError("video_uri",
+			"replicate: a source video (video_uri) is not mapped to any Replicate model input; send the model's own video field (for example reference_videos) as an extra param"))
+	}
 	// A hosted model picks its own length when the create names none, and Replicate's prediction
 	// reports neither the rendered duration nor a cost, so such a job could not be priced: it
 	// would settle unpriced and never be charged to a budget (TXE-7297). The create must name
