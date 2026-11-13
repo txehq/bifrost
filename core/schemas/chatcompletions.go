@@ -1993,6 +1993,10 @@ type BifrostLLMUsage struct {
 	TextMessages      *int       `json:"text_messages,omitempty"`
 	ToolUsage         *ToolUsage `json:"tool_usage,omitempty"`
 	SearchContextSize *string    `json:"search_context_size,omitempty"` // Search context tier the vendor billed ("low" | "medium" | "high")
+	// GuardrailUnits are the policy units a provider-side guardrail consumed evaluating this request
+	// (Bedrock Guardrails' invocationMetrics.usage, fork TXE-7365); nil when none ran or the
+	// provider did not report them.
+	GuardrailUnits *GuardrailUnits `json:"guardrail_units,omitempty"`
 	// ToolUsePromptTokens is the number of tokens in tool-use prompts, the results of
 	// vendor-run tools fed back to the model (Gemini's toolUsePromptTokenCount). The vendor
 	// reports it next to prompt_tokens, not inside it; total_tokens includes it.
@@ -2403,6 +2407,7 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 	merged.ProcessedTokens = base.ProcessedTokens.Add(add.ProcessedTokens)
 	merged.BilledCharacters = sumOptionalInts(base.BilledCharacters, add.BilledCharacters)
 	merged.TextMessages = sumOptionalInts(base.TextMessages, add.TextMessages)
+	merged.GuardrailUnits = base.GuardrailUnits.Add(add.GuardrailUnits)
 	merged.ToolUsage = base.ToolUsage.Add(add.ToolUsage)
 	merged.ToolUsePromptTokens = base.ToolUsePromptTokens + add.ToolUsePromptTokens
 	merged.ToolUsePromptTokensDetails = base.ToolUsePromptTokensDetails.Add(add.ToolUsePromptTokensDetails)
@@ -2512,6 +2517,42 @@ func (d *ToolUsePromptTokensDetails) DeepCopy() *ToolUsePromptTokensDetails {
 	}
 	c := *d
 	return &c
+}
+
+// GuardrailUnits counts the policy units a provider-side guardrail consumed, in Bedrock Guardrails'
+// units (fork, TXE-7365). Bedrock bills each kind of unit at its own rate (aws.amazon.com/bedrock/pricing);
+// the upstream datasheet publishes the rates as guardrail_cost_per_unit on bedrock/guardrails.
+type GuardrailUnits struct {
+	ContentPolicyUnits                  int64 `json:"content_policy_units,omitempty"`
+	ContentPolicyImageUnits             int64 `json:"content_policy_image_units,omitempty"`
+	TopicPolicyUnits                    int64 `json:"topic_policy_units,omitempty"`
+	WordPolicyUnits                     int64 `json:"word_policy_units,omitempty"`
+	SensitiveInformationPolicyUnits     int64 `json:"sensitive_information_policy_units,omitempty"`
+	SensitiveInformationPolicyFreeUnits int64 `json:"sensitive_information_policy_free_units,omitempty"`
+	ContextualGroundingPolicyUnits      int64 `json:"contextual_grounding_policy_units,omitempty"`
+	AutomatedReasoningPolicyUnits       int64 `json:"automated_reasoning_policy_units,omitempty"`
+}
+
+// Add returns the unit-by-unit sum of g and o; nil when both are nil.
+func (g *GuardrailUnits) Add(o *GuardrailUnits) *GuardrailUnits {
+	if g == nil && o == nil {
+		return nil
+	}
+	sum := GuardrailUnits{}
+	for _, side := range [2]*GuardrailUnits{g, o} {
+		if side == nil {
+			continue
+		}
+		sum.ContentPolicyUnits += side.ContentPolicyUnits
+		sum.ContentPolicyImageUnits += side.ContentPolicyImageUnits
+		sum.TopicPolicyUnits += side.TopicPolicyUnits
+		sum.WordPolicyUnits += side.WordPolicyUnits
+		sum.SensitiveInformationPolicyUnits += side.SensitiveInformationPolicyUnits
+		sum.SensitiveInformationPolicyFreeUnits += side.SensitiveInformationPolicyFreeUnits
+		sum.ContextualGroundingPolicyUnits += side.ContextualGroundingPolicyUnits
+		sum.AutomatedReasoningPolicyUnits += side.AutomatedReasoningPolicyUnits
+	}
+	return &sum
 }
 
 // WebSearchToolUsage counts billable web search calls.
@@ -2626,7 +2667,7 @@ type OutputCostDetails struct {
 // AdditionalCost. These are internal sidecar costs with no input/output token
 // category. Extend with new fields as more such cost sources are billed.
 type AdditionalCostDetails struct {
-	GuardrailCost     float64 `json:"guardrail_cost,omitempty"`      // Guardrail judge-call cost
+	GuardrailCost     float64 `json:"guardrail_cost,omitempty"`      // Guardrail cost: Bifrost's guardrail judge calls, and the provider's own guardrail units (Bedrock Guardrails, fork TXE-7365)
 	MCPCost           float64 `json:"mcp_cost,omitempty"`            // MCP tool-execution cost
 	SemanticCacheCost float64 `json:"semantic_cache_cost,omitempty"` // Semantic-cache embedding-lookup cost
 	// RoutingCost is the cost of the internal classification calls the routing
@@ -2907,6 +2948,7 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 	c.ProcessedTokens = u.ProcessedTokens.Add(nil)
 	c.BilledCharacters = copyIntPtr(u.BilledCharacters)
 	c.TextMessages = copyIntPtr(u.TextMessages)
+	c.GuardrailUnits = u.GuardrailUnits.Add(nil)
 	c.ToolUsage = u.ToolUsage.DeepCopy()
 	if u.SearchContextSize != nil {
 		scs := *u.SearchContextSize

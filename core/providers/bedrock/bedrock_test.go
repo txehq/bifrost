@@ -2664,6 +2664,48 @@ func TestContentFilterMapsToIncomplete(t *testing.T) {
 //
 // This is the regression path for the bug where response.Trace was dropped
 // by ToBifrostResponsesResponse, making it invisible to callers.
+// TestGuardrailUnitsReachUsage (TXE-7365): the policy units Bedrock Guardrails reports in each
+// assessment's invocationMetrics.usage, input and output, are summed into usage.guardrail_units on
+// chat and Responses, so the units can be priced. A response with no guardrail trace reports none.
+func TestGuardrailUnitsReachUsage(t *testing.T) {
+	const raw = `{
+		"output": {"message": {"role": "assistant", "content": [{"text": "ok"}]}},
+		"stopReason": "end_turn",
+		"usage": {"inputTokens": 12, "outputTokens": 3, "totalTokens": 15},
+		"metrics": {"latencyMs": 400},
+		"trace": {"guardrail": {
+			"inputAssessment": {"gr-1": {"invocationMetrics": {"guardrailProcessingLatency": 120,
+				"usage": {"contentPolicyUnits": 1, "topicPolicyUnits": 1, "wordPolicyUnits": 1, "sensitiveInformationPolicyUnits": 1, "sensitiveInformationPolicyFreeUnits": 0, "contextualGroundingPolicyUnits": 0}}}},
+			"outputAssessments": {"gr-1": [
+				{"invocationMetrics": {"usage": {"contentPolicyUnits": 2, "contentPolicyImageUnits": 1}}},
+				{"invocationMetrics": {"usage": {"contentPolicyUnits": 1, "contextualGroundingPolicyUnits": 3}}}
+			]}
+		}}
+	}`
+	var response bedrock.BedrockConverseResponse
+	require.NoError(t, json.Unmarshal([]byte(raw), &response))
+	want := &schemas.GuardrailUnits{
+		ContentPolicyUnits: 4, ContentPolicyImageUnits: 1, TopicPolicyUnits: 1, WordPolicyUnits: 1,
+		SensitiveInformationPolicyUnits: 1, ContextualGroundingPolicyUnits: 3,
+	}
+
+	chat, err := response.ToBifrostChatResponse(context.Background(), "anthropic.claude-sonnet-4-5")
+	require.NoError(t, err)
+	require.NotNil(t, chat.Usage)
+	assert.Equal(t, want, chat.Usage.GuardrailUnits)
+	assert.Equal(t, 15, chat.Usage.TotalTokens, "tokens are unchanged")
+
+	responses, err := response.ToBifrostResponsesResponse(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	require.NoError(t, err)
+	require.NotNil(t, responses.Usage)
+	assert.Equal(t, want, responses.Usage.GuardrailUnits)
+
+	response.Trace = nil
+	chat, err = response.ToBifrostChatResponse(context.Background(), "anthropic.claude-sonnet-4-5")
+	require.NoError(t, err)
+	assert.Nil(t, chat.Usage.GuardrailUnits, "no guardrail trace, no units")
+}
+
 func TestGuardrailTraceResponseRoundTrip(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
@@ -9152,4 +9194,27 @@ func TestBedrockOfflineRunReachesAFixtureThroughTheEndpointOverride(t *testing.T
 	require.NotEmpty(t, response.Choices)
 	assert.Equal(t, "hello from the fixture", *response.Choices[0].Message.Content.ContentStr)
 	assert.Equal(t, "/model/"+offlineEgressModel+"/converse", path)
+}
+
+// BenchmarkBedrockChatResponseGuardrailUnits is the conversion cost TXE-7365 adds: summing the
+// guardrail units of a traced response, against the same response with no trace.
+func BenchmarkBedrockChatResponseGuardrailUnits(b *testing.B) {
+	const raw = `{"output":{"message":{"role":"assistant","content":[{"text":"ok"}]}},"stopReason":"end_turn",` +
+		`"usage":{"inputTokens":12,"outputTokens":3,"totalTokens":15},"metrics":{"latencyMs":400},` +
+		`"trace":{"guardrail":{"inputAssessment":{"gr-1":{"invocationMetrics":{"usage":{"contentPolicyUnits":1,"topicPolicyUnits":1}}}},` +
+		`"outputAssessments":{"gr-1":[{"invocationMetrics":{"usage":{"contentPolicyUnits":3}}}]}}}}`
+	var traced bedrock.BedrockConverseResponse
+	if err := json.Unmarshal([]byte(raw), &traced); err != nil {
+		b.Fatal(err)
+	}
+	untraced := traced
+	untraced.Trace = nil
+	for name, response := range map[string]*bedrock.BedrockConverseResponse{"with_trace": &traced, "without_trace": &untraced} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = response.ToBifrostChatResponse(context.Background(), "anthropic.claude-sonnet-4-5")
+			}
+		})
+	}
 }

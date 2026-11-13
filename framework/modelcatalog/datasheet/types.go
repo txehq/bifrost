@@ -123,6 +123,18 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 			Medium *float64 `json:"search_context_size_medium"`
 			High   *float64 `json:"search_context_size_high"`
 		} `json:"search_context_cost_per_query,omitempty"`
+		// GuardrailCostPerUnit is upstream's map of Bedrock guardrail unit to price
+		// (bedrock/guardrails, fork TXE-7365), spread into the GuardrailCostPer* fields below.
+		GuardrailCostPerUnit *struct {
+			ContentPolicyUnits                  *float64 `json:"contentPolicyUnits"`
+			ContentPolicyImageUnits             *float64 `json:"contentPolicyImageUnits"`
+			TopicPolicyUnits                    *float64 `json:"topicPolicyUnits"`
+			WordPolicyUnits                     *float64 `json:"wordPolicyUnits"`
+			SensitiveInformationPolicyUnits     *float64 `json:"sensitiveInformationPolicyUnits"`
+			SensitiveInformationPolicyFreeUnits *float64 `json:"sensitiveInformationPolicyFreeUnits"`
+			ContextualGroundingPolicyUnits      *float64 `json:"contextualGroundingPolicyUnits"`
+			AutomatedReasoningPolicyUnits       *float64 `json:"automatedReasoningPolicyUnits"`
+		} `json:"guardrail_cost_per_unit,omitempty"`
 	}
 	if err := sonic.Unmarshal(data, &raw); err != nil {
 		return err
@@ -143,6 +155,26 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 			p.SearchContextCostPerQuery = q.Low
 		case q.High != nil:
 			p.SearchContextCostPerQuery = q.High
+		}
+	}
+	// The guardrail unit map fills each per-unit rate it names; a flat field already set wins.
+	if g := raw.GuardrailCostPerUnit; g != nil {
+		for _, pair := range []struct {
+			dst **float64
+			src *float64
+		}{
+			{&p.GuardrailCostPerContentPolicyUnit, g.ContentPolicyUnits},
+			{&p.GuardrailCostPerContentPolicyImageUnit, g.ContentPolicyImageUnits},
+			{&p.GuardrailCostPerTopicPolicyUnit, g.TopicPolicyUnits},
+			{&p.GuardrailCostPerWordPolicyUnit, g.WordPolicyUnits},
+			{&p.GuardrailCostPerSensitiveInformationPolicyUnit, g.SensitiveInformationPolicyUnits},
+			{&p.GuardrailCostPerSensitiveInformationPolicyFreeUnit, g.SensitiveInformationPolicyFreeUnits},
+			{&p.GuardrailCostPerContextualGroundingPolicyUnit, g.ContextualGroundingPolicyUnits},
+			{&p.GuardrailCostPerAutomatedReasoningPolicyUnit, g.AutomatedReasoningPolicyUnits},
+		} {
+			if *pair.dst == nil {
+				*pair.dst = pair.src
+			}
 		}
 	}
 	// Older datasheet rows lack web_search_cost_per_request; fall back to the per-query search rate.
@@ -401,6 +433,18 @@ type Options struct {
 	// WebSearchCostPerRequest prices each server-side web search call (usage.tool_usage.web_search.num_requests).
 	WebSearchCostPerRequest       *float64 `json:"web_search_cost_per_request,omitempty"`
 	CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
+	// Bedrock Guardrails rates, per policy unit (fork, TXE-7365). Upstream publishes them as one
+	// map, guardrail_cost_per_unit, keyed by Bedrock's unit names on bedrock/guardrails;
+	// Entry.UnmarshalJSON spreads it into these fields so each rate syncs, overrides and prices
+	// like any other.
+	GuardrailCostPerContentPolicyUnit                  *float64 `json:"guardrail_cost_per_content_policy_unit,omitempty"`
+	GuardrailCostPerContentPolicyImageUnit             *float64 `json:"guardrail_cost_per_content_policy_image_unit,omitempty"`
+	GuardrailCostPerTopicPolicyUnit                    *float64 `json:"guardrail_cost_per_topic_policy_unit,omitempty"`
+	GuardrailCostPerWordPolicyUnit                     *float64 `json:"guardrail_cost_per_word_policy_unit,omitempty"`
+	GuardrailCostPerSensitiveInformationPolicyUnit     *float64 `json:"guardrail_cost_per_sensitive_information_policy_unit,omitempty"`
+	GuardrailCostPerSensitiveInformationPolicyFreeUnit *float64 `json:"guardrail_cost_per_sensitive_information_policy_free_unit,omitempty"`
+	GuardrailCostPerContextualGroundingPolicyUnit      *float64 `json:"guardrail_cost_per_contextual_grounding_policy_unit,omitempty"`
+	GuardrailCostPerAutomatedReasoningPolicyUnit       *float64 `json:"guardrail_cost_per_automated_reasoning_policy_unit,omitempty"`
 	// InputCostPerQuery is the per-query rate rerank models bill on. Cohere and Bedrock both
 	// define a query (a "search unit") as one query against up to 100 document chunks, so a
 	// request over that many chunks bills as several queries. It is unrelated to
@@ -1099,9 +1143,18 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		SearchContextCostPerQuery:     entry.SearchContextCostPerQuery,
 		WebSearchCostPerRequest:       entry.WebSearchCostPerRequest,
 		CodeInterpreterCostPerSession: entry.CodeInterpreterCostPerSession,
-		InputCostPerQuery:             entry.InputCostPerQuery,
-		InferenceGeoUSMultiplier:      entry.InferenceGeoUSMultiplier,
-		CostPerRequest:                entry.CostPerRequest,
+
+		GuardrailCostPerContentPolicyUnit:                  entry.GuardrailCostPerContentPolicyUnit,
+		GuardrailCostPerContentPolicyImageUnit:             entry.GuardrailCostPerContentPolicyImageUnit,
+		GuardrailCostPerTopicPolicyUnit:                    entry.GuardrailCostPerTopicPolicyUnit,
+		GuardrailCostPerWordPolicyUnit:                     entry.GuardrailCostPerWordPolicyUnit,
+		GuardrailCostPerSensitiveInformationPolicyUnit:     entry.GuardrailCostPerSensitiveInformationPolicyUnit,
+		GuardrailCostPerSensitiveInformationPolicyFreeUnit: entry.GuardrailCostPerSensitiveInformationPolicyFreeUnit,
+		GuardrailCostPerContextualGroundingPolicyUnit:      entry.GuardrailCostPerContextualGroundingPolicyUnit,
+		GuardrailCostPerAutomatedReasoningPolicyUnit:       entry.GuardrailCostPerAutomatedReasoningPolicyUnit,
+		InputCostPerQuery:                                  entry.InputCostPerQuery,
+		InferenceGeoUSMultiplier:                           entry.InferenceGeoUSMultiplier,
+		CostPerRequest:                                     entry.CostPerRequest,
 
 		OCRCostPerPage:        entry.OCRCostPerPage,
 		AnnotationCostPerPage: entry.AnnotationCostPerPage,
@@ -1313,8 +1366,17 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		WebSearchCostPerRequest:       pricing.WebSearchCostPerRequest,
 		InputCostPerQuery:             pricing.InputCostPerQuery,
 		CodeInterpreterCostPerSession: pricing.CodeInterpreterCostPerSession,
-		InferenceGeoUSMultiplier:      pricing.InferenceGeoUSMultiplier,
-		CostPerRequest:                pricing.CostPerRequest,
+
+		GuardrailCostPerContentPolicyUnit:                  pricing.GuardrailCostPerContentPolicyUnit,
+		GuardrailCostPerContentPolicyImageUnit:             pricing.GuardrailCostPerContentPolicyImageUnit,
+		GuardrailCostPerTopicPolicyUnit:                    pricing.GuardrailCostPerTopicPolicyUnit,
+		GuardrailCostPerWordPolicyUnit:                     pricing.GuardrailCostPerWordPolicyUnit,
+		GuardrailCostPerSensitiveInformationPolicyUnit:     pricing.GuardrailCostPerSensitiveInformationPolicyUnit,
+		GuardrailCostPerSensitiveInformationPolicyFreeUnit: pricing.GuardrailCostPerSensitiveInformationPolicyFreeUnit,
+		GuardrailCostPerContextualGroundingPolicyUnit:      pricing.GuardrailCostPerContextualGroundingPolicyUnit,
+		GuardrailCostPerAutomatedReasoningPolicyUnit:       pricing.GuardrailCostPerAutomatedReasoningPolicyUnit,
+		InferenceGeoUSMultiplier:                           pricing.InferenceGeoUSMultiplier,
+		CostPerRequest:                                     pricing.CostPerRequest,
 
 		OCRCostPerPage:        pricing.OCRCostPerPage,
 		AnnotationCostPerPage: pricing.AnnotationCostPerPage,

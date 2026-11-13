@@ -251,6 +251,15 @@ type PricingEntry struct {
     WebSearchCostPerRequest       *float64 `json:"web_search_cost_per_request,omitempty"`
     InputCostPerQuery             *float64 `json:"input_cost_per_query,omitempty"`
     CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
+    // Bedrock Guardrails, per policy unit (upstream's guardrail_cost_per_unit map, spread at sync)
+    GuardrailCostPerContentPolicyUnit             *float64 `json:"guardrail_cost_per_content_policy_unit,omitempty"`
+    GuardrailCostPerContentPolicyImageUnit        *float64 `json:"guardrail_cost_per_content_policy_image_unit,omitempty"`
+    GuardrailCostPerTopicPolicyUnit               *float64 `json:"guardrail_cost_per_topic_policy_unit,omitempty"`
+    GuardrailCostPerWordPolicyUnit                *float64 `json:"guardrail_cost_per_word_policy_unit,omitempty"`
+    GuardrailCostPerSensitiveInformationPolicyUnit *float64 `json:"guardrail_cost_per_sensitive_information_policy_unit,omitempty"`
+    GuardrailCostPerSensitiveInformationPolicyFreeUnit *float64 `json:"guardrail_cost_per_sensitive_information_policy_free_unit,omitempty"`
+    GuardrailCostPerContextualGroundingPolicyUnit *float64 `json:"guardrail_cost_per_contextual_grounding_policy_unit,omitempty"`
+    GuardrailCostPerAutomatedReasoningPolicyUnit  *float64 `json:"guardrail_cost_per_automated_reasoning_policy_unit,omitempty"`
     CostPerRequest                *float64 `json:"cost_per_request,omitempty"`
 
     // Costs - Time of day

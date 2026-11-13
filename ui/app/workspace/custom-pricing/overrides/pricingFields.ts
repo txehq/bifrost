@@ -512,6 +512,56 @@ export const PRICING_FIELDS = [
 		group: "chat",
 		requestTypeGroups: ["chat"],
 	},
+	// Bedrock Guardrails, per policy unit (TXE-7365). An override on a chat or Responses model sets
+	// the rates its guardrailed requests are charged; otherwise bedrock/guardrails' rates apply.
+	{
+		key: "guardrail_cost_per_content_policy_unit",
+		label: "Guardrail / content policy unit",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "guardrail_cost_per_content_policy_image_unit",
+		label: "Guardrail / image content unit",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "guardrail_cost_per_topic_policy_unit",
+		label: "Guardrail / topic policy unit",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "guardrail_cost_per_word_policy_unit",
+		label: "Guardrail / word policy unit",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "guardrail_cost_per_sensitive_information_policy_unit",
+		label: "Guardrail / sensitive information unit",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "guardrail_cost_per_sensitive_information_policy_free_unit",
+		label: "Guardrail / free sensitive information unit",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "guardrail_cost_per_contextual_grounding_policy_unit",
+		label: "Guardrail / contextual grounding unit",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "guardrail_cost_per_automated_reasoning_policy_unit",
+		label: "Guardrail / automated reasoning unit",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
 	{
 		key: "inference_geo_us_multiplier",
 		label: "Inference geo US multiplier",

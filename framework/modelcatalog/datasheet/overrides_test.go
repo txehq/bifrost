@@ -538,6 +538,37 @@ func TestPatchPricing_InputCostPerTextMessage(t *testing.T) {
 	assert.Equal(t, 0.004, *back.InputCostPerTextMessage)
 }
 
+// TestPatchPricing_GuardrailUnitRates (TXE-7365): an override sets every Bedrock guardrail unit rate,
+// and the entry and table conversions keep them.
+func TestPatchPricing_GuardrailUnitRates(t *testing.T) {
+	override := Options{
+		GuardrailCostPerContentPolicyUnit:                  bifrost.Ptr(0.00015),
+		GuardrailCostPerContentPolicyImageUnit:             bifrost.Ptr(0.00075),
+		GuardrailCostPerTopicPolicyUnit:                    bifrost.Ptr(0.00015),
+		GuardrailCostPerWordPolicyUnit:                     bifrost.Ptr(0.0001),
+		GuardrailCostPerSensitiveInformationPolicyUnit:     bifrost.Ptr(0.0001),
+		GuardrailCostPerSensitiveInformationPolicyFreeUnit: bifrost.Ptr(0.00001),
+		GuardrailCostPerContextualGroundingPolicyUnit:      bifrost.Ptr(0.0001),
+		GuardrailCostPerAutomatedReasoningPolicyUnit:       bifrost.Ptr(0.00017),
+	}
+	patched := patchPricing(configstoreTables.TableModelPricing{Model: "guardrails", Provider: "bedrock", Mode: "guardrail"}, override)
+	back := convertEntryToTablePricing("bedrock/guardrails", *convertTablePricingToEntry(&patched))
+	for name, pair := range map[string][2]*float64{
+		"content":        {patched.GuardrailCostPerContentPolicyUnit, back.GuardrailCostPerContentPolicyUnit},
+		"content image":  {patched.GuardrailCostPerContentPolicyImageUnit, back.GuardrailCostPerContentPolicyImageUnit},
+		"topic":          {patched.GuardrailCostPerTopicPolicyUnit, back.GuardrailCostPerTopicPolicyUnit},
+		"word":           {patched.GuardrailCostPerWordPolicyUnit, back.GuardrailCostPerWordPolicyUnit},
+		"sensitive":      {patched.GuardrailCostPerSensitiveInformationPolicyUnit, back.GuardrailCostPerSensitiveInformationPolicyUnit},
+		"sensitive free": {patched.GuardrailCostPerSensitiveInformationPolicyFreeUnit, back.GuardrailCostPerSensitiveInformationPolicyFreeUnit},
+		"grounding":      {patched.GuardrailCostPerContextualGroundingPolicyUnit, back.GuardrailCostPerContextualGroundingPolicyUnit},
+		"reasoning":      {patched.GuardrailCostPerAutomatedReasoningPolicyUnit, back.GuardrailCostPerAutomatedReasoningPolicyUnit},
+	} {
+		require.NotNil(t, pair[0], "patch dropped %s", name)
+		require.NotNil(t, pair[1], "conversion dropped %s", name)
+		assert.Equal(t, *pair[0], *pair[1], name)
+	}
+}
+
 func TestPatchPricing_CostPerRequestZero(t *testing.T) {
 	base := configstoreTables.TableModelPricing{
 		CostPerRequest: bifrost.Ptr(0.02),

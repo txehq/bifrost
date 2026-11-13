@@ -2907,6 +2907,38 @@ PricingPatch:
     code_interpreter_cost_per_session:
       type: number
       minimum: 0
+    guardrail_cost_per_content_policy_unit:
+      type: number
+      minimum: 0
+      description: Bedrock Guardrails rate per content filter policy unit (usage.guardrail_units.content_policy_units).
+    guardrail_cost_per_content_policy_image_unit:
+      type: number
+      minimum: 0
+      description: Bedrock Guardrails rate per image content filter unit (usage.guardrail_units.content_policy_image_units).
+    guardrail_cost_per_topic_policy_unit:
+      type: number
+      minimum: 0
+      description: Bedrock Guardrails rate per denied topic policy unit (usage.guardrail_units.topic_policy_units).
+    guardrail_cost_per_word_policy_unit:
+      type: number
+      minimum: 0
+      description: Bedrock Guardrails rate per word filter policy unit (usage.guardrail_units.word_policy_units).
+    guardrail_cost_per_sensitive_information_policy_unit:
+      type: number
+      minimum: 0
+      description: Bedrock Guardrails rate per sensitive information filter unit (usage.guardrail_units.sensitive_information_policy_units).
+    guardrail_cost_per_sensitive_information_policy_free_unit:
+      type: number
+      minimum: 0
+      description: Bedrock Guardrails rate per free sensitive information unit (usage.guardrail_units.sensitive_information_policy_free_units).
+    guardrail_cost_per_contextual_grounding_policy_unit:
+      type: number
+      minimum: 0
+      description: Bedrock Guardrails rate per contextual grounding check unit (usage.guardrail_units.contextual_grounding_policy_units).
+    guardrail_cost_per_automated_reasoning_policy_unit:
+      type: number
+      minimum: 0
+      description: Bedrock Guardrails rate per automated reasoning check unit (usage.guardrail_units.automated_reasoning_policy_units).
     inference_geo_us_multiplier:
       type: number
       minimum: 0

@@ -3205,6 +3205,13 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse(ctx *schemas
 			"trace": response.Trace,
 		}
 	}
+	// Bedrock Guardrails units (TXE-7365): billed per unit apart from tokens.
+	if units := bedrockGuardrailUnits(response.Trace); units != nil {
+		if bifrostResp.Usage == nil {
+			bifrostResp.Usage = &schemas.ResponsesResponseUsage{}
+		}
+		bifrostResp.Usage.GuardrailUnits = units
+	}
 	fields := nonNullRawJSON(response.AdditionalModelResponseFields)
 	if fields != nil {
 		fields = bytes.Clone(fields)

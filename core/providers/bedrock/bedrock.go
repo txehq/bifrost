@@ -1703,6 +1703,11 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 
 				progress.observe(message, &streamEvent)
 
+				// Bedrock Guardrails units (TXE-7365) arrive with the trace on the metadata event.
+				if units := bedrockGuardrailUnits(streamEvent.Trace); units != nil {
+					usage.GuardrailUnits = units
+				}
+
 				if streamEvent.Usage != nil {
 					// Accumulate usage information instead of overwriting
 					// In some cases usage comes in multiple events, so we need to take the maximum values
@@ -2163,6 +2168,12 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 
 				if streamEvent.Trace != nil {
 					streamTrace = streamEvent.Trace
+					// Bedrock Guardrails units (TXE-7365): billed per unit apart from tokens.
+					if units := bedrockGuardrailUnits(streamEvent.Trace); units != nil {
+						usage.GuardrailUnits = units
+						// The cancel/timeout path bills billedUsage, so the units go there too.
+						billedUsage.GuardrailUnits = units.Add(nil)
+					}
 				}
 
 				if streamEvent.Usage != nil {

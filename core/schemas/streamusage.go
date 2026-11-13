@@ -51,6 +51,9 @@ func (u *BifrostLLMUsage) MergeStreamFrame(frame *BifrostLLMUsage) {
 	if frame.TextMessages != nil {
 		u.TextMessages = frame.TextMessages
 	}
+	if frame.GuardrailUnits != nil {
+		u.GuardrailUnits = frame.GuardrailUnits
+	}
 	if frame.ToolUsage != nil {
 		u.ToolUsage = frame.ToolUsage
 	}

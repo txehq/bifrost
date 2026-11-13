@@ -357,6 +357,13 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 			usage.PromptTokens = usage.PromptTokens + response.Usage.CacheWriteInputTokens
 		}
 	}
+	// Bedrock Guardrails units (TXE-7365): billed per unit apart from tokens.
+	if units := bedrockGuardrailUnits(response.Trace); units != nil {
+		if usage == nil {
+			usage = &schemas.BifrostLLMUsage{}
+		}
+		usage.GuardrailUnits = units
+	}
 
 	// Create the final Bifrost response
 	bifrostResponse := &schemas.BifrostChatResponse{

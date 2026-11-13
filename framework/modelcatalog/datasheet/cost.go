@@ -741,6 +741,7 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 	if requestType == schemas.RealtimeRequest {
 		cost = addRealtimeTextMessageCost(cost, pricing, input.usage)
 	}
+	cost = s.addProviderGuardrailCost(cost, pricing, string(routingInfo.Provider), input.usage)
 
 	// Time-of-day pricing: providers that discount outside declared peak windows
 	// (e.g. DeepSeek's 50% off-peak rate) scale every usage-based charge by a
@@ -947,6 +948,7 @@ func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.Bi
 		TotalTokens:      u.TotalTokens,
 		AudioSeconds:     u.AudioSeconds,
 		TextMessages:     u.TextMessages,
+		GuardrailUnits:   u.GuardrailUnits,
 		Cost:             u.Cost,
 	}
 	// Map token details for cache and search query pricing
@@ -2246,6 +2248,105 @@ var videoResolutionTierEdges = map[string]int{
 	"1080p": 1080, "1080P": 1080,
 	"2k": 1440, "2K": 1440, "1440p": 1440, "1440P": 1440,
 	"4k": 2160, "4K": 2160, "2160p": 2160, "2160P": 2160,
+}
+
+// guardrailRateSet is the eight per-unit rates of a provider-side guardrail (fork, TXE-7365).
+type guardrailRateSet struct {
+	content, contentImage, topic, word, sensitive, sensitiveFree, grounding, reasoning *float64
+}
+
+func guardrailRatesOf(p *configstoreTables.TableModelPricing) (guardrailRateSet, bool) {
+	r := guardrailRateSet{
+		p.GuardrailCostPerContentPolicyUnit, p.GuardrailCostPerContentPolicyImageUnit,
+		p.GuardrailCostPerTopicPolicyUnit, p.GuardrailCostPerWordPolicyUnit,
+		p.GuardrailCostPerSensitiveInformationPolicyUnit, p.GuardrailCostPerSensitiveInformationPolicyFreeUnit,
+		p.GuardrailCostPerContextualGroundingPolicyUnit, p.GuardrailCostPerAutomatedReasoningPolicyUnit,
+	}
+	return r, r != guardrailRateSet{}
+}
+
+// orElse returns r with every rate it leaves unset taken from fallback. A rate r sets, an explicit
+// zero included, is kept.
+func (r guardrailRateSet) orElse(fallback guardrailRateSet) guardrailRateSet {
+	pick := func(own, other *float64) *float64 {
+		if own != nil {
+			return own
+		}
+		return other
+	}
+	return guardrailRateSet{
+		pick(r.content, fallback.content), pick(r.contentImage, fallback.contentImage),
+		pick(r.topic, fallback.topic), pick(r.word, fallback.word),
+		pick(r.sensitive, fallback.sensitive), pick(r.sensitiveFree, fallback.sensitiveFree),
+		pick(r.grounding, fallback.grounding), pick(r.reasoning, fallback.reasoning),
+	}
+}
+
+// guardrailUnitRates returns the per-unit rates of a provider-side guardrail for a request, rate by
+// rate: the request model's own row where it sets one (a pricing override, which may set only some
+// of the eight), else the provider's guardrails row, which upstream publishes as bedrock/guardrails
+// (mode "guardrail"). A partial override therefore changes only the rates it names; every unit
+// kind it leaves out is still charged at the provider's rate, never at nothing. Only the eight rate
+// pointers are copied out of the store, under its read lock.
+func (s *Store) guardrailUnitRates(pricing *configstoreTables.TableModelPricing, provider string) (guardrailRateSet, bool) {
+	var own guardrailRateSet
+	if pricing != nil {
+		own, _ = guardrailRatesOf(pricing)
+	}
+	s.mu.RLock()
+	row, ok := s.pricingData[makeKey("guardrails", normalizeProvider(provider), "guardrail")]
+	var providerRates guardrailRateSet
+	if ok {
+		providerRates, _ = guardrailRatesOf(&row)
+	}
+	s.mu.RUnlock()
+	rates := own.orElse(providerRates)
+	return rates, rates != guardrailRateSet{}
+}
+
+// addProviderGuardrailCost adds the charge for the policy units a provider-side guardrail consumed
+// (usage.guardrail_units; Bedrock Guardrails, fork TXE-7365), each kind of unit at its own rate. It is
+// a separate charge from the request's tokens, so it lands on the additional side as guardrail cost.
+func (s *Store) addProviderGuardrailCost(cost *schemas.BifrostCost, pricing *configstoreTables.TableModelPricing, provider string, usage *schemas.BifrostLLMUsage) *schemas.BifrostCost {
+	if usage == nil || usage.GuardrailUnits == nil {
+		return cost
+	}
+	rates, ok := s.guardrailUnitRates(pricing, provider)
+	if !ok {
+		return cost
+	}
+	u := usage.GuardrailUnits
+	charge := 0.0
+	for _, term := range [...]struct {
+		units int64
+		rate  *float64
+	}{
+		{u.ContentPolicyUnits, rates.content},
+		{u.ContentPolicyImageUnits, rates.contentImage},
+		{u.TopicPolicyUnits, rates.topic},
+		{u.WordPolicyUnits, rates.word},
+		{u.SensitiveInformationPolicyUnits, rates.sensitive},
+		{u.SensitiveInformationPolicyFreeUnits, rates.sensitiveFree},
+		{u.ContextualGroundingPolicyUnits, rates.grounding},
+		{u.AutomatedReasoningPolicyUnits, rates.reasoning},
+	} {
+		if term.rate != nil && term.units > 0 {
+			charge += float64(term.units) * *term.rate
+		}
+	}
+	if charge <= 0 {
+		return cost
+	}
+	if cost == nil {
+		cost = &schemas.BifrostCost{}
+	}
+	if cost.AdditionalCostDetails == nil {
+		cost.AdditionalCostDetails = &schemas.AdditionalCostDetails{}
+	}
+	cost.AdditionalCost += charge
+	cost.AdditionalCostDetails.GuardrailCost += charge
+	cost.TotalCost += charge
+	return cost
 }
 
 // computeLiveCost bills GPT Live voice duration: session seconds × input_cost_per_second.

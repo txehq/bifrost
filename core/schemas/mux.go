@@ -1127,6 +1127,7 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 		VendorCost:     cu.VendorCost,
 		AudioSeconds:   copyFloat64Ptr(cu.AudioSeconds),
 		TextMessages:   copyIntPtr(cu.TextMessages),
+		GuardrailUnits: cu.GuardrailUnits.Add(nil),
 		// Same shape on both sides, so the counts survive a chat answer served on a
 		// Responses route and the reverse.
 		ServerSideToolUsageDetails: cu.ServerSideToolUsageDetails,
@@ -1179,6 +1180,7 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 		VendorCost:                 ru.VendorCost,
 		AudioSeconds:               copyFloat64Ptr(ru.AudioSeconds),
 		TextMessages:               copyIntPtr(ru.TextMessages),
+		GuardrailUnits:             ru.GuardrailUnits.Add(nil),
 		ServerSideToolUsageDetails: ru.ServerSideToolUsageDetails,
 	}
 

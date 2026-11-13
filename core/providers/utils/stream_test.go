@@ -554,6 +554,27 @@ func TestAttachBilledUsageFromContext_CopiesUsage(t *testing.T) {
 	}
 }
 
+// TestAttachBilledUsageFromContext_KeepsUsageWithOnlyGuardrailUnits (TXE-7365): Bedrock Guardrails
+// bill per unit apart from tokens, so a stream cut after the guardrail assessed its input owes
+// the units even with no token counted. The snapshot owns its units.
+func TestAttachBilledUsageFromContext_KeepsUsageWithOnlyGuardrailUnits(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	usage := &schemas.BifrostLLMUsage{GuardrailUnits: &schemas.GuardrailUnits{ContentPolicyUnits: 2}}
+	ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
+
+	bifrostErr := &schemas.BifrostError{}
+	attachBilledUsageFromContext(ctx, bifrostErr)
+
+	billed := bifrostErr.ExtraFields.BilledUsage
+	if billed == nil || billed.GuardrailUnits == nil || billed.GuardrailUnits.ContentPolicyUnits != 2 {
+		t.Fatalf("guardrail units not billed: %+v", billed)
+	}
+	usage.GuardrailUnits.ContentPolicyUnits = 999
+	if billed.GuardrailUnits.ContentPolicyUnits != 2 {
+		t.Fatal("BilledUsage aliases the context handle's guardrail units")
+	}
+}
+
 func TestAttachBilledUsageFromContext_NoOpWhenEmpty(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, &schemas.BifrostLLMUsage{})

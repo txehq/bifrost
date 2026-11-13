@@ -584,6 +584,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_input_cost_per_text_message_column"}, run: migrationAddInputCostPerTextMessageColumn},
 	{IDs: []string{"add_output_cost_per_second_resolution_band_columns"}, run: migrationAddOutputCostPerSecondResolutionBandColumns},
 	{IDs: []string{"add_image_variant_pricing_columns"}, run: migrationAddImageVariantPricingColumns},
+	{IDs: []string{"add_guardrail_unit_rate_columns"}, run: migrationAddGuardrailUnitRateColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16931,6 +16932,52 @@ func migrationAddInputCostPerTextMessageColumn(ctx context.Context, db *gorm.DB,
 		},
 		Rollback: func(tx *gorm.DB) error {
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableModelPricing{}, "input_cost_per_text_message")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// guardrailUnitRateColumns are the per-unit Bedrock Guardrails rates (fork, TXE-7365), which the
+// upstream datasheet publishes as one map, guardrail_cost_per_unit, on bedrock/guardrails.
+var guardrailUnitRateColumns = []string{
+	"guardrail_cost_per_content_policy_unit",
+	"guardrail_cost_per_content_policy_image_unit",
+	"guardrail_cost_per_topic_policy_unit",
+	"guardrail_cost_per_word_policy_unit",
+	"guardrail_cost_per_sensitive_information_policy_unit",
+	"guardrail_cost_per_sensitive_information_policy_free_unit",
+	"guardrail_cost_per_contextual_grounding_policy_unit",
+	"guardrail_cost_per_automated_reasoning_policy_unit",
+}
+
+// migrationAddGuardrailUnitRateColumns adds the Bedrock Guardrails per-unit rate columns. Expand-only:
+// nullable columns, nothing rewritten.
+func migrationAddGuardrailUnitRateColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_guardrail_unit_rate_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range guardrailUnitRateColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range guardrailUnitRateColumns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
 		},
 	}})
 	if err := m.Migrate(); err != nil {

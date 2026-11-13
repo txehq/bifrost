@@ -248,6 +248,16 @@ type TableModelPricing struct {
 	WebSearchCostPerRequest       *float64 `gorm:"default:null;column:web_search_cost_per_request" json:"web_search_cost_per_request,omitempty"`
 	InputCostPerQuery             *float64 `gorm:"default:null;column:input_cost_per_query" json:"input_cost_per_query,omitempty"`
 	CodeInterpreterCostPerSession *float64 `gorm:"default:null;column:code_interpreter_cost_per_session" json:"code_interpreter_cost_per_session,omitempty"`
+
+	// Bedrock Guardrails rates, per policy unit (fork, TXE-7365).
+	GuardrailCostPerContentPolicyUnit                  *float64 `gorm:"default:null;column:guardrail_cost_per_content_policy_unit" json:"guardrail_cost_per_content_policy_unit,omitempty"`
+	GuardrailCostPerContentPolicyImageUnit             *float64 `gorm:"default:null;column:guardrail_cost_per_content_policy_image_unit" json:"guardrail_cost_per_content_policy_image_unit,omitempty"`
+	GuardrailCostPerTopicPolicyUnit                    *float64 `gorm:"default:null;column:guardrail_cost_per_topic_policy_unit" json:"guardrail_cost_per_topic_policy_unit,omitempty"`
+	GuardrailCostPerWordPolicyUnit                     *float64 `gorm:"default:null;column:guardrail_cost_per_word_policy_unit" json:"guardrail_cost_per_word_policy_unit,omitempty"`
+	GuardrailCostPerSensitiveInformationPolicyUnit     *float64 `gorm:"default:null;column:guardrail_cost_per_sensitive_information_policy_unit" json:"guardrail_cost_per_sensitive_information_policy_unit,omitempty"`
+	GuardrailCostPerSensitiveInformationPolicyFreeUnit *float64 `gorm:"default:null;column:guardrail_cost_per_sensitive_information_policy_free_unit" json:"guardrail_cost_per_sensitive_information_policy_free_unit,omitempty"`
+	GuardrailCostPerContextualGroundingPolicyUnit      *float64 `gorm:"default:null;column:guardrail_cost_per_contextual_grounding_policy_unit" json:"guardrail_cost_per_contextual_grounding_policy_unit,omitempty"`
+	GuardrailCostPerAutomatedReasoningPolicyUnit       *float64 `gorm:"default:null;column:guardrail_cost_per_automated_reasoning_policy_unit" json:"guardrail_cost_per_automated_reasoning_policy_unit,omitempty"`
 	// Data-residency multiplier scaling all token/cache costs when Anthropic serves inference_geo:"us" (1.1x); nil = no multiplier.
 	InferenceGeoUSMultiplier *float64 `gorm:"default:null;column:inference_geo_us_multiplier" json:"inference_geo_us_multiplier,omitempty"`
 	// CostPerRequest is a flat fee added once per billed request, regardless of request type or usage.
