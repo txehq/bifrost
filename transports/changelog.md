@@ -10,6 +10,7 @@
 - fork: **TXE-7357** (#283) video tokens, per-clip prices, Kling's mode, Seedance's video input and Vertex's embedding intervals are priced.
 - fork: **TXE-7367** (#286) a realtime voice turn the vendor reports by duration is billed per second.
 - fork: **TXE-7372** (#284) priority-served images are priced at the priority image token rate.
+- fork: **TXE-7383** (#287) xAI realtime text messages are billed once sent, and settled even when admission refuses the session.
 - fork: **TXE-7353** (#277) service-tier and 12-hour cache-write rates are priced from the datasheet (new `model_pricing` columns).
 - fork: **TXE-7306** (#273) video jobs with generated audio are priced at the band's audio rate the datasheet publishes (new `model_pricing` columns).
 - fork: **TXE-7329** (#271) a silent video job is priced on the length it rendered.
