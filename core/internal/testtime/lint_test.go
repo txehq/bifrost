@@ -637,8 +637,8 @@ func (l *fileLint) eval(e ast.Expr, depth int) (value, bool) {
 // sleepLintDirs are the packages, from the repository root, whose tests must wait for an
 // asynchronous write on a signal or on Eventually, never on time alone. Add a package
 // here once its sleeps are converted or marked: TXE-7315 framework/logstore, and
-// plugins/logging when TXE-7299 lands.
-var sleepLintDirs = []string{"framework/logstore"}
+// TXE-7319 plugins/logging.
+var sleepLintDirs = []string{"framework/logstore", "plugins/logging"}
 
 // sleepOKMarker marks a sleep that does not wait for an asynchronous write: injected
 // latency in a fake, an absence window (a correct implementation passes however long it

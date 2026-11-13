@@ -501,13 +501,7 @@ func TestCleanupInterruptsBlockedFlushAndDrainsIt(t *testing.T) {
 		plugin.enqueueLogEntry(makeTestLog(fmt.Sprintf("blocked-%d", i)), nil)
 	}
 	// Let the batch writer flush into the blocked store call.
-	deadline := time.Now().Add(2 * time.Second)
-	for !store.blocked.Load() {
-		if time.Now().After(deadline) {
-			t.Fatal("batch writer never reached the store")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitFor(t, "the batch writer to reach the store", store.blocked.Load)
 
 	start := time.Now()
 	if err := plugin.Cleanup(); err != nil {
@@ -559,15 +553,10 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	waitForWithin(t, 3*time.Second, what, cond)
 }
 
+// waitForWithin is testtime.Eventually, the condition wait shared across modules.
 func waitForWithin(t *testing.T, budget time.Duration, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(budget)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testtime.Eventually(t, budget, what, cond)
 }
 
 func countLogs(t *testing.T, store logstore.LogStore) int64 {
@@ -608,7 +597,7 @@ func TestBatchWriterPausesWhileMigrationLockHeld(t *testing.T) {
 	for i := 0; i < capacity+overflow; i++ {
 		plugin.enqueueLogEntry(makeTestLog(fmt.Sprintf("paused-queued-%d", i)), nil)
 	}
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // sleep-ok: absence window; a correct writer passes however long it runs
 	if got := store.batches.Load(); got != 0 {
 		t.Fatalf("expected no inserts while the migration lock is held, got %d batch calls", got)
 	}
@@ -763,14 +752,8 @@ func TestBatchWriterKeepsWritingAfterPauseCapUntilLockClears(t *testing.T) {
 
 	const more = 3 * batch
 	enqueue("cap-later", more)
-	deadline := time.Now().Add(maxPause)
-	for countLogs(t, inner) < batch+more {
-		if time.Now().After(deadline) {
-			t.Fatalf("after the pause cap, later batches must flush at once while the lock stays held: wrote %d of %d within %s",
-				countLogs(t, inner)-batch, more, maxPause)
-		}
-		time.Sleep(poll)
-	}
+	waitForWithin(t, maxPause, "later batches to flush at once after the pause cap while the lock stays held",
+		func() bool { return countLogs(t, inner) >= batch+more })
 
 	store.migrating.Store(false)
 	enqueue("cap-released", batch)
@@ -842,13 +825,13 @@ func TestDeferredUsageWaitsForMigrationAndWriterResume(t *testing.T) {
 	plugin.writerPaused.Store(true)
 
 	scheduleUsage(plugin, "usage-gated")
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // sleep-ok: absence window; no lookup may run while the lock is held
 	if l, u := store.lookups.Load(), store.updates.Load(); l != 0 || u != 0 {
 		t.Fatalf("no store access expected while the migration lock is held: lookups=%d updates=%d", l, u)
 	}
 
 	store.migrating.Store(false)
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // sleep-ok: absence window; no lookup may run while the writer is paused
 	if l := store.lookups.Load(); l != 0 {
 		t.Fatalf("lookup ran %d time(s) before the paused writer resumed; the row it holds cannot be present yet", l)
 	}
@@ -966,7 +949,7 @@ func holdMigrationLockLikeMigrator(t *testing.T, sqlDB *sql.DB) (*sql.Conn, func
 			_ = conn.Close()
 			t.Fatalf("migration lock %d still held by another session after %s", logstoreMigrationLockKey, lockWait)
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond) // sleep-ok: retry interval for a Postgres lock another session holds, under its own deadline
 	}
 	var once sync.Once
 	release := func() {
@@ -1064,7 +1047,7 @@ func TestBatchWriterGateUnderSteadyLoadPostgres(t *testing.T) {
 		t.Fatalf("ALTER-style lock on logs must not wait behind log inserts while the gate is engaged: %v", err)
 	}
 	t.Logf("ACCESS EXCLUSIVE lock on logs granted in %s", time.Since(ddlStart).Round(time.Millisecond))
-	time.Sleep(1500 * time.Millisecond) // the "migration" runs while ~150 more logs arrive
+	time.Sleep(1500 * time.Millisecond) // sleep-ok: the "migration" holds the lock while ~150 more logs arrive
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("Commit error = %v", err)
 	}
@@ -1074,7 +1057,7 @@ func TestBatchWriterGateUnderSteadyLoadPostgres(t *testing.T) {
 	if got := written(); got != atPause {
 		t.Fatalf("%d rows were written while the migration lock was held (had %d at pause)", got-atPause, atPause)
 	}
-	time.Sleep(time.Second)
+	time.Sleep(time.Second) // sleep-ok: absence window; nothing may land while the lock is still held
 	if got := written(); got != atPause {
 		t.Fatalf("%d rows were written while the migration lock was still held (had %d at pause)", got-atPause, atPause)
 	}
@@ -2123,12 +2106,12 @@ type slowStore struct {
 }
 
 func (s *slowStore) BatchCreateIfNotExists(ctx context.Context, entries []*logstore.Log) error {
-	time.Sleep(s.delay)
+	time.Sleep(s.delay) // sleep-ok: injected store latency in a fake, not a wait
 	return s.LogStore.BatchCreateIfNotExists(ctx, entries)
 }
 
 func (s *slowStore) BatchUpdate(ctx context.Context, entries []*logstore.Log) error {
-	time.Sleep(s.delay)
+	time.Sleep(s.delay) // sleep-ok: injected store latency in a fake, not a wait
 	return s.LogStore.BatchUpdate(ctx, entries)
 }
 
