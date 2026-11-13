@@ -926,66 +926,79 @@ func requestsAutomaticContainer(req *schemas.BifrostRequest) bool {
 	return false
 }
 
-// equivalentProviders returns the provider names under which an object on provider may have been
-// recorded: provider itself, and every configured provider that reaches the same upstream, a
-// custom provider and the base it is built on, or two custom providers on one base, when they
-// also share an endpoint. Objects live at the upstream, so an id recorded under one of these names
-// is the same object under the others, and a key must not reach another key's object by switching
-// the name it asks through. Sharing an API format is not sharing an upstream: a custom provider
-// built on OpenAI but pointed at another service's base URL keeps its own objects, and an id that
-// happens to match there is not the OpenAI object.
-//
-// The endpoint compared is where the calls naming an object of kind actually go
-// (reachSameUpstream): a full-URL request_path_overrides entry for such a call can send it to
-// another provider's upstream whatever the provider's own base URL says (TXE-7368).
-func (p *GovernancePlugin) equivalentProviders(kind, provider string) []string {
-	names := []string{provider}
-	if p.inMemoryStore == nil {
-		return names
-	}
-	configured := p.inMemoryStore.GetConfiguredProviders()
-	if len(configured) == 0 {
-		return names
-	}
-	self := schemas.ModelProvider(provider)
-	base := baseProviderOf(self, configured)
-	own := upstreamOf(kind, self, configured)
-	var aliases []string
-	for name := range configured {
-		if name != self && baseProviderOf(name, configured) == base && own.reaches(upstreamOf(kind, name, configured)) {
-			aliases = append(aliases, string(name))
-		}
-	}
-	sort.Strings(aliases)
-	return append(names, aliases...)
+// objectCreationRequestTypes are the calls that create an object of each kind, and so the calls
+// whose upstream holds the objects recorded under a provider name. A file is uploaded, or written
+// by a batch as its output or error file; a container is created, or opened automatically by a
+// Responses call's code interpreter.
+var objectCreationRequestTypes = map[string][]schemas.RequestType{
+	configstoreTables.ProviderObjectKindFile:          {schemas.FileUploadRequest, schemas.BatchCreateRequest},
+	configstoreTables.ProviderObjectKindBatch:         {schemas.BatchCreateRequest},
+	configstoreTables.ProviderObjectKindVideo:         {schemas.VideoGenerationRequest, schemas.VideoEditRequest, schemas.VideoRemixRequest},
+	configstoreTables.ProviderObjectKindContainer:     {schemas.ContainerCreateRequest, schemas.ResponsesRequest, schemas.ResponsesStreamRequest},
+	configstoreTables.ProviderObjectKindContainerFile: {schemas.ContainerFileCreateRequest},
+	configstoreTables.ProviderObjectKindCachedContent: {schemas.CachedContentCreateRequest},
+	configstoreTables.ProviderObjectKindImageTask:     {schemas.ImageGenerationTaskRequest, schemas.ImageEditTaskRequest},
 }
 
-// sameCallProviders returns the provider names whose requestType call reaches the same upstream as
-// provider's own: provider itself, and every configured provider on the same base whose call of
-// that one request type goes to the same place (callTarget). It is narrower than
-// equivalentProviders, which is the right set for refusing access. Forgetting a deleted object
-// must not reach an upstream the delete was not sent to: a provider that moved only its file
-// retrieve to another upstream still deletes on its own, and the object there survives (TXE-7368).
-func (p *GovernancePlugin) sameCallProviders(requestType schemas.RequestType, provider string) []string {
-	names := []string{provider}
+// objectHolders returns the provider names whose recorded objects of kind a requestType call
+// through provider reaches. An ownership row is kept under the provider name an object was created
+// through, and the object lives where that provider's creating call went. A call reaches it when
+// it goes to the same upstream (callTarget, sameAs): the base URLs match, or a full-URL
+// request_path_overrides entry of either call lies under the other's base URL, or both are the
+// same full URL. Only providers on the same base are compared: sharing an API format is not
+// sharing an upstream, and an id that matches on another service is not the same object.
+//
+// A provider can send one call elsewhere and leave the rest on its base URL (TXE-7368), so its
+// rows describe objects at its creating calls' upstream, not wherever its other calls go. Two uses
+// read this, and each errs on its own safe side when a provider's creating calls go to more than
+// one upstream:
+//   - checking access (every = false): a provider's rows count when any of its creating calls
+//     reaches this call's upstream, so a key cannot reach another key's object by naming a
+//     provider whose override goes there;
+//   - forgetting a delete (every = true): a provider's rows are forgotten only when every one of
+//     its creating calls went where the delete went, so a binding whose object may survive on
+//     another upstream is kept. A stale binding of a deleted object only refuses an id nobody has.
+//
+// The calling provider's own rows follow the same rule. A kind with no creating calls listed
+// compares base URLs alone.
+func (p *GovernancePlugin) objectHolders(kind string, requestType schemas.RequestType, provider string, every bool) []string {
 	if p.inMemoryStore == nil {
-		return names
+		return []string{provider}
 	}
 	configured := p.inMemoryStore.GetConfiguredProviders()
 	if len(configured) == 0 {
-		return names
+		return []string{provider}
 	}
 	self := schemas.ModelProvider(provider)
 	base := baseProviderOf(self, configured)
-	own := callTarget(requestType, self, configured)
-	var aliases []string
+	creating := objectCreationRequestTypes[kind]
+	call := callUpstream{endpoint: providerEndpoint(self, configured)}
+	if len(creating) > 0 {
+		call = callTarget(requestType, self, configured)
+	}
+	holds := func(name schemas.ModelProvider) bool {
+		if len(creating) == 0 {
+			return call.endpoint == providerEndpoint(name, configured)
+		}
+		for _, createType := range creating {
+			if call.sameAs(callTarget(createType, name, configured)) != every {
+				return !every
+			}
+		}
+		return every
+	}
+	var holders []string
+	if _, listed := configured[self]; !listed || holds(self) {
+		holders = append(holders, provider)
+	}
+	var others []string
 	for name := range configured {
-		if name != self && baseProviderOf(name, configured) == base && own.sameAs(callTarget(requestType, name, configured)) {
-			aliases = append(aliases, string(name))
+		if name != self && baseProviderOf(name, configured) == base && holds(name) {
+			others = append(others, string(name))
 		}
 	}
-	sort.Strings(aliases)
-	return append(names, aliases...)
+	sort.Strings(others)
+	return append(holders, others...)
 }
 
 // callUpstream is where one request type's call of a provider goes: its full-URL override, or
@@ -1019,71 +1032,6 @@ func (a callUpstream) sameAs(b callUpstream) bool {
 	default:
 		return under(b.override, a.endpoint)
 	}
-}
-
-// objectKindPlaceholders is the request_path_overrides placeholder that names an object of each
-// kind in the calls that address it (providerUtils.ResourcePathPlaceholders).
-var objectKindPlaceholders = map[string]string{
-	configstoreTables.ProviderObjectKindFile:          "{file_id}",
-	configstoreTables.ProviderObjectKindBatch:         "{batch_id}",
-	configstoreTables.ProviderObjectKindVideo:         "{video_id}",
-	configstoreTables.ProviderObjectKindContainer:     "{container_id}",
-	configstoreTables.ProviderObjectKindContainerFile: "{file_id}",
-}
-
-// fullOverrideURLs returns a configured provider's request_path_overrides entries that are full
-// URLs, for the request types whose path names an object of kind, normalized as providerEndpoint
-// normalizes a base URL.
-func fullOverrideURLs(kind string, name schemas.ModelProvider, configured map[schemas.ModelProvider]configstore.ProviderConfig) []string {
-	placeholder, ok := objectKindPlaceholders[kind]
-	config, configuredName := configured[name]
-	if !ok || !configuredName || config.CustomProviderConfig == nil {
-		return nil
-	}
-	var urls []string
-	for requestType, override := range config.CustomProviderConfig.RequestPathOverrides {
-		if !slices.Contains(providerUtils.ResourcePathPlaceholders[requestType], placeholder) {
-			continue
-		}
-		url := strings.TrimRight(strings.ToLower(strings.TrimSpace(override)), "/")
-		if strings.HasPrefix(url, "https://") || strings.HasPrefix(url, "http://") {
-			urls = append(urls, url)
-		}
-	}
-	return urls
-}
-
-// objectUpstream is where a provider's calls naming an object of one kind go: its base URL, and
-// the full-URL request_path_overrides of those calls.
-type objectUpstream struct {
-	endpoint  string
-	overrides []string
-}
-
-func upstreamOf(kind string, name schemas.ModelProvider, configured map[schemas.ModelProvider]configstore.ProviderConfig) objectUpstream {
-	return objectUpstream{endpoint: providerEndpoint(name, configured), overrides: fullOverrideURLs(kind, name, configured)}
-}
-
-// reaches reports whether two providers' calls naming an object of one kind can reach the same
-// upstream: their base URLs match, a full-URL override of one lies under the other's base URL, or
-// both send such a call to the same full URL. A relative override stays on the provider's own
-// base URL, so it changes nothing here (TXE-7368).
-func (a objectUpstream) reaches(b objectUpstream) bool {
-	if a.endpoint == b.endpoint {
-		return true
-	}
-	under := func(url, endpoint string) bool { return endpoint != "" && strings.HasPrefix(url, endpoint+"/") }
-	for _, url := range a.overrides {
-		if under(url, b.endpoint) || slices.Contains(b.overrides, url) {
-			return true
-		}
-	}
-	for _, url := range b.overrides {
-		if under(url, a.endpoint) {
-			return true
-		}
-	}
-	return false
 }
 
 // baseProviderDefaultEndpoints are the endpoints the base providers a custom provider can be built
@@ -1167,22 +1115,30 @@ func cachedContentCarrier(req *schemas.BifrostRequest) (schemas.ModelProvider, m
 // is scoped to a project and region: when the full names that end in it belong to more than one
 // virtual key, the id is ambiguous and reported as such rather than resolved by guessing. The
 // suffix lookup is kept to providers built on Vertex.
-func (p *GovernancePlugin) providerObjectOwners(ctx *schemas.BifrostContext, kind, provider string, ids []string) (map[string]string, map[string]struct{}, error) {
-	return p.providerObjectOwnersOf(ctx, kind, provider, ids, false)
+//
+// requestType is the call being checked: its upstream decides which providers' rows count
+// (objectHolders).
+func (p *GovernancePlugin) providerObjectOwners(ctx *schemas.BifrostContext, kind string, requestType schemas.RequestType, provider string, ids []string) (map[string]string, map[string]struct{}, error) {
+	return p.providerObjectOwnersOf(ctx, kind, requestType, provider, ids, false)
 }
+
+// contestedOwner stands for the creator of an id whose ownership rows, under providers that reach
+// the same upstream, name different virtual keys. No key is it, so the id is refused and hidden
+// for every key rather than handed to whichever row was read last.
+const contestedOwner = "\x00contested"
 
 // providerObjectOwnersOf is providerObjectOwners with one more fact: sameObject says the ids
 // are the forms of a single object (see providerObjectIDForms) rather than distinct objects. An
 // ownership row under any form then answers for all of them, and the fallbacks, a suffix scan
 // and a scan of the batch history for files, are skipped. The forms of one object cannot name
 // two creators: an object is created once, by one key.
-func (p *GovernancePlugin) providerObjectOwnersOf(ctx *schemas.BifrostContext, kind, provider string, ids []string, sameObject bool) (map[string]string, map[string]struct{}, error) {
+func (p *GovernancePlugin) providerObjectOwnersOf(ctx *schemas.BifrostContext, kind string, requestType schemas.RequestType, provider string, ids []string, sameObject bool) (map[string]string, map[string]struct{}, error) {
 	owners := make(map[string]string, len(ids))
 	ambiguous := make(map[string]struct{})
 	if len(ids) == 0 {
 		return owners, ambiguous, nil
 	}
-	providers := p.equivalentProviders(kind, provider)
+	providers := p.objectHolders(kind, requestType, provider, false)
 	objectIDs := make([]string, 0, len(ids)*len(providers))
 	for _, name := range providers {
 		for _, id := range ids {
@@ -1194,9 +1150,16 @@ func (p *GovernancePlugin) providerObjectOwnersOf(ctx *schemas.BifrostContext, k
 		return nil, nil, err
 	}
 	for _, object := range objects {
-		if object != nil && object.VirtualKeyID != "" {
-			owners[object.ObjectID] = object.VirtualKeyID
+		if object == nil || object.VirtualKeyID == "" {
+			continue
 		}
+		// Rows under two holders of one upstream that name different keys for one id cannot both
+		// be right; the id goes to no key (contestedOwner) rather than to whichever row came last.
+		if existing, seen := owners[object.ObjectID]; seen && existing != object.VirtualKeyID {
+			owners[object.ObjectID] = contestedOwner
+			continue
+		}
+		owners[object.ObjectID] = object.VirtualKeyID
 	}
 	// A second source that names a different key for an id already answered makes it ambiguous:
 	// the id is refused rather than resolved by whichever source was read first.
@@ -1572,7 +1535,7 @@ func (p *GovernancePlugin) refuseForeignProviderObject(ctx *schemas.BifrostConte
 			Error:      &schemas.ErrorField{Message: fmt.Sprintf("%s access cannot be verified for virtual keys without a config store", label)},
 		}}, false
 	}
-	owners, ambiguous, err := p.providerObjectOwnersOf(ctx, ref.kind, ref.provider, ref.ids, true)
+	owners, ambiguous, err := p.providerObjectOwnersOf(ctx, ref.kind, req.RequestType, ref.provider, ref.ids, true)
 	if err != nil {
 		p.logger.Error("failed to load %s %s for ownership check: %v", label, ref.requestID, err)
 		ctx.SetValue(governanceRejectedContextKey, true)
@@ -1621,7 +1584,7 @@ func (p *GovernancePlugin) refuseForeignProviderObject(ctx *schemas.BifrostConte
 // forms has an owner on record, as it is not found when addressed. A stored file with no row
 // of its own is hidden when it lies in a folder another key claimed. The predicate is nil when
 // nothing on the page is hidden.
-func (p *GovernancePlugin) hiddenProviderObjects(ctx *schemas.BifrostContext, kind, provider, vkID string, ids []string) (func(id string) bool, error) {
+func (p *GovernancePlugin) hiddenProviderObjects(ctx *schemas.BifrostContext, kind string, requestType schemas.RequestType, provider, vkID string, ids []string) (func(id string) bool, error) {
 	forms := make([]string, 0, len(ids)*2)
 	unverifiable := false
 	for _, id := range ids {
@@ -1629,7 +1592,7 @@ func (p *GovernancePlugin) hiddenProviderObjects(ctx *schemas.BifrostContext, ki
 		forms = append(forms, lookup...)
 		unverifiable = unverifiable || unclear
 	}
-	owners, ambiguous, err := p.providerObjectOwners(ctx, kind, provider, forms)
+	owners, ambiguous, err := p.providerObjectOwners(ctx, kind, requestType, provider, forms)
 	if err != nil {
 		return nil, err
 	}
@@ -1705,7 +1668,7 @@ func (p *GovernancePlugin) hideForeignVideoByReference(ctx *schemas.BifrostConte
 	}
 	video := result.VideoGenerationResponse
 	label := providerObjectLabel(configstoreTables.ProviderObjectKindVideo)
-	hidden, err := p.hiddenProviderObjects(ctx, configstoreTables.ProviderObjectKindVideo, provider, vkID, []string{video.ID})
+	hidden, err := p.hiddenProviderObjects(ctx, configstoreTables.ProviderObjectKindVideo, schemas.VideoRetrieveRequest, provider, vkID, []string{video.ID})
 	if err != nil {
 		p.logger.Error("failed to load %s ownership for a retrieve by client_reference_id: %v", label, err)
 		return &schemas.BifrostError{
@@ -1758,7 +1721,7 @@ func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext,
 		for _, item := range list.Data {
 			ids = append(ids, item.ID)
 		}
-		hidden, err := p.hiddenProviderObjects(ctx, configstoreTables.ProviderObjectKindBatch, provider, vkID, ids)
+		hidden, err := p.hiddenProviderObjects(ctx, configstoreTables.ProviderObjectKindBatch, schemas.BatchListRequest, provider, vkID, ids)
 		if err != nil {
 			return fail(configstoreTables.ProviderObjectKindBatch, err)
 		}
@@ -1783,7 +1746,7 @@ func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext,
 		for _, item := range list.Data {
 			ids = append(ids, item.ID)
 		}
-		hidden, err := p.hiddenProviderObjects(ctx, configstoreTables.ProviderObjectKindFile, provider, vkID, ids)
+		hidden, err := p.hiddenProviderObjects(ctx, configstoreTables.ProviderObjectKindFile, schemas.FileListRequest, provider, vkID, ids)
 		if err != nil {
 			return fail(configstoreTables.ProviderObjectKindFile, err)
 		}
@@ -1807,7 +1770,7 @@ func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext,
 		for _, item := range list.Data {
 			ids = append(ids, item.ID)
 		}
-		hidden, err := p.hiddenProviderObjects(ctx, configstoreTables.ProviderObjectKindVideo, provider, vkID, ids)
+		hidden, err := p.hiddenProviderObjects(ctx, configstoreTables.ProviderObjectKindVideo, schemas.VideoListRequest, provider, vkID, ids)
 		if err != nil {
 			return fail(configstoreTables.ProviderObjectKindVideo, err)
 		}
@@ -1831,7 +1794,7 @@ func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext,
 		for _, item := range list.Data {
 			ids = append(ids, item.ID)
 		}
-		hidden, err := p.hiddenProviderObjects(ctx, configstoreTables.ProviderObjectKindContainer, provider, vkID, ids)
+		hidden, err := p.hiddenProviderObjects(ctx, configstoreTables.ProviderObjectKindContainer, schemas.ContainerListRequest, provider, vkID, ids)
 		if err != nil {
 			return fail(configstoreTables.ProviderObjectKindContainer, err)
 		}
@@ -1855,7 +1818,7 @@ func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext,
 		for _, item := range list.Data {
 			ids = append(ids, item.ID)
 		}
-		hidden, err := p.hiddenProviderObjects(ctx, configstoreTables.ProviderObjectKindContainerFile, provider, vkID, ids)
+		hidden, err := p.hiddenProviderObjects(ctx, configstoreTables.ProviderObjectKindContainerFile, schemas.ContainerFileListRequest, provider, vkID, ids)
 		if err != nil {
 			return fail(configstoreTables.ProviderObjectKindContainerFile, err)
 		}
@@ -1879,7 +1842,7 @@ func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext,
 		for _, item := range list.CachedContents {
 			ids = append(ids, item.Name)
 		}
-		hidden, err := p.hiddenProviderObjects(ctx, configstoreTables.ProviderObjectKindCachedContent, provider, vkID, ids)
+		hidden, err := p.hiddenProviderObjects(ctx, configstoreTables.ProviderObjectKindCachedContent, schemas.CachedContentListRequest, provider, vkID, ids)
 		if err != nil {
 			return fail(configstoreTables.ProviderObjectKindCachedContent, err)
 		}
@@ -1961,11 +1924,11 @@ func (p *GovernancePlugin) recordProviderObjectLifecycle(ctx *schemas.BifrostCon
 		p.recordProviderObjectCreator(ctx, createdKind, provider, createdID, vkID)
 		return
 	}
-	// The object is forgotten under every provider name that reaches the same upstream: the delete
-	// was admitted through one of them, and a row recorded through another would otherwise linger.
-	// Only where this delete call went: an alias that reaches the same objects through another
-	// call (a full-URL retrieve override) keeps its rows, since the object there may survive.
-	aliases := p.sameCallProviders(requestType, provider)
+	// The object is forgotten under every provider name whose objects live where this delete went:
+	// the delete was admitted through one of them, and a row recorded through another would
+	// otherwise linger. A provider whose creating calls go anywhere else, even only in part, keeps
+	// its rows, since the object there may survive (objectHolders, every = true; TXE-7368).
+	aliases := p.objectHolders(deletedKind, requestType, provider, true)
 	for _, alias := range aliases {
 		for _, id := range providerObjectIDForms(deletedKind, schemas.ModelProvider(alias), deletedID) {
 			if err := p.configStore.DeleteProviderObject(ctx, configstoreTables.ProviderObjectID(deletedKind, alias, id)); err != nil {
@@ -2079,7 +2042,7 @@ func (p *GovernancePlugin) recordBatchFiles(ctx *schemas.BifrostContext, provide
 	if len(fileIDs) == 0 || batch.ID == "" {
 		return
 	}
-	owners, _, err := p.providerObjectOwners(ctx, configstoreTables.ProviderObjectKindBatch, provider, []string{batch.ID})
+	owners, _, err := p.providerObjectOwners(ctx, configstoreTables.ProviderObjectKindBatch, schemas.BatchRetrieveRequest, provider, []string{batch.ID})
 	if err != nil {
 		p.logger.Warn("failed to look up the creating virtual key of batch %s on %s: %v", batch.ID, provider, err)
 		return
