@@ -10,6 +10,7 @@ import (
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/modelcatalog"
 	"github.com/capsohq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/capsohq/bifrost/plugins/governance/internal/testtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -130,6 +131,6 @@ func TestPostHookWorkerChargesCharacterPricedEmbeddingsToTheDollarBudget(t *test
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
 		assert.InDelta(c, 12000*2.5e-8, fixture.cost(), 1e-15)
 		assert.Equal(c, int64(1), fixture.requests())
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), 10*time.Millisecond)
 	assert.Equal(t, int64(0), fixture.tokens(), "characters are not tokens; the token limit does not move")
 }
