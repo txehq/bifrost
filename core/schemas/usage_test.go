@@ -1194,3 +1194,26 @@ func TestMergeBifrostLLMUsageSumsServerSideToolUsage(t *testing.T) {
 		}
 	}
 }
+
+func TestRateLimitTokens(t *testing.T) {
+	p := &ProcessedTokenUsage{PromptTokens: 71, CompletionTokens: 418}
+	cases := []struct {
+		name      string
+		chat      *BifrostLLMUsage
+		responses *ResponsesResponseUsage
+		want      int
+	}{
+		{"nil", nil, nil, 0},
+		{"total only", &BifrostLLMUsage{TotalTokens: 30}, &ResponsesResponseUsage{TotalTokens: 30}, 30},
+		{"processed above billed", &BifrostLLMUsage{TotalTokens: 423, ProcessedTokens: p}, &ResponsesResponseUsage{TotalTokens: 423, ProcessedTokens: p}, 489},
+		{"billed above processed", &BifrostLLMUsage{TotalTokens: 600, ProcessedTokens: p}, &ResponsesResponseUsage{TotalTokens: 600, ProcessedTokens: p}, 600},
+	}
+	for _, tc := range cases {
+		if got := tc.chat.RateLimitTokens(); got != tc.want {
+			t.Errorf("%s: BifrostLLMUsage.RateLimitTokens() = %d, want %d", tc.name, got, tc.want)
+		}
+		if got := tc.responses.RateLimitTokens(); got != tc.want {
+			t.Errorf("%s: ResponsesResponseUsage.RateLimitTokens() = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}

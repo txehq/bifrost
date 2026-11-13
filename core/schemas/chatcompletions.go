@@ -2420,6 +2420,26 @@ type ProcessedTokenUsage struct {
 	CompletionTokens int `json:"completion_tokens"`
 }
 
+// Total is the processed prompt plus completion tokens; 0 for a nil receiver.
+func (p *ProcessedTokenUsage) Total() int {
+	if p == nil {
+		return 0
+	}
+	return p.PromptTokens + p.CompletionTokens
+}
+
+// RateLimitTokens is the token count charged against token rate limits. When the vendor
+// reports processed counts apart from billed ones (ProcessedTokens), it is the larger of
+// the processed total and TotalTokens, so a limit never counts fewer tokens than the
+// vendor processed or billed; otherwise it is TotalTokens. Cost and settlement stay on the
+// billed counts (contract C5). 0 for a nil receiver.
+func (u *BifrostLLMUsage) RateLimitTokens() int {
+	if u == nil {
+		return 0
+	}
+	return max(u.TotalTokens, u.ProcessedTokens.Total())
+}
+
 // Add returns the sum of p and o as an owned value; nil when both are nil.
 func (p *ProcessedTokenUsage) Add(o *ProcessedTokenUsage) *ProcessedTokenUsage {
 	if p == nil && o == nil {

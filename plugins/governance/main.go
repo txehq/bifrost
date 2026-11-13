@@ -1962,6 +1962,38 @@ func (p *GovernancePlugin) Cleanup() error {
 	return cleanupErr
 }
 
+// responseTokensUsed is the token count a response charges against governance token rate
+// limits. LLM usage goes through RateLimitTokens, so a vendor that reports processed counts
+// apart from billed ones (usage.processed_tokens, e.g. Cohere) is charged what it processed;
+// every other usage keeps its TotalTokens.
+func responseTokensUsed(result *schemas.BifrostResponse) int {
+	switch {
+	case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
+		return result.TextCompletionResponse.Usage.RateLimitTokens()
+	case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
+		return result.ChatResponse.Usage.RateLimitTokens()
+	case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
+		return result.ResponsesResponse.Usage.RateLimitTokens()
+	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
+		return result.ResponsesStreamResponse.Response.Usage.RateLimitTokens()
+	case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
+		return result.EmbeddingResponse.Usage.RateLimitTokens()
+	case result.SpeechResponse != nil && result.SpeechResponse.Usage != nil:
+		return result.SpeechResponse.Usage.TotalTokens
+	case result.SpeechStreamResponse != nil && result.SpeechStreamResponse.Usage != nil:
+		return result.SpeechStreamResponse.Usage.TotalTokens
+	case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil && result.TranscriptionResponse.Usage.TotalTokens != nil:
+		return *result.TranscriptionResponse.Usage.TotalTokens
+	case result.TranscriptionStreamResponse != nil && result.TranscriptionStreamResponse.Usage != nil && result.TranscriptionStreamResponse.Usage.TotalTokens != nil:
+		return *result.TranscriptionStreamResponse.Usage.TotalTokens
+	case result.PassthroughResponse != nil:
+		if su := result.PassthroughResponse.PassthroughUsage; su != nil && su.LLMUsage != nil {
+			return su.LLMUsage.RateLimitTokens()
+		}
+	}
+	return 0
+}
+
 // postHookWorker is a worker function that processes the response and updates usage tracking
 // It is used to avoid blocking the main thread when updating usage tracking
 // Handles both cases: with virtual key and without virtual key (empty string)
@@ -1998,37 +2030,14 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 		// Bill those tokens — Anthropic charges us for them regardless.
 		if result == nil && bifrostErr != nil && bifrostErr.ExtraFields.BilledUsage != nil {
 			billedUsage := bifrostErr.ExtraFields.BilledUsage
-			tokensUsed = billedUsage.TotalTokens
+			tokensUsed = billedUsage.RateLimitTokens()
 			billedReason = "partial_usage_on_error"
 			if p.modelCatalog != nil {
 				cost = p.modelCatalog.CalculateCostForUsage(billedUsage, provider, model, requestType, pricingScopes)
 			}
 		}
 		if result != nil {
-			switch {
-			case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
-				tokensUsed = result.TextCompletionResponse.Usage.TotalTokens
-			case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
-				tokensUsed = result.ChatResponse.Usage.TotalTokens
-			case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
-				tokensUsed = result.ResponsesResponse.Usage.TotalTokens
-			case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
-				tokensUsed = result.ResponsesStreamResponse.Response.Usage.TotalTokens
-			case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
-				tokensUsed = result.EmbeddingResponse.Usage.TotalTokens
-			case result.SpeechResponse != nil && result.SpeechResponse.Usage != nil:
-				tokensUsed = result.SpeechResponse.Usage.TotalTokens
-			case result.SpeechStreamResponse != nil && result.SpeechStreamResponse.Usage != nil:
-				tokensUsed = result.SpeechStreamResponse.Usage.TotalTokens
-			case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil && result.TranscriptionResponse.Usage.TotalTokens != nil:
-				tokensUsed = *result.TranscriptionResponse.Usage.TotalTokens
-			case result.TranscriptionStreamResponse != nil && result.TranscriptionStreamResponse.Usage != nil && result.TranscriptionStreamResponse.Usage.TotalTokens != nil:
-				tokensUsed = *result.TranscriptionStreamResponse.Usage.TotalTokens
-			case result.PassthroughResponse != nil:
-				if su := result.PassthroughResponse.PassthroughUsage; su != nil && su.LLMUsage != nil {
-					tokensUsed = su.LLMUsage.TotalTokens
-				}
-			}
+			tokensUsed = responseTokensUsed(result)
 		}
 		// A successful response normally carries routing metadata and CalculateCost
 		// includes it. When no response exists (or a later plugin recovered with a

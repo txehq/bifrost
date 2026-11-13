@@ -1367,6 +1367,15 @@ type ResponsesResponseUsage struct {
 	BillingTurns []BifrostLLMUsage `json:"-"` // Mirrors BifrostLLMUsage.BillingTurns through the conversions
 }
 
+// RateLimitTokens is the token count charged against token rate limits; same rule as
+// BifrostLLMUsage.RateLimitTokens. 0 for a nil receiver.
+func (u *ResponsesResponseUsage) RateLimitTokens() int {
+	if u == nil {
+		return 0
+	}
+	return max(u.TotalTokens, u.ProcessedTokens.Total())
+}
+
 // NormalizeProviderCost mirrors BifrostLLMUsage.NormalizeProviderCost for the responses path.
 func (u *ResponsesResponseUsage) NormalizeProviderCost() {
 	if u == nil {
