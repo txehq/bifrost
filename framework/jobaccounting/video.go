@@ -314,8 +314,14 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 	if RenderedDurationRequired(resp) {
 		switch {
 		case load.RenderedSeconds != nil:
+			// The measured length raises the price and never lowers it below the seconds the
+			// create named. The file is read after the job finished, and some outputs live where
+			// the caller can write (a Veo storageURI in the caller's bucket): a caller who swaps in
+			// a shorter MP4 before the sweeper reads it must not shrink the bill.
 			seconds := *load.RenderedSeconds
-			dims.Seconds = &seconds
+			if dims.Seconds == nil || seconds > *dims.Seconds {
+				dims.Seconds = &seconds
+			}
 		case load.RenderedUnmeasurable != "":
 			unmeasured = true
 		default:

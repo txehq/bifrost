@@ -1039,19 +1039,22 @@ func TestVideoSweeper_PricesTheRenderedLengthNotTheRequestedSeconds(t *testing.T
 	require.Len(t, reporter.reports, 1)
 }
 
-// A shorter render is charged for what was rendered too: the measured length is the price basis,
-// whichever way it differs from the request.
-func TestVideoSweeper_PricesAShorterRenderedLength(t *testing.T) {
+// A shorter file never lowers the bill below the seconds the create named: the file is read after
+// the job finished, and an output in the caller's own storage (a Veo storageURI) can be replaced
+// by a shorter MP4 before the sweeper reads it.
+func TestVideoSweeper_AShorterFileDoesNotLowerTheRequestedSeconds(t *testing.T) {
 	store := newFakeAccountingStore()
 	job := replicateVideoJob(t, "pred_shorter", 8)
-	retriever := &fakeVideoRetriever{resp: silentReplicateResponse("pred_shorter"), video: renderedMP4(t, 4)}
+	retriever := &fakeVideoRetriever{resp: silentReplicateResponse("pred_shorter"), video: renderedMP4(t, 1)}
 
 	sweepVideoJob(t, store, job, retriever)
 
 	entry := store.logs[AccountingLogID(ProviderJobKindVideo, schemas.Replicate, "pred_shorter")]
 	require.NotNil(t, entry)
 	require.NotNil(t, entry.Cost)
-	assert.InDelta(t, 4*0.70, *entry.Cost, 1e-12)
+	assert.InDelta(t, 8*0.70, *entry.Cost, 1e-12, "charged the 8 seconds asked for, not the 1-second file")
+	assert.Equal(t, 8, *entry.VideoDebugParsed.Accounting.Seconds)
+	assert.False(t, entry.VideoDebugParsed.Accounting.Incomplete)
 }
 
 // An ffmpeg-written MP4 (TXE-6774's 12-second fixture, moov after mdat) measures as 12 seconds.
