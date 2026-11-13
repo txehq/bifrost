@@ -1621,6 +1621,9 @@ func TestPreLLMHookBindsObjectsAcrossProviderAliases(t *testing.T) {
 		buildProviderConfig("openai", []string{"*"}),
 		buildProviderConfig("my-openai", []string{"*"}),
 		buildProviderConfig("other-service", []string{"*"}),
+		buildProviderConfig("override-openai", []string{"*"}),
+		buildProviderConfig("relative-override", []string{"*"}),
+		buildProviderConfig("override-anthropic", []string{"*"}),
 		buildProviderConfig("anthropic", []string{"*"}),
 	}
 	plugin := newAccessTestPlugin(t, vk, nil)
@@ -1634,11 +1637,55 @@ func TestPreLLMHookBindsObjectsAcrossProviderAliases(t *testing.T) {
 			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
 			NetworkConfig:        &schemas.NetworkConfig{BaseURL: "https://inference.other-service.example/v1"},
 		},
+		// Another base URL, but its file retrieve goes to api.openai.com through a full-URL
+		// override, so its file calls reach OpenAI's files (TXE-7368).
+		"override-openai": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.FileRetrieveRequest: "https://API.openai.com/v1/files/{file_id}",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://gateway.override.example/v1"},
+		},
+		// A relative override stays on the provider's own base URL: still another upstream.
+		"relative-override": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.FileRetrieveRequest: "/v1/files/{file_id}",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://gateway.relative.example"},
+		},
+		// The same on the anthropic base: its file content goes to api.anthropic.com.
+		"override-anthropic": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.FileContentRequest: "https://api.anthropic.com/v1/files/{file_id}/content",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://gateway.anthropic-proxy.example"},
+		},
 		schemas.Anthropic: {},
 	}}
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "anthropic", "file-anthropic-other", "vk-someone-else")
 	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-other", "vk-someone-else")
 
-	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.FileRetrieveRequest, FileRetrieveRequest: &schemas.BifrostFileRetrieveRequest{Provider: "my-openai", FileID: "file-other"}})
+	// A full-URL override that sends file calls to OpenAI makes the provider an alias for files,
+	// whatever its base URL: another key's OpenAI file is refused through it (TXE-7368).
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.FileRetrieveRequest, FileRetrieveRequest: &schemas.BifrostFileRetrieveRequest{Provider: "override-openai", FileID: "file-other"}})
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "another key's OpenAI file is refused through a provider whose full-URL file override reaches OpenAI")
+	assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.FileRetrieveRequest, FileRetrieveRequest: &schemas.BifrostFileRetrieveRequest{Provider: "relative-override", FileID: "file-other"}})
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "a relative override stays on the provider's own upstream")
+	// The provider is an alias for files, so delete and content are refused too, not only the call
+	// whose override reaches OpenAI.
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.FileDeleteRequest, FileDeleteRequest: &schemas.BifrostFileDeleteRequest{Provider: "override-openai", FileID: "file-other"}})
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "another key's OpenAI file cannot be deleted through the override")
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.FileContentRequest, FileContentRequest: &schemas.BifrostFileContentRequest{Provider: "override-openai", FileID: "file-other"}})
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "another key's OpenAI file content cannot be read through the override")
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.FileRetrieveRequest, FileRetrieveRequest: &schemas.BifrostFileRetrieveRequest{Provider: "override-anthropic", FileID: "file-anthropic-other"}})
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "on the anthropic base too, a full-URL file override reaching Anthropic makes the provider an alias")
+
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.FileRetrieveRequest, FileRetrieveRequest: &schemas.BifrostFileRetrieveRequest{Provider: "my-openai", FileID: "file-other"}})
 	require.NoError(t, err)
 	require.NotNil(t, shortCircuit, "another key's OpenAI file is refused through an OpenAI-based custom provider")
 	assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
@@ -1663,6 +1710,47 @@ func TestPreLLMHookBindsObjectsAcrossProviderAliases(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, list.FileListResponse.Data, 1, "the alias list hides the file recorded under openai")
 	assert.Equal(t, "file-unknown", list.FileListResponse.Data[0].ID)
+}
+
+// BenchmarkEquivalentProviders measures resolving a provider's aliases for a file, which every
+// ownership check does, over 20 configured providers of which 5 carry full-URL file overrides.
+// "before" is the comparison by base URL alone that TXE-7368 replaced.
+func BenchmarkEquivalentProviders(b *testing.B) {
+	configured := map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}
+	for i := 0; i < 19; i++ {
+		name := schemas.ModelProvider(fmt.Sprintf("custom-%02d", i))
+		config := configstore.ProviderConfig{
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
+			NetworkConfig:        &schemas.NetworkConfig{BaseURL: fmt.Sprintf("https://gateway-%02d.example/v1", i)},
+		}
+		if i%4 == 0 {
+			config.CustomProviderConfig.RequestPathOverrides = map[schemas.RequestType]string{
+				schemas.FileRetrieveRequest: fmt.Sprintf("https://files-%02d.example/v1/files/{file_id}", i),
+				schemas.FileContentRequest:  fmt.Sprintf("https://files-%02d.example/v1/files/{file_id}/content", i),
+			}
+		}
+		configured[name] = config
+	}
+	plugin := &GovernancePlugin{inMemoryStore: &mockInMemoryStore{configuredProviders: configured}}
+	b.Run("before: base URL only", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			base, endpoint := baseProviderOf("custom-03", configured), providerEndpoint("custom-03", configured)
+			aliases := []string{"custom-03"}
+			for name := range configured {
+				if name != "custom-03" && baseProviderOf(name, configured) == base && providerEndpoint(name, configured) == endpoint {
+					aliases = append(aliases, string(name))
+				}
+			}
+			_ = aliases
+		}
+	})
+	b.Run("after: effective upstream per kind", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = plugin.equivalentProviders(configstoreTables.ProviderObjectKindFile, "custom-03")
+		}
+	})
 }
 
 // The virtual key a request is attributed to is read from its Grant. A context whose identity

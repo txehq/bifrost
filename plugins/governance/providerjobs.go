@@ -934,7 +934,11 @@ func requestsAutomaticContainer(req *schemas.BifrostRequest) bool {
 // the name it asks through. Sharing an API format is not sharing an upstream: a custom provider
 // built on OpenAI but pointed at another service's base URL keeps its own objects, and an id that
 // happens to match there is not the OpenAI object.
-func (p *GovernancePlugin) equivalentProviders(provider string) []string {
+//
+// The endpoint compared is where the calls naming an object of kind actually go
+// (reachSameUpstream): a full-URL request_path_overrides entry for such a call can send it to
+// another provider's upstream whatever the provider's own base URL says (TXE-7368).
+func (p *GovernancePlugin) equivalentProviders(kind, provider string) []string {
 	names := []string{provider}
 	if p.inMemoryStore == nil {
 		return names
@@ -943,16 +947,82 @@ func (p *GovernancePlugin) equivalentProviders(provider string) []string {
 	if len(configured) == 0 {
 		return names
 	}
-	base := baseProviderOf(schemas.ModelProvider(provider), configured)
-	endpoint := providerEndpoint(schemas.ModelProvider(provider), configured)
+	self := schemas.ModelProvider(provider)
+	base := baseProviderOf(self, configured)
+	own := upstreamOf(kind, self, configured)
 	var aliases []string
 	for name := range configured {
-		if string(name) != provider && baseProviderOf(name, configured) == base && providerEndpoint(name, configured) == endpoint {
+		if name != self && baseProviderOf(name, configured) == base && own.reaches(upstreamOf(kind, name, configured)) {
 			aliases = append(aliases, string(name))
 		}
 	}
 	sort.Strings(aliases)
 	return append(names, aliases...)
+}
+
+// objectKindPlaceholders is the request_path_overrides placeholder that names an object of each
+// kind in the calls that address it (providerUtils.ResourcePathPlaceholders).
+var objectKindPlaceholders = map[string]string{
+	configstoreTables.ProviderObjectKindFile:          "{file_id}",
+	configstoreTables.ProviderObjectKindBatch:         "{batch_id}",
+	configstoreTables.ProviderObjectKindVideo:         "{video_id}",
+	configstoreTables.ProviderObjectKindContainer:     "{container_id}",
+	configstoreTables.ProviderObjectKindContainerFile: "{file_id}",
+}
+
+// fullOverrideURLs returns a configured provider's request_path_overrides entries that are full
+// URLs, for the request types whose path names an object of kind, normalized as providerEndpoint
+// normalizes a base URL.
+func fullOverrideURLs(kind string, name schemas.ModelProvider, configured map[schemas.ModelProvider]configstore.ProviderConfig) []string {
+	placeholder, ok := objectKindPlaceholders[kind]
+	config, configuredName := configured[name]
+	if !ok || !configuredName || config.CustomProviderConfig == nil {
+		return nil
+	}
+	var urls []string
+	for requestType, override := range config.CustomProviderConfig.RequestPathOverrides {
+		if !slices.Contains(providerUtils.ResourcePathPlaceholders[requestType], placeholder) {
+			continue
+		}
+		url := strings.TrimRight(strings.ToLower(strings.TrimSpace(override)), "/")
+		if strings.HasPrefix(url, "https://") || strings.HasPrefix(url, "http://") {
+			urls = append(urls, url)
+		}
+	}
+	return urls
+}
+
+// objectUpstream is where a provider's calls naming an object of one kind go: its base URL, and
+// the full-URL request_path_overrides of those calls.
+type objectUpstream struct {
+	endpoint  string
+	overrides []string
+}
+
+func upstreamOf(kind string, name schemas.ModelProvider, configured map[schemas.ModelProvider]configstore.ProviderConfig) objectUpstream {
+	return objectUpstream{endpoint: providerEndpoint(name, configured), overrides: fullOverrideURLs(kind, name, configured)}
+}
+
+// reaches reports whether two providers' calls naming an object of one kind can reach the same
+// upstream: their base URLs match, a full-URL override of one lies under the other's base URL, or
+// both send such a call to the same full URL. A relative override stays on the provider's own
+// base URL, so it changes nothing here (TXE-7368).
+func (a objectUpstream) reaches(b objectUpstream) bool {
+	if a.endpoint == b.endpoint {
+		return true
+	}
+	under := func(url, endpoint string) bool { return endpoint != "" && strings.HasPrefix(url, endpoint+"/") }
+	for _, url := range a.overrides {
+		if under(url, b.endpoint) || slices.Contains(b.overrides, url) {
+			return true
+		}
+	}
+	for _, url := range b.overrides {
+		if under(url, a.endpoint) {
+			return true
+		}
+	}
+	return false
 }
 
 // baseProviderDefaultEndpoints are the endpoints the base providers a custom provider can be built
@@ -1051,7 +1121,7 @@ func (p *GovernancePlugin) providerObjectOwnersOf(ctx *schemas.BifrostContext, k
 	if len(ids) == 0 {
 		return owners, ambiguous, nil
 	}
-	providers := p.equivalentProviders(provider)
+	providers := p.equivalentProviders(kind, provider)
 	objectIDs := make([]string, 0, len(ids)*len(providers))
 	for _, name := range providers {
 		for _, id := range ids {
@@ -1832,7 +1902,7 @@ func (p *GovernancePlugin) recordProviderObjectLifecycle(ctx *schemas.BifrostCon
 	}
 	// The object is forgotten under every provider name that reaches the same upstream: the delete
 	// was admitted through one of them, and a row recorded through another would otherwise linger.
-	aliases := p.equivalentProviders(provider)
+	aliases := p.equivalentProviders(deletedKind, provider)
 	for _, alias := range aliases {
 		for _, id := range providerObjectIDForms(deletedKind, schemas.ModelProvider(alias), deletedID) {
 			if err := p.configStore.DeleteProviderObject(ctx, configstoreTables.ProviderObjectID(deletedKind, alias, id)); err != nil {
