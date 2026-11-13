@@ -148,6 +148,12 @@ type PricingEntry struct {
     OutputCostPerTokenPriority        *float64 `json:"output_cost_per_token_priority,omitempty"`
     InputCostPerTokenDecisions        *float64 `json:"input_cost_per_token_decisions,omitempty"`
     OutputCostPerTokenDecisions       *float64 `json:"output_cost_per_token_decisions,omitempty"`
+    InputCostPerTokenAbove272kTokensDecisions  *float64 `json:"input_cost_per_token_above_272k_tokens_decisions,omitempty"`
+    OutputCostPerTokenAbove272kTokensDecisions *float64 `json:"output_cost_per_token_above_272k_tokens_decisions,omitempty"`
+    CacheReadInputTokenCostDecisions           *float64 `json:"cache_read_input_token_cost_decisions,omitempty"`
+    CacheCreationInputTokenCostDecisions       *float64 `json:"cache_creation_input_token_cost_decisions,omitempty"`
+    InputCostPerTokenAbove200kTokensFlex       *float64 `json:"input_cost_per_token_above_200k_tokens_flex,omitempty"`
+    OutputCostPerTokenAbove200kTokensFlex      *float64 `json:"output_cost_per_token_above_200k_tokens_flex,omitempty"`
     InputCostPerTokenAbove100kTokens  *float64 `json:"input_cost_per_token_above_100k_tokens,omitempty"`
     OutputCostPerTokenAbove100kTokens *float64 `json:"output_cost_per_token_above_100k_tokens,omitempty"`
     InputCostPerTokenAbove200kTokens  *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
@@ -158,6 +164,9 @@ type PricingEntry struct {
     CacheReadInputTokenCost                            *float64 `json:"cache_read_input_token_cost,omitempty"`
     CacheCreationInputTokenCostAbove200kTokens         *float64 `json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`
     CacheReadInputTokenCostAbove200kTokens             *float64 `json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
+    // OpenAI 12-hour cache writes, by tier and 272k window (_flex, _priority, _ultrafast,
+    // _above_272k_tokens and their combinations)
+    CacheCreationInputTokenCostAbove12hr               *float64 `json:"cache_creation_input_token_cost_above_12hr,omitempty"`
     CacheCreationInputTokenCostAbove1hr                *float64 `json:"cache_creation_input_token_cost_above_1hr,omitempty"`
     CacheCreationInputTokenCostAbove1hrAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_1hr_above_200k_tokens,omitempty"`
     CacheCreationInputTokenCostAbove100kTokens         *float64 `json:"cache_creation_input_token_cost_above_100k_tokens,omitempty"`

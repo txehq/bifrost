@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -3982,6 +3983,77 @@ func TestUpsertModelPricesBatch_WebSearchCostPerRequest_SurvivesResync(t *testin
 	require.Len(t, got, 1)
 	require.NotNil(t, got[0].WebSearchCostPerRequest)
 	assert.InDelta(t, 0.02, *got[0].WebSearchCostPerRequest, 1e-9)
+}
+
+// TestPricingSyncUpdateColumns_CoverEveryPricingColumn is the class check for the
+// pricingSyncUpdateColumns trap (fork, TXE-7353): a column on TableModelPricing that is not in
+// the list is written by the first sync and reverts to the stale value on every later one.
+// Every column except the primary key and the editorial additional_attributes must be listed,
+// and every *float64 rate must survive a resync with a changed value.
+func TestPricingSyncUpdateColumns_CoverEveryPricingColumn(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	stmt := &gorm.Statement{DB: s.DB()}
+	require.NoError(t, stmt.Parse(&tables.TableModelPricing{}))
+	listed := map[string]bool{}
+	for _, column := range pricingSyncUpdateColumns {
+		listed[column] = true
+	}
+	for _, field := range stmt.Schema.Fields {
+		if field.DBName == "" || field.PrimaryKey || field.DBName == "additional_attributes" {
+			continue
+		}
+		if !listed[field.DBName] {
+			t.Errorf("governance_model_pricing.%s is not in pricingSyncUpdateColumns (rdb.go): the next datasheet sync would leave it stale", field.DBName)
+		}
+	}
+
+	// PostgreSQL truncates an identifier past 63 bytes, and a truncated column no longer matches
+	// its GORM mapping, so the rate reads back nil (rename_truncated_pricing_column fixed one such
+	// column; TXE-7353's first 12h names were three more). A column name may not be longer.
+	for _, field := range stmt.Schema.Fields {
+		if len(field.DBName) > 63 {
+			t.Errorf("governance_model_pricing.%s is %d bytes; PostgreSQL truncates identifiers past 63. Give the column a shorter name and keep the datasheet key as its json tag", field.DBName, len(field.DBName))
+		}
+	}
+
+	// Every rate, set, then changed and re-upserted, reads back changed.
+	setRates := func(row *tables.TableModelPricing, offset float64) []string {
+		v := reflect.ValueOf(row).Elem()
+		var names []string
+		for i := 0; i < v.NumField(); i++ {
+			if v.Field(i).Type() != reflect.TypeOf((*float64)(nil)) {
+				continue
+			}
+			rate := float64(i) + offset
+			v.Field(i).Set(reflect.ValueOf(&rate))
+			names = append(names, v.Type().Field(i).Name)
+		}
+		return names
+	}
+	row := tables.TableModelPricing{Model: "gpt-6-sol", Provider: "openai", Mode: "chat"}
+	setRates(&row, 0.25)
+	ctx := context.Background()
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+	names := setRates(&row, 0.5)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	gv := reflect.ValueOf(got[0])
+	wv := reflect.ValueOf(row)
+	for _, name := range names {
+		g, _ := gv.FieldByName(name).Interface().(*float64)
+		w := wv.FieldByName(name).Interface().(*float64)
+		switch {
+		case g == nil:
+			t.Errorf("%s did not survive a resync: got null, want %v", name, *w)
+		case *g != *w:
+			t.Errorf("%s did not survive a resync: got %v, want %v", name, *g, *w)
+		}
+	}
 }
 
 func TestUpsertModelPricesBatch_MegapixelImageTierColumns_SurviveResync(t *testing.T) {

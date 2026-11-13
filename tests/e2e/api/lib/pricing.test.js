@@ -100,4 +100,24 @@ test('expectedCostFromRow: cached tokens from token_usage blob and clamping', ()
   assert.ok(Math.abs(expectedCostFromRow(astra, row) - want) < 1e-12);
 });
 
+// TXE-7353: azure/gpt-6-sol publishes a 12h write at 5e-06 (1e-05 on priority) and no above-1hr
+// rate. A 12h write bills at the 12h rate for the served tier; the 30m write at the base rate.
+test('expectedCostFromRow: 12h cache writes bill at the above-12hr rate of the served tier', () => {
+  const sol = {
+    input_cost_per_token: 2e-06, output_cost_per_token: 1e-05,
+    cache_creation_input_token_cost: 2.5e-06, cache_creation_input_token_cost_priority: 5e-06,
+    cache_creation_input_token_cost_above_12hr: 5e-06, cache_creation_input_token_cost_above_12hr_priority: 1e-05,
+  };
+  const row = { prompt_tokens: 10000, completion_tokens: 0, cached_read_tokens: 0,
+    token_usage: JSON.stringify({ prompt_tokens_details: { cached_write_tokens: 8000,
+      cached_write_token_details: { cached_write_tokens_30m: 6000, cached_write_tokens_12h: 2000 } } }) };
+  const standard = 2000 * 2e-06 + 6000 * 2.5e-06 + 2000 * 5e-06;
+  assert.ok(Math.abs(expectedCostFromRow(sol, row) - standard) < 1e-12);
+  const priority = 2000 * 2e-06 + 6000 * 5e-06 + 2000 * 1e-05;
+  assert.ok(Math.abs(expectedCostFromRow(sol, { ...row, service_tier: 'priority' }) - priority) < 1e-12);
+  // A row without 12h rates prices a 12h write at the above-1hr rate, then the base write rate.
+  const anthropicLike = { input_cost_per_token: 2e-06, cache_creation_input_token_cost: 2.5e-06, cache_creation_input_token_cost_above_1hr: 4e-06 };
+  assert.ok(Math.abs(expectedCostFromRow(anthropicLike, row) - (2000 * 2e-06 + 6000 * 2.5e-06 + 2000 * 4e-06)) < 1e-12);
+});
+
 console.log(`\npricing.test.js: ${passed} passed`);

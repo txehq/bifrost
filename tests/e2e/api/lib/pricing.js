@@ -72,20 +72,34 @@ function expectedCostFromRow(entry, row) {
   const completion = Number(row.completion_tokens || 0);
   let cachedRead = Number(row.cached_read_tokens || 0);
   let cachedWrite = 0;
+  let write1h = 0;
+  let write12h = 0;
   if (row.token_usage) {
     try {
       const d = JSON.parse(row.token_usage)?.prompt_tokens_details;
       if (d) {
         if (cachedRead === 0 && d.cached_read_tokens) cachedRead = Number(d.cached_read_tokens);
         if (d.cached_write_tokens) cachedWrite = Number(d.cached_write_tokens);
+        const tiers = d.cached_write_token_details || {};
+        write1h = Math.max(0, Number(tiers.cached_write_tokens_1h || 0));
+        write12h = Math.max(0, Number(tiers.cached_write_tokens_12h || 0));
       }
     } catch (_) { /* ignore malformed usage blob */ }
   }
   // Clamp exactly like cost.go.
   cachedRead = Math.min(cachedRead, prompt);
   cachedWrite = Math.min(cachedWrite, Math.max(0, prompt - cachedRead));
+  write12h = Math.min(write12h, cachedWrite);
+  write1h = Math.min(write1h, cachedWrite - write12h);
   const nonCachedPrompt = Math.max(0, prompt - cachedRead - cachedWrite);
-  return nonCachedPrompt * r.input + cachedRead * r.cacheRead + cachedWrite * r.cacheWrite + completion * r.output;
+  // Long-lived writes (TXE-7353): Anthropic's 1h at the above-1hr rate, OpenAI's 12h at the
+  // served tier's above-12hr rate, falling back to the above-1hr rate, then the base write rate.
+  const sfx = TIER_SUFFIX[String(row.service_tier || '').toLowerCase()] || '';
+  const rate1h = entry.cache_creation_input_token_cost_above_1hr ?? r.cacheWrite;
+  const rate12h = (sfx ? entry['cache_creation_input_token_cost_above_12hr' + sfx] : undefined)
+    ?? entry.cache_creation_input_token_cost_above_12hr ?? rate1h;
+  const writeCost = (cachedWrite - write1h - write12h) * r.cacheWrite + write1h * rate1h + write12h * rate12h;
+  return nonCachedPrompt * r.input + cachedRead * r.cacheRead + writeCost + completion * r.output;
 }
 
 module.exports = { PRICING_PROVIDER_ALIASES, normalizePricingProvider, resolvePricingEntry, tierRates, expectedCostFromRow };

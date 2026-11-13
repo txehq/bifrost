@@ -1,0 +1,388 @@
+{
+  "name": "560. An OpenAI 12h cache write is priced at the 12h rate, and the override API keeps the 12h tier fields (12h cache write pricing) [SERIAL]",
+  "description": "TXE-7353. The upstream datasheet publishes cache_creation_input_token_cost_above_12hr for 90 OpenAI and Azure models (gpt-5.6, gpt-6), with tier and 272k variants, and no above-1hr rate. The fork dropped those keys at sync and priced an OpenAI 12h write (ttl_12h_tokens) at the above-1hr rate, falling back to the base write rate, so azure/gpt-6-sol's 12h write billed at 2.5e-06 instead of 5e-06. The folder makes a throwaway virtual key with a VK-scoped override that sets every rate the request can touch to a distinct value (base write 1e-05, above-1hr 3e-05, above-12hr 1e-04), writes a fresh prefix to OpenAI's 12h cache through it, and checks the logged cost prices the 12h tokens at 1e-04. Before the change the override API dropped the 12h fields (row 560.2 fails) and the write billed at the 1h rate (row 560.4 fails). The override is VK-scoped so nothing else in the suite is repriced; the teardown removes both. One live gpt-5.6-sol call.",
+  "item": [
+    {
+      "name": "560.1 Setup - Create VK for 12h cache write pricing - openai/gpt-5.6-sol",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.unset('cache12hVkId');",
+              "pm.collectionVariables.unset('cache12hVkValue');",
+              "pm.request.body.raw = JSON.stringify({",
+              "  name: '12h Cache Write Pricing VK ' + Date.now(),",
+              "  provider_configs: [{ provider: 'openai', weight: 1.0, allowed_models: ['*'], key_ids: ['*'] }]",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Create VK returns 2xx', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "var body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var vk = body && (body.virtual_key || body);",
+              "pm.test('Created VK exposes usable credentials', function () {",
+              "  pm.expect(vk && vk.id, 'id in: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+              "  pm.expect(vk && vk.value, 'value in: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+              "});",
+              "if (vk && vk.id && vk.value) {",
+              "  pm.collectionVariables.set('cache12hVkId', vk.id);",
+              "  pm.collectionVariables.set('cache12hVkValue', vk.value);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "560.2 Setup - VK-scoped override on the 12h cache-write rates [EXPECT-201] - openai/gpt-5.6-sol",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['cache12hVkId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "pm.collectionVariables.unset('cache12hOverrideId');",
+              "pm.request.body.raw = JSON.stringify({",
+              "  name: 'e2e-12h-cache-write-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),",
+              "  // Virtual-key scoped on purpose: a global or provider-scoped override would reprice every other",
+              "  // gpt-5.6-sol request in flight and trip the cost-accuracy checks elsewhere in the suite.",
+              "  scope_kind: 'virtual_key',",
+              "  virtual_key_id: pm.collectionVariables.get('cache12hVkId'),",
+              "  match_type: 'exact',",
+              "  pattern: 'gpt-5.6-sol',",
+              "  request_types: ['chat'],",
+              "  patch: {\"input_cost_per_token\": 1e-06, \"output_cost_per_token\": 2e-06, \"cache_read_input_token_cost\": 1e-07, \"cache_creation_input_token_cost\": 1e-05, \"cache_creation_input_token_cost_above_1hr\": 3e-05, \"cache_creation_input_token_cost_above_12hr\": 0.0001, \"cache_creation_input_token_cost_above_12hr_above_272k_tokens\": 0.0001, \"cache_creation_input_token_cost_above_12hr_flex\": 0.0001, \"cache_creation_input_token_cost_above_12hr_above_272k_tokens_flex\": 0.0001, \"cache_creation_input_token_cost_above_12hr_priority\": 0.0001, \"cache_creation_input_token_cost_above_12hr_above_272k_tokens_priority\": 0.0001, \"cache_creation_input_token_cost_above_12hr_ultrafast\": 0.0001, \"cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast\": 0.0001}",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Override on the 12h cache-write rate fields is accepted', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "var body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var ov = body && (body.pricing_override || body);",
+              "// The stored patch is the request's patch as the gateway decoded it: a field it does not know is gone.",
+              "var stored = null;",
+              "try { stored = ov && JSON.parse(ov.pricing_patch); } catch (e) { stored = null; }",
+              "pm.test('Override exposes an id and keeps the 12h rate', function () {",
+              "  pm.expect(ov && ov.id, 'body: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+              "  pm.expect(stored && stored.cache_creation_input_token_cost_above_12hr, 'the API dropped the 12h rate: ' + pm.response.text()).to.eql(0.0001);",
+              "  pm.expect(stored && stored.cache_creation_input_token_cost_above_12hr_priority, 'the API dropped the priority 12h rate: ' + pm.response.text()).to.eql(0.0001);",
+              "});",
+              "if (ov && ov.id) { pm.collectionVariables.set('cache12hOverrideId', ov.id); }"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides"
+          ]
+        }
+      }
+    },
+    {
+      "name": "560.3 /v1/chat/completions - a fresh prefix written to the 12h cache through the VK - openai/gpt-5.6-sol",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['cache12hVkValue', 'cache12hOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "// A prefix no earlier run wrote, so this call writes it (a read would bill no write).",
+              "pm.collectionVariables.set('cache12hNonce', String(Date.now()) + '-' + Math.random().toString(36).slice(2, 8));",
+              "pm.collectionVariables.set('cache12hRequestId', 'e2e-12h-cache-write-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));",
+              "pm.collectionVariables.unset('cache12hLogRetry');"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('chat on openai/gpt-5.6-sol succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var j = pm.response.json();",
+              "var det = (j.usage && j.usage.prompt_tokens_details) || {};",
+              "var tiers = det.cached_write_token_details || {};",
+              "// No silent pass: without a 12h write the folder proves nothing, so it fails and says why.",
+              "pm.test('OpenAI reported a 12h cache write', function () {",
+              "  pm.expect(tiers.cached_write_tokens_12h || 0, 'usage: ' + JSON.stringify(j.usage)).to.be.above(0);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{cache12hVkValue}}"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{cache12hRequestId}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-12h-price-{{cache12hNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"12h\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{cache12hNonce}} 12h-price]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "560.4 logs - the 12h write is priced at the 12h rate, not the 1h or base write rate - openai/gpt-5.6-sol",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var retry = Number(pm.collectionVariables.get('cache12hLogRetry') || 0);",
+              "if (retry > 0) {",
+              "  // The async log writer flushes in 1s batches. Newman drains pending timers before it sends.",
+              "  var until = Date.now() + 1000;",
+              "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+              "}",
+              "var missing = ['cache12hRequestId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var reqId = pm.collectionVariables.get('cache12hRequestId');",
+              "pm.test('logs query responds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "});",
+              "if (pm.response.code !== 200) { pm.collectionVariables.unset('cache12hLogRetry'); return; }",
+              "var logs = (pm.response.json().logs || []);",
+              "// The log row id is the request id, so an identity check turns a wrong row into no row.",
+              "var row = null;",
+              "logs.forEach(function (l) { if (l.id === reqId) { row = l; } });",
+              "var retry = Number(pm.collectionVariables.get('cache12hLogRetry') || 0);",
+              "if ((!row || !(row.cost > 0)) && retry < 10) {",
+              "  pm.collectionVariables.set('cache12hLogRetry', retry + 1);",
+              "  postman.setNextRequest(pm.info.requestName);",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('cache12hLogRetry');",
+              "pm.test('the chat was logged under its request id', function () {",
+              "  pm.expect(row, 'no log row for ' + reqId + ': ' + pm.response.text()).to.not.equal(null);",
+              "});",
+              "if (!row) { return; }",
+              "var u = row.token_usage || {};",
+              "var d = u.prompt_tokens_details || {};",
+              "var w = d.cached_write_tokens || 0;",
+              "var w12 = (d.cached_write_token_details || {}).cached_write_tokens_12h || 0;",
+              "var cr = d.cached_read_tokens || 0;",
+              "pm.test('the log row carries the 12h write', function () {",
+              "  pm.expect(w12, 'token_usage: ' + JSON.stringify(u)).to.be.above(0);",
+              "});",
+              "// Every category at the override's rate: the 12h write at the 12h rate, the rest of the writes at the base write rate.",
+              "var expected = (u.prompt_tokens - cr - w) * 1e-06 + cr * 1e-07 + (w - w12) * 1e-05 + w12 * 0.0001 + u.completion_tokens * 2e-06;",
+              "var at1h = expected - w12 * (0.0001 - 3e-05);",
+              "pm.test('the cost prices the 12h write at the 12h rate', function () {",
+              "  pm.expect(Math.abs(row.cost - expected), 'cost ' + row.cost + ' vs expected ' + expected + ' (at the 1h rate it would be ' + at1h + '); token_usage: ' + JSON.stringify(u)).to.be.at.most(Math.max(1e-9, expected * 1e-6));",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs?request_id={{cache12hRequestId}}&limit=1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "request_id",
+              "value": "{{cache12hRequestId}}"
+            },
+            {
+              "key": "limit",
+              "value": "1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "560.5 Teardown - Delete the 12h cache-write override - openai/gpt-5.6-sol",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['cache12hOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Override deleted', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "pm.collectionVariables.unset('cache12hOverrideId');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{cache12hOverrideId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides",
+            "{{cache12hOverrideId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "560.6 Teardown - Delete VK - openai/gpt-5.6-sol",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['cache12hVkId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('VK deleted', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "pm.collectionVariables.unset('cache12hVkId');",
+              "pm.collectionVariables.unset('cache12hVkValue');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys/{{cache12hVkId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{cache12hVkId}}"
+          ]
+        }
+      }
+    }
+  ]
+}

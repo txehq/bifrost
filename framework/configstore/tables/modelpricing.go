@@ -40,6 +40,28 @@ type TableModelPricing struct {
 	// (e.g. a chat row served natively on /v1/decisions); see decisionRates.
 	InputCostPerTokenDecisions  *float64 `gorm:"default:null;column:input_cost_per_token_decisions" json:"input_cost_per_token_decisions,omitempty"`
 	OutputCostPerTokenDecisions *float64 `gorm:"default:null;column:output_cost_per_token_decisions" json:"output_cost_per_token_decisions,omitempty"`
+	// Costs - service tiers and the 12h cache write (fork, TXE-7353). Decision rates above 272k
+	// and decision cache rates; flex above 200k; 12h cache-write rates by tier and context
+	// window; priority image output tokens; audio input tokens by tier.
+	InputCostPerTokenAbove272kTokensDecisions                    *float64 `gorm:"default:null;column:input_cost_per_token_above_272k_tokens_decisions" json:"input_cost_per_token_above_272k_tokens_decisions,omitempty"`
+	OutputCostPerTokenAbove272kTokensDecisions                   *float64 `gorm:"default:null;column:output_cost_per_token_above_272k_tokens_decisions" json:"output_cost_per_token_above_272k_tokens_decisions,omitempty"`
+	CacheReadInputTokenCostDecisions                             *float64 `gorm:"default:null;column:cache_read_input_token_cost_decisions" json:"cache_read_input_token_cost_decisions,omitempty"`
+	CacheReadInputTokenCostAbove272kTokensDecisions              *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_272k_tokens_decisions" json:"cache_read_input_token_cost_above_272k_tokens_decisions,omitempty"`
+	CacheCreationInputTokenCostDecisions                         *float64 `gorm:"default:null;column:cache_creation_input_token_cost_decisions" json:"cache_creation_input_token_cost_decisions,omitempty"`
+	CacheCreationInputTokenCostAbove272kTokensDecisions          *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_272k_tokens_decisions" json:"cache_creation_input_token_cost_above_272k_tokens_decisions,omitempty"`
+	InputCostPerTokenAbove200kTokensFlex                         *float64 `gorm:"default:null;column:input_cost_per_token_above_200k_tokens_flex" json:"input_cost_per_token_above_200k_tokens_flex,omitempty"`
+	OutputCostPerTokenAbove200kTokensFlex                        *float64 `gorm:"default:null;column:output_cost_per_token_above_200k_tokens_flex" json:"output_cost_per_token_above_200k_tokens_flex,omitempty"`
+	CacheReadInputTokenCostAbove200kTokensFlex                   *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_200k_tokens_flex" json:"cache_read_input_token_cost_above_200k_tokens_flex,omitempty"`
+	CacheCreationInputTokenCostAbove12hr                         *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_12hr" json:"cache_creation_input_token_cost_above_12hr,omitempty"`
+	CacheCreationInputTokenCostAbove12hrAbove272kTokens          *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_12hr_above_272k_tokens" json:"cache_creation_input_token_cost_above_12hr_above_272k_tokens,omitempty"`
+	CacheCreationInputTokenCostAbove12hrFlex                     *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_12hr_flex" json:"cache_creation_input_token_cost_above_12hr_flex,omitempty"`
+	CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex      *float64 `gorm:"default:null;column:cache_creation_cost_above_12hr_above_272k_tokens_flex" json:"cache_creation_input_token_cost_above_12hr_above_272k_tokens_flex,omitempty"`
+	CacheCreationInputTokenCostAbove12hrPriority                 *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_12hr_priority" json:"cache_creation_input_token_cost_above_12hr_priority,omitempty"`
+	CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority  *float64 `gorm:"default:null;column:cache_creation_cost_above_12hr_above_272k_tokens_priority" json:"cache_creation_input_token_cost_above_12hr_above_272k_tokens_priority,omitempty"`
+	CacheCreationInputTokenCostAbove12hrUltrafast                *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_12hr_ultrafast" json:"cache_creation_input_token_cost_above_12hr_ultrafast,omitempty"`
+	CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast *float64 `gorm:"default:null;column:cache_creation_cost_above_12hr_above_272k_tokens_ultrafast" json:"cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast,omitempty"`
+	InputCostPerAudioTokenFlex                                   *float64 `gorm:"default:null;column:input_cost_per_audio_token_flex" json:"input_cost_per_audio_token_flex,omitempty"`
+	InputCostPerAudioTokenPriority                               *float64 `gorm:"default:null;column:input_cost_per_audio_token_priority" json:"input_cost_per_audio_token_priority,omitempty"`
 	// Costs - 128k Tier
 	InputCostPerTokenAbove128kTokens          *float64 `gorm:"default:null;column:input_cost_per_token_above_128k_tokens" json:"input_cost_per_token_above_128k_tokens,omitempty"`
 	InputCostPerImageAbove128kTokens          *float64 `gorm:"default:null;column:input_cost_per_image_above_128k_tokens" json:"input_cost_per_image_above_128k_tokens,omitempty"`

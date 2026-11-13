@@ -8561,3 +8561,232 @@ func BenchmarkVideoOutputPerSecondRate(b *testing.B) {
 		_ = videoOutputPerSecondRate(&p, "1280x720", false)
 	}
 }
+
+// =========================================================================
+// TXE-7353: service-tier and 12h cache-write rates upstream publishes. Every value below is
+// the live datasheet's (getbifrost.ai/datasheet, 14 Nov 2026).
+// =========================================================================
+
+// decodeEntry decodes a datasheet row the way sync does and converts it to a pricing row.
+func decodeEntry(t *testing.T, row string) configstoreTables.TableModelPricing {
+	t.Helper()
+	var entry Entry
+	require.NoError(t, json.Unmarshal([]byte(row), &entry))
+	return convertEntryToTablePricing("openai/test-model", entry)
+}
+
+// azure/gpt-6-sol publishes the 12h write at 5e-06 and no above-1hr rate. Before TXE-7353 a 12h
+// write fell back to the base write rate, 2.5e-06, half its price.
+func TestComputeTextCost_OpenAI12hCacheWriteUsesThe12hRate(t *testing.T) {
+	p := decodeEntry(t, `{
+		"provider": "azure", "mode": "chat",
+		"input_cost_per_token": 2e-06, "output_cost_per_token": 1e-05,
+		"cache_creation_input_token_cost": 2.5e-06,
+		"cache_creation_input_token_cost_above_12hr": 5e-06,
+		"cache_creation_input_token_cost_above_12hr_above_272k_tokens": 1e-05,
+		"cache_creation_input_token_cost_above_12hr_flex": 2.5e-06,
+		"cache_creation_input_token_cost_above_12hr_above_272k_tokens_flex": 5e-06,
+		"cache_creation_input_token_cost_above_12hr_priority": 1e-05,
+		"cache_creation_input_token_cost_above_12hr_above_272k_tokens_priority": 2e-05,
+		"cache_creation_input_token_cost_above_12hr_ultrafast": 2e-05,
+		"cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast": 4e-05
+	}`)
+	write := func(prompt int) *schemas.BifrostLLMUsage {
+		return &schemas.BifrostLLMUsage{
+			PromptTokens: prompt, TotalTokens: prompt,
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+				CachedWriteTokens: 8000,
+				CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+					CachedWriteTokens30m: 6000,
+					CachedWriteTokens12h: 2000,
+				},
+			},
+		}
+	}
+	cases := []struct {
+		name    string
+		prompt  int
+		tier    serviceTier
+		rate12h float64
+	}{
+		{"standard", 10000, serviceTier{}, 5e-06},
+		{"standard above 272k", 300000, serviceTier{}, 1e-05},
+		{"flex", 10000, serviceTier{isFlex: true}, 2.5e-06},
+		{"flex above 272k", 300000, serviceTier{isFlex: true}, 5e-06},
+		{"priority", 10000, serviceTier{isPriority: true}, 1e-05},
+		{"priority above 272k", 300000, serviceTier{isPriority: true}, 2e-05},
+		{"ultrafast", 10000, serviceTier{isUltrafast: true}, 2e-05},
+		{"ultrafast above 272k", 300000, serviceTier{isUltrafast: true}, 4e-05},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := computeTextCost(&p, write(tc.prompt), tc.tier)
+			require.NotNil(t, got)
+			want12h := 2000 * tc.rate12h
+			// The 30m writes take the row's base write rate in every case (the row carries no
+			// tier or 272k base write rate).
+			assert.InDelta(t, want12h+6000*2.5e-06, got.InputCostDetails.CachedWriteCost, 1e-12)
+		})
+	}
+}
+
+// A 1h write and a 12h write in one response each take their own rate; a row without 12h rates
+// keeps pricing a 12h write at the above-1hr rate, as before TXE-7353.
+func TestComputeTextCost_1hAnd12hWritesTakeTheirOwnRates(t *testing.T) {
+	p := chatPricing(1e-06, 8e-06)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(1.25e-06)
+	p.CacheCreationInputTokenCostAbove1hr = bifrost.Ptr(2e-06)
+	p.CacheCreationInputTokenCostAbove12hr = bifrost.Ptr(3e-06)
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens: 10000, TotalTokens: 10000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedWriteTokens: 6000,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens5m: 1000, CachedWriteTokens1h: 2000, CachedWriteTokens12h: 3000,
+			},
+		},
+	}
+	assert.InDelta(t, 4000*1e-06+1000*1.25e-06+2000*2e-06+3000*3e-06, computeTextCostTotal(&p, usage, serviceTier{}), 1e-12)
+
+	p.CacheCreationInputTokenCostAbove12hr = nil
+	assert.InDelta(t, 4000*1e-06+1000*1.25e-06+5000*2e-06, computeTextCostTotal(&p, usage, serviceTier{}), 1e-12)
+}
+
+// A batch 12h write takes the synchronous 12h rate scaled by the batch ratio, like every other
+// batch category.
+func TestComputeBatchTextCost_12hCacheWriteScalesThe12hRate(t *testing.T) {
+	p := chatPricing(2e-06, 1e-05)
+	p.InputCostPerTokenBatches = bifrost.Ptr(1e-06)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(2.5e-06)
+	p.CacheCreationInputTokenCostAbove12hr = bifrost.Ptr(5e-06)
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens: 10000, TotalTokens: 10000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedWriteTokens:       2000,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{CachedWriteTokens12h: 2000},
+		},
+	}
+	got := computeBatchTextCost(&p, usage, serviceTier{})
+	require.NotNil(t, got)
+	assert.InDelta(t, 8000*1e-06+2000*5e-06*0.5, got.TotalCost, 1e-12)
+}
+
+// azure/gpt-6-astra publishes its flex 272k rate only as input_cost_per_token_above_272k_tokens_flex.
+// Before TXE-7353 that spelling was dropped and a 300k-token flex request billed at the flat flex
+// rate, 5e-06, half its price.
+func TestEntry_UpstreamRateAliasesFoldIntoTheirFields(t *testing.T) {
+	p := decodeEntry(t, `{
+		"provider": "azure", "mode": "chat",
+		"input_cost_per_token": 1e-05, "output_cost_per_token": 6e-05,
+		"input_cost_per_token_flex": 5e-06, "output_cost_per_token_flex": 3e-05,
+		"input_cost_per_token_above_272k_tokens_flex": 1e-05,
+		"output_cost_per_token_above_272k_tokens_flex": 4.5e-05,
+		"cache_read_input_token_cost_above_272k_tokens_flex": 1e-06,
+		"cache_creation_input_token_cost_above_272k_tokens_flex": 1.25e-05
+	}`)
+	require.NotNil(t, p.InputCostPerTokenFlexAbove272kTokens)
+	assert.Equal(t, 1e-05, *p.InputCostPerTokenFlexAbove272kTokens)
+	assert.Equal(t, 4.5e-05, *p.OutputCostPerTokenFlexAbove272kTokens)
+	assert.Equal(t, 1e-06, *p.CacheReadInputTokenCostFlexAbove272kTokens)
+	assert.Equal(t, 1.25e-05, *p.CacheCreationInputTokenCostFlexAbove272kTokens)
+
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 300000, CompletionTokens: 1000, TotalTokens: 301000}
+	assert.InDelta(t, 300000*1e-05+1000*4.5e-05, computeTextCostTotal(&p, usage, serviceTier{isFlex: true}), 1e-9)
+
+	// OpenAI's fast tier is Priority renamed: *_fast_above_272k_tokens fills the priority 272k
+	// rate when the row lacks it, and the tier-first priority spelling fills it first.
+	fast := decodeEntry(t, `{
+		"provider": "openai", "mode": "chat",
+		"input_cost_per_token": 2e-06, "output_cost_per_token": 1e-05,
+		"input_cost_per_token_fast_above_272k_tokens": 8e-06,
+		"output_cost_per_token_fast_above_272k_tokens": 3e-05,
+		"cache_read_input_token_cost_fast_above_272k_tokens": 8e-07,
+		"cache_creation_input_token_cost_fast_above_272k_tokens": 1e-05,
+		"cache_read_input_token_cost_priority_above_272k_tokens": 9e-07
+	}`)
+	assert.Equal(t, 8e-06, *fast.InputCostPerTokenAbove272kTokensPriority)
+	assert.Equal(t, 3e-05, *fast.OutputCostPerTokenAbove272kTokensPriority)
+	assert.Equal(t, 9e-07, *fast.CacheReadInputTokenCostAbove272kTokensPriority)
+	assert.Equal(t, 1e-05, *fast.CacheCreationInputTokenCostAbove272kTokensPriority)
+
+	// The fork's own spelling wins over an alias on the same row.
+	both := decodeEntry(t, `{
+		"provider": "openai", "mode": "chat",
+		"input_cost_per_token_flex_above_272k_tokens": 2e-06,
+		"input_cost_per_token_above_272k_tokens_flex": 3e-06
+	}`)
+	assert.Equal(t, 2e-06, *both.InputCostPerTokenFlexAbove272kTokens)
+}
+
+// gemini/gemini-3.1-pro-preview publishes flex above 200k at twice the flat flex rate.
+func TestComputeTextCost_FlexAbove200k(t *testing.T) {
+	p := decodeEntry(t, `{
+		"provider": "gemini", "mode": "chat",
+		"input_cost_per_token": 2e-06, "output_cost_per_token": 1.2e-05,
+		"input_cost_per_token_above_200k_tokens": 4e-06, "output_cost_per_token_above_200k_tokens": 1.8e-05,
+		"cache_read_input_token_cost": 2e-07, "cache_read_input_token_cost_above_200k_tokens": 4e-07,
+		"input_cost_per_token_flex": 1e-06, "output_cost_per_token_flex": 6e-06,
+		"cache_read_input_token_cost_flex": 2e-07,
+		"input_cost_per_token_above_200k_tokens_flex": 2e-06,
+		"output_cost_per_token_above_200k_tokens_flex": 9e-06,
+		"cache_read_input_token_cost_above_200k_tokens_flex": 4e-07
+	}`)
+	flex := serviceTier{isFlex: true}
+	long := &schemas.BifrostLLMUsage{
+		PromptTokens: 250000, CompletionTokens: 1000, TotalTokens: 251000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 50000},
+	}
+	assert.InDelta(t, 200000*2e-06+50000*4e-07+1000*9e-06, computeTextCostTotal(&p, long, flex), 1e-9)
+	short := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100}
+	assert.InDelta(t, 1000*1e-06+100*6e-06, computeTextCostTotal(&p, short, flex), 1e-12)
+}
+
+// gemini-2.5-flash publishes audio input at 1e-06, 5e-07 on flex and 1.8e-06 on priority.
+func TestComputeTextCost_AudioInputTokensByTier(t *testing.T) {
+	p := decodeEntry(t, `{
+		"provider": "vertex_ai", "mode": "chat",
+		"input_cost_per_token": 3e-07, "output_cost_per_token": 2.5e-06,
+		"input_cost_per_audio_token": 1e-06,
+		"input_cost_per_audio_token_flex": 5e-07,
+		"input_cost_per_audio_token_priority": 1.8e-06,
+		"input_cost_per_token_flex": 1.5e-07, "input_cost_per_token_priority": 5.4e-07
+	}`)
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens: 1000, TotalTokens: 1000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{AudioTokens: 400},
+	}
+	assert.InDelta(t, 600*3e-07+400*1e-06, computeTextCostTotal(&p, usage, serviceTier{}), 1e-12)
+	assert.InDelta(t, 600*1.5e-07+400*5e-07, computeTextCostTotal(&p, usage, serviceTier{isFlex: true}), 1e-12)
+	assert.InDelta(t, 600*5.4e-07+400*1.8e-06, computeTextCostTotal(&p, usage, serviceTier{isPriority: true}), 1e-12)
+	assert.InDelta(t, 1.8e-06, tieredAudioTokenInputRate(&p, 1000, serviceTier{isPriority: true}), 1e-15)
+}
+
+// gpt-6-luna publishes decision rates of 1e-07 input and 2e-07 above 272k, decision cache reads
+// at 1e-08 (2e-08 above 272k) and decision cache writes at 1.25e-07 (2.5e-07 above 272k).
+func TestComputeDecisionCost_Above272kAndCacheRates(t *testing.T) {
+	p := decodeEntry(t, `{
+		"provider": "openai", "mode": "chat",
+		"input_cost_per_token": 1e-07, "output_cost_per_token": 5e-07,
+		"input_cost_per_token_decisions": 1e-07,
+		"output_cost_per_token_decisions": 0,
+		"input_cost_per_token_above_272k_tokens_decisions": 2e-07,
+		"output_cost_per_token_above_272k_tokens_decisions": 0,
+		"cache_read_input_token_cost_decisions": 1e-08,
+		"cache_read_input_token_cost_above_272k_tokens_decisions": 2e-08,
+		"cache_creation_input_token_cost_decisions": 1.25e-07,
+		"cache_creation_input_token_cost_above_272k_tokens_decisions": 2.5e-07
+	}`)
+	usage := func(prompt int) *schemas.BifrostLLMUsage {
+		return &schemas.BifrostLLMUsage{
+			PromptTokens: prompt, CompletionTokens: 40, TotalTokens: prompt + 40,
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 6000, CachedWriteTokens: 1000},
+		}
+	}
+	assert.InDelta(t, 3000*1e-07+6000*1e-08+1000*1.25e-07, computeDecisionCostTotal(&p, usage(10000), serviceTier{}), 1e-12)
+	assert.InDelta(t, 293000*2e-07+6000*2e-08+1000*2.5e-07, computeDecisionCostTotal(&p, usage(300000), serviceTier{}), 1e-12)
+
+	// A row with flat decision rates and no decision cache rates keeps pricing every prompt
+	// token at the decision input rate.
+	flat := decodeEntry(t, `{"provider": "openai", "mode": "chat", "input_cost_per_token": 1e-07, "input_cost_per_token_decisions": 1e-07, "output_cost_per_token_decisions": 0}`)
+	assert.InDelta(t, 300000*1e-07, computeDecisionCostTotal(&flat, usage(300000), serviceTier{}), 1e-12)
+}

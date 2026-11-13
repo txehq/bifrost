@@ -580,6 +580,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_bfl_key_config_columns"}, run: migrationAddBFLKeyConfigColumns},
 	{IDs: []string{"add_bfl_webhook_url_prefixes_column"}, run: migrationAddBFLWebhookURLPrefixesColumn},
 	{IDs: []string{"add_video_audio_rate_columns"}, run: migrationAddVideoAudioRateColumns},
+	{IDs: []string{"add_service_tier_and_12h_cache_pricing_columns"}, run: migrationAddServiceTierAnd12hCachePricingColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16720,6 +16721,64 @@ func migrationAddVideoAudioRateColumns(ctx context.Context, db *gorm.DB, logger 
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			for _, field := range videoAudioPricingColumns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// serviceTierAnd12hCachePricingColumns are the governance_model_pricing columns
+// migrationAddServiceTierAnd12hCachePricingColumns adds (fork, TXE-7353).
+var serviceTierAnd12hCachePricingColumns = []string{
+	"input_cost_per_token_above_272k_tokens_decisions",
+	"output_cost_per_token_above_272k_tokens_decisions",
+	"cache_read_input_token_cost_decisions",
+	"cache_read_input_token_cost_above_272k_tokens_decisions",
+	"cache_creation_input_token_cost_decisions",
+	"cache_creation_input_token_cost_above_272k_tokens_decisions",
+	"input_cost_per_token_above_200k_tokens_flex",
+	"output_cost_per_token_above_200k_tokens_flex",
+	"cache_read_input_token_cost_above_200k_tokens_flex",
+	"cache_creation_input_token_cost_above_12hr",
+	"cache_creation_input_token_cost_above_12hr_above_272k_tokens",
+	"cache_creation_input_token_cost_above_12hr_flex",
+	"cache_creation_cost_above_12hr_above_272k_tokens_flex",
+	"cache_creation_input_token_cost_above_12hr_priority",
+	"cache_creation_cost_above_12hr_above_272k_tokens_priority",
+	"cache_creation_input_token_cost_above_12hr_ultrafast",
+	"cache_creation_cost_above_12hr_above_272k_tokens_ultrafast",
+	"input_cost_per_audio_token_flex",
+	"input_cost_per_audio_token_priority",
+}
+
+// migrationAddServiceTierAnd12hCachePricingColumns adds the service-tier and 12h cache-write
+// pricing columns the upstream datasheet publishes and the fork dropped at sync (fork,
+// TXE-7353). Expand-only: nullable columns, nothing read from or rewritten in existing rows.
+func migrationAddServiceTierAnd12hCachePricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_service_tier_and_12h_cache_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range serviceTierAnd12hCachePricingColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range serviceTierAnd12hCachePricingColumns {
 				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
 					return fmt.Errorf("failed to drop column %s: %w", field, err)
 				}

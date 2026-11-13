@@ -559,6 +559,26 @@ export interface PricingOverridePatch {
 	output_cost_per_token_flex?: number;
 	input_cost_per_token_decisions?: number;
 	output_cost_per_token_decisions?: number;
+	input_cost_per_token_above_272k_tokens_decisions?: number;
+	output_cost_per_token_above_272k_tokens_decisions?: number;
+	cache_read_input_token_cost_decisions?: number;
+	cache_read_input_token_cost_above_272k_tokens_decisions?: number;
+	cache_creation_input_token_cost_decisions?: number;
+	cache_creation_input_token_cost_above_272k_tokens_decisions?: number;
+	input_cost_per_token_above_200k_tokens_flex?: number;
+	output_cost_per_token_above_200k_tokens_flex?: number;
+	cache_read_input_token_cost_above_200k_tokens_flex?: number;
+	// 12h cache write (OpenAI ttl_12h_tokens)
+	cache_creation_input_token_cost_above_12hr?: number;
+	cache_creation_input_token_cost_above_12hr_above_272k_tokens?: number;
+	cache_creation_input_token_cost_above_12hr_flex?: number;
+	cache_creation_input_token_cost_above_12hr_above_272k_tokens_flex?: number;
+	cache_creation_input_token_cost_above_12hr_priority?: number;
+	cache_creation_input_token_cost_above_12hr_above_272k_tokens_priority?: number;
+	cache_creation_input_token_cost_above_12hr_ultrafast?: number;
+	cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast?: number;
+	input_cost_per_audio_token_flex?: number;
+	input_cost_per_audio_token_priority?: number;
 	input_cost_per_character?: number;
 	input_cost_per_token_fast?: number;
 	output_cost_per_token_fast?: number;

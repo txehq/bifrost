@@ -1,6 +1,7 @@
 package datasheet
 
 import (
+	"reflect"
 	"testing"
 
 	bifrost "github.com/capsohq/bifrost/core"
@@ -1031,6 +1032,46 @@ func TestPatchPricing_InputCostPerQuery(t *testing.T) {
 
 	require.NotNil(t, patched.InputCostPerQuery)
 	assert.Equal(t, 0.002, *patched.InputCostPerQuery)
+}
+
+// TestEveryOptionsRateIsMirrored is the class check for a rate wired into Options but not into
+// one of its mirrors (fork, TXE-7353). Every *float64 rate on Options must be patched by an
+// override (patchPricing) and survive the datasheet row's trip to the table and back
+// (convertEntryToTablePricing and convertTablePricingToEntry). A rate missing from either is
+// parsed at sync and then silently never overridable or never stored.
+func TestEveryOptionsRateIsMirrored(t *testing.T) {
+	var opts Options
+	ov := reflect.ValueOf(&opts).Elem()
+	floatPtr := reflect.TypeOf((*float64)(nil))
+	var names []string
+	for i := 0; i < ov.NumField(); i++ {
+		if ov.Field(i).Type() != floatPtr {
+			continue
+		}
+		v := float64(i + 1)
+		ov.Field(i).Set(reflect.ValueOf(&v))
+		names = append(names, ov.Type().Field(i).Name)
+	}
+	require.NotEmpty(t, names)
+
+	patched := reflect.ValueOf(patchPricing(configstoreTables.TableModelPricing{}, opts))
+	entry := Entry{Options: opts}
+	table := convertEntryToTablePricing("openai/test-model", entry)
+	roundTrip := reflect.ValueOf(convertTablePricingToEntry(&table).Options)
+	for _, name := range names {
+		want := *ov.FieldByName(name).Interface().(*float64)
+		field := patched.FieldByName(name)
+		if !field.IsValid() {
+			t.Errorf("Options.%s has no TableModelPricing field of the same name", name)
+			continue
+		}
+		if got, _ := field.Interface().(*float64); got == nil || *got != want {
+			t.Errorf("patchPricing does not copy Options.%s: add it to the field list in overrides.go", name)
+		}
+		if got, _ := roundTrip.FieldByName(name).Interface().(*float64); got == nil || *got != want {
+			t.Errorf("Options.%s does not survive convertEntryToTablePricing and convertTablePricingToEntry: add it to both in types.go", name)
+		}
+	}
 }
 
 func TestPatchPricing_UltrafastAbove272kRates(t *testing.T) {
