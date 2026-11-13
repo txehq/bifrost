@@ -1286,9 +1286,29 @@ func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *s
 }
 
 // computeEmbeddingCost handles embedding requests (input-only).
+//
+// A vendor that bills embeddings by character (Vertex text models report
+// metadata.billableCharacterCount, carried as usage.billed_characters) is priced by
+// character when the model has an input_cost_per_character rate: characters times that
+// rate, and the token rate is not added on top, because the vendor bills one unit, not
+// both. Without a per-character rate, or without a reported character count, the token
+// path applies as before. Bifrost never estimates characters from tokens or the reverse
+// (contract C5), so a response that reports characters and a model priced only per token
+// costs what its token count costs (TXE-7081).
 func computeEmbeddingCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) *schemas.BifrostCost {
 	if usage == nil {
 		return nil
+	}
+	if pricing.InputCostPerCharacter != nil && usage.BilledCharacters != nil && *usage.BilledCharacters > 0 {
+		c := float64(*usage.BilledCharacters) * *pricing.InputCostPerCharacter
+		if c == 0 {
+			return nil
+		}
+		return &schemas.BifrostCost{
+			InputCost:        c,
+			InputCostDetails: &schemas.InputCostDetails{TextCost: c},
+			TotalCost:        c,
+		}
 	}
 	c := float64(usage.PromptTokens) * tieredInputRate(pricing, usage.PromptTokens, tier)
 	if c == 0 {

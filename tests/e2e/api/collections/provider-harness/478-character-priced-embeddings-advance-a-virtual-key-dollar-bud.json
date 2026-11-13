@@ -1,0 +1,339 @@
+{
+  "name": "478. Character-priced embeddings advance a virtual key dollar budget (embedding character pricing) [SERIAL]",
+  "description": "TXE-7081. Vertex text embeddings bill by character, and Bifrost reports usage.billed_characters with no token count (contract C5). Embedding cost used to read only prompt_tokens, so such a call cost nothing and a virtual key's dollar budget never moved. Now an embedding with billed_characters is priced at the model's input_cost_per_character. The folder makes a virtual key with a $0.05 daily budget and a VK-scoped override of $0.01 per character on text-embedding-005, so the first call costs about $0.20 and exhausts the budget, and the second is refused with 402 policy_budget_exceeded. The override is VK-scoped so nothing else in the suite is repriced; the teardown removes both.",
+  "item": [
+    {
+      "name": "478.1 Setup - Create a VK with a $0.05 budget - vertex/text-embedding-005",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.unset('charBudgetVkId');",
+              "pm.collectionVariables.unset('charBudgetVkValue');",
+              "pm.request.body.raw = JSON.stringify({",
+              "  name: 'Character budget VK ' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),",
+              "  provider_configs: [{ provider: 'vertex', weight: 1.0, allowed_models: ['*'], key_ids: ['*'] }],",
+              "  budgets: [{ max_limit: 0.05, reset_duration: '1d' }]",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Create VK returns 2xx', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "var body = null; try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var vk = body && (body.virtual_key || body);",
+              "if (vk && vk.id && vk.value) { pm.collectionVariables.set('charBudgetVkId', vk.id); pm.collectionVariables.set('charBudgetVkValue', vk.value); }"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        }
+      }
+    },
+    {
+      "name": "478.2 Setup - VK-scoped override of $0.01 per character [EXPECT-201] - vertex/text-embedding-005",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"charBudgetVkId\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "pm.collectionVariables.unset('charBudgetOverrideId');",
+              "pm.request.body.raw = JSON.stringify({",
+              "  name: 'e2e-char-budget-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),",
+              "  scope_kind: 'virtual_key',",
+              "  virtual_key_id: pm.collectionVariables.get('charBudgetVkId'),",
+              "  match_type: 'exact',",
+              "  pattern: 'text-embedding-005',",
+              "  request_types: ['embedding'],",
+              "  patch: { input_cost_per_character: 0.01, input_cost_per_token: 0 }",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Override on input_cost_per_character is accepted', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "var body = null; try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var ov = body && (body.pricing_override || body);",
+              "if (ov && ov.id) { pm.collectionVariables.set('charBudgetOverrideId', ov.id); }"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        }
+      }
+    },
+    {
+      "name": "478.3 /v1/embeddings through the VK - billed characters are charged - vertex/text-embedding-005",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"charBudgetVkValue\",\"charBudgetOverrideId\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the first embedding is served', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "});",
+              "pm.test('Vertex reported billed characters, the unit this folder prices', function () {",
+              "  var u = pm.response.json().usage || {};",
+              "  pm.expect(u.billed_characters, 'usage: ' + JSON.stringify(u)).to.be.above(0);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{charBudgetVkValue}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/text-embedding-005\",\n  \"input\": \"alpha kestrel harbor\"\n}"
+        }
+      }
+    },
+    {
+      "name": "478.4 [EXPECT-402] /v1/embeddings through the VK - the character charge exhausted the budget - vertex/text-embedding-005",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"charBudgetVkValue\",\"charBudgetOverrideId\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "// The usage tracker settles asynchronously; give it a moment before the second call.",
+              "var until = Date.now() + 1500;",
+              "(function wait() { if (Date.now() < until) { setTimeout(wait, 100); } })();"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('402 policy_budget_exceeded: the first call cost about $0.20 against a $0.05 budget', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 400)).to.eql(402);",
+              "  var ef = (pm.response.json() || {}).extra_fields || {};",
+              "  pm.expect(ef.error_type).to.eql('policy_budget_exceeded');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{charBudgetVkValue}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/text-embedding-005\",\n  \"input\": \"alpha kestrel harbor\"\n}"
+        }
+      }
+    },
+    {
+      "name": "478.5 Teardown - Delete the character override - vertex/text-embedding-005",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"charBudgetOverrideId\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Override deleted', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "pm.collectionVariables.unset('charBudgetOverrideId');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{charBudgetOverrideId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides",
+            "{{charBudgetOverrideId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "478.6 Teardown - Delete VK - vertex/text-embedding-005",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = [\"charBudgetVkId\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('VK deleted', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "pm.collectionVariables.unset('charBudgetVkId');",
+              "pm.collectionVariables.unset('charBudgetVkValue');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys/{{charBudgetVkId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{charBudgetVkId}}"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1977,6 +1977,8 @@ func responseTokensUsed(result *schemas.BifrostResponse) int {
 	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
 		return result.ResponsesStreamResponse.Response.Usage.RateLimitTokens()
 	case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
+		// Token limits count tokens only: a character-billed embedding (billed_characters,
+		// no token count) is bounded by its cost and the request limit (TXE-7081).
 		return result.EmbeddingResponse.Usage.RateLimitTokens()
 	case result.SpeechResponse != nil && result.SpeechResponse.Usage != nil:
 		return result.SpeechResponse.Usage.TotalTokens
