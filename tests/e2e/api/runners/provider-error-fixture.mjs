@@ -452,7 +452,7 @@ const fixturePricing = {
 	// MiniMax-H3's input_cost_per_video_per_second is left out: it is billed on the output length (TXE-7351).
 	"fixture-minimax-2k": { provider: "minimax", mode: "video_generation", output_cost_per_second: 0.08, output_cost_per_second_768p: 0.08, output_cost_per_second_2k: 0.13 },
 	// TXE-7356: dall-e-3's live upstream row, which prices an image only by its joint size and quality rate, so folder
-	// 561 can read the price of an hd and a standard image. The fork dropped these keys at sync and billed $0.
+	// 570 can read the price of an hd and a standard image. The fork dropped these keys at sync and billed $0.
 	"fixture-dalle-3": {
 		provider: "openai",
 		mode: "image_generation",
@@ -713,7 +713,7 @@ const openAIImageAnswer = (body, bytes, isEdit) => {
 	// has the request and never answers, which a write-once request must not be sent to twice (folder 429, TXE-7044).
 	if (model === "gpt-image-drop") return { drop: true };
 	// fixture-dalle-3 answers as dall-e-3 does: images and a revised prompt, with no usage and no size or quality, so
-	// the gateway prices it from the size and quality the request asked for (folder 561, TXE-7356).
+	// the gateway prices it from the size and quality the request asked for (folder 570, TXE-7356).
 	if (model === "fixture-dalle-3") {
 		return { status: 200, body: JSON.stringify({ created: 1, data: [{ b64_json: "iVBORw0KGgo=", revised_prompt: "a lighthouse at dusk" }] }) };
 	}

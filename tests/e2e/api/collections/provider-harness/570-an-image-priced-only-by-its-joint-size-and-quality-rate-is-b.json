@@ -1,8 +1,8 @@
 {
-  "name": "561. An image priced only by its joint size and quality rate is billed at it: dall-e-3 hd and standard, 1024 and 1792, not $0 (image variant pricing)",
+  "name": "570. An image priced only by its joint size and quality rate is billed at it: dall-e-3 hd and standard, 1024 and 1792, not $0 (image variant pricing)",
   "item": [
     {
-      "name": "561.1 openai/fixture-dalle-3 POST /v1/images/generations quality hd 1024x1024 is billed $0.088, the hd rate, and the response says hd (image variant pricing)",
+      "name": "570.1 openai/fixture-dalle-3 POST /v1/images/generations quality hd 1024x1024 is billed $0.088, the hd rate, and the response says hd (image variant pricing)",
       "request": {
         "method": "POST",
         "header": [
@@ -78,7 +78,7 @@
       ]
     },
     {
-      "name": "561.2 openai/fixture-dalle-3 POST /v1/images/generations quality standard 1792x1024 is billed $0.088, the standard 1792 rate (image variant pricing)",
+      "name": "570.2 openai/fixture-dalle-3 POST /v1/images/generations quality standard 1792x1024 is billed $0.088, the standard 1792 rate (image variant pricing)",
       "request": {
         "method": "POST",
         "header": [
@@ -148,7 +148,7 @@
       ]
     },
     {
-      "name": "561.3 openai/fixture-dalle-3 POST /v1/images/generations quality hd 1024x1792 is billed $0.132, the portrait hd rate (image variant pricing)",
+      "name": "570.3 openai/fixture-dalle-3 POST /v1/images/generations quality hd 1024x1792 is billed $0.132, the portrait hd rate (image variant pricing)",
       "request": {
         "method": "POST",
         "header": [
