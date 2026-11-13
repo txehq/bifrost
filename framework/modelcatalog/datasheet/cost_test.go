@@ -8522,6 +8522,38 @@ func BenchmarkCalculateCostBillingTurns(b *testing.B) {
 	}
 }
 
+// BenchmarkCalculateCostRealtimeTurns prices a realtime turn reported in tokens (the common
+// case, which TXE-7367 must not slow) and one reported by duration only (xAI grok-voice, which
+// TXE-7367 bills per second).
+func BenchmarkCalculateCostRealtimeTurns(b *testing.B) {
+	duration := realtimeRowStore(b, "xai", "grok-voice-3.0", "realtime", `{"provider":"xai","mode":"realtime","input_cost_per_second":0.001333333333333}`)
+	tokens := realtimeRowStore(b, "openai", "gpt-realtime", "realtime", `{"provider":"openai","mode":"realtime","input_cost_per_token":4e-06,"output_cost_per_token":1.6e-05}`)
+	seconds := 60.0
+	turn := func(provider schemas.ModelProvider, model string, usage *schemas.ResponsesResponseUsage) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Usage:       usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.RealtimeRequest, RoutingInfo: routingInfoFor(provider, model)},
+		}}
+	}
+	for _, tc := range []struct {
+		name string
+		s    *Store
+		resp *schemas.BifrostResponse
+	}{
+		{"tokens", tokens, turn(schemas.OpenAI, "gpt-realtime", &schemas.ResponsesResponseUsage{InputTokens: 100, OutputTokens: 10, TotalTokens: 110})},
+		{"duration", duration, turn(schemas.XAI, "grok-voice-3.0", &schemas.ResponsesResponseUsage{AudioSeconds: &seconds})},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			var sink float64
+			for b.Loop() {
+				sink += tc.s.CalculateCost(tc.resp, nil)
+			}
+			_ = sink
+		})
+	}
+}
+
 // TestOffPeak_RoutingCallDiscountAtWindowEdges: a classification call takes the off-peak
 // discount exactly once, on its usage and never on its flat fee, at both edges of a peak
 // window, and through CalculateCost it is added once beside the request it served.
@@ -9903,3 +9935,35 @@ func TestVideoBillingExtraKeysCoverEveryExtraRead(t *testing.T) {
 		VideoBillingSelectors(map[string]any{"mode": "pro", "resolution": "4k", "reference_videos": []any{"https://x/v.mp4"}, "prompt_extend": true}))
 	assert.Nil(t, VideoBillingSelectors(map[string]any{"seed": 3}))
 }
+// realtimeRowStore holds one decoded datasheet row under the given provider, model and mode.
+func realtimeRowStore(tb testing.TB, provider, model, mode, row string) *Store {
+	tb.Helper()
+	var entry Entry
+	require.NoError(tb, json.Unmarshal([]byte(row), &entry))
+	p := convertEntryToTablePricing(provider+"/"+model, entry)
+	p.Model, p.Provider, p.Mode = model, provider, mode
+	return testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey(model, provider, mode): p})
+}
+
+// TXE-7367: xai/grok-voice-3.0 is priced per second ($0.001333) and its realtime response.done
+// reports a duration, not tokens. The turn was priced through computeTextCost, which reads only
+// tokens, and cost $0. A realtime turn that reports tokens keeps its token pricing.
+func TestCalculateCost_RealtimeDurationTurnIsBilledPerSecond(t *testing.T) {
+	s := realtimeRowStore(t, "xai", "grok-voice-3.0", "realtime", `{"provider":"xai","mode":"realtime","input_cost_per_second":0.001333333333333}`)
+	turn := func(usage *schemas.ResponsesResponseUsage) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Usage:       usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.RealtimeRequest, RoutingInfo: routingInfoFor(schemas.XAI, "grok-voice-3.0")},
+		}}
+	}
+	seconds := 60.0
+	assert.InDelta(t, 60*0.001333333333333, s.CalculateCost(turn(&schemas.ResponsesResponseUsage{AudioSeconds: &seconds}), nil), 1e-9)
+
+	tokens := realtimeRowStore(t, "openai", "gpt-realtime", "realtime", `{"provider":"openai","mode":"realtime","input_cost_per_token":4e-06,"output_cost_per_token":1.6e-05,"input_cost_per_second":0.001}`)
+	tokenTurn := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		Usage:       &schemas.ResponsesResponseUsage{InputTokens: 100, OutputTokens: 10, TotalTokens: 110, AudioSeconds: &seconds},
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.RealtimeRequest, RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-realtime")},
+	}}
+	assert.InDelta(t, 100*4e-06+10*1.6e-05, tokens.CalculateCost(tokenTurn, nil), 1e-12, "a turn with tokens is priced on them, not its duration")
+}
+
