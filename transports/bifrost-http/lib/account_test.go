@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/capsohq/bifrost/core/network"
+	"github.com/capsohq/bifrost/core/network/proxytest"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
@@ -224,9 +225,7 @@ func TestGetConfigForProvider_ProxySourceMatrix(t *testing.T) {
 		for _, own := range owns {
 			for envName, vars := range envs {
 				t.Run(global.name+"/"+own.name+"/"+envName, func(t *testing.T) {
-					for _, name := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"} {
-						t.Setenv(name, "")
-					}
+					proxytest.IsolateEnv(t)
 					for name, value := range vars {
 						t.Setenv(name, value)
 					}

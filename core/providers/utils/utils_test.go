@@ -26,6 +26,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/core/network"
+	"github.com/capsohq/bifrost/core/network/proxytest"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/cespare/xxhash/v2"
 	"github.com/valyala/fasthttp"
@@ -4694,9 +4695,7 @@ func BenchmarkProviderHTTPClientRoundTrip(b *testing.B) {
 		_, _ = w.Write([]byte(`{"access_token":"t"}`))
 	}))
 	defer server.Close()
-	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy"} {
-		b.Setenv(name, "")
-	}
+	proxytest.IsolateEnv(b)
 	client := NewProviderHTTPClient(nil, schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 5}, nil)
 	target := server.URL + "/token"
 	b.ReportAllocs()
