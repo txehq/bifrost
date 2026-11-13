@@ -213,7 +213,7 @@ func TestMatViewRefreshRecordGapMeasuredFromFinish(t *testing.T) {
 		require.Equal(t, first[view].Success.Time, r.Success.Time, "%s refreshed again inside the gap", view)
 	}
 
-	time.Sleep(2500 * time.Millisecond)
+	time.Sleep(2500 * time.Millisecond) // sleep-ok: lets the 2 s refresh gap the code measures pass
 	refreshAsReplica(t, replicaB, 2*time.Second)
 	for view, r := range readMatViewRecord(t, replicaB) {
 		require.True(t, r.Success.Time.After(first[view].Success.Time), "%s must be due once the gap since its finish has passed", view)
@@ -249,7 +249,7 @@ func TestMatViewRefreshRecordFailedRefreshStaysDue(t *testing.T) {
 		if err != nil || time.Now().After(deadline) {
 			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond) // sleep-ok: retry interval of a loop with its own deadline
 	}
 	_, _ = blocker.ExecContext(context.Background(), "ROLLBACK")
 	_ = blocker.Close()

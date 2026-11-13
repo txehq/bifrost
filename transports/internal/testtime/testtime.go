@@ -59,6 +59,33 @@ func Seconds(n int) int {
 	return int(math.Ceil(float64(n) * Factor()))
 }
 
+// TB is the part of testing.TB that Eventually uses, so this package need not import testing.
+type TB interface {
+	Helper()
+	Fatalf(format string, args ...any)
+}
+
+// pollInterval is how often Eventually re-checks its condition.
+const pollInterval = 5 * time.Millisecond
+
+// Eventually waits until cond returns true and fails the test, naming what it waited
+// for, if budget passes first. A test that waits for an asynchronous write waits here
+// (or on a channel or WaitGroup the code signals), never on a sleep that guesses how
+// long the write takes (TXE-7315, TXE-7299). Pass a budget of at least two seconds or
+// Scale(d): the budget only bounds a failure, so a generous one costs nothing when cond
+// holds. cond runs on the test goroutine and must not call t.Fatal itself.
+func Eventually(t TB, budget time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(budget)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out after %s waiting for %s", budget, what)
+			return
+		}
+		time.Sleep(pollInterval)
+	}
+}
+
 func parse(raw string) (float64, error) {
 	if raw == "" {
 		return 1, nil

@@ -11,6 +11,7 @@ import (
 	"github.com/capsohq/bifrost/core/schemas"
 	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/capsohq/bifrost/framework/grant"
+	"github.com/capsohq/bifrost/framework/internal/testtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -63,14 +64,7 @@ func newTestAsyncExecutor(t *testing.T) *AsyncJobExecutor {
 // waitForJobCompletion polls until the operation callback has been invoked.
 func waitForJobCompletion(t *testing.T, done *atomic.Bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if done.Load() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("timed out waiting for async job execution")
+	testtime.Eventually(t, 10*time.Second, "async job execution", done.Load)
 }
 
 // waitForJobStatus polls FindAsyncJobByID until the job reaches a terminal
@@ -79,16 +73,16 @@ func waitForJobCompletion(t *testing.T, done *atomic.Bool) {
 // Processing is intermediate and must not be treated as terminal.
 func waitForJobStatus(t *testing.T, store LogStore, jobID string) *AsyncJob {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		job, err := store.FindAsyncJobByID(context.Background(), jobID)
-		if err == nil && (job.Status == schemas.AsyncJobStatusCompleted || job.Status == schemas.AsyncJobStatusFailed) {
-			return job
+	var job *AsyncJob
+	testtime.Eventually(t, 10*time.Second, "async job to reach terminal status", func() bool {
+		found, err := store.FindAsyncJobByID(context.Background(), jobID)
+		if err != nil || (found.Status != schemas.AsyncJobStatusCompleted && found.Status != schemas.AsyncJobStatusFailed) {
+			return false
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("timed out waiting for async job to reach terminal status")
-	return nil
+		job = found
+		return true
+	})
+	return job
 }
 
 func TestSubmitJob_PropagatesContextValues(t *testing.T) {
@@ -295,15 +289,12 @@ func (r *recordingWebhookDispatcher) enqueued() []AsyncJob {
 // terminal job status alone does not guarantee it already fired.
 func waitForWebhookEnqueue(t *testing.T, dispatcher *recordingWebhookDispatcher, n int) []AsyncJob {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if jobs := dispatcher.enqueued(); len(jobs) >= n {
-			return jobs
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("timed out waiting for webhook enqueue")
-	return nil
+	var jobs []AsyncJob
+	testtime.Eventually(t, 10*time.Second, "webhook enqueue", func() bool {
+		jobs = dispatcher.enqueued()
+		return len(jobs) >= n
+	})
+	return jobs
 }
 
 // newWebhookTestExecutor builds an executor over a file-backed SQLite store:

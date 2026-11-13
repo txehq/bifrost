@@ -46,7 +46,7 @@ func TestDrainExpiredWaitsForMigrationWindow(t *testing.T) {
 	done := make(chan bool, 1)
 	go func() { done <- cleaner.drainExpired(ctx, "logs", time.Now(), manager.DeleteLogsBatch) }()
 
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // sleep-ok: absence window; no delete may run however long the lock is held
 	assert.Equal(t, int64(0), manager.deletes.Load(), "no delete may be issued while the lock is held")
 	manager.migrating.Store(false)
 
