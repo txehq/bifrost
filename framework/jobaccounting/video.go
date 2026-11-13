@@ -68,6 +68,10 @@ var videoProviders = map[schemas.ModelProvider]struct{}{
 	// xAI's video retrieve reports the bill itself (usage.cost_in_usd_ticks), so a finished job
 	// settles at the vendor's figure (fork, TXE-6429).
 	schemas.XAI: {},
+	// FLUX 3 Video on BFL (fork, TXE-6617). BFL reports its cost in credits (usage.vendor_cost),
+	// never usage.cost, so a job is priced from the datasheet rate and the seconds the create
+	// recorded; with no rate it is kept as an unpriced row and repriced when the rate lands.
+	schemas.BFL: {},
 }
 
 // videoSettlementExemptions are the providers that implement video and are deliberately not
