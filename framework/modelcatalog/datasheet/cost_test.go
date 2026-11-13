@@ -6936,10 +6936,13 @@ func TestCalculateCost_ImageGeneration_TXE7356Variants(t *testing.T) {
 		{"grok-imagine-image-quality default tier", "xai", "grok-imagine-image-quality", "", "", "", nil, 0.04},
 		// A tier the row does not price rounds up to the next priced tier, never down.
 		{"grok-imagine-image-quality 1.5k rounds up to 2K", "xai", "grok-imagine-image-quality", "", "", "1.5k", nil, 0.06},
-		// Above every priced tier, or not a tier: unpriced, not billed at a smaller tier.
-		{"grok-imagine-image-quality 4k above every tier", "xai", "grok-imagine-image-quality", "", "", "4k", nil, 0},
+		// Above every priced tier: the largest priced tier, never unpriced.
+		{"grok-imagine-image-quality 4k above every tier takes 2K", "xai", "grok-imagine-image-quality", "", "", "4k", nil, 0.06},
+		// A pixel tier on a row that prices only K tiers: no rate of its family, so unpriced.
 		{"grok-imagine-image-quality numeric tier is another family", "xai", "grok-imagine-image-quality", "", "", "1024", nil, 0},
-		{"grok-imagine-image-quality not a tier", "xai", "grok-imagine-image-quality", "", "", "hd", nil, 0},
+		// Not a tier at all ("hd", "1e9K"): treated as naming none, so the default 1K rate.
+		{"grok-imagine-image-quality not a tier", "xai", "grok-imagine-image-quality", "", "", "hd", nil, 0.04},
+		{"grok-imagine-image-quality non-finite tier", "xai", "grok-imagine-image-quality", "", "", "1e9K", nil, 0.04},
 		// Bedrock SDXL 1.0: 50 or fewer steps (the default 30 when unset), or more.
 		{"sdxl 1.0 default steps", "bedrock", "stability.stable-diffusion-xl-v1", "1024x1024", "", "", nil, 0.04},
 		{"sdxl 1.0 50 steps", "bedrock", "stability.stable-diffusion-xl-v1", "1024x1024", "", "", bifrost.Ptr(50), 0.04},

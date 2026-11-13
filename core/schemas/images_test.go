@@ -161,7 +161,11 @@ func TestImageBackfillsPricedRequestShape(t *testing.T) {
 	}
 
 	// The unified resolution and the extra one disagree: the larger tier is billed either way round.
-	for _, tc := range []struct{ typed, extra, want string }{{"1K", "2K", "2K"}, {"2K", "1K", "2K"}, {"2k", "", "2k"}, {"", "1536", "1536"}} {
+	// An extra that is not a known tier, or one of the other family, never replaces the unified tier.
+	for _, tc := range []struct{ typed, extra, want string }{
+		{"1K", "2K", "2K"}, {"2K", "1K", "2K"}, {"2k", "", "2k"}, {"", "1536", "1536"},
+		{"1K", "1e9K", "1K"}, {"1K", "Inf", "1K"}, {"2K", "1536", "2K"}, {"", "junk", ""}, {"junk", "2K", "2K"},
+	} {
 		r := &BifrostRequest{ImageGenerationRequest: &BifrostImageGenerationRequest{
 			Params: &ImageGenerationParameters{Resolution: TolerantString(tc.typed), ExtraParams: map[string]interface{}{"resolution": tc.extra}},
 		}}

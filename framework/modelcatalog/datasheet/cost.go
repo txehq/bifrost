@@ -1764,9 +1764,9 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 	}
 	// A request that names no resolution gets the vendor's default tier, 1K, on a row priced
 	// only by tier (xAI's grok-imagine-image-quality publishes 1K and 2K and nothing else; xAI,
-	// Gemini and Replicate's nano-banana all default to 1K). A named tier was resolved above,
-	// rounding up to the next priced tier.
-	if perImageRate == nil && shape.resolution == "" {
+	// Gemini and Replicate's nano-banana all default to 1K). A named tier was resolved above; a
+	// value that is not a tier is treated as naming none.
+	if perImageRate == nil && !namedImageResolutionTier(shape.resolution) {
 		perImageRate = pricing.OutputCostPerImage1K
 	}
 	if perImageRate != nil {
@@ -1777,38 +1777,41 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 }
 
 // imageResolutionRate returns the per-image rate for the resolution tier the request named
-// (fork, TXE-7356), or nil when the request named none. Tiers are matched case-insensitively,
-// so xAI's "2k" and Gemini's "2K" select the same rate. A tier the row does not price takes the
-// next larger tier it does (xAI's "1.5k" bills at 2K), never a smaller one; a tier above every
-// priced one, or one that is not a tier at all, is nil and leaves the image unpriced.
+// (fork, TXE-7356), or nil when it named no known tier (schemas.ImageResolutionTier) or the row
+// prices no tier of that family. Tiers match case-insensitively, so xAI's "2k" and Gemini's "2K"
+// select the same rate. A tier the row does not price takes the next larger tier it does (xAI's
+// "1.5k" bills at 2K), never a smaller one, and a tier above every priced one takes the largest:
+// a named tier is never left unpriced on a row that prices its family. The K tiers and the pixel
+// tiers are separate families and never round into each other.
 func imageResolutionRate(pricing *configstoreTables.TableModelPricing, resolution string) *float64 {
-	tiers := []struct {
-		size float64
-		rate *float64
-	}{
-		// The K tiers in thousands of pixels on the long edge, the numeric tiers in pixels.
-		{0.5, pricing.OutputCostPerImageHalfK},
-		{1, pricing.OutputCostPerImage1K},
-		{2, pricing.OutputCostPerImage2K},
-		{4, pricing.OutputCostPerImage4K},
-		{512, pricing.OutputCostPerImageRes512},
-		{1024, pricing.OutputCostPerImageRes1024},
-		{1536, pricing.OutputCostPerImageRes1536},
-	}
-	label := strings.ToUpper(strings.TrimSpace(resolution))
-	k := strings.HasSuffix(label, "K")
-	size, err := strconv.ParseFloat(strings.TrimSuffix(label, "K"), 64)
-	if label == "" || err != nil || size <= 0 {
+	family, size := schemas.ImageResolutionTier(resolution)
+	if family == "" {
 		return nil
 	}
-	for _, t := range tiers {
-		// The K tiers and the numeric tiers are separate families; never round across them.
-		if (t.size < 10) != k || t.size < size || t.rate == nil {
+	// Each family's tiers in ascending order, with the rate the row publishes for each.
+	sizes := []float64{0.5, 1, 2, 4}
+	rates := []*float64{pricing.OutputCostPerImageHalfK, pricing.OutputCostPerImage1K, pricing.OutputCostPerImage2K, pricing.OutputCostPerImage4K}
+	if family == schemas.ImageResolutionTierPixels {
+		sizes = []float64{512, 1024, 1536}
+		rates = []*float64{pricing.OutputCostPerImageRes512, pricing.OutputCostPerImageRes1024, pricing.OutputCostPerImageRes1536}
+	}
+	var largest *float64
+	for i, rate := range rates {
+		if rate == nil {
 			continue
 		}
-		return t.rate
+		if sizes[i] >= size {
+			return rate
+		}
+		largest = rate
 	}
-	return nil
+	return largest
+}
+
+// namedImageResolutionTier reports whether the request named a known resolution tier.
+func namedImageResolutionTier(resolution string) bool {
+	family, _ := schemas.ImageResolutionTier(resolution)
+	return family != ""
 }
 
 // imageStepsRate returns the per-image rate for a model priced by inference steps (fork,

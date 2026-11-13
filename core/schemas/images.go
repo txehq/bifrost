@@ -3,7 +3,6 @@ package schemas
 import (
 	"bytes"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -223,10 +222,17 @@ func getImageResolutionAndStepsFromRequest(req *BifrostRequest) (resolution stri
 	default:
 		return "", nil
 	}
-	// Some providers forward the "resolution" extra and others the unified field, so when both are
-	// set and differ, the larger tier is billed: never less than the vendor may have rendered.
-	if r, ok := extra["resolution"].(string); ok && strings.TrimSpace(r) != "" {
-		if strings.TrimSpace(resolution) == "" || imageResolutionTierPixels(r) > imageResolutionTierPixels(resolution) {
+	// Some providers forward the "resolution" extra and others the unified field, so when both name
+	// a tier of the same family and differ, the larger is billed: never less than the vendor may
+	// have rendered. An extra that is not a known tier never replaces the unified field.
+	if r, ok := extra["resolution"].(string); ok {
+		extraFamily, extraSize := ImageResolutionTier(r)
+		typedFamily, typedSize := ImageResolutionTier(resolution)
+		switch {
+		case extraFamily == "":
+		case strings.TrimSpace(resolution) == "" || typedFamily == "":
+			resolution = r
+		case extraFamily == typedFamily && extraSize > typedSize:
 			resolution = r
 		}
 	}
@@ -335,19 +341,33 @@ func getNumInputImagesSizeQualityAndAspectRatioFromRequest(req *BifrostRequest) 
 	return numInputImages, size, quality, aspectRatio
 }
 
-// imageResolutionTierPixels orders resolution tiers by their long edge in pixels: "2K" is 2000,
-// "1.5k" 1500, "1024" 1024. A value that is not a tier is 0.
-func imageResolutionTierPixels(tier string) float64 {
-	label := strings.ToUpper(strings.TrimSpace(tier))
-	scale := 1.0
-	if strings.HasSuffix(label, "K") {
-		label, scale = strings.TrimSuffix(label, "K"), 1000
+// ImageResolutionTierK and ImageResolutionTierPixels are the two families of image resolution
+// tier vendors name (fork, TXE-7356): "0.5K" to "4K", and a pixel edge, "512" to "1536". Tiers
+// are ordered only within a family.
+const (
+	ImageResolutionTierK      = "k"
+	ImageResolutionTierPixels = "pixels"
+)
+
+// imageResolutionTiers is every resolution tier a vendor takes, by its upper-cased label: the
+// family and its order within the family. A label not listed here is not a tier.
+var imageResolutionTiers = map[string]struct {
+	family string
+	size   float64
+}{
+	"0.5K": {ImageResolutionTierK, 0.5}, "1K": {ImageResolutionTierK, 1}, "1.5K": {ImageResolutionTierK, 1.5},
+	"2K": {ImageResolutionTierK, 2}, "4K": {ImageResolutionTierK, 4},
+	"512": {ImageResolutionTierPixels, 512}, "1024": {ImageResolutionTierPixels, 1024}, "1536": {ImageResolutionTierPixels, 1536},
+}
+
+// ImageResolutionTier returns the family and order of a resolution tier label, matched
+// case-insensitively ("2k" is "2K"), or an empty family for a value that is not a known tier.
+func ImageResolutionTier(label string) (family string, size float64) {
+	t, ok := imageResolutionTiers[strings.ToUpper(strings.TrimSpace(label))]
+	if !ok {
+		return "", 0
 	}
-	n, err := strconv.ParseFloat(label, 64)
-	if err != nil || n <= 0 {
-		return 0
-	}
-	return n * scale
+	return t.family, t.size
 }
 
 // normalizeImageQuality returns the quality string only if the datasheet prices it: low, medium,
