@@ -1057,14 +1057,6 @@ type BedrockCohereEmbeddingInput struct {
 
 // BedrockCohereEmbeddingRequest represents a Bedrock Cohere embedding request.
 // Unlike the direct Cohere API, Bedrock does not accept a "model" field in the body.
-
-// BedrockCohereInputTypeSearchDocument is the input_type applied when a caller omits
-// one. AWS requires the field and defines no default.
-const BedrockCohereInputTypeSearchDocument = "search_document"
-
-// BedrockCohereInputTypeImage is the input_type applied to images[] when a caller omits one.
-const BedrockCohereInputTypeImage = "image"
-
 type BedrockCohereEmbeddingRequest struct {
 	InputType       string                        `json:"input_type"`                 // Required
 	Texts           []string                      `json:"texts,omitempty"`            // text-only inputs

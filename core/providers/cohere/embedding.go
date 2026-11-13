@@ -109,15 +109,16 @@ var cohereInputTypes = map[string]string{
 	"retrieval_query":    "search_query",
 }
 
-// cohereEmbeddingInputType resolves Cohere's input_type, which every v3+ embed model
-// requires (contract C4). The unified field task_type is converted through
+// EmbeddingInputType resolves Cohere's input_type, which every v3+ embed model
+// requires (contract C4), for every provider that serves Cohere's embed models (the
+// cohere provider and Bedrock's cohere.embed-*), so the rule has one source. The unified field task_type is converted through
 // cohereInputTypes; a caller that already speaks Cohere may send input_type itself as an
 // extra field (the native /cohere/v2/embed route arrives that way), and it is sent as
 // given. Bifrost adds no value the caller did not send: with neither, or with a task_type
 // Cohere has no equivalent for, the request is refused as caller_unsupported_parameter on
 // task_type, before any upstream call, instead of being embedded under an input type the
 // caller never asked for (the input type changes the vectors returned).
-func cohereEmbeddingInputType(params *schemas.EmbeddingParameters) (string, error) {
+func EmbeddingInputType(params *schemas.EmbeddingParameters) (string, error) {
 	var taskType, extraInputType string
 	if params != nil {
 		if params.TaskType != nil {
@@ -151,11 +152,11 @@ func cohereEmbeddingInputType(params *schemas.EmbeddingParameters) (string, erro
 // before this change stay comparable with new ones.
 const cohereInternalEmbeddingInputType = "search_document"
 
-// withInternalEmbeddingInputType gives an internal embedding request that names no task
-// Cohere's documented default. A caller's request is returned unchanged and is refused by
+// WithInternalEmbeddingInputType gives an internal embedding request that names no task
+// Cohere's documented default; every provider serving Cohere's embed models calls it. A caller's request is returned unchanged and is refused by
 // ToCohereEmbeddingRequest when it names none (contract C4); see
 // bifrost.MarkInternalEmbeddingRequest.
-func withInternalEmbeddingInputType(ctx *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) *schemas.BifrostEmbeddingRequest {
+func WithInternalEmbeddingInputType(ctx *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) *schemas.BifrostEmbeddingRequest {
 	if ctx == nil || req == nil {
 		return req
 	}
@@ -181,7 +182,7 @@ func ToCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*Coh
 		return nil, providerUtils.InvalidRequestErrorf("embedding input is not provided")
 	}
 
-	inputType, inputTypeErr := cohereEmbeddingInputType(bifrostReq.Params)
+	inputType, inputTypeErr := EmbeddingInputType(bifrostReq.Params)
 	if inputTypeErr != nil {
 		return nil, inputTypeErr
 	}

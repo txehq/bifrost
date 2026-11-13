@@ -150,7 +150,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": [\n    \"a red square\",\n    \"a blue circle\"\n  ]\n}"
+              "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": [\n    \"a red square\",\n    \"a blue circle\"\n  ],\n  \"task_type\": \"search_document\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/embeddings",
@@ -188,7 +188,7 @@
                   "pm.test('it carries the Cohere texts[] envelope', function () {",
                   "  var asText = typeof rr === 'string' ? rr : JSON.stringify(rr);",
                   "  pm.expect(asText, 'not the Cohere envelope: ' + asText.slice(0, 200)).to.include('texts');",
-                  "  pm.expect(asText, 'input_type is defaulted by the converter and must be reported').to.include('input_type');",
+                  "  pm.expect(asText, 'the caller task_type is sent as input_type and must be reported').to.include('input_type');",
                   "});"
                 ]
               }
