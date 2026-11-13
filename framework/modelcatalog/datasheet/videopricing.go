@@ -33,6 +33,23 @@ type VideoPricingDimensions struct {
 	Seconds *int   `json:"seconds,omitempty"`
 	Size    string `json:"size,omitempty"`
 
+	// Resolution is the unified resolution tier ("720p", "1080P"). Models that take a
+	// tier instead of a size (Wan 2.7 and 3.0, Seedance) send no size, so this is the
+	// only record of the band their rate is selected by. A size, when present, wins.
+	Resolution string `json:"resolution,omitempty"`
+	// AspectRatio is the unified aspect_ratio ("16:9"). No rate reads it yet; it is
+	// recorded because contract C4 counts it as price-affecting.
+	AspectRatio string `json:"aspect_ratio,omitempty"`
+	// OutputFormat is the requested container ("mp4", "webm").
+	OutputFormat *string `json:"output_format,omitempty"`
+
+	// The conditioning inputs. Several vendors price image-to-video, first-and-last-frame
+	// and reference-to-video apart from text-to-video. Only their presence and count are
+	// recorded, never the media: a data URL has no place in a pricing row.
+	InputReference  bool `json:"input_reference,omitempty"`
+	LastFrame       bool `json:"last_frame,omitempty"`
+	ReferenceImages int  `json:"reference_images,omitempty"`
+
 	// Type is the operation selector ("upscale", "3d"). These do not bill per
 	// second of output at all, so a rate keyed only on duration is wrong for them.
 	Type *string `json:"type,omitempty"`
@@ -82,6 +99,22 @@ func (d VideoPricingDimensions) MergedWith(observed VideoPricingDimensions) Vide
 	if observed.Size != "" {
 		out.Size = observed.Size
 	}
+	if observed.Resolution != "" {
+		out.Resolution = observed.Resolution
+	}
+	if observed.AspectRatio != "" {
+		out.AspectRatio = observed.AspectRatio
+	}
+	if observed.OutputFormat != nil {
+		out.OutputFormat = observed.OutputFormat
+	}
+	// The conditioning inputs are facts of the request; a response never reports them
+	// absent, so it can only add one.
+	out.InputReference = out.InputReference || observed.InputReference
+	out.LastFrame = out.LastFrame || observed.LastFrame
+	if observed.ReferenceImages > 0 {
+		out.ReferenceImages = observed.ReferenceImages
+	}
 	if observed.Type != nil {
 		out.Type = observed.Type
 	}
@@ -103,11 +136,16 @@ func (d VideoPricingDimensions) MergedWith(observed VideoPricingDimensions) Vide
 	if observed.ProviderCost != nil {
 		out.ProviderCost = observed.ProviderCost
 	}
-	for key, value := range observed.Extra {
-		if out.Extra == nil {
-			out.Extra = map[string]any{}
+	if len(observed.Extra) > 0 {
+		// A fresh map: the receiver's Extra can be the request's own ExtraParams.
+		merged := make(map[string]any, len(out.Extra)+len(observed.Extra))
+		for key, value := range out.Extra {
+			merged[key] = value
 		}
-		out.Extra[key] = value
+		for key, value := range observed.Extra {
+			merged[key] = value
+		}
+		out.Extra = merged
 	}
 	return out
 }
@@ -155,7 +193,7 @@ func (s *Store) CalculateVideoCostDetails(dims VideoPricingDimensions, provider 
 	// bill on factor or megapixels instead, and no rate for those is published to
 	// the catalog yet — so they resolve to unpriced rather than being silently
 	// billed as if they were a per-second generation of the same length.
-	breakdown := computeVideoCost(pricing, nil, dims.Seconds, dims.Size, dims.OutputCount, serviceTier{})
+	breakdown := computeVideoCost(pricing, nil, dims.Seconds, dims.Size, dims.Resolution, dims.OutputCount, serviceTier{})
 	if breakdown == nil || breakdown.TotalCost <= 0 {
 		return VideoCostDetails{}
 	}

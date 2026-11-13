@@ -589,6 +589,7 @@ export interface VideoDebug {
 export interface VideoAccountingDebug {
 	seconds?: number;
 	size?: string;
+	resolution?: string; // the tier the rate band was read from when no size names one
 	output_count?: number;
 	incomplete?: boolean;
 }

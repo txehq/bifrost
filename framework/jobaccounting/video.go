@@ -259,6 +259,7 @@ func videoDebugFor(videoID string, status schemas.VideoStatus, dims modelcatalog
 			Accounting: &schemas.VideoAccountingDebug{
 				Seconds:      dims.Seconds,
 				Size:         dims.Size,
+				Resolution:   dims.Resolution,
 				OutputCount:  dims.OutputCount,
 				Incomplete:   incomplete,
 				RequestType:  videoRequestTypeFor(dims.RequestType),
@@ -331,6 +332,7 @@ func (s *VideoSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManage
 		RequestType: requestType,
 		Seconds:     accounting.Seconds,
 		Size:        accounting.Size,
+		Resolution:  accounting.Resolution,
 		OutputCount: accounting.OutputCount,
 	}, schemas.ModelProvider(entry.Provider), &scopes)
 	if !details.Priced {

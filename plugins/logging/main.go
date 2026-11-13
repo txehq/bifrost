@@ -914,6 +914,11 @@ func (p *LoggerPlugin) recordVideoJobLifecycle(entry *logstore.Log, result *sche
 // videoDimensionsFromEntryParams reads the pricing-relevant request parameters off
 // the log entry. The parameters arrive as the typed struct the request carried, but
 // a rehydrated entry can present them as a decoded map, so both shapes are handled.
+//
+// Every price-affecting unified field of a video create (schemas.PriceAffectingUnifiedFields)
+// is captured here, or is exempt with a reason in
+// TestVideoDimensionsFromEntryParams_CapturesEveryPriceAffectingField, which fails
+// when the contract's table gains a field this function does not read (TXE-7122).
 func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.RequestType) modelcatalog.VideoPricingDimensions {
 	dims := modelcatalog.VideoPricingDimensions{RequestType: requestType}
 	if requestType == schemas.VideoRetrieveRequest {
@@ -928,6 +933,11 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 			return dims
 		}
 		dims.Size = params.Size
+		dims.Resolution = string(params.Resolution)
+		dims.AspectRatio = string(params.AspectRatio)
+		dims.OutputFormat = params.OutputFormat
+		dims.LastFrame = params.LastFrame != ""
+		dims.ReferenceImages = len(params.ReferenceImages)
 		dims.Type = params.Type
 		dims.Audio = params.Audio
 		dims.UpscaleFactor = params.UpscaleFactor
@@ -939,9 +949,7 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 		}
 		// Anything not modeled yet still gets captured: a knob that turns out to be
 		// price-relevant is then already on the row, with no backfill needed.
-		if len(params.ExtraParams) > 0 {
-			dims.Extra = params.ExtraParams
-		}
+		dims.Extra = videoExtraDimensions(params.ExtraParams, dims)
 	case *schemas.VideoEditParameters:
 		if params == nil {
 			return dims
@@ -955,7 +963,65 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 	case map[string]any:
 		applyVideoDimensionsFromMap(&dims, params)
 	}
+	// input_reference is the first frame, and it travels in the input rather than the
+	// params. A video create without one is text-to-video.
+	if requestType == schemas.VideoGenerationRequest && entry.VideoGenerationInputParsed != nil {
+		if ref := entry.VideoGenerationInputParsed.InputReference; ref != nil && *ref != "" {
+			dims.InputReference = true
+		}
+	}
 	return dims
+}
+
+// videoExtraDimensions copies the extra params into the dimensions' Extra, less the
+// unified fields the dimensions already hold typed. The HTTP handlers keep a copy of
+// each unified video field among the extra params (schemas.UnifiedVideoGenerationFields);
+// recorded again under Extra it would only duplicate the typed field, and for
+// last_frame and reference_images it would write the frame itself, a URL or a whole
+// data URL, into the pricing row. A copy the typed field could not hold (Runware 3D's
+// numeric resolution) stays: it is captured nowhere else.
+//
+// A map holding no such copy is returned as it is, as before this filter existed, so the
+// common video create allocates nothing here; only a map that does hold one is copied.
+// The dimensions are marshalled onto the job row straight away and MergedWith never
+// writes into Extra, so sharing the request's map is safe.
+func videoExtraDimensions(extra map[string]any, dims modelcatalog.VideoPricingDimensions) map[string]any {
+	if len(extra) == 0 {
+		return nil
+	}
+	held := func(key string) bool {
+		switch key {
+		case "resolution":
+			return dims.Resolution != ""
+		case "aspect_ratio":
+			return dims.AspectRatio != ""
+		case "last_frame":
+			return dims.LastFrame
+		case "reference_images":
+			return dims.ReferenceImages > 0
+		}
+		return false
+	}
+	copies := 0
+	for _, name := range schemas.UnifiedVideoGenerationFields {
+		if _, ok := extra[name]; ok && held(name) {
+			copies++
+		}
+	}
+	if copies == 0 {
+		return extra
+	}
+	out := make(map[string]any, len(extra)-copies)
+	for key, value := range extra {
+		if held(key) {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // applyVideoDimensionsFromMap decodes the same fields off a rehydrated entry whose
@@ -963,6 +1029,25 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 func applyVideoDimensionsFromMap(dims *modelcatalog.VideoPricingDimensions, params map[string]any) {
 	if size, ok := params["size"].(string); ok {
 		dims.Size = size
+	}
+	if resolution, ok := params["resolution"].(string); ok {
+		dims.Resolution = resolution
+	}
+	if aspectRatio, ok := params["aspect_ratio"].(string); ok {
+		dims.AspectRatio = aspectRatio
+	}
+	if outputFormat, ok := params["output_format"].(string); ok {
+		dims.OutputFormat = &outputFormat
+	}
+	if lastFrame, ok := params["last_frame"].(string); ok && lastFrame != "" {
+		dims.LastFrame = true
+	}
+	if references, ok := params["reference_images"].([]any); ok {
+		for _, reference := range references {
+			if url, isString := reference.(string); isString && url != "" {
+				dims.ReferenceImages++
+			}
+		}
 	}
 	if operation, ok := params["type"].(string); ok {
 		dims.Type = &operation
