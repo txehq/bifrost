@@ -718,6 +718,10 @@ type VideoAccountingDebug struct {
 	// after merging the terminal response over the request captured at submission.
 	Seconds *int   `json:"seconds,omitempty"`
 	Size    string `json:"size,omitempty"`
+	// Audio is the create's audio flag, which selects a band's with-audio rate (fork,
+	// TXE-7306). Nil means the create did not say, and the provider's default applies; a
+	// reprice must read it from here, or an explicit false would reprice with audio.
+	Audio *bool `json:"audio,omitempty"`
 	// OutputCount is how many clips the job returned; the per-second rate is
 	// multiplied by it.
 	OutputCount int `json:"output_count,omitempty"`

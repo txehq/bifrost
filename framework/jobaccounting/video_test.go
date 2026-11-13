@@ -2,6 +2,7 @@ package jobaccounting
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -820,6 +821,45 @@ func (a *videoCoverageAccount) GetConfigForProvider(_ schemas.ModelProvider) (*s
 	return &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{
 		BaseURL: a.baseURL, DefaultRequestTimeoutInSeconds: 5, MaxRetries: 0, AllowPrivateNetwork: true,
 	}}, nil
+}
+
+// videoDimsRecordingPricing records the dimensions each video price is computed from.
+type videoDimsRecordingPricing struct {
+	requestTypePricing
+	dims []modelcatalog.VideoPricingDimensions
+}
+
+func (p *videoDimsRecordingPricing) CalculateVideoCostDetails(dims modelcatalog.VideoPricingDimensions, _ schemas.ModelProvider, _ *modelcatalog.PricingLookupScopes) modelcatalog.VideoCostDetails {
+	p.dims = append(p.dims, dims)
+	return modelcatalog.VideoCostDetails{Cost: 0.125, Priced: true}
+}
+
+// TestVideoReprice_KeepsTheSettlementsAudioFlag (TXE-7306): a reprice prices a settled video
+// with the audio flag its create stated, read back from the stored video_debug. Without it, an
+// explicit audio false repriced at the provider's default, the with-audio rate (folder 549's
+// silent job: 0.125 settled, 0.25 after a recalculation).
+func TestVideoReprice_KeepsTheSettlementsAudioFlag(t *testing.T) {
+	off := false
+	seconds := 5
+	for name, audio := range map[string]*bool{"audio false": &off, "audio unstated": nil} {
+		t.Run(name, func(t *testing.T) {
+			settled := &logstore.Log{ID: "log-1", Provider: string(schemas.DashScope), Model: "wan2.5-t2v-preview"}
+			videoDebugFor("ds-audio-off", schemas.VideoStatusCompleted, modelcatalog.VideoPricingDimensions{
+				RequestType: schemas.VideoGenerationRequest, Seconds: &seconds, Size: "1280x720", Audio: audio, OutputCount: 1,
+			}, false)(settled)
+			// The row as the store keeps it: video_debug serialized, read back by the reprice.
+			stored, err := json.Marshal(settled.VideoDebugParsed)
+			require.NoError(t, err)
+			row := &logstore.Log{ID: settled.ID, Provider: settled.Provider, Model: settled.Model, VideoDebug: string(stored)}
+
+			pricing := &videoDimsRecordingPricing{}
+			repriced, err := (&VideoSettler{}).RepriceFromLog(row, pricing)
+			require.NoError(t, err)
+			require.NotNil(t, repriced)
+			require.Len(t, pricing.dims, 1)
+			assert.Equal(t, audio, pricing.dims[0].Audio)
+		})
+	}
 }
 
 // TestEveryVideoProviderHasAnAudioDefault (TXE-7306) fails when a provider in videoProviders has
