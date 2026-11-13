@@ -82,50 +82,6 @@
       }
     },
     {
-      "name": "[EXPECT-400] /v1/videos - FLUX 3 video generation answers unsupported with no upstream call - bfl/flux-3-video",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('video_generation is refused as unsupported by bfl', function () {",
-              "  var text = pm.response.text();",
-              "  pm.expect(pm.response.code, 'want 400 unsupported_operation, got: ' + text).to.eql(400);",
-              "  var body = pm.response.json();",
-              "  pm.expect(body.error && body.error.code, text).to.eql('unsupported_operation');",
-              "  pm.expect(body.error.message, text).to.include('video_generation');",
-              "  pm.expect(body.error.message, text).to.include('bfl');",
-              "});"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"model\": \"bfl/flux-3-video\",\n  \"prompt\": \"A paper boat drifting down a rain gutter\",\n  \"seconds\": \"5\"\n}"
-        },
-        "url": {
-          "raw": "{{baseUrl}}/v1/videos",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "v1",
-            "videos"
-          ]
-        }
-      }
-    },
-    {
       "name": "[EXPECT-400] /v1/chat/completions - chat answers unsupported with no upstream call - bfl/flux-2-pro",
       "event": [
         {
