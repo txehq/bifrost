@@ -580,7 +580,7 @@ func readMP4Duration(src *videoSource, rs io.ReadSeeker, size int64, limits Read
 }
 
 // reconcileTiming raises t.ticks, mdhd's duration, to what the timing table presents: the sum of stts's
-// sample deltas, or with a ctts the latest any sample presents until (presentationEnd). stts must time
+// sample deltas, raised by a ctts to the latest any sample presents until (presentationEnd). stts must time
 // exactly the samples stsz sizes, or the table is inconsistent.
 func reconcileTiming(t *mp4Track) error {
 	if t.stts == nil {
@@ -597,11 +597,11 @@ func reconcileTiming(t *mp4Track) error {
 	}
 	if t.ctts != nil {
 		// Fork (TXE-7334): the latest any sample presents until, not the decode end plus the largest
-		// offset, which may belong to an earlier sample and overstate a reordered clip.
-		end = presentationEnd(t.stts, t.ctts)
-	}
-	if end.Sign() < 0 {
-		end.SetInt64(0)
+		// offset, which may belong to an earlier sample and overstate a reordered clip. The decode
+		// end stays the minimum: negative offsets cannot pull the clip shorter than its samples last.
+		if presented := presentationEnd(t.stts, t.ctts); presented.Cmp(end) > 0 {
+			end = presented
+		}
 	}
 	if !end.IsUint64() {
 		return fmt.Errorf("%w: the timing table runs past 2^64 ticks", errVideoInvalid)

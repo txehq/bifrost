@@ -196,6 +196,7 @@ func TestTimingTablesBoundTheMediaDuration(t *testing.T) {
 	reordered := &mp4.Ctts{FullBox: mp4.FullBox{Version: 1}, EntryCount: 4, Entries: []mp4.CttsEntry{
 		{SampleCount: 1, SampleOffsetV1: 0}, {SampleCount: 1, SampleOffsetV1: 2000}, {SampleCount: 2, SampleOffsetV1: -1000}, {SampleCount: 8, SampleOffsetV1: 0},
 	}}
+	early := &mp4.Ctts{FullBox: mp4.FullBox{Version: 1}, EntryCount: 1, Entries: []mp4.CttsEntry{{SampleCount: 12, SampleOffsetV1: -10000}}}
 	for name, c := range map[string]struct {
 		data   []byte
 		wantMS int64
@@ -206,6 +207,8 @@ func TestTimingTablesBoundTheMediaDuration(t *testing.T) {
 		// TXE-7334: the second sample presents 2 s late, until 4 s, and the two after it 1 s early; the
 		// last sample still ends the clip at 12 s. The largest offset added to the decode end gave 14 s.
 		"a reordered sample does not lengthen the clip": {data: build(1000, 12, reordered), wantMS: 12000},
+		// Offsets that pull every sample 10 s early do not make 12 s of samples shorter than 12 s.
+		"negative offsets do not shorten the clip": {data: build(1000, 12, early), wantMS: 12000},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := Read(context.Background(), &rangeCounter{data: c.data}, int64(len(c.data)))
