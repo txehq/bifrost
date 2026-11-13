@@ -1,6 +1,6 @@
 {
   "name": "498. An operator lists and releases output folder claims, and a key with no storage list does not claim a bucket root (storage folder claims) [SERIAL]",
-  "description": "TXE-7259. Local fixture regression, no live provider call: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. Since TXE-7121 (folder 497) a virtual key claims the output folder it first writes into, and no request releases a claim. Three things change here. A key with no allowed_storage_prefixes that writes to the root of a bucket does not claim the bucket (498.3 to 498.5): one request would otherwise take the whole bucket from every other key. An operator lists claims with GET /api/governance/storage-folders and releases one with DELETE /api/governance/storage-folders?folder=<uri> (498.6 to 498.12): after the release the next key to write there claims the folder. A deleted key keeps its claims until an operator releases them (498.13 to 498.15), since dropping them would hand the folder contents to every key with no storage list. 498.16 pins that only the four served batch creates reached the provider. The folder and bucket names carry a per-run suffix because a claim outlives the key that made it; 498.17 releases the one claim the run leaves.",
+  "description": "TXE-7259. Local fixture regression, no live provider call: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. Since TXE-7121 (folder 497) a virtual key claims the output folder it first writes into, and no request releases a claim. Three things change here. A key with no allowed_storage_prefixes that writes to the root of a bucket does not claim the bucket (498.3 to 498.5): one request would otherwise take the whole bucket from every other key. An operator lists claims with GET /api/governance/storage-folders and releases one with DELETE /api/governance/storage-folders?folder=<uri> (498.6 to 498.12): after the release the next key to write there claims the folder. A batch whose create named no output folder (as one created before folders were claimed) has the output directory its retrieve names claimed for its creator (498.13 to 498.16): the fixture batch created with metadata.fixture_output_dir retrieves as completed with that directory as output_file_id, and another key then cannot read a result file in it. A deleted key keeps its claims until an operator releases them (498.17 to 498.19), since dropping them would hand the folder contents to every key with no storage list. 498.20 pins that only the five served batch creates reached the provider. The folder and bucket names carry a per-run suffix because a claim outlives the key that made it; 498.21 and 498.22 release the two claims the run leaves.",
   "item": [
     {
       "name": "498.1 [setup] virtual key A",
@@ -698,7 +698,245 @@
       }
     },
     {
-      "name": "498.13 key B is deleted",
+      "name": "498.13 key A creates a batch that names no output folder",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimVkA') || !pm.collectionVariables.get('claimVkAId') || !pm.collectionVariables.get('claimRun')) { pm.execution.skipRequest(); return; }",
+              "if (!pm.collectionVariables.get('claimVkB')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the batch is created', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200); });",
+              "pm.collectionVariables.set('claimRetrieveBatch', (pm.response.json() || {}).id || '');",
+              "pm.test('it has an id', function () { pm.expect(pm.collectionVariables.get('claimRetrieveBatch'), pm.response.text()).to.not.equal(''); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{claimVkA}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"storage_uri_files/fixture-model\",\"input_file_id\":\"gs://bifrost-fixture-bucket/uploads/folder-ownership-input.jsonl\",\"endpoint\":\"/v1/chat/completions\",\"completion_window\":\"24h\",\"metadata\":{\"fixture_output_dir\":\"gs://bifrost-fixture-bucket/retrieved-{{claimRun}}/job\"}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "498.14 key A retrieves it, and the retrieve names the directory its results were written to",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimVkA') || !pm.collectionVariables.get('claimVkAId') || !pm.collectionVariables.get('claimRun')) { pm.execution.skipRequest(); return; }",
+              "if (!pm.collectionVariables.get('claimRetrieveBatch')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the batch is retrieved', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200); });",
+              "pm.test('the retrieve names the output directory', function () { pm.expect((pm.response.json() || {}).output_file_id, pm.response.text().slice(0, 400)).to.eql(pm.variables.replaceIn('gs://bifrost-fixture-bucket/retrieved-{{claimRun}}/job')); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{claimVkA}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches/{{claimRetrieveBatch}}?provider=storage_uri_files",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches",
+            "{{claimRetrieveBatch}}"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "storage_uri_files"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "498.15 that directory is now claimed by key A",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimVkA') || !pm.collectionVariables.get('claimVkAId') || !pm.collectionVariables.get('claimRun')) { pm.execution.skipRequest(); return; }",
+              "pm.collectionVariables.set('claimRetrievedQ', encodeURIComponent(pm.variables.replaceIn('gs://bifrost-fixture-bucket/retrieved-{{claimRun}}/')));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('the claims are listed', function () { pm.expect(pm.response.code, txt.slice(0, 400)).to.eql(200); });",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "var want = [{ folder: pm.variables.replaceIn('gs://bifrost-fixture-bucket/retrieved-{{claimRun}}/job/'), virtual_key_id: pm.collectionVariables.get('claimVkAId') }];",
+              "var got = (body.storage_folders || []).map(function (c) { return { folder: c.folder, virtual_key_id: c.virtual_key_id }; });",
+              "pm.test('key A holds the output directory of its batch', function () { pm.expect(got, txt.slice(0, 600)).to.eql(want); pm.expect(body.total_count, txt.slice(0, 400)).to.eql(want.length); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/storage-folders?prefix={{claimRetrievedQ}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "storage-folders"
+          ],
+          "query": [
+            {
+              "key": "prefix",
+              "value": "{{claimRetrievedQ}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "498.16 [EXPECT-404] so key B cannot read a result file in it",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimVkA') || !pm.collectionVariables.get('claimVkAId') || !pm.collectionVariables.get('claimRun')) { pm.execution.skipRequest(); return; }",
+              "if (!pm.collectionVariables.get('claimVkB')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('a result file of key A batch is 404 for key B', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404); });",
+              "pm.test('the refusal is the gateway and does not confirm the object', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.type, 'unexpected body: ' + txt.slice(0, 400)).to.eql('access_blocked');",
+              "  pm.expect(body.error && body.error.message, txt.slice(0, 400)).to.include('not found');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{claimVkB}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"storage_uri_files/fixture-model\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Describe this.\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"gs://bifrost-fixture-bucket/retrieved-{{claimRun}}/job/predictions.jsonl\"}}]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "498.17 key B is deleted",
       "event": [
         {
           "listen": "prerequest",
@@ -748,7 +986,7 @@
       }
     },
     {
-      "name": "498.14 a deleted key keeps its claim",
+      "name": "498.18 a deleted key keeps its claim",
       "event": [
         {
           "listen": "prerequest",
@@ -802,7 +1040,7 @@
       }
     },
     {
-      "name": "498.15 [EXPECT-404] so key A still cannot write into that folder",
+      "name": "498.19 [EXPECT-404] so key A still cannot write into that folder",
       "event": [
         {
           "listen": "prerequest",
@@ -867,7 +1105,7 @@
       }
     },
     {
-      "name": "498.16 only the four batch creates that were served reached the provider",
+      "name": "498.20 only the five batch creates that were served reached the provider",
       "event": [
         {
           "listen": "prerequest",
@@ -888,8 +1126,8 @@
             "type": "text/javascript",
             "exec": [
               "var calls = pm.response.json().data[0].calls.filter(function (c) { return String(c.path).indexOf('/pp/storage/') === 0; }).map(function (c) { return c.path; });",
-              "pm.test('four batch creates, nothing else', function () {",
-              "  pm.expect(calls, JSON.stringify(calls)).to.eql(['/pp/storage/v1/batches', '/pp/storage/v1/batches', '/pp/storage/v1/batches', '/pp/storage/v1/batches']);",
+              "pm.test('five batch creates, nothing else', function () {",
+              "  pm.expect(calls, JSON.stringify(calls)).to.eql(['/pp/storage/v1/batches', '/pp/storage/v1/batches', '/pp/storage/v1/batches', '/pp/storage/v1/batches', '/pp/storage/v1/batches']);",
               "});"
             ]
           }
@@ -902,7 +1140,7 @@
       }
     },
     {
-      "name": "498.17 [cleanup] the deleted key claim is released",
+      "name": "498.21 [cleanup] the deleted key claim is released",
       "event": [
         {
           "listen": "prerequest",
@@ -951,7 +1189,56 @@
       }
     },
     {
-      "name": "498.18 [cleanup] virtual key A is deleted",
+      "name": "498.22 [cleanup] the claim on key A batch output directory is released",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimVkA') || !pm.collectionVariables.get('claimVkAId') || !pm.collectionVariables.get('claimRun')) { pm.execution.skipRequest(); return; }",
+              "pm.collectionVariables.set('claimRetrievedFolderQ', encodeURIComponent(pm.variables.replaceIn('gs://bifrost-fixture-bucket/retrieved-{{claimRun}}/job/')));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the claim is released', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.eql(200); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/storage-folders?folder={{claimRetrievedFolderQ}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "storage-folders"
+          ],
+          "query": [
+            {
+              "key": "folder",
+              "value": "{{claimRetrievedFolderQ}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "498.23 [cleanup] virtual key A is deleted",
       "event": [
         {
           "listen": "prerequest",

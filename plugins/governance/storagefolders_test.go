@@ -492,3 +492,28 @@ func TestBatchOutputFolderIsClaimedOnRetrieve(t *testing.T) {
 	retrieve("batch-nobody", "s3://ret/nobody/job-4")
 	assert.Empty(t, storageFolderOwner(t, store, "s3://ret/nobody/job-4/"), "a batch nobody recorded hands its results to no one")
 }
+
+// BenchmarkBatchRetrieveRecording measures the post-hook work of a batch retrieve (TXE-7259):
+// recording the result files for the batch's creator, and for a storage output directory the
+// folder check that claims it. "covered" is the common case once folders are claimed at create
+// time: the key's own folder is above the directory and nothing is written.
+func BenchmarkBatchRetrieveRecording(b *testing.B) {
+	t := &testing.T{}
+	plugin, store := newStorageFolderTestPlugin(t)
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindBatch, "bedrock", "batch-bench", "vk-mcp-stamp")
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindStorageFolder, "s3", "s3://bench/tenant/out/", "vk-mcp-stamp")
+	cases := map[string]string{
+		"provider file id":                    "file-abc123",
+		"storage output, covered by a folder": "s3://bench/tenant/out/job-1",
+		"storage output, claimed once":        "s3://bench/unclaimed/job-1",
+	}
+	for name, output := range cases {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			resp := &schemas.BifrostBatchRetrieveResponse{ID: "batch-bench", OutputFileID: schemas.Ptr(output)}
+			for i := 0; i < b.N; i++ {
+				plugin.recordBatchFiles(presentCtx(mcpTestVKValue), "bedrock", resp)
+			}
+		})
+	}
+}
