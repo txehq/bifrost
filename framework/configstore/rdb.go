@@ -3189,6 +3189,12 @@ var pricingSyncUpdateColumns = []string{
 	"output_cost_per_video_per_second_720p_audio",
 	"output_cost_per_video_per_second_1080p_audio",
 	"output_cost_per_video_per_second_4k_audio",
+	"output_cost_per_second_480p",
+	"output_cost_per_second_720p",
+	"output_cost_per_second_768p",
+	"output_cost_per_second_1080p",
+	"output_cost_per_second_2k",
+	"output_cost_per_second_4k",
 	// Costs - Other
 	"search_context_cost_per_query",
 	"web_search_cost_per_request",

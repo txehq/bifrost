@@ -18,10 +18,20 @@ export const VIDEO_BANDS = [
   { edge: 480, key: "480p", column: "output_cost_per_video_per_second_480p" },
   { edge: 540, key: "540p", column: "output_cost_per_video_per_second_540p" },
   { edge: 720, key: "720p", column: "output_cost_per_video_per_second_720p" },
+  // 768p and 2K exist only as upstream's output_cost_per_second_<band> keys (TXE-7349).
+  { edge: 768, key: "768p", column: "output_cost_per_second_768p" },
   { edge: 1024, key: "1024p", column: "output_cost_per_video_per_second_1024p" },
   { edge: 1080, key: "1080p", column: "output_cost_per_video_per_second_1080p" },
+  { edge: 1440, key: "2k", column: "output_cost_per_second_2k" },
   { edge: 2160, key: "4k", column: "output_cost_per_video_per_second_4k" },
 ];
+
+// Tier labels a request can name instead of a size (Veo "4k", Wan "480P", MiniMax
+// "2K"), mirroring videoResolutionTierEdges in cost.go.
+const TIER_EDGES = {
+  "360p": 360, "480p": 480, "540p": 540, "720p": 720, "768p": 768, "1024p": 1024, "1080p": 1080,
+  "2k": 1440, "1440p": 1440, "4k": 2160, "2160p": 2160,
+};
 
 // parseSize mirrors parseImageDimensions: "1920x1080" -> {width, height}. Returns
 // null for anything that is not two positive integers around an `x`, which is the
@@ -39,6 +49,10 @@ export function parseSize(size) {
 // videoResolutionBand returns the short edge, which is what the band is keyed on:
 // a portrait 1080x1920 clip is the same 1080p price as landscape 1920x1080.
 export function videoResolutionBand(size) {
+  if (typeof size === "string") {
+    const tier = TIER_EDGES[size.trim().toLowerCase()];
+    if (tier) return tier;
+  }
   const parsed = parseSize(size);
   if (!parsed) return 0;
   return Math.min(parsed.width, parsed.height);

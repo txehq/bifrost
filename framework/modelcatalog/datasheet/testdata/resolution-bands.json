@@ -1,0 +1,120 @@
+{
+  "dashscope/wan3.0-video": {
+    "base_model": "wan3.0-video",
+    "metadata": {
+      "comment": "Wan 3.0 all-in-one video generation (text, first/last frame, multimodal reference, edit, extend). Billed duration is usage.duration, which adds input video seconds for the edit and extend modes. China (Beijing) list price per output second, USD, matching this prefix's default host. The base rate is the 1080P default tier."
+    },
+    "mode": "video_generation",
+    "output_cost_per_second": 0.165025,
+    "output_cost_per_second_1080p": 0.165025,
+    "output_cost_per_second_480p": 0.041256,
+    "output_cost_per_second_720p": 0.082513,
+    "provider": "dashscope",
+    "provider_specific_entry": {
+      "dashscope_video_reference_input": "first_frame"
+    },
+    "source": "https://www.alibabacloud.com/help/en/model-studio/wan3-0-video",
+    "supported_endpoints": [
+      "/v1/videos"
+    ],
+    "supported_modalities": [
+      "text",
+      "image",
+      "video",
+      "audio"
+    ],
+    "supported_output_modalities": [
+      "video"
+    ]
+  },
+  "gemini/veo-3.1-generate-001": {
+    "base_model": "veo-3.1-generate",
+    "max_input_tokens": 1024,
+    "mode": "video_generation",
+    "output_cost_per_second": 0.4,
+    "output_cost_per_second_4k": 0.6,
+    "provider": "gemini",
+    "source": "https://ai.google.dev/gemini-api/docs/pricing",
+    "supported_modalities": [
+      "text"
+    ],
+    "supported_output_modalities": [
+      "video"
+    ]
+  },
+  "minimax/MiniMax-H3": {
+    "base_model": "MiniMax-H3",
+    "input_cost_per_image": 0.04,
+    "input_cost_per_video_per_second": 0.08,
+    "metadata": {
+      "comment": "V2 async task API. Pay-as-you-go list price $0.08/s at 768P and $0.13/s at 2K, plus $0.04 per input image beyond the first 5. Audio input is free. Reference video input is rejected, since MiniMax bills its duration only after the create call."
+    },
+    "mode": "video_generation",
+    "output_cost_per_second": 0.08,
+    "output_cost_per_second_2k": 0.13,
+    "output_cost_per_second_768p": 0.08,
+    "output_cost_per_video_per_second": 0.08,
+    "provider": "minimax",
+    "provider_specific_entry": {
+      "minimax_free_input_images": 5
+    },
+    "source": "https://platform.minimax.io/docs/pricing/overview#models/video",
+    "supported_endpoints": [
+      "/v2/video_generation"
+    ],
+    "supported_modalities": [
+      "text",
+      "image",
+      "video",
+      "audio"
+    ],
+    "supported_output_modalities": [
+      "video"
+    ],
+    "supports_audio_input": true,
+    "supports_image_input": true,
+    "supports_video_input": true
+  },
+  "runwayml/seedance2": {
+    "base_model": "seedance2",
+    "metadata": {
+      "comment": "36 credits per second @ $0.01 per credit = $0.36 per second (480p/720p); 40 credits/s = $0.40 (1080p); 150 credits/s = $1.50 (4K). No credit minimum. Supports text-to-video, image-to-video, and video-to-video at the same per-second rate."
+    },
+    "mode": "video_generation",
+    "output_cost_per_second": 0.3,
+    "output_cost_per_second_1080p": 0.4,
+    "output_cost_per_second_480p": 0.14,
+    "output_cost_per_second_4k": 1.5,
+    "output_cost_per_video_per_second": 0.36,
+    "output_cost_per_video_per_second_1080p": 0.4,
+    "output_cost_per_video_per_second_480p": 0.36,
+    "output_cost_per_video_per_second_4k": 1.5,
+    "output_cost_per_video_per_second_720p": 0.36,
+    "provider": "runwayml",
+    "source": "https://docs.dev.runwayml.com/guides/pricing/",
+    "supported_modalities": [
+      "text",
+      "image",
+      "video"
+    ],
+    "supported_output_modalities": [
+      "video"
+    ]
+  },
+  "vertex_ai/veo-3.1-generate-001": {
+    "base_model": "veo-3.1-generate",
+    "max_input_tokens": 1024,
+    "mode": "video_generation",
+    "output_cost_per_second": 0.4,
+    "output_cost_per_second_4k": 0.6,
+    "provider": "vertex_ai",
+    "source": "https://cloud.google.com/vertex-ai/generative-ai/pricing",
+    "successor_model": "vertex_ai/gemini-omni-1.2-flash",
+    "supported_modalities": [
+      "text"
+    ],
+    "supported_output_modalities": [
+      "video"
+    ]
+  }
+}

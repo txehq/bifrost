@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/capsohq/bifrost/core/schemas"
+	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
 )
 
 // VideoPricingDimensions is every factor that can move the price of one video job.
@@ -33,6 +34,26 @@ type VideoPricingDimensions struct {
 	// today. Size is "WxH"; the rate is banded on its short edge.
 	Seconds *int   `json:"seconds,omitempty"`
 	Size    string `json:"size,omitempty"`
+	// Resolution is the tier label ("480p", "2K", "4k") a request names instead of a size.
+	// Veo, Wan 2.7+ and MiniMax take one; it selects the rate band when Size names none
+	// (TXE-7349).
+	Resolution string `json:"resolution,omitempty"`
+	// SizeReported is true when Size came from the provider's response rather than the
+	// request. A requested size is not always what was rendered: Veo reads it only for the
+	// aspect ratio and renders at the requested tier, so only a reported size outranks the
+	// tier. It is set by VideoDimensionsFromResponse and MergedWith and never persisted.
+	SizeReported bool `json:"-"`
+	// ResolutionSettled is true when Resolution is the tier a settlement recorded as the one that
+	// set the band (VideoCostDetails.PricedResolution, or TierOnlyResolution on an unpriced job).
+	// That choice was made with the request's sources and the custom provider's base in hand,
+	// neither of which a reprice has, so the tier prices the job as recorded instead of being
+	// judged again against videoTierReaders. Only RepriceFromLog sets it; it is never persisted.
+	ResolutionSettled bool `json:"-"`
+	// BaseProvider is the base provider of a custom provider, set by the caller that can
+	// resolve it. Pricing reads it only to know which converter rendered the job (see
+	// videoProvidersRenderingRequestedTier); the custom name still selects the rates. It is
+	// never persisted.
+	BaseProvider schemas.ModelProvider `json:"-"`
 
 	// Type is the operation selector ("upscale", "3d"). These do not bill per
 	// second of output at all, so a rate keyed only on duration is wrong for them.
@@ -58,7 +79,8 @@ type VideoPricingDimensions struct {
 	// Extra carries request knobs that are not modeled above yet. It is the
 	// research hatch: capture a provider-specific parameter here as soon as it
 	// looks price-relevant, and promote it to a typed field once its rate is
-	// actually published. Nothing reads it during pricing today.
+	// actually published. Pricing reads only its "resolution", and only for rows
+	// written before Resolution existed (see BandResolution).
 	Extra map[string]any `json:"extra,omitempty"`
 }
 
@@ -83,6 +105,10 @@ func (d VideoPricingDimensions) MergedWith(observed VideoPricingDimensions) Vide
 	}
 	if observed.Size != "" {
 		out.Size = observed.Size
+		out.SizeReported = observed.SizeReported
+	}
+	if observed.Resolution != "" {
+		out.Resolution = observed.Resolution
 	}
 	if observed.Type != nil {
 		out.Type = observed.Type
@@ -122,6 +148,11 @@ type VideoCostDetails struct {
 	Priced           bool
 	ProviderCostUsed bool
 	Breakdown        *schemas.BifrostCost
+	// PricedResolution is the resolution tier that selected the rate band, or "" when a size
+	// did (or nothing banded the job). The settlement records it, so a reprice prices from
+	// the tier alone, or the size alone, exactly as settlement chose (TXE-7349): a reprice
+	// cannot resolve a custom provider's base, so it must not rerun that choice.
+	PricedResolution string
 }
 
 // CalculateVideoCostDetails prices a video job from its merged dimensions.
@@ -159,11 +190,129 @@ func (s *Store) CalculateVideoCostDetails(dims VideoPricingDimensions, provider 
 	// billed as if they were a per-second generation of the same length.
 	// The audio flag the create captured selects a band's with-audio rate where the model has
 	// one (TXE-7306); an unstated flag takes the provider's audio default.
-	breakdown := computeVideoCost(pricing, nil, dims.Seconds, dims.Size, dims.OutputCount, VideoPricedWithAudio(provider, dims.Audio), serviceTier{})
+	audio := VideoPricedWithAudio(provider, dims.Audio)
+	band := dims.bandSize(provider, pricing, audio)
+	breakdown := computeVideoCost(pricing, nil, dims.Seconds, band, dims.OutputCount, audio, serviceTier{})
 	if breakdown == nil || breakdown.TotalCost <= 0 {
 		return VideoCostDetails{}
 	}
-	return VideoCostDetails{Cost: breakdown.TotalCost, Priced: true, Breakdown: breakdown}
+	details := VideoCostDetails{Cost: breakdown.TotalCost, Priced: true, Breakdown: breakdown}
+	if band != dims.Size {
+		details.PricedResolution = band
+	}
+	return details
+}
+
+// BandResolution returns the resolution tier label that names a rate band: Resolution,
+// else a "resolution" captured in Extra, else "". Extra covers job rows written before
+// Resolution existed, which hold the tier only there, so a job in flight across the
+// upgrade still settles at its band (TXE-7349).
+func (d VideoPricingDimensions) BandResolution() string {
+	if videoResolutionBand(d.Resolution) > 0 {
+		return d.Resolution
+	}
+	if resolution, ok := d.Extra["resolution"].(string); ok && videoResolutionBand(resolution) > 0 {
+		return resolution
+	}
+	return ""
+}
+
+// videoTierReader says where a provider's create converter reads the resolution tier from, so a
+// tier the provider renders can set the band and one it never reads cannot (TXE-7349). Typed is
+// the unified field (VideoGenerationParameters.Resolution); extra is extra_params.resolution.
+// The HTTP adapters fill both; a Go SDK caller may set one. Each entry names the code that reads
+// it, and a provider is added only from its converter.
+type videoTierReader struct {
+	typed, extra bool
+	source       string
+}
+
+var videoTierReaders = map[schemas.ModelProvider]videoTierReader{
+	schemas.Gemini:    {typed: true, extra: true, source: "gemini.ToGeminiVideoGenerationRequest: parameters.resolution from extra_params.resolution, else the typed field; size sets only aspectRatio"},
+	schemas.Vertex:    {typed: true, extra: true, source: "vertex sends Veo through gemini.ToGeminiVideoGenerationRequest"},
+	schemas.MiniMax:   {extra: true, source: "minimax video create: extra_params.resolution replaces the tier derived from size"},
+	schemas.DashScope: {typed: true, source: "dashscope video create: parameters.resolution from the typed field (Wan 2.7+, and image-to-video before it)"},
+	schemas.Kling:     {typed: true, source: "kling video create: settings.resolution from the typed field"},
+	schemas.BytePlus:  {typed: true, source: "byteplus video create: the typed field overrides the tier a size implies"},
+}
+
+// requestedTier is the resolution tier the request named and whether the provider that rendered
+// the job reads it from where it was named. A tier the provider reads from either source counts
+// as rendered.
+func (d VideoPricingDimensions) requestedTier(renderer schemas.ModelProvider) (string, bool) {
+	reader := videoTierReaders[renderer]
+	typed := ""
+	if videoResolutionBand(d.Resolution) > 0 {
+		typed = d.Resolution
+	}
+	extra := ""
+	if resolution, ok := d.Extra["resolution"].(string); ok && videoResolutionBand(resolution) > 0 {
+		extra = resolution
+	}
+	switch {
+	case typed != "" && reader.typed:
+		return typed, true
+	case extra != "" && reader.extra:
+		return extra, true
+	case typed != "":
+		return typed, false
+	default:
+		return extra, false
+	}
+}
+
+func (d VideoPricingDimensions) renderer(provider schemas.ModelProvider) schemas.ModelProvider {
+	if d.BaseProvider != "" {
+		return d.BaseProvider
+	}
+	return provider
+}
+
+// bandSize returns what the rate band is read from (TXE-7349):
+//   - a tier a settlement recorded as the one that set the band (ResolutionSettled), on a
+//     reprice;
+//   - a size the provider reported, which is what it rendered;
+//   - else a requested tier the provider reads (see videoTierReaders), which is what it
+//     rendered whatever size was also asked for (Veo with size 3840x2160 and resolution 1080p
+//     renders 1080p);
+//   - else the requested size, or the unbanded rate when there is none, unless a tier the
+//     provider may ignore costs more. A caller cannot lower the price with a tier the provider
+//     never reads: the job is priced at the dearer of that tier and what it would cost without it.
+func (d VideoPricingDimensions) bandSize(provider schemas.ModelProvider, pricing *configstoreTables.TableModelPricing, audio bool) string {
+	if d.ResolutionSettled && videoResolutionBand(d.Resolution) > 0 {
+		return d.Resolution
+	}
+	if d.SizeReported && videoResolutionBand(d.Size) > 0 {
+		return d.Size
+	}
+	tier, rendered := d.requestedTier(d.renderer(provider))
+	if tier == "" {
+		return d.Size
+	}
+	if rendered {
+		return tier
+	}
+	if videoOutputPerSecondRate(pricing, tier, audio) > videoOutputPerSecondRate(pricing, d.Size, audio) {
+		return tier
+	}
+	return d.Size
+}
+
+// TierOnlyResolution is the tier a settlement that could not be priced records: a tier the
+// provider reads, unless the provider reported a size that names a band, and "" otherwise. It
+// follows bandSize's first two rules, which need no rates: a reported size is what was rendered,
+// and a read tier is rendered whatever size was requested (Veo with size 1280x720 and resolution
+// 4k renders 4K). Without rates the dearer of an unread tier and the size cannot be told, so the
+// record leaves that choice to the size; a reprice then never takes a cheaper tier the provider
+// may ignore.
+func (d VideoPricingDimensions) TierOnlyResolution(provider schemas.ModelProvider) string {
+	if d.SizeReported && videoResolutionBand(d.Size) > 0 {
+		return ""
+	}
+	if tier, rendered := d.requestedTier(d.renderer(provider)); rendered {
+		return tier
+	}
+	return ""
 }
 
 // videoClipCount counts the billable clips in outputs, skipping image outputs such as a task's last frame.
@@ -206,9 +355,10 @@ func VideoDimensionsFromResponse(resp *schemas.BifrostVideoGenerationResponse) V
 		return VideoPricingDimensions{}
 	}
 	dims := VideoPricingDimensions{
-		Model:       resp.Model,
-		Size:        resp.Size,
-		OutputCount: videoClipCount(resp.Videos),
+		Model:        resp.Model,
+		Size:         resp.Size,
+		SizeReported: resp.Size != "",
+		OutputCount:  videoClipCount(resp.Videos),
 	}
 	if resp.Seconds != nil {
 		if seconds, ok := VideoSeconds(*resp.Seconds); ok {

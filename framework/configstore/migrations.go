@@ -582,6 +582,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_video_audio_rate_columns"}, run: migrationAddVideoAudioRateColumns},
 	{IDs: []string{"add_service_tier_and_12h_cache_pricing_columns"}, run: migrationAddServiceTierAnd12hCachePricingColumns},
 	{IDs: []string{"add_input_cost_per_text_message_column"}, run: migrationAddInputCostPerTextMessageColumn},
+	{IDs: []string{"add_output_cost_per_second_resolution_band_columns"}, run: migrationAddOutputCostPerSecondResolutionBandColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -762,6 +763,46 @@ func migrationAddVideoResolutionPricingColumns(ctx context.Context, db *gorm.DB,
 		},
 		Rollback: func(*gorm.DB) error {
 			return fmt.Errorf("add_video_resolution_pricing_columns is non-rollbackable: dropping the resolution-banded video rate columns would permanently delete every custom per-resolution price an operator has set, and the affected models would silently bill at their unbanded rate instead; the columns are additive and older binaries safely ignore them")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// outputCostPerSecondResolutionBandColumns are upstream's resolution-banded output rates
+// (TXE-7349). The datasheet publishes them as output_cost_per_second_<band> for Veo, Wan,
+// MiniMax, Runway, Replicate and fal; without these columns a 4K Veo clip billed at the
+// unbanded $0.40/s instead of $0.60/s, and a 480p Wan 3.0 clip at $0.165/s instead of $0.041/s.
+var outputCostPerSecondResolutionBandColumns = []string{
+	"output_cost_per_second_480p",
+	"output_cost_per_second_720p",
+	"output_cost_per_second_768p",
+	"output_cost_per_second_1080p",
+	"output_cost_per_second_2k",
+	"output_cost_per_second_4k",
+}
+
+// migrationAddOutputCostPerSecondResolutionBandColumns is expand-only: it adds nullable
+// columns that older binaries ignore, and has no rollback.
+func migrationAddOutputCostPerSecondResolutionBandColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_output_cost_per_second_resolution_band_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range outputCostPerSecondResolutionBandColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the resolution-band rate columns would delete every custom per-resolution price an operator has set, and those models would bill at their unbanded rate; the columns are additive and older binaries ignore them", migrationName)
 		},
 	}})
 	if err := m.Migrate(); err != nil {

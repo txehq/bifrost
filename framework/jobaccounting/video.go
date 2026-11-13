@@ -152,6 +152,17 @@ func (s *VideoSettler) SupportsProvider(provider schemas.ModelProvider) bool {
 	return false
 }
 
+// baseProvider is the base provider of a custom provider, or "" when the name is not one or the
+// retriever cannot say. Pricing reads it to know which converter rendered the job (TXE-7349).
+func (s *VideoSettler) baseProvider(provider schemas.ModelProvider) schemas.ModelProvider {
+	if resolver, ok := s.retriever.(BaseProviderResolver); ok {
+		if base := resolver.BaseProvider(provider); base != provider {
+			return base
+		}
+	}
+	return ""
+}
+
 // BaseProviderResolver is implemented by a VideoRetriever that can name the base provider of a
 // configured custom provider ("" when the name is not a custom provider). Fork addition.
 type BaseProviderResolver interface {
@@ -340,7 +351,9 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 	if resp != nil {
 		videoStatus = resp.Status
 	}
-	settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, false)
+	// The base provider names the converter that rendered a custom provider's job (TXE-7349).
+	dims.BaseProvider = s.baseProvider(jobReq.Provider)
+	settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, dims.TierOnlyResolution(jobReq.Provider), false)
 
 	if resp != nil && resp.ContentFilter != nil && resp.ContentFilter.FilteredCount > 0 {
 		settlement.UnpriceableReason = UnpriceableReasonContentFiltered
@@ -373,21 +386,21 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 		// once the rate lands, rather than dropping the job's cost entirely.
 		settlement.RecordUnpriced = true
 		settlement.UnpricedModel = dims.Model
-		settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, true)
+		settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, dims.TierOnlyResolution(jobReq.Provider), true)
 		return settlement, nil
 	}
 
 	settlement.Priced = true
 	settlement.Complete = true
 	settlement.Cost = details.Cost
-	settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, unmeasured)
+	settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, details.PricedResolution, unmeasured)
 	return settlement, nil
 }
 
 // videoDebugFor builds the closure that attaches video detail to the aggregate row.
 // Accounting being set is what marks this row as the settlement rather than the
 // submission it settles — the two are otherwise identical but for a cost.
-func videoDebugFor(videoID string, status schemas.VideoStatus, dims modelcatalog.VideoPricingDimensions, incomplete bool) func(*logstore.Log) {
+func videoDebugFor(videoID string, status schemas.VideoStatus, dims modelcatalog.VideoPricingDimensions, resolution string, incomplete bool) func(*logstore.Log) {
 	return func(entry *logstore.Log) {
 		entry.VideoDebugParsed = &schemas.BifrostVideoDebug{
 			VideoID: videoID,
@@ -396,6 +409,7 @@ func videoDebugFor(videoID string, status schemas.VideoStatus, dims modelcatalog
 				Seconds:      dims.Seconds,
 				Size:         dims.Size,
 				Audio:        dims.Audio,
+				Resolution:   resolution,
 				OutputCount:  dims.OutputCount,
 				Incomplete:   incomplete,
 				RequestType:  videoRequestTypeFor(dims.RequestType),
@@ -467,11 +481,18 @@ func (s *VideoSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManage
 		Model:       entry.Model,
 		RequestType: requestType,
 		Seconds:     accounting.Seconds,
-		Size:        accounting.Size,
+		// A recorded tier set the band at settlement, so the size is left out and the tier
+		// alone prices the reprice; without one the size alone does (TXE-7349).
+		Size: repriceSize(accounting),
 		// The settlement's audio flag (TXE-7306): without it an explicit audio false
 		// would reprice at the provider's default, the with-audio rate.
-		Audio:       accounting.Audio,
-		OutputCount: accounting.OutputCount,
+		Audio:      accounting.Audio,
+		Resolution: accounting.Resolution,
+		// The recorded tier is the one settlement chose, with the request's sources and a custom
+		// provider's base in hand; a reprice has neither, so it takes the tier as recorded rather
+		// than judging it again (TXE-7349).
+		ResolutionSettled: accounting.Resolution != "",
+		OutputCount:       accounting.OutputCount,
 	}, schemas.ModelProvider(entry.Provider), &scopes)
 	if !details.Priced {
 		return nil, fmt.Errorf("%w: no video rate for log %s", ErrPricingInputsUnavailable, entry.ID)
@@ -488,6 +509,15 @@ func (s *VideoSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManage
 		DebugJSON:   string(debugJSON),
 		DebugColumn: "video_debug",
 	}, nil
+}
+
+// repriceSize is the size a reprice prices from: none when the settlement recorded the tier
+// that set the band, else the recorded size.
+func repriceSize(accounting *schemas.VideoAccountingDebug) string {
+	if accounting.Resolution != "" {
+		return ""
+	}
+	return accounting.Size
 }
 
 // HydrateFromLog reads this kind's detail back off an already-written aggregate row,

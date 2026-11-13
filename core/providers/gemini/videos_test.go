@@ -220,3 +220,19 @@ func TestOpenAIRouteResolutionReachesVeo(t *testing.T) {
 	require.NotNil(t, geminiReq.Parameters.Resolution)
 	assert.Equal(t, "1080p", *geminiReq.Parameters.Resolution)
 }
+
+// TXE-7349: pricing bills a Veo job at the band of its unified resolution, so the converter must
+// send that resolution whether it arrives as the typed field alone (a Go SDK caller) or also in
+// extra_params (the HTTP adapters).
+func TestGeminiVideoDeliversTheUnifiedResolution(t *testing.T) {
+	for _, extra := range []map[string]interface{}{nil, {"personGeneration": "allow_adult"}, {"resolution": "4k"}} {
+		got, err := gemini.ToGeminiVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+			Provider: schemas.Gemini, Model: "veo-3.1-generate-001",
+			Input:  &schemas.VideoGenerationInput{Prompt: "a paper boat"},
+			Params: &schemas.VideoGenerationParameters{Resolution: "4k", ExtraParams: extra},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, got.Parameters)
+		assert.Equal(t, schemas.Ptr("4k"), got.Parameters.Resolution, "extra params %v", extra)
+	}
+}

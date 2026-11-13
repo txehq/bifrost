@@ -363,6 +363,12 @@ func ToGeminiVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 		if params.AspectRatio == nil && bifrostReq.Params.AspectRatio != "" {
 			params.AspectRatio = schemas.Ptr(string(bifrostReq.Params.AspectRatio))
 		}
+		// The unified resolution is Veo's resolution (TXE-7349). The HTTP adapters also copy it
+		// into extra_params, read above; a Go SDK caller sets only the typed field, which pricing
+		// bills at its band, so it must reach Veo too.
+		if params.Resolution == nil && bifrostReq.Params.Resolution != "" {
+			params.Resolution = schemas.Ptr(string(bifrostReq.Params.Resolution))
+		}
 		if params.AspectRatio == nil && bifrostReq.Params.Size != "" {
 			aspectRatio := sizeToAspectRatio(bifrostReq.Params.Size)
 			if aspectRatio != "" {

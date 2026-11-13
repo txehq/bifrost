@@ -919,6 +919,42 @@ export const PRICING_FIELDS = [
 		group: "video",
 		requestTypeGroups: ["video"],
 	},
+	{
+		key: "output_cost_per_second_480p",
+		label: "Output / second (480p, upstream)",
+		group: "video",
+		requestTypeGroups: ["video"],
+	},
+	{
+		key: "output_cost_per_second_720p",
+		label: "Output / second (720p, upstream)",
+		group: "video",
+		requestTypeGroups: ["video"],
+	},
+	{
+		key: "output_cost_per_second_768p",
+		label: "Output / second (768p, upstream)",
+		group: "video",
+		requestTypeGroups: ["video"],
+	},
+	{
+		key: "output_cost_per_second_1080p",
+		label: "Output / second (1080p, upstream)",
+		group: "video",
+		requestTypeGroups: ["video"],
+	},
+	{
+		key: "output_cost_per_second_2k",
+		label: "Output / second (2K, upstream)",
+		group: "video",
+		requestTypeGroups: ["video"],
+	},
+	{
+		key: "output_cost_per_second_4k",
+		label: "Output / second (4K, upstream)",
+		group: "video",
+		requestTypeGroups: ["video"],
+	},
 	// OCR fields
 	{
 		key: "ocr_cost_per_page",

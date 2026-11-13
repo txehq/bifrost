@@ -928,6 +928,9 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 			return dims
 		}
 		dims.Size = params.Size
+		// The typed tier only. A tier in extra_params stays in Extra (captured below), so pricing
+		// can tell which one the provider reads (TXE-7349).
+		dims.Resolution = string(params.Resolution)
 		dims.Type = params.Type
 		dims.Audio = params.Audio
 		dims.UpscaleFactor = params.UpscaleFactor
@@ -963,6 +966,9 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 func applyVideoDimensionsFromMap(dims *modelcatalog.VideoPricingDimensions, params map[string]any) {
 	if size, ok := params["size"].(string); ok {
 		dims.Size = size
+	}
+	if resolution, ok := params["resolution"].(string); ok {
+		dims.Resolution = resolution
 	}
 	if operation, ok := params["type"].(string); ok {
 		dims.Type = &operation

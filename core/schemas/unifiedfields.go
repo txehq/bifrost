@@ -318,6 +318,8 @@ var nestedPriceFields = func() []NestedPriceField {
 			NestedPriceField{provider, "parameters.aspectRatio", "aspect_ratio", video},
 			NestedPriceField{provider, "parameters.durationSeconds", "seconds", video},
 			NestedPriceField{provider, "parameters.generateAudio", "audio", video},
+			// Veo renders the unified resolution, which picks the rate band (TXE-7349).
+			NestedPriceField{provider, "parameters.resolution", "resolution", video},
 			// An Omni model's video create is an Interactions API body (TXE-6538).
 			NestedPriceField{provider, "response_format.duration", "seconds", video},
 			NestedPriceField{provider, "response_format.aspect_ratio", "aspect_ratio", video},

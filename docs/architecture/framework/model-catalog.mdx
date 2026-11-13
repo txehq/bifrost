@@ -233,6 +233,12 @@ type PricingEntry struct {
     OutputCostPerVideoPerSecond720pAudio  *float64 `json:"output_cost_per_video_per_second_720p_audio,omitempty"`
     OutputCostPerVideoPerSecond1080pAudio *float64 `json:"output_cost_per_video_per_second_1080p_audio,omitempty"`
     OutputCostPerVideoPerSecond4kAudio    *float64 `json:"output_cost_per_video_per_second_4k_audio,omitempty"`
+    OutputCostPerSecond480p  *float64 `json:"output_cost_per_second_480p,omitempty"`
+    OutputCostPerSecond720p  *float64 `json:"output_cost_per_second_720p,omitempty"`
+    OutputCostPerSecond768p  *float64 `json:"output_cost_per_second_768p,omitempty"`
+    OutputCostPerSecond1080p *float64 `json:"output_cost_per_second_1080p,omitempty"`
+    OutputCostPerSecond2k    *float64 `json:"output_cost_per_second_2k,omitempty"`
+    OutputCostPerSecond4k    *float64 `json:"output_cost_per_second_4k,omitempty"`
 
     // Costs - Other
     SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`

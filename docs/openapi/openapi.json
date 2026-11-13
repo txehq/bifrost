@@ -140446,6 +140446,36 @@
             "minimum": 0,
             "description": "Per-second output rate for 4K video with generated audio. Used when the request asks for audio, or does not say and its provider defaults to audio; falls back to the 4K rate when unset."
           },
+          "output_cost_per_second_480p": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Upstream datasheet's per-second output rate for 480p video. Read when output_cost_per_video_per_second_480p is unset, before either unbanded rate."
+          },
+          "output_cost_per_second_720p": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Upstream datasheet's per-second output rate for 720p video. Read when output_cost_per_video_per_second_720p is unset, before either unbanded rate."
+          },
+          "output_cost_per_second_768p": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Upstream datasheet's per-second output rate for 768p video (MiniMax 768P), read before either unbanded rate."
+          },
+          "output_cost_per_second_1080p": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Upstream datasheet's per-second output rate for 1080p video. Read when output_cost_per_video_per_second_1080p is unset, before either unbanded rate."
+          },
+          "output_cost_per_second_2k": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Upstream datasheet's per-second output rate for 2K video (short edge 1440, MiniMax 2K), read before either unbanded rate."
+          },
+          "output_cost_per_second_4k": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Upstream datasheet's per-second output rate for 4K video. Read when output_cost_per_video_per_second_4k is unset, before either unbanded rate."
+          },
           "web_search_cost_per_request": {
             "type": "number",
             "minimum": 0,

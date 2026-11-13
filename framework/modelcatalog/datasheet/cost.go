@@ -1928,6 +1928,11 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 // publishes one where the vendor bills audio on top (pixverse-v6 720p is 0.09 silent and 0.12
 // with audio). Upstream has no unbanded audio rate, so a band with no audio rate, or a size
 // that names no band, falls back to the silent rates below.
+//
+// Each silent band has up to two keys. The fork's output_cost_per_video_per_second_<band> is
+// read first, then upstream's output_cost_per_second_<band> (TXE-7349); either beats both
+// unbanded rates, so a model is billed at its unbanded rate only when it publishes no band for
+// the resolution.
 func videoOutputPerSecondRate(pricing *configstoreTables.TableModelPricing, size string, audio bool) float64 {
 	band := videoResolutionBand(size)
 	if audio {
@@ -1935,34 +1940,30 @@ func videoOutputPerSecondRate(pricing *configstoreTables.TableModelPricing, size
 			return *rate
 		}
 	}
+	var bandRates []*float64
 	switch band {
 	case 360:
-		if pricing.OutputCostPerVideoPerSecond360p != nil {
-			return *pricing.OutputCostPerVideoPerSecond360p
-		}
+		bandRates = []*float64{pricing.OutputCostPerVideoPerSecond360p}
 	case 540:
-		if pricing.OutputCostPerVideoPerSecond540p != nil {
-			return *pricing.OutputCostPerVideoPerSecond540p
-		}
+		bandRates = []*float64{pricing.OutputCostPerVideoPerSecond540p}
 	case 480:
-		if pricing.OutputCostPerVideoPerSecond480p != nil {
-			return *pricing.OutputCostPerVideoPerSecond480p
-		}
+		bandRates = []*float64{pricing.OutputCostPerVideoPerSecond480p, pricing.OutputCostPerSecond480p}
 	case 720:
-		if pricing.OutputCostPerVideoPerSecond720p != nil {
-			return *pricing.OutputCostPerVideoPerSecond720p
-		}
+		bandRates = []*float64{pricing.OutputCostPerVideoPerSecond720p, pricing.OutputCostPerSecond720p}
+	case 768:
+		bandRates = []*float64{pricing.OutputCostPerSecond768p}
 	case 1024:
-		if pricing.OutputCostPerVideoPerSecond1024p != nil {
-			return *pricing.OutputCostPerVideoPerSecond1024p
-		}
+		bandRates = []*float64{pricing.OutputCostPerVideoPerSecond1024p}
 	case 1080:
-		if pricing.OutputCostPerVideoPerSecond1080p != nil {
-			return *pricing.OutputCostPerVideoPerSecond1080p
-		}
+		bandRates = []*float64{pricing.OutputCostPerVideoPerSecond1080p, pricing.OutputCostPerSecond1080p}
+	case 1440:
+		bandRates = []*float64{pricing.OutputCostPerSecond2k}
 	case 2160:
-		if pricing.OutputCostPerVideoPerSecond4k != nil {
-			return *pricing.OutputCostPerVideoPerSecond4k
+		bandRates = []*float64{pricing.OutputCostPerVideoPerSecond4k, pricing.OutputCostPerSecond4k}
+	}
+	for _, rate := range bandRates {
+		if rate != nil {
+			return *rate
 		}
 	}
 	if pricing.OutputCostPerVideoPerSecond != nil {
@@ -2035,13 +2036,37 @@ func VideoPricedWithAudio(provider schemas.ModelProvider, audio *bool) bool {
 
 // videoResolutionBand returns the short edge of a "WxH" size, which is the number
 // providers name their resolution tiers after ("1920x1080" and "1080x1920" are both
-// 1080p). Returns 0 when the size is absent or malformed.
+// 1080p). It also reads a tier label ("480p", "768P", "2K", "4k"), which is how Veo,
+// Wan 2.7+ and MiniMax take a resolution instead of a size (TXE-7349). Returns 0 when
+// the size is absent or malformed.
 func videoResolutionBand(size string) int {
-	width, height := parseImageDimensions(size)
-	if width <= 0 || height <= 0 {
+	if width, height := parseImageDimensions(size); width > 0 && height > 0 {
+		return min(width, height)
+	}
+	if size == "" {
 		return 0
 	}
-	return min(width, height)
+	// The spellings providers document are in the map as written, so the common case
+	// neither trims nor lowercases (each would allocate on a hit).
+	if edge, ok := videoResolutionTierEdges[size]; ok {
+		return edge
+	}
+	return videoResolutionTierEdges[strings.ToLower(strings.TrimSpace(size))]
+}
+
+// videoResolutionTierEdges maps a resolution tier label to the short edge its band is
+// keyed on. 2K is 2560x1440, the short edge MiniMax documents for its 2K tier
+// (core/providers/minimax miniMaxVideoShortEdges); 4K is 3840x2160.
+var videoResolutionTierEdges = map[string]int{
+	"360p": 360, "360P": 360,
+	"480p": 480, "480P": 480,
+	"540p": 540, "540P": 540,
+	"720p": 720, "720P": 720,
+	"768p": 768, "768P": 768,
+	"1024p": 1024, "1024P": 1024,
+	"1080p": 1080, "1080P": 1080,
+	"2k": 1440, "2K": 1440, "1440p": 1440, "1440P": 1440,
+	"4k": 2160, "4K": 2160, "2160p": 2160, "2160P": 2160,
 }
 
 // computeLiveCost bills GPT Live voice duration: session seconds × input_cost_per_second.
@@ -2525,15 +2550,16 @@ func parseImageDimensions(size string) (int, int) {
 	if size == "" {
 		return 0, 0
 	}
-	parts := strings.SplitN(size, "x", 2)
-	if len(parts) != 2 {
+	// Cut splits at the first "x" as SplitN(size, "x", 2) did, without allocating the slice.
+	wPart, hPart, ok := strings.Cut(size, "x")
+	if !ok {
 		return 0, 0
 	}
-	w, err := strconv.Atoi(parts[0])
+	w, err := strconv.Atoi(wPart)
 	if err != nil || w <= 0 {
 		return 0, 0
 	}
-	h, err := strconv.Atoi(parts[1])
+	h, err := strconv.Atoi(hPart)
 	if err != nil || h <= 0 {
 		return 0, 0
 	}

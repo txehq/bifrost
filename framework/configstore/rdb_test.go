@@ -5420,6 +5420,51 @@ func TestUpsertModelPricesBatch_VideoResolutionColumnsSurviveResync(t *testing.T
 	assert.Equal(t, 0.60, *found.OutputCostPerVideoPerSecond4k)
 }
 
+// The upstream output_cost_per_second_<band> columns (TXE-7349) must survive a resync
+// of an existing row too, or every band reverts to null after the first 24h sync.
+func TestUpsertModelPricesBatch_OutputCostPerSecondBandColumnsSurviveResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	row := tables.TableModelPricing{Model: "veo-3.1-generate-001", Provider: "gemini", Mode: "video_generation"}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	row.OutputCostPerSecond480p = cost(0.041256)
+	row.OutputCostPerSecond720p = cost(0.082513)
+	row.OutputCostPerSecond768p = cost(0.08)
+	row.OutputCostPerSecond1080p = cost(0.165025)
+	row.OutputCostPerSecond2k = cost(0.13)
+	row.OutputCostPerSecond4k = cost(0.6)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	var found *tables.TableModelPricing
+	for i := range got {
+		if got[i].Model == "veo-3.1-generate-001" {
+			found = &got[i]
+			break
+		}
+	}
+	require.NotNil(t, found)
+	for column, value := range map[string]*float64{
+		"output_cost_per_second_480p":  found.OutputCostPerSecond480p,
+		"output_cost_per_second_720p":  found.OutputCostPerSecond720p,
+		"output_cost_per_second_768p":  found.OutputCostPerSecond768p,
+		"output_cost_per_second_1080p": found.OutputCostPerSecond1080p,
+		"output_cost_per_second_2k":    found.OutputCostPerSecond2k,
+		"output_cost_per_second_4k":    found.OutputCostPerSecond4k,
+	} {
+		require.NotNil(t, value, "%s missing from pricingSyncUpdateColumns", column)
+	}
+	assert.Equal(t, 0.041256, *found.OutputCostPerSecond480p)
+	assert.Equal(t, 0.13, *found.OutputCostPerSecond2k)
+	assert.Equal(t, 0.6, *found.OutputCostPerSecond4k)
+}
+
 // TestRDBConfigStore_CreatedAtSurvivesConfigSync is the general form of
 // TestRDBConfigStore_RoutingRuleCreatedAtSurvivesUpdate. GORM's Save selects every
 // column, so any entity rebuilt from config.json — which carries no created_at —

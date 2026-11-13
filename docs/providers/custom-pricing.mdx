@@ -468,10 +468,16 @@ least 1536) is billed at the 1536×1024 rate, which is checked first.
 | `output_cost_per_video_per_second_720p_audio` | Cost per second of 720p video output with generated audio |
 | `output_cost_per_video_per_second_1080p_audio` | Cost per second of 1080p video output with generated audio |
 | `output_cost_per_video_per_second_4k_audio` | Cost per second of 4K video output with generated audio |
+| `output_cost_per_second_480p` | Upstream's cost per second of 480p video output |
+| `output_cost_per_second_720p` | Upstream's cost per second of 720p video output |
+| `output_cost_per_second_768p` | Upstream's cost per second of 768p video output |
+| `output_cost_per_second_1080p` | Upstream's cost per second of 1080p video output |
+| `output_cost_per_second_2k` | Upstream's cost per second of 2K (1440p) video output |
+| `output_cost_per_second_4k` | Upstream's cost per second of 4K video output |
 | `input_cost_per_video_per_second_above_128k_tokens` | Video input cost above 128k context |
 | `input_cost_per_audio_per_second_above_128k_tokens` | Audio input cost above 128k context |
 
-The resolution-banded video rates are matched on the short edge of the generated video's size, so `1920x1080` and `1080x1920` both resolve to `output_cost_per_video_per_second_1080p`. A size matching no band falls back to `output_cost_per_video_per_second`, then `output_cost_per_second`. The resolved rate is multiplied by the number of clips the job returned.
+The resolution-banded video rates are matched on the short edge of the generated video's size, so `1920x1080` and `1080x1920` both resolve to `output_cost_per_video_per_second_1080p`. A request that names a resolution tier instead of a size (`"resolution": "4k"`, `"480P"`, `"2K"`) is matched on that tier; 2K is the 1440 band. For each band, `output_cost_per_video_per_second_<band>` is read first, then `output_cost_per_second_<band>`. A size matching no band falls back to `output_cost_per_video_per_second`, then `output_cost_per_second`. The resolved rate is multiplied by the number of clips the job returned.
 
 A video with generated audio is priced at its band's `_audio` rate when the model has one, and at the band's silent rate otherwise. A request that sets `audio: false` takes the silent rate. A request that does not mention `audio` takes its provider's default. Runway, for example, generates audio unless asked not to, so its unstated requests take the `_audio` rate. A provider that documents no default is priced with audio.
 

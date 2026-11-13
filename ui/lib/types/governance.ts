@@ -693,6 +693,12 @@ export interface PricingOverridePatch {
 	output_cost_per_video_per_second_720p_audio?: number;
 	output_cost_per_video_per_second_1080p_audio?: number;
 	output_cost_per_video_per_second_4k_audio?: number;
+	output_cost_per_second_480p?: number;
+	output_cost_per_second_720p?: number;
+	output_cost_per_second_768p?: number;
+	output_cost_per_second_1080p?: number;
+	output_cost_per_second_2k?: number;
+	output_cost_per_second_4k?: number;
 	// Other
 	web_search_cost_per_request?: number;
 	input_cost_per_query?: number;

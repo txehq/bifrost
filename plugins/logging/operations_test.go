@@ -5237,3 +5237,32 @@ func TestAccountBatchResultsDoesNotSettleFromAPartialPage(t *testing.T) {
 		t.Fatalf("settled %d requests and %d tokens, want both lines: 2 requests and 300 tokens", breakdown.RequestCount, breakdown.Usage.TotalTokens)
 	}
 }
+
+// A tier-only request has no size, so the tier is the only record of its rate band. The typed
+// tier is captured as Resolution and a tier in extra_params stays in Extra, so pricing can tell
+// which one the provider reads (Veo and MiniMax read extra_params, Wan 2.7+, Kling and BytePlus
+// the typed field). A rehydrated entry presents it as a map (TXE-7349).
+func TestVideoDimensionsFromEntryParams_CapturesResolutionTier(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		params    any
+		want      string
+		wantExtra any
+	}{
+		{name: "unified field", params: &schemas.VideoGenerationParameters{Resolution: "480P"}, want: "480P"},
+		{name: "extra_params only stays in Extra", params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"resolution": "4k"}}, want: "", wantExtra: "4k"},
+		{name: "both kept apart", params: &schemas.VideoGenerationParameters{Resolution: "2K", ExtraParams: map[string]any{"resolution": "768P"}}, want: "2K", wantExtra: "768P"},
+		{name: "rehydrated map", params: map[string]any{"resolution": "2K"}, want: "2K"},
+		{name: "absent", params: &schemas.VideoGenerationParameters{Size: "1280x720"}, want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dims := videoDimensionsFromEntryParams(&logstore.Log{ParamsParsed: tc.params}, schemas.VideoGenerationRequest)
+			if dims.Resolution != tc.want {
+				t.Fatalf("resolution = %q, want %q", dims.Resolution, tc.want)
+			}
+			if tc.wantExtra != nil && dims.Extra["resolution"] != tc.wantExtra {
+				t.Fatalf("extra resolution = %v, want %v", dims.Extra["resolution"], tc.wantExtra)
+			}
+		})
+	}
+}

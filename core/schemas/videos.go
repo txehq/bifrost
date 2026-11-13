@@ -722,6 +722,10 @@ type VideoAccountingDebug struct {
 	// TXE-7306). Nil means the create did not say, and the provider's default applies; a
 	// reprice must read it from here, or an explicit false would reprice with audio.
 	Audio *bool `json:"audio,omitempty"`
+	// Resolution is the tier label ("4k", "480P") the request named instead of a size.
+	// It picks the rate band when Size names none, so repricing must read it back
+	// (TXE-7349).
+	Resolution string `json:"resolution,omitempty"`
 	// OutputCount is how many clips the job returned; the per-second rate is
 	// multiplied by it.
 	OutputCount int `json:"output_count,omitempty"`
