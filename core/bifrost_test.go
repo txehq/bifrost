@@ -48,7 +48,6 @@ import (
 	"github.com/capsohq/bifrost/core/keyselectors"
 	"github.com/capsohq/bifrost/core/mcp"
 	"github.com/capsohq/bifrost/core/network"
-	mistralprovider "github.com/capsohq/bifrost/core/providers/mistral"
 	openaiprovider "github.com/capsohq/bifrost/core/providers/openai"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
@@ -627,63 +626,6 @@ func TestCreateBaseProvider_CustomTypesafeBase(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "unsupported base provider type") {
 		t.Fatalf("vertex is not a supported base provider, got err=%v", err)
-	}
-}
-
-func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
-	providerConfig := &schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        "http://127.0.0.1:1",
-			DefaultRequestTimeoutInSeconds: 1,
-		},
-		CustomProviderConfig: &schemas.CustomProviderConfig{
-			CustomProviderKey: "custom-mistral",
-			BaseProviderType:  schemas.Mistral,
-			AllowedRequests:   &schemas.AllowedRequests{},
-		},
-	}
-	provider := mistralprovider.NewMistralProvider(providerConfig, NewDefaultLogger(schemas.LogLevelError))
-	if provider.GetProviderKey() != schemas.ModelProvider("custom-mistral") {
-		t.Fatalf("expected custom provider key, got %q", provider.GetProviderKey())
-	}
-	bifrost := &Bifrost{}
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-
-	request := &ChannelMessage{
-		Context: ctx,
-		BifrostRequest: schemas.BifrostRequest{
-			RequestType: schemas.OCRRequest,
-			OCRRequest: &schemas.BifrostOCRRequest{
-				Model: "custom-mistral/mistral-ocr-latest",
-				Document: schemas.OCRDocument{
-					Type:        schemas.OCRDocumentTypeDocumentURL,
-					DocumentURL: Ptr("https://example.com/doc.pdf"),
-				},
-			},
-		},
-	}
-
-	response, err := bifrost.handleProviderRequest(provider, providerConfig, request, schemas.Key{}, nil)
-	if response != nil {
-		t.Fatalf("expected nil response, got %#v", response)
-	}
-	if err == nil {
-		t.Fatal("expected unsupported operation error, got nil")
-	}
-	if err.Error == nil {
-		t.Fatal("expected detailed error, got nil")
-	}
-	if err.Error.Code == nil || *err.Error.Code != "unsupported_operation" {
-		t.Fatalf("expected unsupported_operation code, got %#v", err.Error.Code)
-	}
-	if err.ExtraFields.Provider != schemas.ModelProvider("custom-mistral") {
-		t.Fatalf("expected custom provider name, got %q", err.ExtraFields.Provider)
-	}
-	if err.ExtraFields.RequestType != schemas.OCRRequest {
-		t.Fatalf("expected OCR request type, got %q", err.ExtraFields.RequestType)
-	}
-	if err.ExtraFields.OriginalModelRequested != "custom-mistral/mistral-ocr-latest" {
-		t.Fatalf("expected model to be preserved, got %q", err.ExtraFields.OriginalModelRequested)
 	}
 }
 

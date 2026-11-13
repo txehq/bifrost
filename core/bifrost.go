@@ -5425,6 +5425,12 @@ func (bifrost *Bifrost) SelectKeyForProviderRequestType(ctx *schemas.BifrostCont
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
+	// These sessions dial the vendor themselves and never pass the request worker, so a custom
+	// provider's allowed_requests is enforced here, before a key is handed out (TXE-7370).
+	if config, configErr := bifrost.account.GetConfigForProvider(providerKey); configErr == nil && config != nil &&
+		config.CustomProviderConfig != nil && !config.CustomProviderConfig.IsOperationAllowed(requestType) {
+		return schemas.Key{}, errOperationNotAllowed(requestType, providerKey)
+	}
 	baseProvider := bifrost.baseProviderType(providerKey)
 	supportedKeys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, requestType, providerKey, model, baseProvider, additionalModels...)
 	if err != nil {
@@ -8426,6 +8432,15 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 
 		bifrost.endCoreSpan(workerSetupSpan)
 
+		// A custom provider's allowed_requests is enforced here for every request type, before
+		// a key is chosen, so an operation the operator did not allow makes no upstream call
+		// (TXE-7370, allowedrequests.go).
+		if allowErr := checkAllowedRequest(req.Context, provider, config, &req.BifrostRequest); allowErr != nil {
+			allowErr.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), model, model)
+			bifrost.sendWorkerError(req, *allowErr)
+			continue
+		}
+
 		// A unified field this provider declared it does not take is refused here, before a
 		// key is chosen, so the request makes no upstream call (contract C4, BF4).
 		if fieldErr := schemas.CheckDeclaredUnifiedFields(provider, &req.BifrostRequest); fieldErr != nil {
@@ -9155,7 +9170,7 @@ func routeChatReasoningMode(ctx *schemas.BifrostContext, provider schemas.Provid
 	if useRawBody, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); useRawBody {
 		return nil
 	}
-	if schemas.ChatReasoningModeRequiresResponses(schemas.ResolveBaseProvider(ctx, provider.GetProviderKey())) {
+	if chatReasoningModeRoutesToResponses(ctx, provider, req) {
 		// The Responses API has no equivalent for these chat parameters, so the conversion
 		// would drop them silently and serve a weaker contract than the caller asked for.
 		if unsupported := chatParamsWithoutResponsesEquivalent(req.Params); len(unsupported) > 0 {
@@ -9177,6 +9192,22 @@ func routeChatReasoningMode(ctx *schemas.BifrostContext, provider schemas.Provid
 		ctx.SetValue(schemas.BifrostContextKeyCompatDroppedParams, append(slices.Clip(prior), "reasoning.mode"))
 	}
 	return nil
+}
+
+// chatReasoningModeRoutesToResponses reports whether routeChatReasoningMode sends req to the
+// Responses API. The allowed_requests gate (checkAllowedRequest) reads it before dispatch, so
+// a chat request served as responses is checked as responses.
+func chatReasoningModeRoutesToResponses(ctx *schemas.BifrostContext, provider schemas.Provider, req *schemas.BifrostChatRequest) bool {
+	if req == nil || req.Params == nil || req.Params.Reasoning == nil || req.Params.Reasoning.Mode == nil {
+		return false
+	}
+	// A raw-body request is sent upstream byte for byte, so it stays on chat.
+	if ctx != nil {
+		if useRawBody, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); useRawBody {
+			return false
+		}
+	}
+	return schemas.ChatReasoningModeRequiresResponses(schemas.ResolveBaseProvider(ctx, provider.GetProviderKey()))
 }
 
 // chatParamsWithoutResponsesEquivalent lists the set chat parameters that
@@ -9660,16 +9691,7 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		}
 		response.DecisionResponse = decisionResponse
 	case schemas.OCRRequest:
-		var customProviderConfig *schemas.CustomProviderConfig
-		if config != nil {
-			customProviderConfig = config.CustomProviderConfig
-		}
-		if bifrostError := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), customProviderConfig, schemas.OCRRequest); bifrostError != nil {
-			if req.BifrostRequest.OCRRequest != nil {
-				bifrostError.ExtraFields.OriginalModelRequested = req.BifrostRequest.OCRRequest.Model
-			}
-			return nil, bifrostError
-		}
+		// allowed_requests is checked by the request worker (checkAllowedRequest).
 		ocrResponse, bifrostError := provider.OCR(req.Context, key, req.BifrostRequest.OCRRequest)
 		if bifrostError != nil {
 			return nil, bifrostError

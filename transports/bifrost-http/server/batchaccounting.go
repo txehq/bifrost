@@ -86,6 +86,9 @@ func internalJobContext(parent context.Context, selectedKeyID string) *schemas.B
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, uuid.NewString())
 	ctx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
 	ctx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+	// The sweeper reads the state of a job a caller was allowed to create, so it can bill it:
+	// core's allowed_requests check does not refuse these polls (TXE-7370).
+	ctx.SetValue(schemas.BifrostContextKeyProviderJobAccounting, true)
 	if selectedKeyID = strings.TrimSpace(selectedKeyID); selectedKeyID != "" {
 		ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, selectedKeyID)
 	}
