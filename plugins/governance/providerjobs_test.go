@@ -2657,6 +2657,54 @@ func TestPreLLMHookRefusesAnUploadReadThroughAnotherPathOfTheSameStore(t *testin
 	assert.Nil(t, shortCircuit, "an id on OpenAI is not the store's file")
 }
 
+// Batch results on the openai base fetch the batch through the batch_retrieve override when they
+// have none of their own (providerUtils.ResourcePathOverrideFallbacks). Two providers share an
+// unrelated base URL: one creates batches at a batch service, the other retrieves from it. Results
+// through the second reach the batch service, so the creator's row answers for them: its key is
+// admitted and another key refused (TXE-7368).
+func TestPreLLMHookPlacesBatchResultsWhereTheirRetrieveFallbackGoes(t *testing.T) {
+	store := newProviderObjectConfigStore(t)
+	configured := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		"batch-creator": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.BatchCreateRequest: "https://batches.example/v1/batches",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://gateway.shared.example/v1"},
+		},
+		"batch-reader": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.BatchRetrieveRequest: "https://batches.example/v1/batches/{batch_id}",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://gateway.shared.example/v1"},
+		},
+	}}
+	owner := buildVKForMCPStamping(nil)
+	owner.ProviderConfigs = append(owner.ProviderConfigs, buildProviderConfig("batch-creator", []string{"*"}), buildProviderConfig("batch-reader", []string{"*"}))
+	plugin := newAccessTestPlugin(t, owner, nil)
+	plugin.configStore = store
+	plugin.inMemoryStore = configured
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindBatch, "batch-creator", "batch-at-service", "vk-mcp-stamp")
+
+	results := func(provider schemas.ModelProvider) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.BatchResultsRequest, BatchResultsRequest: &schemas.BifrostBatchResultsRequest{Provider: provider, BatchID: "batch-at-service"}}
+	}
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), results("batch-reader"))
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "the batch's creator reads its results through the provider whose retrieve reaches the batch service")
+
+	otherKey := buildVKForMCPStamping(nil)
+	otherKey.ID = "vk-other"
+	otherKey.Value = *schemas.NewSecretVar("sk-bf-other")
+	otherKey.ProviderConfigs = append(otherKey.ProviderConfigs, buildProviderConfig("batch-reader", []string{"*"}))
+	otherPlugin := newAccessTestPlugin(t, otherKey, nil)
+	otherPlugin.configStore = store
+	otherPlugin.inMemoryStore = configured
+	_, shortCircuit, err = otherPlugin.PreLLMHook(presentCtx("sk-bf-other"), results("batch-reader"))
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "another key is refused the results")
+	assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+}
+
 // A provider that moved only its batch retrieve to OpenAI finds OpenAI's batches, and the output
 // file a retrieve names is recorded under that provider although it lives at OpenAI. Its file
 // rows count wherever its batch retrieve goes, so another key is refused the output through

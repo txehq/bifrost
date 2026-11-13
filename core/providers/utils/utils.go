@@ -2294,6 +2294,26 @@ func ResourceRequestURL(baseURL string, defaultPath string, customProviderConfig
 	return baseURL + path, nil
 }
 
+// ResourcePathOverrideFallbacks are the calls that, with no request_path_overrides entry of
+// their own, follow another call's entry, by base: each list is the request types the call reads
+// in order, the first with a non-blank entry winning (GetResourceRequestPath). Batch results on
+// the openai and gemini bases fetch the batch, so they follow batch_retrieve. The call sites
+// build their URL from OverrideRequestTypes, and governance reads the same lists to place where
+// a call goes when it checks object ownership (TXE-7368), so the two cannot disagree.
+var ResourcePathOverrideFallbacks = map[schemas.ModelProvider]map[schemas.RequestType][]schemas.RequestType{
+	schemas.OpenAI: {schemas.BatchResultsRequest: {schemas.BatchResultsRequest, schemas.BatchRetrieveRequest}},
+	schemas.Gemini: {schemas.BatchResultsRequest: {schemas.BatchResultsRequest, schemas.BatchRetrieveRequest}},
+}
+
+// OverrideRequestTypes is the request types whose request_path_overrides entries a requestType
+// call on base reads, in order: its ResourcePathOverrideFallbacks list, or requestType alone.
+func OverrideRequestTypes(base schemas.ModelProvider, requestType schemas.RequestType) []schemas.RequestType {
+	if requestTypes, ok := ResourcePathOverrideFallbacks[base][requestType]; ok {
+		return requestTypes
+	}
+	return []schemas.RequestType{requestType}
+}
+
 // BatchAndFileResourceRequestTypes are the request types of ResourcePathPlaceholders that
 // name a batch or a file by id: the calls every base that serves batches or files templates
 // (TXE-7084, TXE-7085), and the ones a base in ResourcePathOverrideRefusedBases refuses.

@@ -1010,8 +1010,8 @@ func (p *GovernancePlugin) objectHolders(kind string, requestType schemas.Reques
 	return append(holders, others...)
 }
 
-// callUpstream is where one request type's call of a provider goes: its full-URL override, or
-// else its base URL.
+// callUpstream is where one request type's call of a provider goes: the full-URL override it
+// reads (its own, or the one it falls back to), or else its base URL.
 type callUpstream struct {
 	endpoint string
 	override string
@@ -1019,11 +1019,23 @@ type callUpstream struct {
 
 func callTarget(requestType schemas.RequestType, name schemas.ModelProvider, configured map[schemas.ModelProvider]configstore.ProviderConfig) callUpstream {
 	target := callUpstream{endpoint: providerEndpoint(name, configured)}
-	if config, ok := configured[name]; ok && config.CustomProviderConfig != nil {
-		url := strings.TrimRight(strings.ToLower(strings.TrimSpace(config.CustomProviderConfig.RequestPathOverrides[requestType])), "/")
+	config, ok := configured[name]
+	if !ok || config.CustomProviderConfig == nil || len(config.CustomProviderConfig.RequestPathOverrides) == 0 {
+		return target
+	}
+	// The call reads the entries the provider code reads, in its order: a call with no entry of its
+	// own can follow another call's (providerUtils.ResourcePathOverrideFallbacks), as batch results
+	// follow batch_retrieve on the openai and gemini bases. The first non-blank entry decides; a
+	// relative one stays on the base URL.
+	for _, readType := range providerUtils.OverrideRequestTypes(baseProviderOf(name, configured), requestType) {
+		url := strings.TrimRight(strings.ToLower(strings.TrimSpace(config.CustomProviderConfig.RequestPathOverrides[readType])), "/")
+		if url == "" {
+			continue
+		}
 		if strings.HasPrefix(url, "https://") || strings.HasPrefix(url, "http://") {
 			target.override = url
 		}
+		break
 	}
 	return target
 }
