@@ -27,6 +27,10 @@ const (
 	// logging plugin can fully drain in the worst case; remaining entries beyond
 	// the deadline are dropped so the process is never wedged on a slow store.
 	cleanupDrainTimeout = 30 * time.Second
+	// cleanupCallbackTimeout caps how long Cleanup waits, after the drain, for
+	// the post-write callback goroutines processBatch started (websocket
+	// broadcast, and the reconcile callback's re-read of its row).
+	cleanupCallbackTimeout = 5 * time.Second
 	// batchWriteAttempts is how many times processBatch sends a batch whose
 	// failure was transient (connection lost, statement timeout, server
 	// shutting down) before counting it as dropped. The per-row fallback is
@@ -617,7 +621,12 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 		}
 	}
 	if len(callbacks) > 0 || len(mcpCallbacks) > 0 {
+		// Tracked so Cleanup can wait for it: a callback may read the store
+		// (makeReconcileCallback re-reads its row), and that read must finish
+		// before the store's owner closes it.
+		p.callbackWG.Add(1)
 		go func(callbacks []cbPair, mcpCallbacks []mcpCbPair) {
+			defer p.callbackWG.Done()
 			defer func() {
 				if r := recover(); r != nil {
 					p.logger.Warn("log callback panicked: %v", r)
