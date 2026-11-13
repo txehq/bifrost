@@ -1081,3 +1081,65 @@ func TestToGeminiImageGenerationResponseGivesTheServedTierBack(t *testing.T) {
 	require.NotNil(t, vertex.UsageMetadata)
 	assert.Equal(t, TrafficTypeOnDemandPriority, vertex.UsageMetadata.TrafficType)
 }
+
+// TXE-7372, provider level: a Gemini image model's generation and edit, sent through the
+// provider to a vendor that answers on the priority tier, come back with that tier on the
+// response, which cost reads.
+func TestGeminiImageGenerationAndEditCarryTheServedTier(t *testing.T) {
+	const answer = `{"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/png","data":"aW1n"}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":1290,"totalTokenCount":1302,"serviceTier":"priority","candidatesTokensDetails":[{"modality":"IMAGE","tokenCount":1290}]}}`
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(answer))
+	}))
+	defer server.Close()
+
+	provider := NewGeminiProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+	}, testNoopLogger{})
+	key := schemas.Key{Value: *schemas.NewSecretVar("gemini-test")}
+	ctx := func() *schemas.BifrostContext { return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline) }
+
+	generated, bifrostErr := provider.ImageGeneration(ctx(), key, &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.Gemini, Model: "gemini-2.5-flash-image", Input: &schemas.ImageGenerationInput{Prompt: "a lighthouse"},
+	})
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, generated.ServiceTier)
+	assert.Equal(t, schemas.BifrostServiceTierPriority, *generated.ServiceTier)
+
+	edited, bifrostErr := provider.ImageEdit(ctx(), key, &schemas.BifrostImageEditRequest{
+		Provider: schemas.Gemini, Model: "gemini-2.5-flash-image",
+		Input: &schemas.ImageEditInput{Prompt: "make the sky purple", Images: []schemas.ImageInput{{Image: imageTestPNG(t)}}},
+	})
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, edited.ServiceTier)
+	assert.Equal(t, schemas.BifrostServiceTierPriority, *edited.ServiceTier)
+	require.Len(t, paths, 2)
+	for _, p := range paths {
+		assert.True(t, strings.HasSuffix(p, "/models/gemini-2.5-flash-image:generateContent"), p)
+	}
+}
+
+// BenchmarkGenerateContentImageResponse converts a Gemini image response with no served tier
+// (the common case) and with the priority tier (TXE-7372 reads it onto the response).
+func BenchmarkGenerateContentImageResponse(b *testing.B) {
+	for _, tc := range []struct{ name, usage string }{
+		{"no-tier", `{"promptTokenCount":12,"candidatesTokenCount":1290,"totalTokenCount":1302,"candidatesTokensDetails":[{"modality":"IMAGE","tokenCount":1290}]}`},
+		{"priority", `{"promptTokenCount":12,"candidatesTokenCount":1290,"totalTokenCount":1302,"serviceTier":"priority","candidatesTokensDetails":[{"modality":"IMAGE","tokenCount":1290}]}`},
+	} {
+		var response GenerateContentResponse
+		body := `{"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/png","data":"aW1n"}}]},"finishReason":"STOP"}],"usageMetadata":` + tc.usage + `}`
+		if err := json.Unmarshal([]byte(body), &response); err != nil {
+			b.Fatal(err)
+		}
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, bifrostErr := response.ToBifrostImageGenerationResponse(); bifrostErr != nil {
+					b.Fatal(bifrostErr.GetErrorString())
+				}
+			}
+		})
+	}
+}

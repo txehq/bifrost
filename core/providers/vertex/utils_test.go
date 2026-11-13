@@ -2103,3 +2103,71 @@ func TestVertexGCSVideoDownload(t *testing.T) {
 		t.Fatalf("want an invalid-location error, got %+v", bifrostErr)
 	}
 }
+
+// TXE-7372: a Gemini image model on Vertex reuses the Gemini image converter. A generation and an
+// edit that Vertex serves on the priority tier (usageMetadata.trafficType ON_DEMAND_PRIORITY) come
+// back with that tier on the response, which cost reads. The offline harness has no Vertex
+// provider (it needs Google OAuth), so this pins the Vertex route.
+func TestVertexGeminiImageCarriesTheServedTier(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/png","data":"aW1n"}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":1120,"totalTokenCount":1132,"trafficType":"ON_DEMAND_PRIORITY","candidatesTokensDetails":[{"modality":"IMAGE","tokenCount":1120}]}}`))
+	}))
+	defer upstream.Close()
+
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	for _, client := range []*fasthttp.Client{provider.client, provider.streamingClient} {
+		client.Dial = func(string) (net.Conn, error) { return net.Dial("tcp", upstream.Listener.Addr().String()) }
+		client.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{
+		ProjectID:       *schemas.NewSecretVar("proj"),
+		Region:          *schemas.NewSecretVar("global"),
+		AuthCredentials: *schemas.NewSecretVar("test-credentials"),
+	}}
+	provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"}))
+	ctx := func() *schemas.BifrostContext { return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline) }
+
+	generated, bifrostErr := provider.ImageGeneration(ctx(), key, &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.Vertex, Model: "gemini-3-pro-image", Input: &schemas.ImageGenerationInput{Prompt: "a lighthouse"},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("ImageGeneration: %s", bifrostErr.GetErrorString())
+	}
+	if generated.ServiceTier == nil || *generated.ServiceTier != schemas.BifrostServiceTierPriority {
+		t.Fatalf("generation ServiceTier = %v, want priority", generated.ServiceTier)
+	}
+
+	png := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89")
+	edited, bifrostErr := provider.ImageEdit(ctx(), key, &schemas.BifrostImageEditRequest{
+		Provider: schemas.Vertex, Model: "gemini-3-pro-image",
+		Input: &schemas.ImageEditInput{Prompt: "make the sky purple", Images: []schemas.ImageInput{{Image: png}}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("ImageEdit: %s", bifrostErr.GetErrorString())
+	}
+	if edited.ServiceTier == nil || *edited.ServiceTier != schemas.BifrostServiceTierPriority {
+		t.Fatalf("edit ServiceTier = %v, want priority", edited.ServiceTier)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(paths) != 2 {
+		t.Fatalf("upstream calls = %v, want a generateContent for each", paths)
+	}
+	for _, p := range paths {
+		if !strings.HasSuffix(p, "/models/gemini-3-pro-image:generateContent") {
+			t.Fatalf("upstream path = %s, want gemini-3-pro-image:generateContent", p)
+		}
+	}
+}

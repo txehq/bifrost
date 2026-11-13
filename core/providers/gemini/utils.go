@@ -515,7 +515,9 @@ func mapGeminiTrafficTypeToBifrost(trafficType TrafficType) *schemas.BifrostServ
 	default:
 		return nil
 	}
-	return &tier
+	// Copied out only on a match: returning &tier made tier escape, so it was heap-allocated on
+	// every call, including the common no-trafficType response (TXE-7372 benchmark).
+	return schemas.Ptr(tier)
 }
 
 // mapBifrostServiceTierToVertexTrafficType converts a BifrostServiceTier to a Vertex AI trafficType string.

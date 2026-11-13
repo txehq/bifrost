@@ -8554,6 +8554,44 @@ func BenchmarkCalculateCostRealtimeTurns(b *testing.B) {
 	}
 }
 
+// BenchmarkCalculateCostImageServedTier prices a token-priced image response with no served tier
+// (the common case) and one served on the priority tier (TXE-7372).
+func BenchmarkCalculateCostImageServedTier(b *testing.B) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gemini-2.5-flash-image", "gemini", "image_generation"): {
+			Model: "gemini-2.5-flash-image", Provider: "gemini", Mode: "image_generation",
+			InputCostPerToken:               bifrost.Ptr(3e-07),
+			OutputCostPerImageToken:         bifrost.Ptr(3e-05),
+			OutputCostPerImageTokenPriority: bifrost.Ptr(5.4e-05),
+		},
+	})
+	priority := schemas.BifrostServiceTierPriority
+	for _, tc := range []struct {
+		name string
+		tier *schemas.BifrostServiceTier
+	}{{"no-tier", nil}, {"priority", &priority}} {
+		resp := makeImageResponse(schemas.Gemini, "gemini-2.5-flash-image", &schemas.ImageUsage{
+			InputTokens: 12, OutputTokens: 1290, TotalTokens: 1302,
+			OutputTokensDetails: &schemas.ImageTokenDetails{ImageTokens: 1290},
+		})
+		resp.ImageGenerationResponse.Data = []schemas.ImageData{{B64JSON: "aW1n"}}
+		setImageServedTier(resp, tc.tier)
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if s.CalculateCost(resp, nil) <= 0 {
+					b.Fatal("unpriced")
+				}
+			}
+		})
+	}
+}
+
+// setImageServedTier puts the served tier on an image response.
+func setImageServedTier(resp *schemas.BifrostResponse, tier *schemas.BifrostServiceTier) {
+	resp.ImageGenerationResponse.ServiceTier = tier
+}
+
 // TestOffPeak_RoutingCallDiscountAtWindowEdges: a classification call takes the off-peak
 // discount exactly once, on its usage and never on its flat fee, at both edges of a peak
 // window, and through CalculateCost it is added once beside the request it served.
