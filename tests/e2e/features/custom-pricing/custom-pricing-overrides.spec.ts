@@ -155,6 +155,9 @@ test.describe("Custom pricing overrides - realtime text message rate", () => {
 		await page.getByTestId(`pricing-override-edit-btn-${saved.id}`).click();
 		await page.getByTestId("pricing-field-search").fill("text message");
 		await expect(page.getByTestId(`pricing-override-field-input-${key}`)).toHaveValue("0.004");
+	});
+});
+
 // TXE-7354: the explicit batch rates are pricing override fields. An override that sets the batch
 // cache-read rate, the batch 12h write above 272k (whose column name is shortened), and the batch
 // image output rate as an explicit zero is saved with all three and reopens with them.
