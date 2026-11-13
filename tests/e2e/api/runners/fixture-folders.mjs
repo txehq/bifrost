@@ -43,6 +43,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { listFolderFiles, PROVIDER_HARNESS_DIR } from "./lib/provider-harness-source.mjs";
+import { S3_BUCKET } from "./lib/s3-object-fixture.mjs";
 import { remapLoopbackPorts, writeCheckedInFixtureConfig } from "./lib/tls-intercept-proxy.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -97,6 +98,34 @@ export const GROUPS = [
 		...providerError,
 		files: ["185-routing-retries-first-token-cutoffs-and-refused-keys-against.json"],
 		config: "tests/e2e/api/provider_config/routing-error-fixture.config.json",
+	},
+	{
+		// The hybrid log store (TXE-7326): the provider-error gateway, with its log store offloading
+		// payloads to the S3-compatible store that provider-error-fixture.mjs serves on its main port
+		// (lib/s3-object-fixture.mjs). Rows hold or fail a chosen upload through that store's control API.
+		// Only the pinned folders run here: offloading changes what every other folder's log reads see.
+		id: "hybrid-logstore",
+		...providerError,
+		variables: ["hybridLogstoreFixture"],
+		files: ["547-hybrid-log-store-serves-each-log-while-its-upload-is-held-or.json"],
+		configPatch: (config, dir, ports) => {
+			config.logs_store = {
+				enabled: true,
+				type: "sqlite",
+				config: { path: join(dir, "logs.db") },
+				object_storage: {
+					type: "s3",
+					bucket: S3_BUCKET,
+					prefix: "harness",
+					region: "us-east-1",
+					endpoint: `http://127.0.0.1:${ports.main}`,
+					access_key_id: "harness",
+					secret_access_key: "harness",
+					force_path_style: true,
+				},
+			};
+		},
+		vars: (p) => ({ ...providerError.vars(p), hybridLogstoreFixture: "1" }),
 	},
 	{
 		id: "vertex-endpoint",
@@ -375,7 +404,8 @@ async function runGroup(group, folders, { gateway, workDir }) {
 	const fixtures = [];
 	let gw;
 	try {
-		if (group.config) writeCheckedInFixtureConfig(dir, { source: join(REPO, group.config), mapping, datasheetOrigin: datasheets.url });
+		const patch = group.configPatch && ((config) => group.configPatch(config, dir, ports));
+		if (group.config) writeCheckedInFixtureConfig(dir, { source: join(REPO, group.config), mapping, datasheetOrigin: datasheets.url, patch });
 		// A group may start more than one fixture; each is waited for on its own port.
 		const specs = [group.fixture(ports, dir)].flat();
 		for (const [i, fx] of specs.entries()) {
