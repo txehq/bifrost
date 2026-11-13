@@ -12,7 +12,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
-import { GROUPS, fixtureVariables, loadData, plan, readFolders, rowsFromReport, verdict } from "./fixture-folders.mjs";
+import { GROUPS, fixtureVariables, loadData, plan, readFolders, requestNames, rowsFromReport, verdict } from "./fixture-folders.mjs";
 import { remapLoopbackPorts, writeCheckedInFixtureConfig } from "./lib/tls-intercept-proxy.mjs";
 
 const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../../../..");
@@ -24,6 +24,8 @@ const check = (name, fn) => {
 	console.log(`  ok - ${name}`);
 };
 
+// Synthetic plans use the groups that take folders by variable; the real harness test covers `files`.
+const BY_VARIABLE = GROUPS.filter((g) => !g.files);
 const folder = (name, ...lines) => ({ name, item: [{ name: `${name} row`, event: [{ listen: "prerequest", script: { exec: lines } }] }] });
 
 check("the real harness: every folder that reads a fixture variable is run by a group or declared in notRun", () => {
@@ -32,17 +34,22 @@ check("the real harness: every folder that reads a fixture variable is run by a 
 	// The folder whose stale row started this (161.11) is run by the Vertex group.
 	assert.ok(members.get("vertex-endpoint").some((f) => f.name.startsWith("161. ")), "folder 161 is in the vertex-endpoint group");
 	assert.ok(members.get("provider-error").length >= 60, "the provider error fixture's folders are found");
+	// 190 and 199 are all [PREVIEW] rows, so they run in the group that sets include_preview, and only there.
+	for (const n of ["190. WebRTC setup billing", "199. WebRTC event filter"]) {
+		assert.ok(members.get("provider-error-preview").some((f) => f.name.startsWith(n)), `${n} is in provider-error-preview`);
+		assert.ok(!members.get("provider-error").some((f) => f.name.startsWith(n)), `${n} is not in provider-error`);
+	}
 });
 
 check("a folder reading a fixture variable no group starts fails plan, naming the folder and the variable", () => {
-	const { problems } = plan([{ file: "900-new.json", folder: folder("900. new", "if (pm.variables.get('kafkaBrokerFixtureUrl')) {}") }], { notRun: [], quarantine: [] });
+	const { problems } = plan([{ file: "900-new.json", folder: folder("900. new", "if (pm.variables.get('kafkaBrokerFixtureUrl')) {}") }], { notRun: [], quarantine: [] }, BY_VARIABLE);
 	assert.strictEqual(problems.length, 1);
 	assert.match(problems[0], /900-new\.json reads kafkaBrokerFixtureUrl/);
 });
 
 check("a notRun entry with its reason and ticket excuses that folder", () => {
 	const data = { notRun: [{ file: "900-new.json", reason: "needs a broker", ticket: "TXE-1" }], quarantine: [] };
-	const { problems, declared } = plan([{ file: "900-new.json", folder: folder("900. new", "pm.variables.get('kafkaBrokerFixtureUrl')") }], data);
+	const { problems, declared } = plan([{ file: "900-new.json", folder: folder("900. new", "pm.variables.get('kafkaBrokerFixtureUrl')") }], data, BY_VARIABLE);
 	assert.deepStrictEqual(problems, []);
 	assert.deepStrictEqual(declared, ["900-new.json"]);
 });
@@ -57,14 +64,14 @@ check("stale notRun entries fail plan: a missing file, a folder without fixture 
 		],
 		quarantine: [],
 	};
-	const { problems } = plan(folders, data);
+	const { problems } = plan(folders, data, BY_VARIABLE);
 	assert.ok(problems.some((p) => /2-gone\.json names no folder file/.test(p)));
 	assert.ok(problems.some((p) => /1-live\.json names a folder that reads no fixture variable/.test(p)));
 	assert.ok(problems.some((p) => /needs a ticket and a reason/.test(p)));
 });
 
 check("a folder reading two groups' variables is run by both", () => {
-	const { members } = plan([{ file: "314-x.json", folder: folder("314. x", "pm.variables.get('providerErrorFixture')", "pm.variables.get('vertexEndpointFixture')") }], { notRun: [], quarantine: [] });
+	const { members } = plan([{ file: "314-x.json", folder: folder("314. x", "pm.variables.get('providerErrorFixture')", "pm.variables.get('vertexEndpointFixture')") }], { notRun: [], quarantine: [] }, BY_VARIABLE);
 	assert.deepStrictEqual(members.get("provider-error").map((f) => f.file), ["314-x.json"]);
 	assert.deepStrictEqual(members.get("vertex-endpoint").map((f) => f.file), ["314-x.json"]);
 });
@@ -95,6 +102,46 @@ check("verdict: a failing row fails the run unless quarantined; a quarantined ro
 	assert.ok(problems.some((p) => /passes now: remove its entry .*TXE-2.*fixed row/.test(p)));
 	assert.ok(problems.some((p) => /did not run .*renamed row \(TXE-3\)/.test(p)));
 	assert.deepStrictEqual(verdict(new Map([["known failure", { failed: ["x"], ran: true }]]), [{ row: "known failure", ticket: "TXE-1" }]), []);
+});
+
+check("verdict: a selected row that no group answered fails the run unless skippedRows names it with a reason", () => {
+	const rows = new Map([["answered", { failed: [], ran: true }]]);
+	const selected = new Set(["answered", "silent skip", "declared live row"]);
+	const problems = verdict(rows, [], { selected, skippedRows: [{ row: "declared live row", reason: "live vendor row" }] });
+	assert.strictEqual(problems.length, 1);
+	assert.match(problems[0], /^SKIPPED silent skip/);
+});
+
+check("verdict: a skippedRows entry that now runs, names no selected row, or has no reason fails the run", () => {
+	const rows = new Map([["now runs", { failed: [], ran: true }]]);
+	const problems = verdict(rows, [], {
+		selected: new Set(["now runs", "no reason"]),
+		skippedRows: [{ row: "now runs", reason: "r" }, { row: "renamed", reason: "r" }, { row: "no reason" }],
+	});
+	assert.ok(problems.some((p) => /skippedRows row runs now: .*now runs/.test(p)));
+	assert.ok(problems.some((p) => /names no selected row .*renamed/.test(p)));
+	assert.ok(problems.some((p) => /needs a reason: no reason/.test(p)));
+});
+
+check("a group with files runs exactly those folders, and the group of the same variables without files does not", () => {
+	const groups = [
+		{ id: "base", variables: ["providerErrorFixture"] },
+		{ id: "preview", variables: ["providerErrorFixture"], files: ["190-webrtc.json"] },
+	];
+	const folders = [
+		{ file: "190-webrtc.json", folder: folder("190. webrtc", "pm.variables.get('providerErrorFixture')") },
+		{ file: "191-other.json", folder: folder("191. other", "pm.variables.get('providerErrorFixture')") },
+	];
+	const { members, problems } = plan(folders, { notRun: [], quarantine: [] }, groups);
+	assert.deepStrictEqual(problems, []);
+	assert.deepStrictEqual(members.get("preview").map((f) => f.file), ["190-webrtc.json"]);
+	assert.deepStrictEqual(members.get("base").map((f) => f.file), ["191-other.json"]);
+	const { problems: gone } = plan(folders.slice(1), { notRun: [], quarantine: [] }, groups);
+	assert.ok(gone.some((p) => /group preview names 190-webrtc\.json, which is no folder file/.test(p)));
+});
+
+check("requestNames lists every row under the folders, at any depth", () => {
+	assert.deepStrictEqual([...requestNames({ item: [{ name: "1. f", item: [{ name: "a" }, { name: "sub", item: [{ name: "b" }] }] }] })], ["a", "b"]);
 });
 
 check("rowsFromReport: a row fails on a failed assertion or a request error, and a skipped row neither ran nor failed", () => {

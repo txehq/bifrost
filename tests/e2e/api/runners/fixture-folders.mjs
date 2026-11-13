@@ -29,10 +29,12 @@
 // A folder belongs to every group whose variables it reads; a row that reads another group's
 // switch skips itself there, as it does in a live run.
 //
-// fixture-folders.json holds the two exception lists, each entry with its ticket: notRun (folders
-// that use a fixture this runner does not start yet, with the reason) and quarantine (rows that
-// fail on main). Both only shrink: a quarantined row that passes fails the run until its entry
-// is removed.
+// fixture-folders.json holds the three exception lists: notRun (folders that use a fixture this
+// runner does not start yet, with the reason and a ticket), quarantine (rows that fail on main, with
+// a ticket) and skippedRows (rows that skip themselves in a fixture run on purpose, a live row in a
+// fixture folder, with the reason). Every other row of a selected folder must be answered by some
+// group: a row that skipped itself checked nothing. All three only shrink: an entry whose row
+// passes, runs, or is gone fails the run until the entry is removed.
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -53,28 +55,39 @@ const SETUP_TOKEN = "bifrost-e2e-setup-token"; // provider-error-fixture.config.
 // that adds one fails `plan` until a group starts that fixture or notRun names the folder.
 export const FIXTURE_VARIABLE = /\b[a-z][a-zA-Z0-9]*Fixture(?:Url|Base|StallProxyUrl)?\b/g;
 
+const providerError = {
+	variables: ["providerErrorFixture", "providerErrorFixtureUrl", "providerErrorFixtureStallProxyUrl"],
+	ports: { main: 8791, stall: 8799, tls: 8793, tunnel: 8788 },
+	fixture: (p) => ({
+		script: "provider-error-fixture.mjs",
+		args: [],
+		env: {
+			PROVIDER_ERROR_FIXTURE_PORT: p.main,
+			PROVIDER_ERROR_FIXTURE_STALL_PORT: p.stall,
+			PROVIDER_ERROR_FIXTURE_TLS_PORT: p.tls,
+			PROVIDER_ERROR_FIXTURE_MEDIA_TUNNEL_PORT: p.tunnel,
+		},
+	}),
+	config: "tests/e2e/api/provider_config/provider-error-fixture.config.json",
+	vars: (p) => ({
+		providerErrorFixture: "1",
+		providerErrorFixtureUrl: `http://127.0.0.1:${p.main}`,
+		providerErrorFixtureStallProxyUrl: `http://127.0.0.1:${p.stall}`,
+		setupToken: SETUP_TOKEN,
+	}),
+};
+
+// A group with `files` runs exactly those folder files, and no group without `files` runs them.
 export const GROUPS = [
+	{ id: "provider-error", ...providerError },
 	{
-		id: "provider-error",
-		variables: ["providerErrorFixture", "providerErrorFixtureUrl", "providerErrorFixtureStallProxyUrl"],
-		ports: { main: 8791, stall: 8799, tls: 8793, tunnel: 8788 },
-		fixture: (p) => ({
-			script: "provider-error-fixture.mjs",
-			args: [],
-			env: {
-				PROVIDER_ERROR_FIXTURE_PORT: p.main,
-				PROVIDER_ERROR_FIXTURE_STALL_PORT: p.stall,
-				PROVIDER_ERROR_FIXTURE_TLS_PORT: p.tls,
-				PROVIDER_ERROR_FIXTURE_MEDIA_TUNNEL_PORT: p.tunnel,
-			},
-		}),
-		config: "tests/e2e/api/provider_config/provider-error-fixture.config.json",
-		vars: (p) => ({
-			providerErrorFixture: "1",
-			providerErrorFixtureUrl: `http://127.0.0.1:${p.main}`,
-			providerErrorFixtureStallProxyUrl: `http://127.0.0.1:${p.stall}`,
-			setupToken: SETUP_TOKEN,
-		}),
+		// Folders whose fixture rows are all tagged [PREVIEW]: the collection skips those unless
+		// include_preview=1. Setting it for every provider-error folder would also switch on the live
+		// preview rows other folders carry (416.20), so these run apart with it set.
+		id: "provider-error-preview",
+		...providerError,
+		files: ["190-webrtc-setup-billing-preserves-incurred-usage-openai-local-f.json", "199-webrtc-event-filter-preserves-billing-openai-local-fixture.json"],
+		vars: (p) => ({ ...providerError.vars(p), include_preview: "1" }),
 	},
 	{
 		id: "vertex-endpoint",
@@ -109,7 +122,7 @@ export const GROUPS = [
 
 export function loadData(path = DATA_FILE) {
 	const data = JSON.parse(readFileSync(path, "utf8"));
-	return { notRun: data.notRun || [], quarantine: data.quarantine || [] };
+	return { notRun: data.notRun || [], quarantine: data.quarantine || [], skippedRows: data.skippedRows || [] };
 }
 
 // fixtureVariables returns the fixture variables a folder object reads, sorted.
@@ -119,7 +132,9 @@ export function fixtureVariables(folder) {
 
 // plan classifies folders ({file, folder}) into the groups that run them and lists the problems.
 export function plan(folders, { notRun = [], quarantine = [] } = {}, groups = GROUPS) {
-	const byVariable = new Map(groups.flatMap((g) => g.variables.map((v) => [v, g.id])));
+	const byVariable = new Map();
+	for (const g of groups.filter((g) => !g.files)) for (const v of g.variables) byVariable.set(v, g.id);
+	const pinned = new Map(groups.flatMap((g) => (g.files || []).map((f) => [f, g])));
 	const notRunFiles = new Map(notRun.map((e) => [e.file, e]));
 	const problems = [];
 	const members = new Map(groups.map((g) => [g.id, []]));
@@ -133,13 +148,18 @@ export function plan(folders, { notRun = [], quarantine = [] } = {}, groups = GR
 			declared.push(file);
 			continue;
 		}
-		const unknown = variables.filter((v) => !byVariable.has(v));
+		const unknown = pinned.has(file) ? [] : variables.filter((v) => !byVariable.has(v));
 		if (unknown.length) {
 			problems.push(`${file} reads ${unknown.join(", ")}, which no group in fixture-folders.mjs starts: add a group that runs it, or a notRun entry in fixture-folders.json with the reason and a ticket`);
 			continue;
 		}
+		if (pinned.has(file)) {
+			members.get(pinned.get(file).id).push({ file, name: folder.name });
+			continue;
+		}
 		for (const id of new Set(variables.map((v) => byVariable.get(v)))) members.get(id).push({ file, name: folder.name });
 	}
+	for (const [file, g] of pinned) if (!seenFiles.has(file)) problems.push(`group ${g.id} names ${file}, which is no folder file`);
 	for (const entry of notRun) {
 		if (!entry.ticket || !entry.reason) problems.push(`notRun entry ${entry.file} needs a ticket and a reason`);
 		if (!seenFiles.has(entry.file)) problems.push(`notRun entry ${entry.file} names no folder file: remove it`);
@@ -149,11 +169,24 @@ export function plan(folders, { notRun = [], quarantine = [] } = {}, groups = GR
 	return { members, declared, problems };
 }
 
-// verdict compares the rows a run executed with the quarantine list.
-// rows: Map of row name -> {failed: [message], ran: boolean}
-export function verdict(rows, quarantine) {
+// verdict compares the rows a run executed with the quarantine list, and the rows the run selected
+// with the rows it answered. A selected row that no group answered skipped itself (a [PREVIEW]
+// tag, a switch no group sets, a key augment found unset), so it checked nothing: it fails the run
+// unless skippedRows in fixture-folders.json names it with the reason.
+// rows: Map of row name -> {failed: [message], ran: boolean}; selected: Set of row names.
+export function verdict(rows, quarantine, { selected = new Set(), skippedRows = [] } = {}) {
 	const quarantined = new Map(quarantine.map((e) => [e.row, e]));
 	const problems = [];
+	const allowedSkips = new Map(skippedRows.map((e) => [e.row, e]));
+	for (const name of selected) {
+		const answered = rows.get(name)?.ran;
+		if (!answered && !allowedSkips.has(name)) problems.push(`SKIPPED ${name}\n      no group answered this row; make a group run it, or name it in skippedRows in fixture-folders.json with the reason`);
+	}
+	for (const [name, e] of allowedSkips) {
+		if (!e.reason) problems.push(`skippedRows entry needs a reason: ${name}`);
+		if (!selected.has(name)) problems.push(`skippedRows entry names no selected row (renamed or removed?): ${name}`);
+		else if (rows.get(name)?.ran) problems.push(`skippedRows row runs now: remove its entry from fixture-folders.json: ${name}`);
+	}
 	for (const [name, r] of rows) {
 		if (r.failed.length && !quarantined.has(name)) problems.push(`FAIL ${name}\n      ${r.failed[0]}`);
 	}
@@ -195,6 +228,16 @@ export function rowsFromReport(report) {
 		else unattributed.push(`${f?.source?.name || "collection"}: ${message}`);
 	}
 	return { rows, unattributed };
+}
+
+// requestNames lists every request (row) under a collection's folders, at any depth.
+export function requestNames(collection) {
+	const names = new Set();
+	const walk = (items) => {
+		for (const i of items || []) i.item ? walk(i.item) : names.add(i.name);
+	};
+	walk(collection.item);
+	return names;
 }
 
 export function readFolders(dir = PROVIDER_HARNESS_DIR) {
@@ -318,7 +361,7 @@ async function runGroup(group, folders, { gateway, workDir }) {
 		const newman = start(newmanBin(), args, { log: join(dir, "newman.log") });
 		const { code } = await newman.exited;
 		if (!existsSync(report)) throw new Error(`newman exited ${code} without a report\n${newman.tail()}`);
-		return { ...rowsFromReport(JSON.parse(readFileSync(report, "utf8"))), newmanExit: code };
+		return { ...rowsFromReport(JSON.parse(readFileSync(report, "utf8"))), newmanExit: code, selected: requestNames(collection) };
 	} finally {
 		await stop(gw);
 		await stop(fixture);
@@ -364,12 +407,14 @@ async function main() {
 		process.exit(2);
 	}
 	const rows = new Map();
+	const selected = new Set();
 	const failures = [];
 	for (const g of groups) {
 		const folders = members.get(g.id);
 		console.log(`▶ ${g.id}: ${folders.length} folders`);
 		try {
-			const { rows: got, unattributed, newmanExit } = await runGroup(g, folders, { gateway: resolve(args.gateway), workDir });
+			const { rows: got, unattributed, newmanExit, selected: picked } = await runGroup(g, folders, { gateway: resolve(args.gateway), workDir });
+			for (const n of picked) selected.add(n);
 			const ran = [...got.values()].filter((r) => r.ran).length;
 			const failed = [...got.values()].filter((r) => r.failed.length).length;
 			console.log(`  ${got.size} rows, ${ran} answered, ${failed} failing`);
@@ -385,16 +430,17 @@ async function main() {
 			failures.push(`${g.id}: ${e.message}`);
 		}
 	}
-	// With --group, only that group's quarantined rows can be judged.
+	// With --group, only that group's quarantined and skipped rows can be judged.
 	const quarantine = args.group ? data.quarantine.filter((e) => rows.has(e.row)) : data.quarantine;
-	failures.push(...verdict(rows, quarantine));
+	const skippedRows = args.group ? data.skippedRows.filter((e) => selected.has(e.row)) : data.skippedRows;
+	failures.push(...verdict(rows, quarantine, { selected, skippedRows }));
 	console.log(`work dir: ${workDir}`);
 	if (failures.length) {
 		console.error(`\n✗ ${failures.length} problem(s):`);
 		for (const f of failures) console.error(`  ${f}`);
 		process.exit(1);
 	}
-	console.log(`✓ ${rows.size} rows across ${groups.length} group(s); ${quarantine.length} quarantined rows still fail`);
+	console.log(`✓ ${rows.size} rows across ${groups.length} group(s); ${quarantine.length} quarantined rows still fail; ${skippedRows.length} rows skip by declaration`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

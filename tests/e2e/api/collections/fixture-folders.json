@@ -1,5 +1,5 @@
 {
-  "$comment": "tests/e2e/api/runners/fixture-folders.mjs reads this file. notRun: harness folder files that use a fixture and that no runner group runs yet, each with its reason and ticket. quarantine: rows that a runner group runs and that fail on main, each with its ticket; the check fails when a quarantined row passes, so the entry must be removed in the PR that fixes the row. Both lists only shrink.",
+  "$comment": "tests/e2e/api/runners/fixture-folders.mjs reads this file. notRun: harness folder files that use a fixture and that no runner group runs yet, each with its reason and ticket. quarantine: rows that a runner group runs and that fail on main, each with its ticket; the check fails when a quarantined row passes, so the entry must be removed in the PR that fixes the row. skippedRows: rows in a folder a group runs that skip themselves there on purpose (a live row in a fixture folder), each with the reason; any other row that no group answers fails the run, since it checked nothing. All three lists only shrink.",
   "notRun": [
     {
       "file": "186-streamed-retry-after-an-in-stream-error-logs-the-served-atte.json",
@@ -59,6 +59,56 @@
     {
       "row": "423.26 dashscope wire capture: each download queried its task once without the async header, and the file left through the proxy to the address the task named (dashscope wan video)",
       "ticket": "TXE-7289"
+    },
+    {
+      "row": "422.15 bfl downloads: each queried its task once, the file left through the proxy to the address the task named, the loopback file and the bare id reached nothing (bfl flux 3 video)",
+      "ticket": "TXE-7289"
+    }
+  ],
+  "skippedRows": [
+    {
+      "row": "vertex/gemini-3-pro-image /v1/images/generations resolution 1K reaches Vertex as imageConfig.imageSize and usage.output_images is the delivered count (gemini image contract)",
+      "reason": "live Vertex image row: it asserts what Vertex returns, and skips itself when providerErrorFixture=1"
+    },
+    {
+      "row": "vertex/gemini-3-pro-image /v1/images/edits with a URL input image sends it to Vertex as fileData.fileUri (gemini image contract)",
+      "reason": "live Vertex image row: it asserts what Vertex returns, and skips itself when providerErrorFixture=1"
+    },
+    {
+      "row": "deepseek/deepseek-v4-flash /anthropic/v1/messages takes the native passthrough and returns DeepSeek's usage - TXE-6548",
+      "reason": "live DeepSeek passthrough row: it asserts DeepSeek's own answer, and skips itself when providerErrorFixture=1"
+    },
+    {
+      "row": "deepseek/deepseek-v4-flash /anthropic/v1/messages (stream) relays DeepSeek's SSE through the native passthrough - TXE-6548",
+      "reason": "live DeepSeek passthrough row: it asserts DeepSeek's own answer, and skips itself when providerErrorFixture=1"
+    },
+    {
+      "row": "deepseek/deepseek-v4-flash-anthropic (key alias) /anthropic/v1/messages reaches DeepSeek as the alias's model id - TXE-6548",
+      "reason": "live DeepSeek passthrough row: it asserts DeepSeek's own answer, and skips itself when providerErrorFixture=1"
+    },
+    {
+      "row": "deepseek/deepseek-v4-flash /anthropic/v1/messages returns DeepSeek's 400 as is for a named tool_choice in thinking mode - TXE-6548 [EXPECT-400]",
+      "reason": "live DeepSeek passthrough row: it asserts DeepSeek's own answer, and skips itself when providerErrorFixture=1"
+    },
+    {
+      "row": "/v1/chat/completions - content-safety flags input_sensitive/output_sensitive - minimax/MiniMax-M3",
+      "reason": "live MiniMax row: it asserts what the vendor's own filter and model return, and skips itself when providerErrorFixture=1"
+    },
+    {
+      "row": "/v1/responses - replayed MiniMax reasoning_text history is accepted - minimax/MiniMax-M3",
+      "reason": "live MiniMax row: it asserts what the vendor's own filter and model return, and skips itself when providerErrorFixture=1"
+    },
+    {
+      "row": "416.20 [PREVIEW] /v1/videos - a live text-to-video task is created with a client_reference_id - kling/kling-2.5-turbo (kling video contract)",
+      "reason": "live Kling [PREVIEW] row: it creates and polls a real Kling task, so it needs a vendor key and include_preview=1, which this runner never sets for folder 416"
+    },
+    {
+      "row": "416.21 [PREVIEW] kling GET /v1/videos/{id} - poll the live task until it completes with a link, its expiry, seconds and Kling's deduction (kling video contract)",
+      "reason": "live Kling [PREVIEW] row: it creates and polls a real Kling task, so it needs a vendor key and include_preview=1, which this runner never sets for folder 416"
+    },
+    {
+      "row": "416.22 [PREVIEW] kling GET /v1/videos/{client_reference_id}?id_type=client_reference_id - the live task is found by its client_reference_id (kling video contract)",
+      "reason": "live Kling [PREVIEW] row: it creates and polls a real Kling task, so it needs a vendor key and include_preview=1, which this runner never sets for folder 416"
     }
   ]
 }
