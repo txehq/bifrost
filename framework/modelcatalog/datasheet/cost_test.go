@@ -9751,6 +9751,29 @@ func TestInputVideoTokens_TXE7357(t *testing.T) {
 	assert.InDelta(t, 100*0.000012, computeEmbeddingCost(&emb, over, serviceTier{}).TotalCost, 1e-12)
 }
 
+// /v1/responses reports video tokens on input_tokens_details; both the ordinary and the streamed
+// response keep them through normalization, so they take the video rate as on chat.
+func TestResponsesUsageKeepsVideoTokens_TXE7357(t *testing.T) {
+	live := pricingRowFromDatasheetJSON(t, "gemini/gemini-3.1-flash-live-preview", geminiFlashLiveRow)
+	usage := &schemas.ResponsesResponseUsage{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100,
+		InputTokensDetails: &schemas.ResponsesResponseInputTokens{TextTokens: 500, VideoTokens: 500}}
+	want := 500*7.5e-7 + 500*0.000001 + 100*0.0000045
+	for name, resp := range map[string]*schemas.BifrostResponse{
+		"responses":        {ResponsesResponse: &schemas.BifrostResponsesResponse{Usage: usage}},
+		"responses stream": {ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Response: &schemas.BifrostResponsesResponse{Usage: usage}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := extractCostInput(resp)
+			require.NotNil(t, input.usage)
+			require.NotNil(t, input.usage.PromptTokensDetails)
+			assert.Equal(t, 500, input.usage.PromptTokensDetails.VideoTokens)
+			cost := computeTextCost(&live, input.usage, serviceTier{})
+			require.NotNil(t, cost)
+			assert.InDelta(t, want, cost.TotalCost, 1e-12)
+		})
+	}
+}
+
 // Vertex multimodalembedding prices a second of embedded video by the embedding interval.
 func TestCalculateCost_EmbeddingVideoIntervals_TXE7357(t *testing.T) {
 	s := txe7357Store(t)
