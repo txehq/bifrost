@@ -516,6 +516,9 @@ func TestBatchOutputFolderIsClaimedOnRetrieve(t *testing.T) {
 	seedProviderObject(t, store, fileKind, "bedrock", "s3://ret/hist2/", other)
 	retrieve("batch-old", "s3://ret/hist2/deeper/sub")
 	assert.Empty(t, storageFolderOwner(t, store, "s3://ret/hist2/deeper/sub/"), "another key's earlier batch wrote into a folder above (file row)")
+	seedProviderObject(t, store, fileKind, "bedrock", "s3://ret/same", other)
+	retrieve("batch-old", "s3://ret/same/")
+	assert.Empty(t, storageFolderOwner(t, store, "s3://ret/same/"), "another key's output at the folder's own name without its slash")
 	retrieve("batch-nobody", "s3://ret/nobody/job-4")
 	assert.Empty(t, storageFolderOwner(t, store, "s3://ret/nobody/job-4/"), "a batch nobody recorded hands its results to no one")
 }

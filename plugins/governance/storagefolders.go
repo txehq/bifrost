@@ -393,11 +393,12 @@ func (p *GovernancePlugin) claimBatchOutputFolder(ctx *schemas.BifrostContext, l
 	}
 	owners, err := p.storageFolderOwners(ctx, folders)
 	if err == nil && len(owners) == 0 {
-		// Another key's output at a folder above (an earlier batch's output directory, recorded
-		// as a file or on its job row, which no folder claim covers) also stands in the way: the
-		// claim would hide what that key could reach until now.
+		// Another key's output at this folder or one above (an earlier batch's output directory,
+		// recorded as a file or on its job row, with or without its trailing slash, which no
+		// folder claim covers) also stands in the way: the claim would hide what that key could
+		// reach until now. The slashless name of the folder itself is not beneath it.
 		above := make([]string, 0, 2*len(folders))
-		for _, ancestor := range folders[:len(folders)-1] {
+		for _, ancestor := range folders {
 			above = append(above, ancestor, strings.TrimSuffix(ancestor, "/"))
 		}
 		var foreign bool

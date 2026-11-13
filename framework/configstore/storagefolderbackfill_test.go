@@ -50,12 +50,16 @@ func TestBackfillBatchOutputFolders(t *testing.T) {
 			job("gs://b/upload-under/", "vk-a")   // another key uploaded a file inside it
 			job("gs://b/up2/", "vk-a")            // another key uploaded inside it ...
 			job("gs://b/up2/mine/", "vk-a")       // ... so this inner folder of the key is claimed on its own
+			job("gs://b/slashless/", "vk-a")      // another key's file row is at its slashless name
+			job("gs://b/below-file/x/", "vk-a")   // another key's file row is at a folder above
 			job("gs://b/nobody/", "")             // no key
 			job("file-openai-output", "vk-a")     // not object storage
 			object(tables.ProviderObjectKindStorageFolder, "gs://b/mine/", "vk-a")
 			object(tables.ProviderObjectKindStorageFolder, "gs://b/theirs/", "vk-b")
 			object(tables.ProviderObjectKindFile, "gs://b/upload-under/f.jsonl", "vk-b")
 			object(tables.ProviderObjectKindFile, "gs://b/up2/theirs.jsonl", "vk-b")
+			object(tables.ProviderObjectKindFile, "gs://b/slashless", "vk-b")
+			object(tables.ProviderObjectKindFile, "gs://b/below-file", "vk-b")
 
 			claimed, err := backfillBatchOutputFolders(ctx, store.DB())
 			require.NoError(t, err)

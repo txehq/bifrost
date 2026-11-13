@@ -24,7 +24,8 @@ import (
 //     inside it or around it;
 //   - not a bucket root, not longer than a folder id can be, not nested too deep to check;
 //   - no folder claimed at or above it already (the key's own claim covers it; another key's
-//     claim decides against it), and no record of another key beneath it.
+//     claim decides against it), no record of another key at it or above it by either name
+//     (with or without the trailing slash), and none beneath it.
 //
 // Anything less is left as it was. The migration only adds storage_folder rows, which a
 // binary without the folder rule never reads, so it is safe to run under the previous
@@ -197,7 +198,16 @@ func backfillBatchOutputFolders(ctx context.Context, db *gorm.DB) (int, error) {
 		if err != nil || len(above) > 0 {
 			return false, err
 		}
-		foreign, err := store.HasForeignProviderObjectUnderPrefix(ctx, kinds, folder, vk)
+		// Another key's record at this folder or one above, by either name (an output directory
+		// recorded with or without its trailing slash), or anywhere beneath it.
+		names := make([]string, 0, 2*len(foldersAbove(folder)))
+		for _, name := range foldersAbove(folder) {
+			names = append(names, name, strings.TrimSuffix(name, "/"))
+		}
+		foreign, err := store.HasForeignRecordAt(ctx, names, vk)
+		if err == nil && !foreign {
+			foreign, err = store.HasForeignProviderObjectUnderPrefix(ctx, kinds, folder, vk)
+		}
 		if err == nil && !foreign {
 			foreign, err = store.HasForeignProviderJobFileUnderPrefix(ctx, folder, vk)
 		}
