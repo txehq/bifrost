@@ -48,9 +48,13 @@ test("bands match exactly — an off-band size falls through to unbanded", () =>
   assert.equal(bandKeyFor("1280x720"), "720p");
   assert.equal(bandKeyFor("1024x1024"), "1024p");
   assert.equal(bandKeyFor("3840x2160"), "4k");
-  // 640x360 is below every band. It must NOT borrow the 480p rate — that is the
-  // silent-overbill the exact match exists to prevent.
-  assert.equal(bandKeyFor("640x360"), null);
+  // 360p and 540p are bands of their own (TXE-7306). 640x360 must NOT borrow the
+  // 480p rate, and 960x540 must not borrow 720p — the silent-overbill the exact
+  // match exists to prevent.
+  assert.equal(bandKeyFor("640x360"), "360p");
+  assert.equal(bandKeyFor("960x540"), "540p");
+  // 576p sits between published bands and has no rate of its own.
+  assert.equal(bandKeyFor("1024x576"), null);
   // 1440p sits between published bands and has no rate of its own.
   assert.equal(bandKeyFor("2560x1440"), null);
   assert.equal(bandKeyFor("garbage"), null);
@@ -284,7 +288,7 @@ test("buildPricingOverride declines cases with no datasheet rate to seed", () =>
   assert.equal(buildPricingOverride({ expect: { cost: { mode: "fixed", value: 0 } }, body: { model: "m" } }), null);
   // A size with no band has no column to write the rate into.
   assert.equal(
-    buildPricingOverride({ expect: { size: "640x360", cost: { mode: "rate", rate_per_second: 1 } }, body: { model: "m" } }),
+    buildPricingOverride({ expect: { size: "1024x576", cost: { mode: "rate", rate_per_second: 1 } }, body: { model: "m" } }),
     null,
   );
 });

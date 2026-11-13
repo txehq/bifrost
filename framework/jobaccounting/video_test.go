@@ -2,6 +2,7 @@ package jobaccounting
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	cstables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/capsohq/bifrost/framework/logstore"
 	"github.com/capsohq/bifrost/framework/modelcatalog"
+	"github.com/capsohq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -819,6 +821,67 @@ func (a *videoCoverageAccount) GetConfigForProvider(_ schemas.ModelProvider) (*s
 	return &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{
 		BaseURL: a.baseURL, DefaultRequestTimeoutInSeconds: 5, MaxRetries: 0, AllowPrivateNetwork: true,
 	}}, nil
+}
+
+// videoDimsRecordingPricing records the dimensions each video price is computed from.
+type videoDimsRecordingPricing struct {
+	requestTypePricing
+	dims []modelcatalog.VideoPricingDimensions
+}
+
+func (p *videoDimsRecordingPricing) CalculateVideoCostDetails(dims modelcatalog.VideoPricingDimensions, _ schemas.ModelProvider, _ *modelcatalog.PricingLookupScopes) modelcatalog.VideoCostDetails {
+	p.dims = append(p.dims, dims)
+	return modelcatalog.VideoCostDetails{Cost: 0.125, Priced: true}
+}
+
+// TestVideoReprice_KeepsTheSettlementsAudioFlag (TXE-7306): a reprice prices a settled video
+// with the audio flag its create stated, read back from the stored video_debug. Without it, an
+// explicit audio false repriced at the provider's default, the with-audio rate (folder 549's
+// silent job: 0.125 settled, 0.25 after a recalculation).
+func TestVideoReprice_KeepsTheSettlementsAudioFlag(t *testing.T) {
+	off := false
+	seconds := 5
+	for name, audio := range map[string]*bool{"audio false": &off, "audio unstated": nil} {
+		t.Run(name, func(t *testing.T) {
+			settled := &logstore.Log{ID: "log-1", Provider: string(schemas.DashScope), Model: "wan2.5-t2v-preview"}
+			videoDebugFor("ds-audio-off", schemas.VideoStatusCompleted, modelcatalog.VideoPricingDimensions{
+				RequestType: schemas.VideoGenerationRequest, Seconds: &seconds, Size: "1280x720", Audio: audio, OutputCount: 1,
+			}, false)(settled)
+			// The row as the store keeps it: video_debug serialized, read back by the reprice.
+			stored, err := json.Marshal(settled.VideoDebugParsed)
+			require.NoError(t, err)
+			row := &logstore.Log{ID: settled.ID, Provider: settled.Provider, Model: settled.Model, VideoDebug: string(stored)}
+
+			pricing := &videoDimsRecordingPricing{}
+			repriced, err := (&VideoSettler{}).RepriceFromLog(row, pricing)
+			require.NoError(t, err)
+			require.NotNil(t, repriced)
+			require.Len(t, pricing.dims, 1)
+			assert.Equal(t, audio, pricing.dims[0].Audio)
+		})
+	}
+}
+
+// TestEveryVideoProviderHasAnAudioDefault (TXE-7306) fails when a provider in videoProviders has
+// no entry in datasheet.VideoAudioDefaults, or an entry cites no source. A job whose create does
+// not say whether to generate audio is priced at its provider's default, and a provider added
+// without one would fall to the catch-all instead of its vendor's documented behaviour. An entry
+// for a provider that settles no video is stale and fails too.
+func TestEveryVideoProviderHasAnAudioDefault(t *testing.T) {
+	for provider := range videoProviders {
+		def, ok := datasheet.VideoAudioDefaults[provider]
+		switch {
+		case !ok:
+			t.Errorf("%s settles video but has no entry in datasheet.VideoAudioDefaults: add what its vendor does when a create does not say whether to generate audio, with the vendor page", provider)
+		case strings.TrimSpace(def.Source) == "":
+			t.Errorf("%s's entry in datasheet.VideoAudioDefaults cites no source", provider)
+		}
+	}
+	for provider := range datasheet.VideoAudioDefaults {
+		if _, settled := videoProviders[provider]; !settled {
+			t.Errorf("%s is in datasheet.VideoAudioDefaults but not in videoProviders: remove the entry", provider)
+		}
+	}
 }
 
 // TestVideoSettlerCoversEveryProviderThatImplementsVideo (TXE-7118) reads the set of video

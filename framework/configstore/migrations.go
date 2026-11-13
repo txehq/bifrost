@@ -579,6 +579,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_client_config_max_response_body_size_mb_column"}, run: migrationAddClientConfigMaxResponseBodySizeMBColumn},
 	{IDs: []string{"add_bfl_key_config_columns"}, run: migrationAddBFLKeyConfigColumns},
 	{IDs: []string{"add_bfl_webhook_url_prefixes_column"}, run: migrationAddBFLWebhookURLPrefixesColumn},
+	{IDs: []string{"add_video_audio_rate_columns"}, run: migrationAddVideoAudioRateColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16680,6 +16681,50 @@ func migrationAddBFLWebhookURLPrefixesColumn(ctx context.Context, db *gorm.DB, l
 		},
 		Rollback: func(tx *gorm.DB) error {
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableKey{}, "bfl_webhook_url_prefixes")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// videoAudioPricingColumns are the video output rate columns the upstream datasheet
+// publishes and the fork read none of before TXE-7306: the 360p and 540p silent bands,
+// and the with-audio rate of each band. Expand-only: nullable columns, nothing rewritten.
+var videoAudioPricingColumns = []string{
+	"output_cost_per_video_per_second_360p",
+	"output_cost_per_video_per_second_540p",
+	"output_cost_per_video_per_second_360p_audio",
+	"output_cost_per_video_per_second_540p_audio",
+	"output_cost_per_video_per_second_720p_audio",
+	"output_cost_per_video_per_second_1080p_audio",
+	"output_cost_per_video_per_second_4k_audio",
+}
+
+func migrationAddVideoAudioRateColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_video_audio_rate_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range videoAudioPricingColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range videoAudioPricingColumns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
 		},
 	}})
 	if err := m.Migrate(); err != nil {

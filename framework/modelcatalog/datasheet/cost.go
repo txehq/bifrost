@@ -723,7 +723,10 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		schemas.ImageGenerationTaskRequest, schemas.ImageEditTaskRequest:
 		cost = computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality, input.tier)
 	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest, schemas.VideoEditRequest:
-		cost = computeVideoCost(pricing, input.usage, input.videoSeconds, input.videoSize, input.videoCount, input.tier)
+		// A video response does not carry the request's audio flag, so the per-request price
+		// takes the provider's audio default. Settlement prices from the captured request
+		// dimensions instead (CalculateVideoCostDetails).
+		cost = computeVideoCost(pricing, input.usage, input.videoSeconds, input.videoSize, input.videoCount, VideoPricedWithAudio(routingInfo.Provider, nil), input.tier)
 	case schemas.OCRRequest:
 		cost = computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
 	case schemas.ContainerCreateRequest:
@@ -1811,7 +1814,7 @@ func imageQualityRate(pricing *configstoreTables.TableModelPricing, quality stri
 
 // computeVideoCost handles video generation requests.
 // Input and output are calculated independently — tokens first, then per-second fallback.
-func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, videoSize string, videoCount int, tier serviceTier) *schemas.BifrostCost {
+func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, videoSize string, videoCount int, audio bool, tier serviceTier) *schemas.BifrostCost {
 	tierTokens := inputTierTokens(usage)
 
 	// Input: text prompt tokens first, then per-second fallback
@@ -1832,7 +1835,7 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 		// Seconds is one clip's duration, and a single job can return several clips
 		// (Veo's sampleCount). Count is 0 on a job that has not produced its outputs
 		// yet, which still owes one clip's worth rather than nothing.
-		outputCost = float64(*videoSeconds) * videoOutputPerSecondRate(pricing, videoSize) * float64(max(1, videoCount))
+		outputCost = float64(*videoSeconds) * videoOutputPerSecondRate(pricing, videoSize, audio) * float64(max(1, videoCount))
 	}
 
 	return newInputOutputCost(inputCost, outputCost)
@@ -1848,8 +1851,27 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 // Bands match exactly on the short edge rather than at-or-above: an unlisted resolution
 // falls back to the unbanded rate instead of rounding up into a more expensive band, so a
 // 480p clip is never billed at the 720p rate.
-func videoOutputPerSecondRate(pricing *configstoreTables.TableModelPricing, size string) float64 {
-	switch videoResolutionBand(size) {
+//
+// A job with generated audio takes its band's audio rate first (fork, TXE-7306): upstream
+// publishes one where the vendor bills audio on top (pixverse-v6 720p is 0.09 silent and 0.12
+// with audio). Upstream has no unbanded audio rate, so a band with no audio rate, or a size
+// that names no band, falls back to the silent rates below.
+func videoOutputPerSecondRate(pricing *configstoreTables.TableModelPricing, size string, audio bool) float64 {
+	band := videoResolutionBand(size)
+	if audio {
+		if rate := videoAudioBandRate(pricing, band); rate != nil {
+			return *rate
+		}
+	}
+	switch band {
+	case 360:
+		if pricing.OutputCostPerVideoPerSecond360p != nil {
+			return *pricing.OutputCostPerVideoPerSecond360p
+		}
+	case 540:
+		if pricing.OutputCostPerVideoPerSecond540p != nil {
+			return *pricing.OutputCostPerVideoPerSecond540p
+		}
 	case 480:
 		if pricing.OutputCostPerVideoPerSecond480p != nil {
 			return *pricing.OutputCostPerVideoPerSecond480p
@@ -1878,6 +1900,65 @@ func videoOutputPerSecondRate(pricing *configstoreTables.TableModelPricing, size
 		return *pricing.OutputCostPerSecond
 	}
 	return 0
+}
+
+// videoAudioBandRate is the with-audio per-second rate of a resolution band, or nil when the
+// model publishes none for it.
+func videoAudioBandRate(pricing *configstoreTables.TableModelPricing, band int) *float64 {
+	switch band {
+	case 360:
+		return pricing.OutputCostPerVideoPerSecond360pAudio
+	case 540:
+		return pricing.OutputCostPerVideoPerSecond540pAudio
+	case 720:
+		return pricing.OutputCostPerVideoPerSecond720pAudio
+	case 1080:
+		return pricing.OutputCostPerVideoPerSecond1080pAudio
+	case 2160:
+		return pricing.OutputCostPerVideoPerSecond4kAudio
+	}
+	return nil
+}
+
+// VideoAudioDefault is what a video provider does when a create does not say whether to
+// generate audio, and the vendor page that says so.
+type VideoAudioDefault struct {
+	On     bool
+	Source string
+}
+
+// VideoAudioDefaults is each video provider's audio default (fork, TXE-7306). A job whose create
+// does not say is priced at the with-audio rate when its vendor renders audio by default, since
+// that is what the vendor bills. Where a vendor documents no default, the entry is on: pricing a
+// default-audio job at the silent rate would charge the key less than the vendor bills.
+// TestEveryVideoProviderHasAnAudioDefault (framework/jobaccounting) fails when a provider in
+// videoProviders has no entry. Sources were read on 14 Nov 2026.
+var VideoAudioDefaults = map[schemas.ModelProvider]VideoAudioDefault{
+	schemas.Runway:    {On: true, Source: "docs.dev.runwayml.com/guides/pricing: \"audio defaults to true\"; veo3.1 is $0.20/s silent and $0.40/s with audio"},
+	schemas.Replicate: {On: true, Source: "the converter sends no audio flag, so the model's default applies; replicate.com/google/veo-3.1 generate_audio defaults to true"},
+	schemas.OpenAI:    {On: true, Source: "developers.openai.com/api/docs/models/sora-2: every Sora video has synced audio, and there is no silent price"},
+	schemas.Gemini:    {On: true, Source: "aistudio.google.com/docs/pricing: Gemini Omni video has native audio at one price; Veo on the Gemini API is shut down (aistudio.google.com/docs/deprecations)"},
+	schemas.Vertex:    {On: true, Source: "no default documented on the Vertex Veo pages; Veo 3 renders sound, so an unstated flag is priced with audio"},
+	schemas.Kling:     {On: true, Source: "no default documented (kling.ai/llms.txt prices kling-v3 std at $0.084/s silent and $0.126/s with audio); priced with audio so an unstated job is not under-charged"},
+	schemas.DashScope: {On: true, Source: "no default documented (alibabacloud.com/help/en/model-studio/model-pricing: wan2.6-i2v-flash 720P $0.025/s silent, $0.05/s with audio); priced with audio"},
+	schemas.MiniMax:   {On: true, Source: "platform.minimax.io/docs/guides/pricing: one price whatever the audio setting"},
+	schemas.BytePlus:  {On: true, Source: "ai.byteplus.com/ark/region:ap-southeast-1/docs/model-pricing: Seedance 2.x is priced per video token with no audio split"},
+	schemas.XAI:       {On: true, Source: "the retrieve reports the bill itself (usage.cost_in_usd_ticks), which covers audio"},
+	schemas.BFL:       {On: true, Source: "the query reports BFL's settled cost (usage.cost, TXE-7297), which covers generate_audio"},
+	schemas.Runware:   {On: true, Source: "the task reports its own cost, which covers audio"},
+}
+
+// VideoPricedWithAudio reports whether a video job is priced at a with-audio rate: the create's
+// audio flag when it gave one, otherwise its provider's default (VideoAudioDefaults). A provider
+// with no entry is priced with audio, never below what a default-audio vendor bills.
+func VideoPricedWithAudio(provider schemas.ModelProvider, audio *bool) bool {
+	if audio != nil {
+		return *audio
+	}
+	if def, ok := VideoAudioDefaults[provider]; ok {
+		return def.On
+	}
+	return true
 }
 
 // videoResolutionBand returns the short edge of a "WxH" size, which is the number

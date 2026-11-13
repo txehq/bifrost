@@ -1,0 +1,481 @@
+{
+  "name": "549. A video with generated audio settles at its resolution band's audio rate, and audio false at the silent rate (video audio rate) [SERIAL]",
+  "item": [
+    {
+      "name": "549.1 the fixture gateway runs with provider job accounting off; its client config is kept to restore at the end (video audio rate)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.unset('audioRateClientConfig');",
+              "pm.collectionVariables.unset('audioRateOnId');",
+              "pm.collectionVariables.unset('audioRateOffId');",
+              "pm.collectionVariables.unset('audioRateRetry');",
+              "pm.test('accounting reads back off', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.client_config && j.client_config.disable_provider_job_accounting, pm.response.text().slice(0, 400)).to.equal(true);",
+              "});",
+              "var cc = pm.response.code === 200 ? pm.response.json().client_config : null;",
+              "if (cc) { pm.collectionVariables.set('audioRateClientConfig', JSON.stringify(cc)); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "549.2 [EXPECT-200] turn provider job accounting on, which starts the video sweeper (video audio rate)",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{{audioRateOnBody}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var saved = pm.collectionVariables.get('audioRateClientConfig');",
+              "if (!saved) {",
+              "  // 549.1 kept no config: leave the switch alone rather than write a partial one.",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var cc = JSON.parse(saved);",
+              "  cc.disable_provider_job_accounting = false;",
+              "  pm.variables.set('audioRateOnBody', JSON.stringify({ client_config: cc }));",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('accounting turned on', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "549.3 dashscope/wan2.5-t2v-preview POST /v1/videos, 5 seconds at 1280x720 with audio true, is the queued task ds-audio-on (video audio rate)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"dashscope/wan2.5-t2v-preview\",\n  \"prompt\": \"a paper boat drifts across a still pond at dawn\",\n  \"seconds\": \"5\",\n  \"size\": \"1280x720\",\n  \"audio\": true\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('create returns the queued task', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(String(j.id || '').indexOf('ds-audio-on'), pm.response.text()).to.eql(0);",
+              "});",
+              "if (pm.response.code === 200) { pm.collectionVariables.set('audioRateOnId', pm.response.json().id); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "549.4 dashscope/wan2.5-t2v-preview POST /v1/videos, 5 seconds at 1280x720 with audio false, is the queued task ds-audio-off (video audio rate)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"dashscope/wan2.5-t2v-preview\",\n  \"prompt\": \"a paper boat drifts across a still pond at dawn\",\n  \"seconds\": \"5\",\n  \"size\": \"1280x720\",\n  \"audio\": false\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('create returns the queued task', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(String(j.id || '').indexOf('ds-audio-off'), pm.response.text()).to.eql(0);",
+              "});",
+              "if (pm.response.code === 200) { pm.collectionVariables.set('audioRateOffId', pm.response.json().id); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "549.5 dashscope GET /v1/videos/{id} reports ds-audio-on completed, so the job is due for settlement (video audio rate)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/{{audioRateOnId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "{{audioRateOnId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the retrieve reports the task completed', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.json().status, pm.response.text()).to.eql('completed');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "549.6 dashscope GET /v1/videos/{id} reports ds-audio-off completed, so the job is due for settlement (video audio rate)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/{{audioRateOffId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "{{audioRateOffId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the retrieve reports the task completed', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.json().status, pm.response.text()).to.eql('completed');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "549.7 the job with audio settles at the 720p audio rate (5 s x $0.05) and the job with audio false at the 720p silent rate (5 s x $0.025) (video audio rate)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs?providers=dashscope&models=wan2.5-t2v-preview&limit=50",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "providers",
+              "value": "dashscope"
+            },
+            {
+              "key": "models",
+              "value": "wan2.5-t2v-preview"
+            },
+            {
+              "key": "limit",
+              "value": "50"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var retry = Number(pm.collectionVariables.get('audioRateRetry') || 0);",
+              "if (retry > 0) {",
+              "  // The video sweeper ticks every 30 s; newman drains pending timers before it sends.",
+              "  var until = Date.now() + 2000;",
+              "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('logs query responds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "});",
+              "if (pm.response.code !== 200) { pm.collectionVariables.unset('audioRateRetry'); return; }",
+              "// A settlement row is the one whose video_debug carries accounting; the submission and the",
+              "// retrieve rows carry video_debug without it.",
+              "var settled = {};",
+              "(pm.response.json().logs || []).forEach(function (l) {",
+              "  var vd = l.video_debug;",
+              "  if (!vd || !vd.accounting) { return; }",
+              "  ['ds-audio-on', 'ds-audio-off'].forEach(function (task) {",
+              "    if (!settled[task] && String(vd.video_id || '').indexOf(task) === 0) { settled[task] = l; }",
+              "  });",
+              "});",
+              "var retry = Number(pm.collectionVariables.get('audioRateRetry') || 0);",
+              "if ((!settled['ds-audio-on'] || !settled['ds-audio-off']) && retry < 45) {",
+              "  pm.collectionVariables.set('audioRateRetry', retry + 1);",
+              "  postman.setNextRequest(pm.info.requestName);",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('audioRateRetry');",
+              "pm.test('both jobs settled within 90 s of their retrieves', function () {",
+              "  pm.expect(settled['ds-audio-on'], 'no settlement row for ds-audio-on: ' + pm.response.text().slice(0, 1500)).to.not.equal(undefined);",
+              "  pm.expect(settled['ds-audio-off'], 'no settlement row for ds-audio-off: ' + pm.response.text().slice(0, 1500)).to.not.equal(undefined);",
+              "});",
+              "if (settled['ds-audio-on']) {",
+              "  pm.test('audio true is priced at the 720p audio rate, 5 s x $0.05, where a build that drops the _audio key prices it at the silent 0.125', function () {",
+              "    pm.expect(settled['ds-audio-on'].cost, JSON.stringify(settled['ds-audio-on']).slice(0, 1500)).to.be.closeTo(0.25, 1e-9);",
+              "  });",
+              "}",
+              "if (settled['ds-audio-off']) {",
+              "  pm.test('audio false is priced at the 720p silent rate, 5 s x $0.025', function () {",
+              "    pm.expect(settled['ds-audio-off'].cost, JSON.stringify(settled['ds-audio-off']).slice(0, 1500)).to.be.closeTo(0.125, 1e-9);",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "549.8 [EXPECT-200] teardown: provider job accounting is turned back off with the client config 549.1 kept, whatever the rows above did (video audio rate)",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{{audioRateOffBody}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var saved = pm.collectionVariables.get('audioRateClientConfig');",
+              "if (!saved) {",
+              "  // 549.2 did not run either, so accounting was never turned on.",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var cc = JSON.parse(saved);",
+              "  cc.disable_provider_job_accounting = true;",
+              "  pm.variables.set('audioRateOffBody', JSON.stringify({ client_config: cc }));",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.unset('audioRateRetry');",
+              "pm.test('accounting turned back off', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.eql(200);",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config', method: 'GET', header: { 'X-Bifrost-Setup-Token': 'bifrost-e2e-setup-token' } }, function (err, res) {",
+              "  pm.test('accounting reads back off', function () {",
+              "    pm.expect(err, 'gateway unreachable: ' + err).to.equal(null);",
+              "    var j = res.json();",
+              "    pm.expect(j.client_config && j.client_config.disable_provider_job_accounting, res.text().slice(0, 400)).to.equal(true);",
+              "  });",
+              "});",
+              "pm.collectionVariables.unset('audioRateClientConfig');",
+              "pm.collectionVariables.unset('audioRateOnId');",
+              "pm.collectionVariables.unset('audioRateOffId');"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

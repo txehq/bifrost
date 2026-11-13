@@ -231,11 +231,23 @@ type Options struct {
 
 	// Resolution-banded video output rates, matched on the short edge of the response's
 	// size. Absent band falls back to OutputCostPerVideoPerSecond, then OutputCostPerSecond.
+	OutputCostPerVideoPerSecond360p  *float64 `json:"output_cost_per_video_per_second_360p,omitempty"`
 	OutputCostPerVideoPerSecond480p  *float64 `json:"output_cost_per_video_per_second_480p,omitempty"`
+	OutputCostPerVideoPerSecond540p  *float64 `json:"output_cost_per_video_per_second_540p,omitempty"`
 	OutputCostPerVideoPerSecond720p  *float64 `json:"output_cost_per_video_per_second_720p,omitempty"`
 	OutputCostPerVideoPerSecond1024p *float64 `json:"output_cost_per_video_per_second_1024p,omitempty"`
 	OutputCostPerVideoPerSecond1080p *float64 `json:"output_cost_per_video_per_second_1080p,omitempty"`
 	OutputCostPerVideoPerSecond4k    *float64 `json:"output_cost_per_video_per_second_4k,omitempty"`
+
+	// Video output rates with generated audio, per resolution band (fork, TXE-7306). Upstream
+	// publishes them where a vendor bills a video with audio above a silent one (Replicate's
+	// pixverse-v6 720p: 0.09 silent, 0.12 with audio). A job with audio that its model has no
+	// audio rate for is priced at the silent rate of its band.
+	OutputCostPerVideoPerSecond360pAudio  *float64 `json:"output_cost_per_video_per_second_360p_audio,omitempty"`
+	OutputCostPerVideoPerSecond540pAudio  *float64 `json:"output_cost_per_video_per_second_540p_audio,omitempty"`
+	OutputCostPerVideoPerSecond720pAudio  *float64 `json:"output_cost_per_video_per_second_720p_audio,omitempty"`
+	OutputCostPerVideoPerSecond1080pAudio *float64 `json:"output_cost_per_video_per_second_1080p_audio,omitempty"`
+	OutputCostPerVideoPerSecond4kAudio    *float64 `json:"output_cost_per_video_per_second_4k_audio,omitempty"`
 
 	// Costs - Other.
 	//
@@ -855,11 +867,19 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		OutputCostPerVideoPerSecond: entry.OutputCostPerVideoPerSecond,
 		OutputCostPerSecond:         entry.OutputCostPerSecond,
 
+		OutputCostPerVideoPerSecond360p:  entry.OutputCostPerVideoPerSecond360p,
 		OutputCostPerVideoPerSecond480p:  entry.OutputCostPerVideoPerSecond480p,
+		OutputCostPerVideoPerSecond540p:  entry.OutputCostPerVideoPerSecond540p,
 		OutputCostPerVideoPerSecond720p:  entry.OutputCostPerVideoPerSecond720p,
 		OutputCostPerVideoPerSecond1024p: entry.OutputCostPerVideoPerSecond1024p,
 		OutputCostPerVideoPerSecond1080p: entry.OutputCostPerVideoPerSecond1080p,
 		OutputCostPerVideoPerSecond4k:    entry.OutputCostPerVideoPerSecond4k,
+
+		OutputCostPerVideoPerSecond360pAudio:  entry.OutputCostPerVideoPerSecond360pAudio,
+		OutputCostPerVideoPerSecond540pAudio:  entry.OutputCostPerVideoPerSecond540pAudio,
+		OutputCostPerVideoPerSecond720pAudio:  entry.OutputCostPerVideoPerSecond720pAudio,
+		OutputCostPerVideoPerSecond1080pAudio: entry.OutputCostPerVideoPerSecond1080pAudio,
+		OutputCostPerVideoPerSecond4kAudio:    entry.OutputCostPerVideoPerSecond4kAudio,
 
 		SearchContextCostPerQuery:     entry.SearchContextCostPerQuery,
 		WebSearchCostPerRequest:       entry.WebSearchCostPerRequest,
@@ -991,11 +1011,19 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerVideoPerSecond: pricing.OutputCostPerVideoPerSecond,
 		OutputCostPerSecond:         pricing.OutputCostPerSecond,
 
+		OutputCostPerVideoPerSecond360p:  pricing.OutputCostPerVideoPerSecond360p,
 		OutputCostPerVideoPerSecond480p:  pricing.OutputCostPerVideoPerSecond480p,
+		OutputCostPerVideoPerSecond540p:  pricing.OutputCostPerVideoPerSecond540p,
 		OutputCostPerVideoPerSecond720p:  pricing.OutputCostPerVideoPerSecond720p,
 		OutputCostPerVideoPerSecond1024p: pricing.OutputCostPerVideoPerSecond1024p,
 		OutputCostPerVideoPerSecond1080p: pricing.OutputCostPerVideoPerSecond1080p,
 		OutputCostPerVideoPerSecond4k:    pricing.OutputCostPerVideoPerSecond4k,
+
+		OutputCostPerVideoPerSecond360pAudio:  pricing.OutputCostPerVideoPerSecond360pAudio,
+		OutputCostPerVideoPerSecond540pAudio:  pricing.OutputCostPerVideoPerSecond540pAudio,
+		OutputCostPerVideoPerSecond720pAudio:  pricing.OutputCostPerVideoPerSecond720pAudio,
+		OutputCostPerVideoPerSecond1080pAudio: pricing.OutputCostPerVideoPerSecond1080pAudio,
+		OutputCostPerVideoPerSecond4kAudio:    pricing.OutputCostPerVideoPerSecond4kAudio,
 
 		SearchContextCostPerQuery:     pricing.SearchContextCostPerQuery,
 		WebSearchCostPerRequest:       pricing.WebSearchCostPerRequest,

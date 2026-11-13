@@ -14,7 +14,9 @@
 // the 720p rate just because it is below it, and an unmatched size deliberately
 // falls back to the unbanded rate instead of picking the nearest band.
 export const VIDEO_BANDS = [
+  { edge: 360, key: "360p", column: "output_cost_per_video_per_second_360p" },
   { edge: 480, key: "480p", column: "output_cost_per_video_per_second_480p" },
+  { edge: 540, key: "540p", column: "output_cost_per_video_per_second_540p" },
   { edge: 720, key: "720p", column: "output_cost_per_video_per_second_720p" },
   { edge: 1024, key: "1024p", column: "output_cost_per_video_per_second_1024p" },
   { edge: 1080, key: "1080p", column: "output_cost_per_video_per_second_1080p" },
