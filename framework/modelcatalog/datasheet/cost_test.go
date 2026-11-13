@@ -10229,3 +10229,73 @@ func TestCalculateCost_RealtimeDurationTurnIsBilledPerSecond(t *testing.T) {
 	}}
 	assert.InDelta(t, 100*4e-06+10*1.6e-05, tokens.CalculateCost(tokenTurn, nil), 1e-12, "a turn with tokens is priced on them, not its duration")
 }
+
+// =========================================================================
+// TXE-7355: long-context tiers the fork had none for. Values are the live datasheet's.
+// =========================================================================
+
+// minimax/MiniMax-M3 doubles every rate above 512k. A 600k-token prompt billed at 3e-07.
+func TestComputeTextCost_Above512kTier(t *testing.T) {
+	p := decodeEntry(t, `{
+		"provider": "minimax", "mode": "chat",
+		"input_cost_per_token": 3e-07, "output_cost_per_token": 1.2e-06, "cache_read_input_token_cost": 6e-08,
+		"input_cost_per_token_above_512k_tokens": 6e-07, "output_cost_per_token_above_512k_tokens": 2.4e-06,
+		"cache_read_input_token_cost_above_512k_tokens": 1.2e-07
+	}`)
+	long := &schemas.BifrostLLMUsage{PromptTokens: 600000, CompletionTokens: 1000, TotalTokens: 601000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 100000}}
+	assert.InDelta(t, 500000*6e-07+100000*1.2e-07+1000*2.4e-06, computeTextCostTotal(&p, long, serviceTier{}), 1e-9)
+	short := &schemas.BifrostLLMUsage{PromptTokens: 500000, CompletionTokens: 1000, TotalTokens: 501000}
+	assert.InDelta(t, 500000*3e-07+1000*1.2e-06, computeTextCostTotal(&p, short, serviceTier{}), 1e-9)
+
+	// The batch path applies the same tier, scaled by the batch ratio (0.5 by default).
+	batch := computeBatchTextCost(&p, long, serviceTier{})
+	require.NotNil(t, batch)
+	assert.InDelta(t, (500000*6e-07+100000*1.2e-07+1000*2.4e-06)*0.5, batch.TotalCost, 1e-9)
+}
+
+// replicate/qwen/qwen3-7-plus prices above 256k at about 3x its base. A row with a 272k tier as
+// well takes the 272k rate past 272k and the 256k rate between.
+func TestComputeTextCost_Above256kTier(t *testing.T) {
+	p := decodeEntry(t, `{
+		"provider": "replicate", "mode": "chat",
+		"input_cost_per_token": 2.76e-07, "output_cost_per_token": 1.101e-06,
+		"input_cost_per_token_above_256k_tokens": 8.26e-07, "output_cost_per_token_above_256k_tokens": 3.301e-06
+	}`)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 260000, CompletionTokens: 1000, TotalTokens: 261000}
+	assert.InDelta(t, 260000*8.26e-07+1000*3.301e-06, computeTextCostTotal(&p, usage, serviceTier{}), 1e-9)
+
+	p.InputCostPerTokenAbove272kTokens = bifrost.Ptr(1e-06)
+	past272k := &schemas.BifrostLLMUsage{PromptTokens: 300000, TotalTokens: 300000}
+	assert.InDelta(t, 300000*1e-06, computeTextCostTotal(&p, past272k, serviceTier{}), 1e-9)
+	assert.InDelta(t, 260000*8.26e-07+1000*3.301e-06, computeTextCostTotal(&p, usage, serviceTier{}), 1e-9)
+}
+
+// byteplus/seed-2-0-pro-260328 publishes cache reads above 128k at 2e-07; the fork already priced
+// its 128k input tier but kept cache reads at 1e-07.
+func TestComputeTextCost_CacheReadAbove128k(t *testing.T) {
+	p := decodeEntry(t, `{
+		"provider": "byteplus", "mode": "chat",
+		"input_cost_per_token": 5e-07, "output_cost_per_token": 4e-06,
+		"input_cost_per_token_above_128k_tokens": 1e-06,
+		"cache_read_input_token_cost": 1e-07, "cache_read_input_token_cost_above_128k_tokens": 2e-07
+	}`)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 150000, TotalTokens: 150000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 100000}}
+	assert.InDelta(t, 50000*1e-06+100000*2e-07, computeTextCostTotal(&p, usage, serviceTier{}), 1e-9)
+}
+
+// empiriolabs/glm-5-1 prices above 32k at 1.1e-06 against 8.25e-07.
+func TestComputeTextCost_Above32kTier(t *testing.T) {
+	p := decodeEntry(t, `{
+		"provider": "empiriolabs", "mode": "chat",
+		"input_cost_per_token": 8.25e-07, "output_cost_per_token": 3.3e-06,
+		"input_cost_per_token_above_32k_tokens": 1.1e-06, "output_cost_per_token_above_32k_tokens": 4.4e-06,
+		"cache_read_input_token_cost": 1.65e-07, "cache_read_input_token_cost_above_32k_tokens": 2.2e-07
+	}`)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 40000, CompletionTokens: 100, TotalTokens: 40100,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 10000}}
+	assert.InDelta(t, 30000*1.1e-06+10000*2.2e-07+100*4.4e-06, computeTextCostTotal(&p, usage, serviceTier{}), 1e-9)
+	short := &schemas.BifrostLLMUsage{PromptTokens: 30000, TotalTokens: 30000}
+	assert.InDelta(t, 30000*8.25e-07, computeTextCostTotal(&p, short, serviceTier{}), 1e-9)
+}

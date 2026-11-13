@@ -342,6 +342,10 @@ Any field you set (including `0`) is applied as an override; omitted fields are 
 |-------|-------------|
 | `input_cost_per_token_above_128k_tokens` | Input cost above 128k context |
 | `output_cost_per_token_above_128k_tokens` | Output cost above 128k context |
+| `input_cost_per_token_above_32k_tokens`, `output_cost_per_token_above_32k_tokens`, `cache_read_input_token_cost_above_32k_tokens` | Cost above 32k context |
+| `input_cost_per_token_above_256k_tokens`, `output_cost_per_token_above_256k_tokens`, `cache_read_input_token_cost_above_256k_tokens` | Cost above 256k context |
+| `input_cost_per_token_above_512k_tokens`, `output_cost_per_token_above_512k_tokens`, `cache_read_input_token_cost_above_512k_tokens` | Cost above 512k context. The largest context tier the prompt passes wins |
+| `cache_read_input_token_cost_above_128k_tokens` | Cache-read cost above 128k context |
 | `input_cost_per_token_above_100k_tokens` | Input cost above 100k context |
 | `output_cost_per_token_above_100k_tokens` | Output cost above 100k context |
 | `input_cost_per_token_above_200k_tokens` | Input cost above 200k context |

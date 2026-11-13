@@ -1286,15 +1286,22 @@ func computeBatchTokenCost(pricing *configstoreTables.TableModelPricing, usage *
 		// without an explicit batch rate falls back to the flat batch input rate.
 		in := batchRates{ratio: batchRatio(pricing.InputCostPerToken, *resolvedInputRate), prompt: promptTokens}
 		inputRate := in.pick(*resolvedInputRate,
+			batchTier{TokenTierAbove512K, nil, pricing.InputCostPerTokenAbove512kTokens},
 			batchTier{TokenTierAbove272K, pricing.InputCostPerTokenAbove272kTokensBatches, pricing.InputCostPerTokenAbove272kTokens},
+			batchTier{TokenTierAbove256K, nil, pricing.InputCostPerTokenAbove256kTokens},
 			batchTier{TokenTierAbove200K, pricing.InputCostPerTokenAbove200kTokensBatches, pricing.InputCostPerTokenAbove200kTokens},
 			batchTier{TokenTierAbove128K, nil, pricing.InputCostPerTokenAbove128kTokens},
 			batchTier{TokenTierAbove100K, pricing.InputCostPerTokenAbove100kTokensBatches, pricing.InputCostPerTokenAbove100kTokens},
+			batchTier{TokenTierAbove32K, nil, pricing.InputCostPerTokenAbove32kTokens},
 		)
 		cacheReadRate := in.pick(in.rateOr(*resolvedInputRate, pricing.CacheReadInputTokenCostBatches, pricing.CacheReadInputTokenCost),
+			batchTier{TokenTierAbove512K, nil, pricing.CacheReadInputTokenCostAbove512kTokens},
 			batchTier{TokenTierAbove272K, pricing.CacheReadInputTokenCostAbove272kTokensBatches, pricing.CacheReadInputTokenCostAbove272kTokens},
+			batchTier{TokenTierAbove256K, nil, pricing.CacheReadInputTokenCostAbove256kTokens},
 			batchTier{TokenTierAbove200K, pricing.CacheReadInputTokenCostAbove200kTokensBatches, pricing.CacheReadInputTokenCostAbove200kTokens},
+			batchTier{TokenTierAbove128K, nil, pricing.CacheReadInputTokenCostAbove128kTokens},
 			batchTier{TokenTierAbove100K, pricing.CacheReadInputTokenCostAbove100kTokensBatches, pricing.CacheReadInputTokenCostAbove100kTokens},
+			batchTier{TokenTierAbove32K, nil, pricing.CacheReadInputTokenCostAbove32kTokens},
 		)
 		cacheWriteRate := in.pick(in.rateOr(*resolvedInputRate, pricing.CacheCreationInputTokenCostBatches, pricing.CacheCreationInputTokenCost),
 			batchTier{TokenTierAbove272K, pricing.CacheCreationInputTokenCostAbove272kTokensBatches, pricing.CacheCreationInputTokenCostAbove272kTokens},
@@ -1355,10 +1362,13 @@ func computeBatchTokenCost(pricing *configstoreTables.TableModelPricing, usage *
 		// not completion length.
 		out := batchRates{ratio: batchRatio(pricing.OutputCostPerToken, *resolvedOutputRate), prompt: usage.PromptTokens}
 		outputRate := out.pick(*resolvedOutputRate,
+			batchTier{TokenTierAbove512K, nil, pricing.OutputCostPerTokenAbove512kTokens},
 			batchTier{TokenTierAbove272K, pricing.OutputCostPerTokenAbove272kTokensBatches, pricing.OutputCostPerTokenAbove272kTokens},
+			batchTier{TokenTierAbove256K, nil, pricing.OutputCostPerTokenAbove256kTokens},
 			batchTier{TokenTierAbove200K, pricing.OutputCostPerTokenAbove200kTokensBatches, pricing.OutputCostPerTokenAbove200kTokens},
 			batchTier{TokenTierAbove128K, nil, pricing.OutputCostPerTokenAbove128kTokens},
 			batchTier{TokenTierAbove100K, pricing.OutputCostPerTokenAbove100kTokensBatches, pricing.OutputCostPerTokenAbove100kTokens},
+			batchTier{TokenTierAbove32K, nil, pricing.OutputCostPerTokenAbove32kTokens},
 		)
 		outputCost = float64(usage.CompletionTokens) * outputRate
 		// Image output tokens on an image line take the image batch rate (TXE-7354:
@@ -2811,6 +2821,9 @@ func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens i
 			return *pricing.InputCostPerTokenFlex
 		}
 	}
+	if totalTokens > TokenTierAbove512K && pricing.InputCostPerTokenAbove512kTokens != nil {
+		return *pricing.InputCostPerTokenAbove512kTokens
+	}
 	if totalTokens > TokenTierAbove272K {
 		if tier.isPriority && pricing.InputCostPerTokenAbove272kTokensPriority != nil {
 			return *pricing.InputCostPerTokenAbove272kTokensPriority
@@ -2818,6 +2831,9 @@ func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens i
 		if pricing.InputCostPerTokenAbove272kTokens != nil {
 			return *pricing.InputCostPerTokenAbove272kTokens
 		}
+	}
+	if totalTokens > TokenTierAbove256K && pricing.InputCostPerTokenAbove256kTokens != nil {
+		return *pricing.InputCostPerTokenAbove256kTokens
 	}
 	if totalTokens > TokenTierAbove200K {
 		if tier.isPriority && pricing.InputCostPerTokenAbove200kTokensPriority != nil {
@@ -2832,6 +2848,9 @@ func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens i
 	}
 	if totalTokens > TokenTierAbove100K && pricing.InputCostPerTokenAbove100kTokens != nil {
 		return *pricing.InputCostPerTokenAbove100kTokens
+	}
+	if totalTokens > TokenTierAbove32K && pricing.InputCostPerTokenAbove32kTokens != nil {
+		return *pricing.InputCostPerTokenAbove32kTokens
 	}
 	if tier.isPriority && pricing.InputCostPerTokenPriority != nil {
 		return *pricing.InputCostPerTokenPriority
@@ -2869,6 +2888,9 @@ func tieredOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens 
 			return *pricing.OutputCostPerTokenFlex
 		}
 	}
+	if totalTokens > TokenTierAbove512K && pricing.OutputCostPerTokenAbove512kTokens != nil {
+		return *pricing.OutputCostPerTokenAbove512kTokens
+	}
 	if totalTokens > TokenTierAbove272K {
 		if tier.isPriority && pricing.OutputCostPerTokenAbove272kTokensPriority != nil {
 			return *pricing.OutputCostPerTokenAbove272kTokensPriority
@@ -2876,6 +2898,9 @@ func tieredOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens 
 		if pricing.OutputCostPerTokenAbove272kTokens != nil {
 			return *pricing.OutputCostPerTokenAbove272kTokens
 		}
+	}
+	if totalTokens > TokenTierAbove256K && pricing.OutputCostPerTokenAbove256kTokens != nil {
+		return *pricing.OutputCostPerTokenAbove256kTokens
 	}
 	if totalTokens > TokenTierAbove200K {
 		if tier.isPriority && pricing.OutputCostPerTokenAbove200kTokensPriority != nil {
@@ -2890,6 +2915,9 @@ func tieredOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens 
 	}
 	if totalTokens > TokenTierAbove100K && pricing.OutputCostPerTokenAbove100kTokens != nil {
 		return *pricing.OutputCostPerTokenAbove100kTokens
+	}
+	if totalTokens > TokenTierAbove32K && pricing.OutputCostPerTokenAbove32kTokens != nil {
+		return *pricing.OutputCostPerTokenAbove32kTokens
 	}
 
 	if tier.isPriority && pricing.OutputCostPerTokenPriority != nil {
@@ -3031,6 +3059,9 @@ func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing,
 			return *pricing.CacheReadInputTokenCostFlex
 		}
 	}
+	if totalTokens > TokenTierAbove512K && pricing.CacheReadInputTokenCostAbove512kTokens != nil {
+		return *pricing.CacheReadInputTokenCostAbove512kTokens
+	}
 	if totalTokens > TokenTierAbove272K {
 		if tier.isPriority && pricing.CacheReadInputTokenCostAbove272kTokensPriority != nil {
 			return *pricing.CacheReadInputTokenCostAbove272kTokensPriority
@@ -3038,6 +3069,9 @@ func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing,
 		if pricing.CacheReadInputTokenCostAbove272kTokens != nil {
 			return *pricing.CacheReadInputTokenCostAbove272kTokens
 		}
+	}
+	if totalTokens > TokenTierAbove256K && pricing.CacheReadInputTokenCostAbove256kTokens != nil {
+		return *pricing.CacheReadInputTokenCostAbove256kTokens
 	}
 	if totalTokens > TokenTierAbove200K {
 		if tier.isPriority && pricing.CacheReadInputTokenCostAbove200kTokensPriority != nil {
@@ -3047,8 +3081,14 @@ func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing,
 			return *pricing.CacheReadInputTokenCostAbove200kTokens
 		}
 	}
+	if totalTokens > TokenTierAbove128K && pricing.CacheReadInputTokenCostAbove128kTokens != nil {
+		return *pricing.CacheReadInputTokenCostAbove128kTokens
+	}
 	if totalTokens > TokenTierAbove100K && pricing.CacheReadInputTokenCostAbove100kTokens != nil {
 		return *pricing.CacheReadInputTokenCostAbove100kTokens
+	}
+	if totalTokens > TokenTierAbove32K && pricing.CacheReadInputTokenCostAbove32kTokens != nil {
+		return *pricing.CacheReadInputTokenCostAbove32kTokens
 	}
 	if tier.isPriority && pricing.CacheReadInputTokenCostPriority != nil {
 		return *pricing.CacheReadInputTokenCostPriority
