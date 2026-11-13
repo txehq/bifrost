@@ -486,9 +486,13 @@ func (s *VideoSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManage
 		Size: repriceSize(accounting),
 		// The settlement's audio flag (TXE-7306): without it an explicit audio false
 		// would reprice at the provider's default, the with-audio rate.
-		Audio:       accounting.Audio,
-		Resolution:  accounting.Resolution,
-		OutputCount: accounting.OutputCount,
+		Audio:      accounting.Audio,
+		Resolution: accounting.Resolution,
+		// The recorded tier is the one settlement chose, with the request's sources and a custom
+		// provider's base in hand; a reprice has neither, so it takes the tier as recorded rather
+		// than judging it again (TXE-7349).
+		ResolutionSettled: accounting.Resolution != "",
+		OutputCount:       accounting.OutputCount,
 	}, schemas.ModelProvider(entry.Provider), &scopes)
 	if !details.Priced {
 		return nil, fmt.Errorf("%w: no video rate for log %s", ErrPricingInputsUnavailable, entry.ID)

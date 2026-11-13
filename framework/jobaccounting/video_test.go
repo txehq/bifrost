@@ -1679,3 +1679,61 @@ func TestVideoSettle_TierTheProviderIgnoresIsNotRecorded(t *testing.T) {
 	settlement.ApplyDebug(entry)
 	assert.Equal(t, "", entry.VideoDebugParsed.Accounting.Resolution)
 }
+
+// A Veo job that requested size 1280x720 and resolution 4k renders 4K: Veo reads the size only for
+// the aspect ratio. When its rate is missing at settlement, the unpriced record must still carry
+// the 4k tier, or the backfill reprices the job at the requested 720p size once the rate lands
+// (TXE-7349).
+func TestVideoSettle_UnpricedJobKeepsARenderedTierBesideARequestedSize(t *testing.T) {
+	dims := generationDims("veo-3.1-generate-001", "1280x720", 8)
+	dims.Resolution = "4k"
+	job := videoJob(t, "vid_unpriced_tier", dims)
+	settlement, err := NewVideoSettler(nil).Settle(context.Background(), fakePricing{}, JobRequest{
+		Provider: schemas.Gemini, ProviderJobID: job.JobID, FallbackModel: job.Model, Job: job,
+		Payload: VideoPayload{Response: &schemas.BifrostVideoGenerationResponse{
+			Status: schemas.VideoStatusCompleted, Seconds: bifrost.Ptr("8"),
+			Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+		}},
+	})
+	require.NoError(t, err)
+	require.True(t, settlement.RecordUnpriced, "fakePricing has no rate for this model")
+	entry := &logstore.Log{Model: "veo-3.1-generate-001", Provider: string(schemas.Gemini)}
+	settlement.ApplyDebug(entry)
+	assert.Equal(t, "4k", entry.VideoDebugParsed.Accounting.Resolution)
+
+	repricing := &dimsRecordingPricing{}
+	_, _ = NewVideoSettler(nil).RepriceFromLog(entry, repricing)
+	require.Len(t, repricing.seen, 1)
+	assert.Equal(t, "4k", repricing.seen[0].Resolution)
+	assert.Equal(t, "", repricing.seen[0].Size)
+	assert.True(t, repricing.seen[0].ResolutionSettled)
+}
+
+// A reprice takes the recorded tier as settled. MiniMax reads its tier from extra_params only, and
+// a reprice hands pricing the tier in the typed field; judged again against the request sources it
+// would be an unread tier and lose to a dearer unbanded rate, so a 768P job settled at the band
+// would reprice above it (TXE-7349).
+func TestVideoReprice_RecordedTierIsSettled(t *testing.T) {
+	dims := generationDims("sora-2-pro", "", 6)
+	dims.Extra = map[string]any{"resolution": "768P"}
+	job := videoJob(t, "vid_minimax_tier", dims)
+	settlement, err := NewVideoSettler(nil).Settle(context.Background(), fakePricing{}, JobRequest{
+		Provider: schemas.MiniMax, ProviderJobID: job.JobID, FallbackModel: job.Model, Job: job,
+		Payload: VideoPayload{Response: &schemas.BifrostVideoGenerationResponse{
+			Status: schemas.VideoStatusCompleted, Seconds: bifrost.Ptr("6"),
+			Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+		}},
+	})
+	require.NoError(t, err)
+	entry := &logstore.Log{Model: "sora-2-pro", Provider: string(schemas.MiniMax)}
+	settlement.ApplyDebug(entry)
+	require.Equal(t, "768P", entry.VideoDebugParsed.Accounting.Resolution)
+
+	repricing := &dimsRecordingPricing{}
+	_, err = NewVideoSettler(nil).RepriceFromLog(entry, repricing)
+	require.NoError(t, err)
+	require.Len(t, repricing.seen, 1)
+	assert.Equal(t, "768P", repricing.seen[0].Resolution)
+	assert.True(t, repricing.seen[0].ResolutionSettled)
+	assert.Nil(t, repricing.seen[0].Extra, "the tier reaches pricing only as the settled typed field")
+}

@@ -43,6 +43,12 @@ type VideoPricingDimensions struct {
 	// aspect ratio and renders at the requested tier, so only a reported size outranks the
 	// tier. It is set by VideoDimensionsFromResponse and MergedWith and never persisted.
 	SizeReported bool `json:"-"`
+	// ResolutionSettled is true when Resolution is the tier a settlement recorded as the one that
+	// set the band (VideoCostDetails.PricedResolution, or TierOnlyResolution on an unpriced job).
+	// That choice was made with the request's sources and the custom provider's base in hand,
+	// neither of which a reprice has, so the tier prices the job as recorded instead of being
+	// judged again against videoTierReaders. Only RepriceFromLog sets it; it is never persisted.
+	ResolutionSettled bool `json:"-"`
 	// BaseProvider is the base provider of a custom provider, set by the caller that can
 	// resolve it. Pricing reads it only to know which converter rendered the job (see
 	// videoProvidersRenderingRequestedTier); the custom name still selects the rates. It is
@@ -263,6 +269,8 @@ func (d VideoPricingDimensions) renderer(provider schemas.ModelProvider) schemas
 }
 
 // bandSize returns what the rate band is read from (TXE-7349):
+//   - a tier a settlement recorded as the one that set the band (ResolutionSettled), on a
+//     reprice;
 //   - a size the provider reported, which is what it rendered;
 //   - else a requested tier the provider reads (see videoTierReaders), which is what it
 //     rendered whatever size was also asked for (Veo with size 3840x2160 and resolution 1080p
@@ -271,6 +279,9 @@ func (d VideoPricingDimensions) renderer(provider schemas.ModelProvider) schemas
 //     provider may ignore costs more. A caller cannot lower the price with a tier the provider
 //     never reads: the job is priced at the dearer of that tier and what it would cost without it.
 func (d VideoPricingDimensions) bandSize(provider schemas.ModelProvider, pricing *configstoreTables.TableModelPricing, audio bool) string {
+	if d.ResolutionSettled && videoResolutionBand(d.Resolution) > 0 {
+		return d.Resolution
+	}
 	if d.SizeReported && videoResolutionBand(d.Size) > 0 {
 		return d.Size
 	}
@@ -288,11 +299,14 @@ func (d VideoPricingDimensions) bandSize(provider schemas.ModelProvider, pricing
 }
 
 // TierOnlyResolution is the tier a settlement that could not be priced records: a tier the
-// provider reads, when no size names a band, and "" otherwise. Without rates the dearer of an
-// unread tier and the size cannot be told, so the record leaves the choice to the size; a reprice
-// then never takes a cheaper tier the provider may ignore.
+// provider reads, unless the provider reported a size that names a band, and "" otherwise. It
+// follows bandSize's first two rules, which need no rates: a reported size is what was rendered,
+// and a read tier is rendered whatever size was requested (Veo with size 1280x720 and resolution
+// 4k renders 4K). Without rates the dearer of an unread tier and the size cannot be told, so the
+// record leaves that choice to the size; a reprice then never takes a cheaper tier the provider
+// may ignore.
 func (d VideoPricingDimensions) TierOnlyResolution(provider schemas.ModelProvider) string {
-	if videoResolutionBand(d.Size) > 0 {
+	if d.SizeReported && videoResolutionBand(d.Size) > 0 {
 		return ""
 	}
 	if tier, rendered := d.requestedTier(d.renderer(provider)); rendered {

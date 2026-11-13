@@ -8966,7 +8966,36 @@ func TestVideoPricingDimensions_BandSizePrecedence(t *testing.T) {
 	assert.Equal(t, "", merged.TierOnlyResolution(schemas.Gemini))
 	assert.Equal(t, "4k", VideoPricingDimensions{Resolution: "4k"}.TierOnlyResolution(schemas.Gemini))
 	assert.Equal(t, "", VideoPricingDimensions{Resolution: "4k"}.TierOnlyResolution(schemas.OpenAI), "a tier the provider never reads is not recorded")
-	assert.Equal(t, "", captured.TierOnlyResolution(schemas.Gemini), "with both named, an unpriced record leaves the choice to the size")
+	assert.Equal(t, "4k", captured.TierOnlyResolution(schemas.Gemini),
+		"a read tier beside a requested size is what Veo renders, so an unpriced record keeps it")
+	assert.Equal(t, "4k", VideoPricingDimensions{Size: "1280x720", Resolution: "4k"}.TierOnlyResolution(schemas.Gemini))
+	assert.Equal(t, "", VideoPricingDimensions{Size: "1920x1080", Resolution: "480p"}.TierOnlyResolution(schemas.OpenAI),
+		"with an unread tier beside a size, an unpriced record leaves the choice to the size")
+
+	// A tier a settlement recorded prices the reprice as recorded, even where the request-source
+	// rule would not trust it: the reprice hands MiniMax's tier back in the typed field, and has
+	// no base provider for a custom DashScope.
+	assert.Equal(t, "480p", band(VideoPricingDimensions{Resolution: "480p", ResolutionSettled: true}, schemas.MiniMax))
+	assert.Equal(t, "480p", band(VideoPricingDimensions{Resolution: "480p", ResolutionSettled: true}, "my-wan"))
+	assert.Equal(t, "", band(VideoPricingDimensions{Resolution: "480p"}, "my-wan"), "unsettled, the same tier is unread")
+}
+
+// The reviewed case end to end on a real store: a MiniMax override with a 768P band at 0.04/s and
+// an unbanded 0.08/s settles at the band and reprices at it too (TXE-7349).
+func TestCalculateVideoCostDetails_SettledTierRepricesAtItsBand(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerSecond:     bifrost.Ptr(0.08),
+		OutputCostPerSecond768p: bifrost.Ptr(0.04),
+	}
+	seconds := 6
+	settled := VideoPricingDimensions{Extra: map[string]any{"resolution": "768P"}, Seconds: &seconds}
+	tier := settled.bandSize(schemas.MiniMax, &p, false)
+	require.Equal(t, "768P", tier)
+	reprice := VideoPricingDimensions{Resolution: tier, ResolutionSettled: true, Seconds: &seconds}
+	assert.InDelta(t, 0.24, computeVideoCost(&p, nil, &seconds, reprice.bandSize(schemas.MiniMax, &p, false), 1, false, serviceTier{}).TotalCost, 1e-9)
+	unsettled := VideoPricingDimensions{Resolution: tier, Seconds: &seconds}
+	assert.InDelta(t, 0.48, computeVideoCost(&p, nil, &seconds, unsettled.bandSize(schemas.MiniMax, &p, false), 1, false, serviceTier{}).TotalCost, 1e-9,
+		"without the settled flag the reprice would bill the unbanded rate")
 }
 
 // The details name the tier that set the band, so the settlement records it for a reprice.
