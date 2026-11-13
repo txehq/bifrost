@@ -180,6 +180,12 @@ func (mc *ModelCatalog) CalculateVideoCostDetails(dims VideoPricingDimensions, p
 	return mc.datasheet.CalculateVideoCostDetails(dims, provider, (*datasheet.LookupScopes)(scopes))
 }
 
+// VideoRequestHasVideoInput reports whether a video create takes a video as input; see
+// datasheet.VideoRequestHasVideoInput.
+func VideoRequestHasVideoInput(provider schemas.ModelProvider, input *schemas.VideoGenerationInput, extra map[string]any) bool {
+	return datasheet.VideoRequestHasVideoInput(provider, input, extra)
+}
+
 // VideoSeconds reads a video duration as whole seconds; see datasheet.VideoSeconds.
 func VideoSeconds(value string) (int, bool) {
 	return datasheet.VideoSeconds(value)

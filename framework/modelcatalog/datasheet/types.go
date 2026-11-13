@@ -462,6 +462,33 @@ type Options struct {
 	OutputCostPerSecond2k    *float64 `json:"output_cost_per_second_2k,omitempty"`
 	OutputCostPerSecond4k    *float64 `json:"output_cost_per_second_4k,omitempty"`
 
+	// Video tokens, per-clip rates, Kling's mode, Seedance's video-input surcharge and Vertex's
+	// embedding interval tiers (fork, TXE-7357).
+	//   - Video tokens: input video tokens a vendor reports apart (Gemini) and the output video
+	//     tokens a video job reports (Seedance's completion tokens, Gemini Omni's video tokens).
+	//   - Per clip: one price per clip of a resolution and length (MiniMax Hailuo), and a flat
+	//     price per clip whatever its length.
+	//   - Mode: Kling's pro and standard modes, with and without audio, in place of the unbanded rate.
+	//   - Video in: the band's rate when the job takes a video as input.
+	//   - Interval: Vertex multimodalembedding prices a second of video by its embedding interval.
+	InputCostPerVideoToken                     *float64 `json:"input_cost_per_video_token,omitempty"`
+	InputCostPerVideoTokenBatches              *float64 `json:"input_cost_per_video_token_batches,omitempty"`
+	InputCostPerVideoPerSecondAbove8sInterval  *float64 `json:"input_cost_per_video_per_second_above_8s_interval,omitempty"`
+	InputCostPerVideoPerSecondAbove15sInterval *float64 `json:"input_cost_per_video_per_second_above_15s_interval,omitempty"`
+	OutputCostPerVideoToken                    *float64 `json:"output_cost_per_video_token,omitempty"`
+	OutputCostPerVideo                         *float64 `json:"output_cost_per_video,omitempty"`
+	OutputCostPerVideo768p6s                   *float64 `json:"output_cost_per_video_768p_6s,omitempty"`
+	OutputCostPerVideo768p10s                  *float64 `json:"output_cost_per_video_768p_10s,omitempty"`
+	OutputCostPerVideo1080p6s                  *float64 `json:"output_cost_per_video_1080p_6s,omitempty"`
+	OutputCostPerVideoPerSecond480pVideoIn     *float64 `json:"output_cost_per_video_per_second_480p_video_in,omitempty"`
+	OutputCostPerVideoPerSecond720pVideoIn     *float64 `json:"output_cost_per_video_per_second_720p_video_in,omitempty"`
+	OutputCostPerVideoPerSecond1080pVideoIn    *float64 `json:"output_cost_per_video_per_second_1080p_video_in,omitempty"`
+	OutputCostPerVideoPerSecond4kVideoIn       *float64 `json:"output_cost_per_video_per_second_4k_video_in,omitempty"`
+	OutputCostPerVideoPerSecondPro             *float64 `json:"output_cost_per_video_per_second_pro,omitempty"`
+	OutputCostPerVideoPerSecondProAudio        *float64 `json:"output_cost_per_video_per_second_pro_audio,omitempty"`
+	OutputCostPerVideoPerSecondStandard        *float64 `json:"output_cost_per_video_per_second_standard,omitempty"`
+	OutputCostPerVideoPerSecondStandardAudio   *float64 `json:"output_cost_per_video_per_second_standard_audio,omitempty"`
+
 	// Costs - Other.
 	//
 	// SearchContextCostPerQuery is stored as a single float64, but the upstream datasheet
@@ -653,6 +680,12 @@ type costInput struct {
 	videoSeconds        *int
 	videoSize           string // e.g. "1920x1080", used for resolution-banded video pricing
 	videoCount          int    // generated clips on the response; 0 until the job returns them
+	videoOutputTokens   *int   // output video tokens the vendor reported (fork, TXE-7357)
+	videoInputSeconds   bool   // the vendor billed input video seconds: the job had a video input (TXE-7357)
+	// embeddingVideoSeconds and embeddingVideoInterval are the seconds of video an embedding
+	// response embedded and the longest segment it embedded them in (fork, TXE-7357).
+	embeddingVideoSeconds  int
+	embeddingVideoInterval int
 	// videoStatus is the job's lifecycle status. A video is billed at settlement,
 	// not at submission, so a non-terminal status prices to nothing.
 	videoStatus       schemas.VideoStatus
@@ -1197,6 +1230,24 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		OutputCostPerSecond2k:                 entry.OutputCostPerSecond2k,
 		OutputCostPerSecond4k:                 entry.OutputCostPerSecond4k,
 
+		InputCostPerVideoToken:                     entry.InputCostPerVideoToken,
+		InputCostPerVideoTokenBatches:              entry.InputCostPerVideoTokenBatches,
+		InputCostPerVideoPerSecondAbove8sInterval:  entry.InputCostPerVideoPerSecondAbove8sInterval,
+		InputCostPerVideoPerSecondAbove15sInterval: entry.InputCostPerVideoPerSecondAbove15sInterval,
+		OutputCostPerVideoToken:                    entry.OutputCostPerVideoToken,
+		OutputCostPerVideo:                         entry.OutputCostPerVideo,
+		OutputCostPerVideo768p6s:                   entry.OutputCostPerVideo768p6s,
+		OutputCostPerVideo768p10s:                  entry.OutputCostPerVideo768p10s,
+		OutputCostPerVideo1080p6s:                  entry.OutputCostPerVideo1080p6s,
+		OutputCostPerVideoPerSecond480pVideoIn:     entry.OutputCostPerVideoPerSecond480pVideoIn,
+		OutputCostPerVideoPerSecond720pVideoIn:     entry.OutputCostPerVideoPerSecond720pVideoIn,
+		OutputCostPerVideoPerSecond1080pVideoIn:    entry.OutputCostPerVideoPerSecond1080pVideoIn,
+		OutputCostPerVideoPerSecond4kVideoIn:       entry.OutputCostPerVideoPerSecond4kVideoIn,
+		OutputCostPerVideoPerSecondPro:             entry.OutputCostPerVideoPerSecondPro,
+		OutputCostPerVideoPerSecondProAudio:        entry.OutputCostPerVideoPerSecondProAudio,
+		OutputCostPerVideoPerSecondStandard:        entry.OutputCostPerVideoPerSecondStandard,
+		OutputCostPerVideoPerSecondStandardAudio:   entry.OutputCostPerVideoPerSecondStandardAudio,
+
 		SearchContextCostPerQuery:     entry.SearchContextCostPerQuery,
 		WebSearchCostPerRequest:       entry.WebSearchCostPerRequest,
 		CodeInterpreterCostPerSession: entry.CodeInterpreterCostPerSession,
@@ -1438,6 +1489,24 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerSecond1080p:              pricing.OutputCostPerSecond1080p,
 		OutputCostPerSecond2k:                 pricing.OutputCostPerSecond2k,
 		OutputCostPerSecond4k:                 pricing.OutputCostPerSecond4k,
+
+		InputCostPerVideoToken:                     pricing.InputCostPerVideoToken,
+		InputCostPerVideoTokenBatches:              pricing.InputCostPerVideoTokenBatches,
+		InputCostPerVideoPerSecondAbove8sInterval:  pricing.InputCostPerVideoPerSecondAbove8sInterval,
+		InputCostPerVideoPerSecondAbove15sInterval: pricing.InputCostPerVideoPerSecondAbove15sInterval,
+		OutputCostPerVideoToken:                    pricing.OutputCostPerVideoToken,
+		OutputCostPerVideo:                         pricing.OutputCostPerVideo,
+		OutputCostPerVideo768p6s:                   pricing.OutputCostPerVideo768p6s,
+		OutputCostPerVideo768p10s:                  pricing.OutputCostPerVideo768p10s,
+		OutputCostPerVideo1080p6s:                  pricing.OutputCostPerVideo1080p6s,
+		OutputCostPerVideoPerSecond480pVideoIn:     pricing.OutputCostPerVideoPerSecond480pVideoIn,
+		OutputCostPerVideoPerSecond720pVideoIn:     pricing.OutputCostPerVideoPerSecond720pVideoIn,
+		OutputCostPerVideoPerSecond1080pVideoIn:    pricing.OutputCostPerVideoPerSecond1080pVideoIn,
+		OutputCostPerVideoPerSecond4kVideoIn:       pricing.OutputCostPerVideoPerSecond4kVideoIn,
+		OutputCostPerVideoPerSecondPro:             pricing.OutputCostPerVideoPerSecondPro,
+		OutputCostPerVideoPerSecondProAudio:        pricing.OutputCostPerVideoPerSecondProAudio,
+		OutputCostPerVideoPerSecondStandard:        pricing.OutputCostPerVideoPerSecondStandard,
+		OutputCostPerVideoPerSecondStandardAudio:   pricing.OutputCostPerVideoPerSecondStandardAudio,
 
 		SearchContextCostPerQuery:     pricing.SearchContextCostPerQuery,
 		WebSearchCostPerRequest:       pricing.WebSearchCostPerRequest,

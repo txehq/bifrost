@@ -464,11 +464,11 @@ func computeImageCostTotal(pricing *configstoreTables.TableModelPricing, imageUs
 }
 
 func computeVideoCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, tier serviceTier) float64 {
-	return bcTotal(computeVideoCost(pricing, usage, videoSeconds, "", 0, false, tier))
+	return bcTotal(computeVideoCost(pricing, usage, videoSeconds, "", 0, false, videoJob{}, tier))
 }
 
 func computeVideoCostTotalSized(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, videoSize string, videoCount int, tier serviceTier) float64 {
-	return bcTotal(computeVideoCost(pricing, usage, videoSeconds, videoSize, videoCount, false, tier))
+	return bcTotal(computeVideoCost(pricing, usage, videoSeconds, videoSize, videoCount, false, videoJob{}, tier))
 }
 
 func computeContainerCreationCostTotal(pricing *configstoreTables.TableModelPricing) float64 {
@@ -8877,6 +8877,42 @@ func BenchmarkCalculateCostImageVariants(b *testing.B) {
 	})
 }
 
+// TXE-7357: the cost of settling a video job, the common per-second case and the rates TXE-7357
+// adds (a clip price, a mode, video tokens).
+func BenchmarkCalculateVideoCostDetailsBands(b *testing.B) {
+	p := pixverseV6Pricing()
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey(p.Model, p.Provider, p.Mode): p})
+	seconds := 5
+	dims := VideoPricingDimensions{Model: p.Model, RequestType: schemas.VideoGenerationRequest, Seconds: &seconds, Size: "1280x720", OutputCount: 1}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = s.CalculateVideoCostDetails(dims, schemas.Replicate, nil)
+	}
+}
+
+// BenchmarkCalculateVideoCostDetailsTXE7357 is BenchmarkCalculateVideoCostDetailsBands for the TXE-7357 rates.
+func BenchmarkCalculateVideoCostDetailsTXE7357(b *testing.B) {
+	s := txe7357Store(b)
+	off := false
+	cases := map[string]struct {
+		provider schemas.ModelProvider
+		dims     VideoPricingDimensions
+	}{
+		"clip":         {schemas.MiniMax, VideoPricingDimensions{Model: "MiniMax-Hailuo-2.3", Seconds: bifrost.Ptr(6), Size: "1366x768"}},
+		"mode":         {schemas.Replicate, VideoPricingDimensions{Model: "kwaivgi/kling-v3-video", Seconds: bifrost.Ptr(5), Audio: &off, Extra: map[string]any{"mode": "pro"}}},
+		"video_tokens": {schemas.BytePlus, VideoPricingDimensions{Model: "dreamina-seedance-2-0-260128", OutputTokens: bifrost.Ptr(108900)}},
+	}
+	for name, tc := range cases {
+		tc.dims.RequestType = schemas.VideoGenerationRequest
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = s.CalculateVideoCostDetails(tc.dims, tc.provider, nil)
+			}
+		})
+	}
+}
+
 func BenchmarkVideoOutputPerSecondRate(b *testing.B) {
 	p := pixverseV6Pricing()
 	b.ReportAllocs()
@@ -9275,9 +9311,9 @@ func TestCalculateVideoCostDetails_SettledTierRepricesAtItsBand(t *testing.T) {
 	tier := settled.bandSize(schemas.MiniMax, &p, false)
 	require.Equal(t, "768P", tier)
 	reprice := VideoPricingDimensions{Resolution: tier, ResolutionSettled: true, Seconds: &seconds}
-	assert.InDelta(t, 0.24, computeVideoCost(&p, nil, &seconds, reprice.bandSize(schemas.MiniMax, &p, false), 1, false, serviceTier{}).TotalCost, 1e-9)
+	assert.InDelta(t, 0.24, computeVideoCost(&p, nil, &seconds, reprice.bandSize(schemas.MiniMax, &p, false), 1, false, videoJob{}, serviceTier{}).TotalCost, 1e-9)
 	unsettled := VideoPricingDimensions{Resolution: tier, Seconds: &seconds}
-	assert.InDelta(t, 0.48, computeVideoCost(&p, nil, &seconds, unsettled.bandSize(schemas.MiniMax, &p, false), 1, false, serviceTier{}).TotalCost, 1e-9,
+	assert.InDelta(t, 0.48, computeVideoCost(&p, nil, &seconds, unsettled.bandSize(schemas.MiniMax, &p, false), 1, false, videoJob{}, serviceTier{}).TotalCost, 1e-9,
 		"without the settled flag the reprice would bill the unbanded rate")
 }
 
@@ -9551,4 +9587,184 @@ func TestBatchCost_ImageLinesTakeTheImageBatchRates(t *testing.T) {
 	chat := computeBatchTextCost(func() *configstoreTables.TableModelPricing { p := decodeEntry(t, row); return &p }(), usage, serviceTier{})
 	require.NotNil(t, chat)
 	assert.InDelta(t, 100*1.5e-07+1300*1.25e-06, chat.TotalCost, 1e-12)
+}
+
+// ===========================================================================
+// TXE-7357: video tokens, per-clip prices, Kling's mode, Seedance's video-input rate and
+// Vertex's embedding interval tiers. The rows are the live upstream datasheet's
+// (getbifrost.ai/datasheet, fetched 2026-11-14), run through the production JSON -> row
+// conversion, so a missing json tag fails here too.
+// ===========================================================================
+
+const (
+	minimaxHailuo23Row = `{"provider":"minimax","mode":"video_generation","output_cost_per_video_768p_6s":0.28,
+		"output_cost_per_video_768p_10s":0.56,"output_cost_per_video_1080p_6s":0.49}`
+	replicateHailuo23Row = `{"provider":"replicate","mode":"video_generation","output_cost_per_video":0.28,
+		"output_cost_per_video_768p_6s":0.28,"output_cost_per_video_768p_10s":0.56,"output_cost_per_video_1080p_6s":0.49}`
+	replicateKlingV3Row = `{"provider":"replicate","mode":"video_generation","output_cost_per_video_per_second":0.168,
+		"output_cost_per_video_per_second_standard":0.168,"output_cost_per_video_per_second_standard_audio":0.252,
+		"output_cost_per_video_per_second_pro":0.224,"output_cost_per_video_per_second_pro_audio":0.336,
+		"output_cost_per_video_per_second_4k":0.42,"output_cost_per_video_per_second_4k_audio":0.42}`
+	replicateSeedance20Row = `{"provider":"replicate","mode":"video_generation","output_cost_per_video_per_second":0.08,
+		"output_cost_per_video_per_second_480p":0.08,"output_cost_per_video_per_second_480p_video_in":0.1,
+		"output_cost_per_video_per_second_720p":0.18,"output_cost_per_video_per_second_720p_video_in":0.22,
+		"output_cost_per_video_per_second_1080p":0.45,"output_cost_per_video_per_second_1080p_video_in":0.55,
+		"output_cost_per_video_per_second_4k":1,"output_cost_per_video_per_second_4k_video_in":1.25}`
+	byteplusSeedance20Row = `{"provider":"byteplus","mode":"video_generation","output_cost_per_video_token":0.000007}`
+	geminiOmniFlashRow    = `{"provider":"gemini","mode":"video_generation","input_cost_per_token":0.0000015,
+		"output_cost_per_token":0.000009,"output_cost_per_video_token":0.0000175,"output_cost_per_video_per_second":0.10136}`
+	geminiEmbedding2Row = `{"provider":"gemini","mode":"embedding","input_cost_per_token":2E-7,"input_cost_per_token_batches":1E-7,
+		"input_cost_per_video_token":0.000012,"input_cost_per_video_token_batches":0.000006,"output_cost_per_token":0}`
+	geminiFlashLiveRow = `{"provider":"gemini","mode":"realtime","input_cost_per_token":7.5E-7,"input_cost_per_audio_token":0.000003,
+		"input_cost_per_video_token":0.000001,"output_cost_per_token":0.0000045}`
+	vertexMultimodalEmbeddingRow = `{"provider":"vertex_ai","mode":"embedding","input_cost_per_video_per_second":0.0005,
+		"input_cost_per_video_per_second_above_15s_interval":0.002,"input_cost_per_video_per_second_above_8s_interval":0.001,
+		"input_cost_per_token":8E-7}`
+)
+
+// txe7357Store holds the TXE-7357 rows under the model names their providers route.
+func txe7357Store(t testing.TB) *Store {
+	t.Helper()
+	rows := map[string]string{
+		"minimax/MiniMax-Hailuo-2.3":            minimaxHailuo23Row,
+		"replicate/minimax/hailuo-2.3":          replicateHailuo23Row,
+		"replicate/kwaivgi/kling-v3-video":      replicateKlingV3Row,
+		"replicate/bytedance/seedance-2.0":      replicateSeedance20Row,
+		"byteplus/dreamina-seedance-2-0-260128": byteplusSeedance20Row,
+		"gemini/gemini-omni-flash-preview":      geminiOmniFlashRow,
+		"vertex_ai/multimodalembedding@001":     vertexMultimodalEmbeddingRow,
+	}
+	pricing := map[string]configstoreTables.TableModelPricing{}
+	for key, blob := range rows {
+		var entry Entry
+		if err := json.Unmarshal([]byte(blob), &entry); err != nil {
+			t.Fatalf("%s: %v", key, err)
+		}
+		row := convertEntryToTablePricing(key, entry)
+		pricing[makeKey(row.Model, row.Provider, row.Mode)] = row
+	}
+	return testStoreWithPricing(pricing)
+}
+
+func TestCalculateVideoCostDetails_TXE7357(t *testing.T) {
+	s := txe7357Store(t)
+	off := false
+	on := true
+	tokens := 108900
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		dims     VideoPricingDimensions
+		expected float64 // 0: unpriced
+	}{
+		// MiniMax Hailuo 2.3 publishes only per-clip prices: before TXE-7357 every job was $0.
+		{"hailuo 768p 6s", schemas.MiniMax, VideoPricingDimensions{Model: "MiniMax-Hailuo-2.3", Seconds: bifrost.Ptr(6), Size: "1366x768"}, 0.28},
+		{"hailuo 768p 10s", schemas.MiniMax, VideoPricingDimensions{Model: "MiniMax-Hailuo-2.3", Seconds: bifrost.Ptr(10), Size: "1366x768"}, 0.56},
+		{"hailuo 1080p 6s", schemas.MiniMax, VideoPricingDimensions{Model: "MiniMax-Hailuo-2.3", Seconds: bifrost.Ptr(6), Size: "1920x1080"}, 0.49},
+		{"hailuo portrait 768p 6s", schemas.MiniMax, VideoPricingDimensions{Model: "MiniMax-Hailuo-2.3", Seconds: bifrost.Ptr(6), Size: "768x1366"}, 0.28},
+		{"hailuo two clips", schemas.MiniMax, VideoPricingDimensions{Model: "MiniMax-Hailuo-2.3", Seconds: bifrost.Ptr(6), Size: "1366x768", OutputCount: 2}, 0.56},
+		// 1080p 10s is not a clip MiniMax publishes, and there is no per-second rate: unpriced.
+		{"hailuo 1080p 10s unpriced", schemas.MiniMax, VideoPricingDimensions{Model: "MiniMax-Hailuo-2.3", Seconds: bifrost.Ptr(10), Size: "1920x1080"}, 0},
+		// Replicate's Hailuo has a flat per-clip price too, which needs no length.
+		{"replicate hailuo no length", schemas.Replicate, VideoPricingDimensions{Model: "minimax/hailuo-2.3"}, 0.28},
+		{"replicate hailuo 768p 10s", schemas.Replicate, VideoPricingDimensions{Model: "minimax/hailuo-2.3", Seconds: bifrost.Ptr(10), Size: "1366x768"}, 0.56},
+		// Kling v3 on Replicate: pro is $0.224/s upstream; the fork billed every mode at $0.168/s.
+		{"kling pro silent", schemas.Replicate, VideoPricingDimensions{Model: "kwaivgi/kling-v3-video", Seconds: bifrost.Ptr(5), Audio: &off, Extra: map[string]any{"mode": "pro"}}, 5 * 0.224},
+		{"kling pro with audio", schemas.Replicate, VideoPricingDimensions{Model: "kwaivgi/kling-v3-video", Seconds: bifrost.Ptr(5), Audio: &on, Extra: map[string]any{"mode": "pro"}}, 5 * 0.336},
+		{"kling standard silent", schemas.Replicate, VideoPricingDimensions{Model: "kwaivgi/kling-v3-video", Seconds: bifrost.Ptr(5), Audio: &off, Extra: map[string]any{"mode": "standard"}}, 5 * 0.168},
+		{"kling std with audio", schemas.Replicate, VideoPricingDimensions{Model: "kwaivgi/kling-v3-video", Seconds: bifrost.Ptr(5), Audio: &on, Mode: "std"}, 5 * 0.252},
+		// Replicate's audio default is on (VideoAudioDefaults), so an unstated flag takes pro's audio rate.
+		{"kling pro audio unstated", schemas.Replicate, VideoPricingDimensions{Model: "kwaivgi/kling-v3-video", Seconds: bifrost.Ptr(5), Extra: map[string]any{"mode": "pro"}}, 5 * 0.336},
+		{"kling no mode", schemas.Replicate, VideoPricingDimensions{Model: "kwaivgi/kling-v3-video", Seconds: bifrost.Ptr(5), Audio: &off}, 5 * 0.168},
+		// A mode Bifrost does not recognize fails closed, at the dearer mode rate.
+		{"kling unknown mode", schemas.Replicate, VideoPricingDimensions{Model: "kwaivgi/kling-v3-video", Seconds: bifrost.Ptr(5), Audio: &off, Mode: "master"}, 5 * 0.224},
+		// The band is the rendered resolution and wins over the mode.
+		{"kling pro 4k", schemas.Replicate, VideoPricingDimensions{Model: "kwaivgi/kling-v3-video", Seconds: bifrost.Ptr(5), Audio: &off, Size: "3840x2160", Extra: map[string]any{"mode": "pro"}}, 5 * 0.42},
+		// Seedance 2.0 720p: $0.22/s with a video input upstream, $0.18/s without.
+		{"seedance 720p video in", schemas.Replicate, VideoPricingDimensions{Model: "bytedance/seedance-2.0", Seconds: bifrost.Ptr(5), Size: "1280x720", VideoInput: &on}, 5 * 0.22},
+		{"seedance 720p no video in", schemas.Replicate, VideoPricingDimensions{Model: "bytedance/seedance-2.0", Seconds: bifrost.Ptr(5), Size: "1280x720"}, 5 * 0.18},
+		{"seedance 1080p video in", schemas.Replicate, VideoPricingDimensions{Model: "bytedance/seedance-2.0", Seconds: bifrost.Ptr(4), Size: "1920x1080", VideoInput: &on}, 4 * 0.55},
+		{"seedance 4k video in", schemas.Replicate, VideoPricingDimensions{Model: "bytedance/seedance-2.0", Seconds: bifrost.Ptr(4), Size: "3840x2160", VideoInput: &on}, 4 * 1.25},
+		// BytePlus Seedance bills per output video token and reports them: before TXE-7357 $0.
+		{"byteplus seedance tokens", schemas.BytePlus, VideoPricingDimensions{Model: "dreamina-seedance-2-0-260128", OutputTokens: &tokens, Seconds: bifrost.Ptr(5)}, 108900 * 0.000007},
+		// Gemini Omni reports its video tokens: priced by them rather than by the per-second rate.
+		{"gemini omni video tokens", schemas.Gemini, VideoPricingDimensions{Model: "gemini-omni-flash-preview", OutputTokens: bifrost.Ptr(5000), Seconds: bifrost.Ptr(5)}, 5000 * 0.0000175},
+		{"gemini omni no tokens", schemas.Gemini, VideoPricingDimensions{Model: "gemini-omni-flash-preview", Seconds: bifrost.Ptr(5)}, 5 * 0.10136},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.dims.RequestType = schemas.VideoGenerationRequest
+			details := s.CalculateVideoCostDetails(tc.dims, tc.provider, nil)
+			if tc.expected == 0 {
+				assert.False(t, details.Priced, "cost %v", details.Cost)
+				return
+			}
+			require.True(t, details.Priced)
+			assert.InDelta(t, tc.expected, details.Cost, 1e-9)
+		})
+	}
+}
+
+// The per-request path prices a completed video response the same way, from what the response
+// reports: MiniMax's rendered size and seconds, and BytePlus's output video tokens.
+func TestCalculateCost_VideoResponse_TXE7357(t *testing.T) {
+	s := txe7357Store(t)
+	video := func(provider schemas.ModelProvider, model string, seconds, size string, usage *schemas.VideoUsage) *schemas.BifrostResponse {
+		resp := &schemas.BifrostVideoGenerationResponse{
+			Status: schemas.VideoStatusCompleted, Size: size, Usage: usage,
+			Videos:      []schemas.VideoOutput{{ContentType: "video/mp4"}},
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.VideoRetrieveRequest, PricingRequestType: schemas.VideoGenerationRequest, RoutingInfo: routingInfoFor(provider, model)},
+		}
+		if seconds != "" {
+			resp.Seconds = &seconds
+		}
+		return &schemas.BifrostResponse{VideoGenerationResponse: resp}
+	}
+	assert.InDelta(t, 0.28, s.CalculateCost(video(schemas.MiniMax, "MiniMax-Hailuo-2.3", "6", "1366x768", nil), nil), 1e-9)
+	assert.InDelta(t, 108900*0.000007, s.CalculateCost(video(schemas.BytePlus, "dreamina-seedance-2-0-260128", "", "", &schemas.VideoUsage{OutputTokens: bifrost.Ptr(108900)}), nil), 1e-9)
+	assert.InDelta(t, 0.28, s.CalculateCost(video(schemas.Replicate, "minimax/hailuo-2.3", "", "", nil), nil), 1e-9)
+}
+
+// Input video tokens are priced at the video token rate, in chat, embedding and batch pricing.
+func TestInputVideoTokens_TXE7357(t *testing.T) {
+	live := pricingRowFromDatasheetJSON(t, "gemini/gemini-3.1-flash-live-preview", geminiFlashLiveRow)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{AudioTokens: 200, VideoTokens: 500}}
+	text := computeTextCost(&live, usage, serviceTier{})
+	require.NotNil(t, text)
+	// 300 text tokens at the text rate, 200 audio at the audio rate, 500 video at the video rate.
+	assert.InDelta(t, 300*7.5e-7+200*0.000003+500*0.000001, text.InputCost, 1e-12)
+	assert.InDelta(t, text.InputCost, text.InputCostDetails.TextCost+text.InputCostDetails.AudioCost, 1e-12, "the breakdown still sums to the input side")
+
+	emb := pricingRowFromDatasheetJSON(t, "gemini/gemini-embedding-2", geminiEmbedding2Row)
+	embUsage := &schemas.BifrostLLMUsage{PromptTokens: 1000, TotalTokens: 1000, PromptTokensDetails: &schemas.ChatPromptTokensDetails{VideoTokens: 600}}
+	cost := computeEmbeddingCost(&emb, embUsage, serviceTier{})
+	require.NotNil(t, cost)
+	assert.InDelta(t, 400*2e-7+600*0.000012, cost.TotalCost, 1e-12)
+
+	batch := computeBatchTextCost(&emb, embUsage, serviceTier{})
+	require.NotNil(t, batch)
+	assert.InDelta(t, 400*1e-7+600*0.000006, batch.TotalCost, 1e-12)
+
+	// A vendor reporting more video tokens than the prompt has cannot price more than the prompt.
+	over := &schemas.BifrostLLMUsage{PromptTokens: 100, TotalTokens: 100, PromptTokensDetails: &schemas.ChatPromptTokensDetails{VideoTokens: 900}}
+	assert.InDelta(t, 100*0.000012, computeEmbeddingCost(&emb, over, serviceTier{}).TotalCost, 1e-12)
+}
+
+// Vertex multimodalembedding prices a second of embedded video by the embedding interval.
+func TestCalculateCost_EmbeddingVideoIntervals_TXE7357(t *testing.T) {
+	s := txe7357Store(t)
+	embedding := func(segments ...[2]int) *schemas.BifrostResponse {
+		data := make([]schemas.EmbeddingData, 0, len(segments))
+		for i, seg := range segments {
+			data = append(data, schemas.EmbeddingData{Index: i, Modality: schemas.EmbeddingModalityVideo,
+				VideoSegment: &schemas.EmbeddingVideoSegment{StartOffsetSec: seg[0], EndOffsetSec: seg[1]}})
+		}
+		return &schemas.BifrostResponse{EmbeddingResponse: &schemas.BifrostEmbeddingResponse{Data: data,
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.EmbeddingRequest, RoutingInfo: routingInfoFor(schemas.Vertex, "multimodalembedding@001")}}}
+	}
+	// Vertex's default interval is 16 seconds: above 15, so $0.002/s for 40 seconds of video.
+	assert.InDelta(t, 40*0.002, s.CalculateCost(embedding([2]int{0, 16}, [2]int{16, 32}, [2]int{32, 40}), nil), 1e-12)
+	assert.InDelta(t, 30*0.001, s.CalculateCost(embedding([2]int{0, 10}, [2]int{10, 20}, [2]int{20, 30}), nil), 1e-12)
+	assert.InDelta(t, 12*0.0005, s.CalculateCost(embedding([2]int{0, 4}, [2]int{4, 8}, [2]int{8, 12}), nil), 1e-12)
 }

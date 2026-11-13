@@ -468,7 +468,9 @@ const fixturePricing = {
 	"fireworks_ai/accounts/fixture/models/known": { provider: "fireworks_ai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
 	// TXE-7297: a per-second Kling video rate, so folder 519 can read the price a settled job got from the 5.1 second
 	// clip the Kling query reports. Nothing settles a video unless a row turns provider job accounting on.
-	"kling-3.0": { provider: "kling", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
+	// TXE-7357: a pro-mode rate too, so folder 571 can read that a job created with mode "pro" settles at it.
+	// A job that names no mode (folder 519) keeps the unbanded 0.1.
+	"kling-3.0": { provider: "kling", mode: "video_generation", output_cost_per_video_per_second: 0.1, output_cost_per_video_per_second_pro: 0.224 },
 	// TXE-7306: a 720p rate with and without generated audio, so folder 549 can read which one a
 	// settled job got. The figures are Model Studio's for wan2.6-i2v-flash 720P (0.025 silent, 0.05
 	// with audio); the unbanded 0.1 shows a job that matched no band.
@@ -1745,6 +1747,9 @@ const probeDownload = (spec, reply) => {
 // succeeded with one video, a duration and a deduction of Units.
 const KLING_TASK_ID = "893605946402811985";
 const KLING_BLOCKED_TASK_ID = "893605946402811986";
+// A create whose prompt says "[pro-mode]" gets its own task id (folder 571, TXE-7357), so its settlement row
+// is not confused with folder 519's.
+const KLING_PRO_MODE_TASK_ID = "893605946402811987";
 const klingTask = (id, externalID) => (id === KLING_BLOCKED_TASK_ID
 	? { id, status: "failed", message: "The task failed because it triggered the content risk control of the platform", create_time: 1781080778802, update_time: 1781080794151, external_id: externalID, outputs: [], billing: [] }
 	: {
@@ -2642,7 +2647,8 @@ const handleRequest = (req, res) => {
 				if (/blocked/.test(prompt)) {
 					return send(400, {}, JSON.stringify({ code: 1301, message: "The content you uploaded appears to violate the community guidelines", request_id: "kling-fixture-1301" }));
 				}
-				return send(200, {}, klingEnvelope({ id: KLING_TASK_ID, status: "submitted", create_time: 1781080778802, update_time: 1781080778802, external_id: body?.options?.external_task_id || "" }));
+				const taskID = prompt.includes("[pro-mode]") ? KLING_PRO_MODE_TASK_ID : KLING_TASK_ID;
+				return send(200, {}, klingEnvelope({ id: taskID, status: "submitted", create_time: 1781080778802, update_time: 1781080778802, external_id: body?.options?.external_task_id || "" }));
 			}
 			if (req.method === "GET" && path === "/tasks") {
 				const taskID = url.searchParams.get("task_ids");

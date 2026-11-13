@@ -67,6 +67,18 @@ type VideoPricingDimensions struct {
 	// publishes one (TXE-7306); nil takes the provider's audio default (VideoAudioDefaults).
 	Audio *bool `json:"audio,omitempty"`
 
+	// Mode is Kling's generation mode ("pro", "standard"), which has its own per-second
+	// rate (fork, TXE-7357). Empty reads the "mode" the create carried in Extra.
+	Mode string `json:"mode,omitempty"`
+	// VideoInput is whether the job took a video as input (a video_uri, Seedance's
+	// reference_videos, or input video seconds the vendor billed). Seedance prices such a
+	// job at its band's video-input rate (TXE-7357).
+	VideoInput *bool `json:"video_input,omitempty"`
+	// OutputTokens is the output video tokens the vendor reported (Seedance's completion
+	// tokens, Gemini Omni's video tokens). A model priced per video token is billed by them
+	// rather than by seconds (TXE-7357).
+	OutputTokens *int `json:"output_tokens,omitempty"`
+
 	// OutputCount is how many clips the job actually returned. It is 0 until the
 	// job produces them, and a job that has not finished still owes one clip's
 	// worth rather than nothing — see computeVideoCost.
@@ -121,6 +133,17 @@ func (d VideoPricingDimensions) MergedWith(observed VideoPricingDimensions) Vide
 	}
 	if observed.Audio != nil {
 		out.Audio = observed.Audio
+	}
+	if observed.Mode != "" {
+		out.Mode = observed.Mode
+	}
+	// A video input the request named stays one: a response that reports no input seconds
+	// does not mean the job had no video input.
+	if observed.VideoInput != nil && (out.VideoInput == nil || *observed.VideoInput) {
+		out.VideoInput = observed.VideoInput
+	}
+	if observed.OutputTokens != nil {
+		out.OutputTokens = observed.OutputTokens
 	}
 	// A finished job reporting zero clips is a job that produced nothing, not a job
 	// we lack a count for — but only the response can say that, so it only ever
@@ -192,7 +215,7 @@ func (s *Store) CalculateVideoCostDetails(dims VideoPricingDimensions, provider 
 	// one (TXE-7306); an unstated flag takes the provider's audio default.
 	audio := VideoPricedWithAudio(provider, dims.Audio)
 	band := dims.bandSize(provider, pricing, audio)
-	breakdown := computeVideoCost(pricing, nil, dims.Seconds, band, dims.OutputCount, audio, serviceTier{})
+	breakdown := computeVideoCost(pricing, nil, dims.Seconds, band, dims.OutputCount, audio, dims.job(), serviceTier{})
 	if breakdown == nil || breakdown.TotalCost <= 0 {
 		return VideoCostDetails{}
 	}
@@ -315,6 +338,53 @@ func (d VideoPricingDimensions) TierOnlyResolution(provider schemas.ModelProvide
 	return ""
 }
 
+// PricedMode returns the generation mode the job is priced at: Mode, else the "mode" the
+// create carried in Extra (Replicate's Kling takes it as an extra param), else "".
+func (d VideoPricingDimensions) PricedMode() string {
+	if d.Mode != "" {
+		return d.Mode
+	}
+	if mode, ok := d.Extra["mode"].(string); ok {
+		return mode
+	}
+	return ""
+}
+
+// job returns the dimensions computeVideoCost chooses a rate by beyond size and length.
+func (d VideoPricingDimensions) job() videoJob {
+	return videoJob{
+		mode:         d.PricedMode(),
+		videoInput:   d.VideoInput != nil && *d.VideoInput,
+		outputTokens: d.OutputTokens,
+	}
+}
+
+// videoURIDroppedBy are the providers whose create converter never sends Input.VideoURI, with
+// the ticket that tracks it: a video_uri there is not a video input the vendor received, so it
+// does not take the video-input rate.
+var videoURIDroppedBy = map[schemas.ModelProvider]string{
+	schemas.Replicate: "TXE-7374: core/providers/replicate/videos.go never reads Input.VideoURI",
+}
+
+// VideoRequestHasVideoInput reports whether a video create sends the vendor a video as input:
+// a video_uri on a provider that sends it, or the reference_videos extra param that Seedance
+// reads (BytePlus maps it to its reference_video content; Replicate passes extra params to the
+// model as they are).
+func VideoRequestHasVideoInput(provider schemas.ModelProvider, input *schemas.VideoGenerationInput, extra map[string]any) bool {
+	if _, dropped := videoURIDroppedBy[provider]; !dropped && input != nil && input.VideoURI != nil && strings.TrimSpace(*input.VideoURI) != "" {
+		return true
+	}
+	switch refs := extra["reference_videos"].(type) {
+	case []string:
+		return len(refs) > 0
+	case []any:
+		return len(refs) > 0
+	case string:
+		return strings.TrimSpace(refs) != ""
+	}
+	return false
+}
+
 // videoClipCount counts the billable clips in outputs, skipping image outputs such as a task's last frame.
 func videoClipCount(outputs []schemas.VideoOutput) int {
 	n := 0
@@ -368,6 +438,16 @@ func VideoDimensionsFromResponse(resp *schemas.BifrostVideoGenerationResponse) V
 	if resp.Usage != nil && resp.Usage.Cost != nil && resp.Usage.Cost.TotalCost > 0 {
 		total := resp.Usage.Cost.TotalCost
 		dims.ProviderCost = &total
+	}
+	// Fork (TXE-7357): the output video tokens and the input video seconds the vendor billed.
+	if resp.Usage != nil {
+		if resp.Usage.OutputTokens != nil && *resp.Usage.OutputTokens > 0 {
+			tokens := *resp.Usage.OutputTokens
+			dims.OutputTokens = &tokens
+		}
+		if resp.Usage.InputSeconds != nil && *resp.Usage.InputSeconds > 0 {
+			dims.VideoInput = schemas.Ptr(true)
+		}
 	}
 	return dims
 }

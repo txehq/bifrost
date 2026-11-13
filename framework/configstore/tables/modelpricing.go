@@ -263,6 +263,26 @@ type TableModelPricing struct {
 	OutputCostPerSecond2k    *float64 `gorm:"default:null;column:output_cost_per_second_2k" json:"output_cost_per_second_2k,omitempty"`
 	OutputCostPerSecond4k    *float64 `gorm:"default:null;column:output_cost_per_second_4k" json:"output_cost_per_second_4k,omitempty"`
 
+	// Fork (TXE-7357): video tokens, per-clip rates, Kling's mode, Seedance's video-input rates
+	// and Vertex's embedding interval tiers. See datasheet.Options.
+	InputCostPerVideoToken                     *float64 `gorm:"default:null;column:input_cost_per_video_token" json:"input_cost_per_video_token,omitempty"`
+	InputCostPerVideoTokenBatches              *float64 `gorm:"default:null;column:input_cost_per_video_token_batches" json:"input_cost_per_video_token_batches,omitempty"`
+	InputCostPerVideoPerSecondAbove8sInterval  *float64 `gorm:"default:null;column:input_cost_per_video_per_second_above_8s_interval" json:"input_cost_per_video_per_second_above_8s_interval,omitempty"`
+	InputCostPerVideoPerSecondAbove15sInterval *float64 `gorm:"default:null;column:input_cost_per_video_per_second_above_15s_interval" json:"input_cost_per_video_per_second_above_15s_interval,omitempty"`
+	OutputCostPerVideoToken                    *float64 `gorm:"default:null;column:output_cost_per_video_token" json:"output_cost_per_video_token,omitempty"`
+	OutputCostPerVideo                         *float64 `gorm:"default:null;column:output_cost_per_video" json:"output_cost_per_video,omitempty"`
+	OutputCostPerVideo768p6s                   *float64 `gorm:"default:null;column:output_cost_per_video_768p_6s" json:"output_cost_per_video_768p_6s,omitempty"`
+	OutputCostPerVideo768p10s                  *float64 `gorm:"default:null;column:output_cost_per_video_768p_10s" json:"output_cost_per_video_768p_10s,omitempty"`
+	OutputCostPerVideo1080p6s                  *float64 `gorm:"default:null;column:output_cost_per_video_1080p_6s" json:"output_cost_per_video_1080p_6s,omitempty"`
+	OutputCostPerVideoPerSecond480pVideoIn     *float64 `gorm:"default:null;column:output_cost_per_video_per_second_480p_video_in" json:"output_cost_per_video_per_second_480p_video_in,omitempty"`
+	OutputCostPerVideoPerSecond720pVideoIn     *float64 `gorm:"default:null;column:output_cost_per_video_per_second_720p_video_in" json:"output_cost_per_video_per_second_720p_video_in,omitempty"`
+	OutputCostPerVideoPerSecond1080pVideoIn    *float64 `gorm:"default:null;column:output_cost_per_video_per_second_1080p_video_in" json:"output_cost_per_video_per_second_1080p_video_in,omitempty"`
+	OutputCostPerVideoPerSecond4kVideoIn       *float64 `gorm:"default:null;column:output_cost_per_video_per_second_4k_video_in" json:"output_cost_per_video_per_second_4k_video_in,omitempty"`
+	OutputCostPerVideoPerSecondPro             *float64 `gorm:"default:null;column:output_cost_per_video_per_second_pro" json:"output_cost_per_video_per_second_pro,omitempty"`
+	OutputCostPerVideoPerSecondProAudio        *float64 `gorm:"default:null;column:output_cost_per_video_per_second_pro_audio" json:"output_cost_per_video_per_second_pro_audio,omitempty"`
+	OutputCostPerVideoPerSecondStandard        *float64 `gorm:"default:null;column:output_cost_per_video_per_second_standard" json:"output_cost_per_video_per_second_standard,omitempty"`
+	OutputCostPerVideoPerSecondStandardAudio   *float64 `gorm:"default:null;column:output_cost_per_video_per_second_standard_audio" json:"output_cost_per_video_per_second_standard_audio,omitempty"`
+
 	// Costs - Other
 	SearchContextCostPerQuery     *float64 `gorm:"default:null;column:search_context_cost_per_query" json:"search_context_cost_per_query,omitempty"`
 	WebSearchCostPerRequest       *float64 `gorm:"default:null;column:web_search_cost_per_request" json:"web_search_cost_per_request,omitempty"`

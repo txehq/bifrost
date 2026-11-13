@@ -140792,6 +140792,91 @@
             "minimum": 0,
             "description": "Upstream datasheet's per-second output rate for 4K video. Read when output_cost_per_video_per_second_4k is unset, before either unbanded rate."
           },
+          "input_cost_per_video_token": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per input video token, for a vendor that reports video tokens apart (Gemini). Replaces the text rate for those tokens."
+          },
+          "input_cost_per_video_token_batches": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per input video token in a batch request; falls back to half input_cost_per_video_token when unset."
+          },
+          "input_cost_per_video_per_second_above_8s_interval": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per second of embedded video when the embedding interval is longer than 8 seconds (Vertex multimodalembedding)."
+          },
+          "input_cost_per_video_per_second_above_15s_interval": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per second of embedded video when the embedding interval is longer than 15 seconds (Vertex multimodalembedding)."
+          },
+          "output_cost_per_video_token": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per output video token the vendor reports for a video job (Seedance completion tokens, Gemini Omni video tokens). Wins over every per-second and per-clip rate."
+          },
+          "output_cost_per_video": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per generated clip, whatever its length. Used when no per-clip or per-second rate matches."
+          },
+          "output_cost_per_video_768p_6s": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per generated 768p clip of 6 seconds."
+          },
+          "output_cost_per_video_768p_10s": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per generated 768p clip of 10 seconds."
+          },
+          "output_cost_per_video_1080p_6s": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per generated 1080p clip of 6 seconds."
+          },
+          "output_cost_per_video_per_second_480p_video_in": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per second of 480p output for a job with a video input (video_uri or reference_videos)."
+          },
+          "output_cost_per_video_per_second_720p_video_in": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per second of 720p output for a job with a video input (video_uri or reference_videos)."
+          },
+          "output_cost_per_video_per_second_1080p_video_in": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per second of 1080p output for a job with a video input (video_uri or reference_videos)."
+          },
+          "output_cost_per_video_per_second_4k_video_in": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per second of 4K output for a job with a video input (video_uri or reference_videos)."
+          },
+          "output_cost_per_video_per_second_pro": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per second of output in pro mode (the request's mode extra param). Used when no resolution band rate matches."
+          },
+          "output_cost_per_video_per_second_pro_audio": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per second of output with generated audio in pro mode."
+          },
+          "output_cost_per_video_per_second_standard": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per second of output in standard mode (mode standard or std). Used when no resolution band rate matches."
+          },
+          "output_cost_per_video_per_second_standard_audio": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per second of output with generated audio in standard mode."
+          },
           "web_search_cost_per_request": {
             "type": "number",
             "minimum": 0,

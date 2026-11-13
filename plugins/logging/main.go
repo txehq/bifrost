@@ -945,6 +945,11 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 		if len(params.ExtraParams) > 0 {
 			dims.Extra = params.ExtraParams
 		}
+		// A video input prices Seedance at its band's video-input rate (TXE-7357). Kling's
+		// mode is read from Extra at pricing time (VideoPricingDimensions.PricedMode).
+		if modelcatalog.VideoRequestHasVideoInput(schemas.ModelProvider(entry.Provider), entry.VideoGenerationInputParsed, params.ExtraParams) {
+			dims.VideoInput = schemas.Ptr(true)
+		}
 	case *schemas.VideoEditParameters:
 		if params == nil {
 			return dims
@@ -975,6 +980,13 @@ func applyVideoDimensionsFromMap(dims *modelcatalog.VideoPricingDimensions, para
 	}
 	if audio, ok := params["audio"].(bool); ok {
 		dims.Audio = &audio
+	}
+	// Fork (TXE-7357): Kling's mode and a Seedance video input, which choose the rate too.
+	if mode, ok := params["mode"].(string); ok {
+		dims.Mode = mode
+	}
+	if modelcatalog.VideoRequestHasVideoInput("", nil, params) {
+		dims.VideoInput = schemas.Ptr(true)
 	}
 	if seconds, ok := params["seconds"].(string); ok {
 		if parsed, err := strconv.Atoi(seconds); err == nil {

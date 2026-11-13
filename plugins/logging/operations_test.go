@@ -4110,6 +4110,53 @@ func TestRecordVideoJobLifecycle_CapturesRequestPricingDimensions(t *testing.T) 
 	}
 }
 
+// TXE-7357: the job row keeps what a Seedance or Kling job is priced by beyond size and length:
+// its video input (video_uri, or the reference_videos extra param), Kling's mode (an extra param),
+// and the output video tokens the response reports.
+func TestRecordVideoJobLifecycle_CapturesVideoInputModeAndTokens(t *testing.T) {
+	plugin, bs := newVideoLifecyclePlugin(t)
+	five := "5"
+	for name, tc := range map[string]struct {
+		provider   schemas.ModelProvider
+		input      *schemas.VideoGenerationInput
+		extra      map[string]interface{}
+		videoInput bool
+	}{
+		"byteplus video_uri":         {provider: schemas.BytePlus, input: &schemas.VideoGenerationInput{Prompt: "p", VideoURI: schemas.Ptr("https://example.com/in.mp4")}, videoInput: true},
+		"replicate reference_videos": {provider: schemas.Replicate, extra: map[string]interface{}{"reference_videos": []interface{}{"https://example.com/in.mp4"}, "mode": "pro"}, videoInput: true},
+		// Replicate's converter never sends video_uri (TXE-7374): no video input reached the vendor.
+		"replicate video_uri": {provider: schemas.Replicate, input: &schemas.VideoGenerationInput{Prompt: "p", VideoURI: schemas.Ptr("https://example.com/in.mp4")}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			id := "vid_" + strings.ReplaceAll(name, " ", "_")
+			entry := &logstore.Log{
+				ID: "req-" + id, Provider: string(tc.provider), Model: "bytedance/seedance-2.0",
+				VideoGenerationInputParsed: tc.input,
+				ParamsParsed:               &schemas.VideoGenerationParameters{Seconds: &five, Size: "1280x720", ExtraParams: tc.extra},
+			}
+			result := &schemas.BifrostResponse{VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+				ID: id, Status: schemas.VideoStatusQueued, Usage: &schemas.VideoUsage{OutputTokens: schemas.Ptr(108900)},
+			}}
+			plugin.recordVideoJobLifecycle(entry, result, schemas.VideoGenerationRequest)
+
+			job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, string(tc.provider), id))
+			if err != nil {
+				t.Fatalf("expected a video job row: %v", err)
+			}
+			dims := jobaccounting.VideoDimensionsFromJob(job)
+			if got := dims.VideoInput != nil && *dims.VideoInput; got != tc.videoInput {
+				t.Fatalf("video input = %v, want %v", dims.VideoInput, tc.videoInput)
+			}
+			if dims.OutputTokens == nil || *dims.OutputTokens != 108900 {
+				t.Fatalf("output tokens = %v, want 108900", dims.OutputTokens)
+			}
+			if tc.extra != nil && dims.PricedMode() != "pro" {
+				t.Fatalf("mode = %q, want pro", dims.PricedMode())
+			}
+		})
+	}
+}
+
 // A video submitted before this build was already charged at submission. Creating
 // its row on a later retrieve would hand it to the sweeper and charge it twice.
 func TestRecordVideoJobLifecycle_RetrieveDoesNotCreateRowForPreUpgradeJob(t *testing.T) {

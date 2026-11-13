@@ -249,6 +249,10 @@ type PricingEntry struct {
     OutputCostPerSecond1080p *float64 `json:"output_cost_per_second_1080p,omitempty"`
     OutputCostPerSecond2k    *float64 `json:"output_cost_per_second_2k,omitempty"`
     OutputCostPerSecond4k    *float64 `json:"output_cost_per_second_4k,omitempty"`
+    // Video tokens, per-clip, mode, video-input and embedding interval rates, e.g.
+    OutputCostPerVideoToken        *float64 `json:"output_cost_per_video_token,omitempty"`
+    OutputCostPerVideo768p6s       *float64 `json:"output_cost_per_video_768p_6s,omitempty"`
+    OutputCostPerVideoPerSecondPro *float64 `json:"output_cost_per_video_per_second_pro,omitempty"`
 
     // Costs - Other
     SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`

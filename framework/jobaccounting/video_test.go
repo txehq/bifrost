@@ -864,6 +864,31 @@ func TestVideoReprice_KeepsTheSettlementsAudioFlag(t *testing.T) {
 	}
 }
 
+// TestVideoReprice_KeepsTheSettlementsModeVideoInputAndTokens (TXE-7357): a reprice prices a
+// settled video with the mode, the video input and the output video tokens it settled at, read
+// back from the stored video_debug. Without them a Kling pro job would reprice at the default
+// mode, a Seedance job with a video input at the cheaper rate, and a BytePlus job at $0.
+func TestVideoReprice_KeepsTheSettlementsModeVideoInputAndTokens(t *testing.T) {
+	seconds, tokens, on := 5, 108900, true
+	settled := &logstore.Log{ID: "log-1", Provider: string(schemas.Replicate), Model: "kwaivgi/kling-v3-video"}
+	videoDebugFor("rep-1", schemas.VideoStatusCompleted, modelcatalog.VideoPricingDimensions{
+		RequestType: schemas.VideoGenerationRequest, Seconds: &seconds, OutputCount: 1,
+		Extra: map[string]any{"mode": "pro"}, VideoInput: &on, OutputTokens: &tokens,
+	}, "", false)(settled)
+	stored, err := json.Marshal(settled.VideoDebugParsed)
+	require.NoError(t, err)
+	row := &logstore.Log{ID: settled.ID, Provider: settled.Provider, Model: settled.Model, VideoDebug: string(stored)}
+
+	pricing := &videoDimsRecordingPricing{}
+	repriced, err := (&VideoSettler{}).RepriceFromLog(row, pricing)
+	require.NoError(t, err)
+	require.NotNil(t, repriced)
+	require.Len(t, pricing.dims, 1)
+	assert.Equal(t, "pro", pricing.dims[0].PricedMode(), "the mode the create carried in extra params is recorded and read back")
+	assert.Equal(t, &on, pricing.dims[0].VideoInput)
+	assert.Equal(t, &tokens, pricing.dims[0].OutputTokens)
+}
+
 // TestEveryVideoProviderHasAnAudioDefault (TXE-7306) fails when a provider in videoProviders has
 // no entry in datasheet.VideoAudioDefaults, or an entry cites no source. A job whose create does
 // not say whether to generate audio is priced at its provider's default, and a provider added
