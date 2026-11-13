@@ -2613,6 +2613,56 @@ func TestPostLLMHookKeepsTheBindingOfAProviderThatCreatesElsewhere(t *testing.T)
 	assert.Len(t, kept, 1, "delete-moved's own upload was not where its delete went")
 }
 
+// A provider that moved only its batch retrieve to OpenAI finds OpenAI's batches, and the output
+// file a retrieve names is recorded under that provider although it lives at OpenAI. Its file
+// rows count wherever its batch retrieve goes, so another key is refused the output through
+// openai (TXE-7368).
+func TestPreLLMHookRefusesABatchOutputRecordedThroughAMovedBatchRetrieve(t *testing.T) {
+	store := newProviderObjectConfigStore(t)
+	configured := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {},
+		"retrieve-moved": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.BatchRetrieveRequest: "https://api.openai.com/v1/batches/{batch_id}",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://gateway.retrieve-moved.example/v1"},
+		},
+	}}
+	owner := buildVKForMCPStamping(nil)
+	owner.ProviderConfigs = append(owner.ProviderConfigs, buildProviderConfig("retrieve-moved", []string{"*"}))
+	plugin := newAccessTestPlugin(t, owner, nil)
+	plugin.configStore = store
+	plugin.inMemoryStore = configured
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindBatch, "openai", "batch-at-openai", "vk-mcp-stamp")
+
+	ctx := presentCtx(mcpTestVKValue)
+	retrieve := &schemas.BifrostRequest{RequestType: schemas.BatchRetrieveRequest, BatchRetrieveRequest: &schemas.BifrostBatchRetrieveRequest{Provider: "retrieve-moved", BatchID: "batch-at-openai"}}
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, retrieve)
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit, "the batch's creator retrieves it through the provider whose batch retrieve reaches OpenAI")
+	output := "file-batch-output"
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{BatchRetrieveResponse: &schemas.BifrostBatchRetrieveResponse{ID: "batch-at-openai", Status: schemas.BatchStatusCompleted, OutputFileID: &output,
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.BatchRetrieveRequest, Provider: "retrieve-moved"}}}, nil)
+	require.NoError(t, err)
+	rows, err := store.GetProviderObjectsByIDs(context.Background(), []string{configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindFile, "retrieve-moved", output)})
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "the output file is recorded under the provider that retrieved the batch")
+	assert.Equal(t, "vk-mcp-stamp", rows[0].VirtualKeyID)
+
+	otherKey := buildVKForMCPStamping(nil)
+	otherKey.ID = "vk-other"
+	otherKey.Value = *schemas.NewSecretVar("sk-bf-other")
+	otherPlugin := newAccessTestPlugin(t, otherKey, nil)
+	otherPlugin.configStore = store
+	otherPlugin.inMemoryStore = configured
+	for _, requestType := range []schemas.RequestType{schemas.FileRetrieveRequest, schemas.FileContentRequest, schemas.FileDeleteRequest} {
+		_, shortCircuit, err = otherPlugin.PreLLMHook(presentCtx("sk-bf-other"), providerObjectRequests(output)[requestType])
+		require.NoError(t, err)
+		require.NotNil(t, shortCircuit, "another key's %s of the batch output through openai is refused", requestType)
+		assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+	}
+}
+
 // suffixCountingStore is the real store with the suffix lookups observed.
 type suffixCountingStore struct {
 	configstore.ConfigStore

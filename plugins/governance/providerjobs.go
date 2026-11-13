@@ -926,12 +926,13 @@ func requestsAutomaticContainer(req *schemas.BifrostRequest) bool {
 	return false
 }
 
-// objectCreationRequestTypes are the calls that create an object of each kind, and so the calls
+// objectCreationRequestTypes are the calls that record an object of each kind, and so the calls
 // whose upstream holds the objects recorded under a provider name. A file is uploaded, or written
-// by a batch as its output or error file; a container is created, or opened automatically by a
-// Responses call's code interpreter.
+// by a batch as its output or error file, which is recorded when a batch retrieve names it
+// (recordBatchFiles) and lives where that retrieve went; a container is created, or opened
+// automatically by a Responses call's code interpreter.
 var objectCreationRequestTypes = map[string][]schemas.RequestType{
-	configstoreTables.ProviderObjectKindFile:          {schemas.FileUploadRequest, schemas.BatchCreateRequest},
+	configstoreTables.ProviderObjectKindFile:          {schemas.FileUploadRequest, schemas.BatchCreateRequest, schemas.BatchRetrieveRequest},
 	configstoreTables.ProviderObjectKindBatch:         {schemas.BatchCreateRequest},
 	configstoreTables.ProviderObjectKindVideo:         {schemas.VideoGenerationRequest, schemas.VideoEditRequest, schemas.VideoRemixRequest},
 	configstoreTables.ProviderObjectKindContainer:     {schemas.ContainerCreateRequest, schemas.ResponsesRequest, schemas.ResponsesStreamRequest},
@@ -2049,6 +2050,12 @@ func (p *GovernancePlugin) recordBatchFiles(ctx *schemas.BifrostContext, provide
 	}
 	owner := owners[batch.ID]
 	if owner == "" {
+		return
+	}
+	if owner == contestedOwner {
+		// Two keys hold the batch on one upstream, so its files have no one owner to record. The
+		// batch itself is refused to both, which is what reaches its output file id.
+		p.logger.Warn("not recording the files of batch %s on %s: its ownership rows name more than one virtual key", batch.ID, provider)
 		return
 	}
 	for _, fileID := range fileIDs {
