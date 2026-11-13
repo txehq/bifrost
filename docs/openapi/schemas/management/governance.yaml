@@ -1311,6 +1311,49 @@ ListRateLimitsResponse:
     count:
       type: integer
 
+StorageFolderClaim:
+  type: object
+  description: An output folder a virtual key has claimed.
+  properties:
+    folder:
+      type: string
+      description: The folder's storage URI, ending in "/".
+    virtual_key_id:
+      type: string
+      description: The key that claimed it. It may name a deleted key.
+    created_at:
+      type: string
+      format: date-time
+
+ListStorageFoldersResponse:
+  type: object
+  description: A page of storage folder claims
+  properties:
+    storage_folders:
+      type: array
+      items:
+        $ref: '#/StorageFolderClaim'
+    count:
+      type: integer
+    total_count:
+      type: integer
+      format: int64
+    limit:
+      type: integer
+    offset:
+      type: integer
+
+DeleteStorageFolderResponse:
+  type: object
+  properties:
+    message:
+      type: string
+    folder:
+      type: string
+    virtual_key_id:
+      type: string
+      description: The key whose claim was released.
+
 CustomerResponse:
   type: object
   description: Customer operation response

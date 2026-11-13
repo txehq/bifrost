@@ -1765,6 +1765,14 @@
                 ]
               },
               {
+                "group": "Storage Folder Claims",
+                "expanded": false,
+                "pages": [
+                  "GET /api/governance/storage-folders",
+                  "DELETE /api/governance/storage-folders"
+                ]
+              },
+              {
                 "group": "Model Configs",
                 "expanded": false,
                 "pages": [

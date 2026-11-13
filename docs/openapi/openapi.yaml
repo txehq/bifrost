@@ -951,6 +951,8 @@ paths:
     $ref: "./paths/management/governance.yaml#/budgets"
   /api/governance/rate-limits:
     $ref: "./paths/management/governance.yaml#/rate-limits"
+  /api/governance/storage-folders:
+    $ref: "./paths/management/governance.yaml#/storage-folders"
 
   # Governance - Budget Increase Requests (Enterprise)
   /api/governance/budget-requests/{request_id}/approve:

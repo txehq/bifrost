@@ -55152,6 +55152,217 @@
         }
       }
     },
+    "/api/governance/storage-folders": {
+      "get": {
+        "operationId": "listStorageFolders",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "List storage folder claims",
+        "description": "Lists the output folders in object storage that virtual keys have claimed, in byte order of\ntheir URI. A virtual key claims a folder the first time it names it as the place its output\nis written (a batch's output folder, a task's `output_storage_uri`); the folder and\neverything in it are then that key's. A key with no `allowed_storage_prefixes` does not\nclaim the root of a bucket. A claim stays when its key is deleted, until it is released.\n",
+        "tags": [
+          "Governance"
+        ],
+        "parameters": [
+          {
+            "name": "virtual_key_id",
+            "in": "query",
+            "description": "Only the claims of this virtual key.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "prefix",
+            "in": "query",
+            "description": "Only the folders whose URI starts with this, matched byte for byte (no wildcards, case-sensitive).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, 1 to 100.",
+            "schema": {
+              "type": "integer",
+              "default": 25,
+              "minimum": 0
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "A page of storage folder claims",
+                  "properties": {
+                    "storage_folders": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "An output folder a virtual key has claimed.",
+                        "properties": {
+                          "folder": {
+                            "type": "string",
+                            "description": "The folder's storage URI, ending in \"/\"."
+                          },
+                          "virtual_key_id": {
+                            "type": "string",
+                            "description": "The key that claimed it. It may name a deleted key."
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        }
+                      }
+                    },
+                    "count": {
+                      "type": "integer"
+                    },
+                    "total_count": {
+                      "type": "integer",
+                      "format": "int64"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "offset": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteStorageFolder",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Delete` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Release a storage folder claim",
+        "description": "Releases the claim on one folder. What lies in the folder is then reachable as any\nunclaimed storage is, and the next virtual key to name the folder as an output location\nclaims it.\n",
+        "tags": [
+          "Governance"
+        ],
+        "parameters": [
+          {
+            "name": "folder",
+            "in": "query",
+            "required": true,
+            "description": "The claimed folder's exact storage URI, ending in `/` (for example `gs://bucket/out/`).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The claim was released",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "folder": {
+                      "type": "string"
+                    },
+                    "virtual_key_id": {
+                      "type": "string",
+                      "description": "The key whose claim was released."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/governance/budget-requests/{request_id}/approve": {
       "post": {
         "operationId": "approveBudgetRequest",
@@ -136394,6 +136605,20 @@
           "description": {
             "type": "string"
           },
+          "allowed_storage_prefixes": {
+            "type": "array",
+            "description": "The object storage a request made with this key may name, as buckets or folders (gs://<bucket>[/<folder>] or s3://<bucket>[/<folder>]). Omitted when the key is not restricted.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "allowed_pubsub_topics": {
+            "type": "array",
+            "description": "The Pub/Sub topics a request made with this key may name, as full topic names (projects/<project>/topics/<topic>). Omitted when the key is not restricted.",
+            "items": {
+              "type": "string"
+            }
+          },
           "metadata": {
             "type": "object",
             "description": "Custom key/value metadata attached to the key (for example cost_center, project, owner, environment). Omitted when the key has none.",
@@ -136887,6 +137112,24 @@
           "description": {
             "type": "string"
           },
+          "allowed_storage_prefixes": {
+            "type": "array",
+            "description": "Limits the object storage a request made with this key may name. Each entry is a bucket or a folder, gs://<bucket>[/<folder>] or s3://<bucket>[/<folder>], with no wildcard and no '.' or '..' segment; at most 64 entries. When set, every storage location a request names, read or written, in any form, must lie under one of the entries, or the request is refused with 403. Omit for no restriction.",
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          },
+          "allowed_pubsub_topics": {
+            "type": "array",
+            "description": "Limits the Pub/Sub topics a request made with this key may name. Each entry is a full topic name, projects/<project>/topics/<topic>; at most 64 entries. Omit for no restriction.",
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          },
           "metadata": {
             "type": "object",
             "description": "Custom key/value metadata for cost attribution (for example cost_center, project, owner, environment). Keys are 1-256 characters of letters, digits, '.', '_' and '-' and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.",
@@ -137061,6 +137304,30 @@
           },
           "description": {
             "type": "string"
+          },
+          "allowed_storage_prefixes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "Replaces the key's allowed storage as a whole. Omit (or send null) to leave it unchanged; send [] to clear it, after which the key is not restricted. Each entry is a bucket or a folder, gs://<bucket>[/<folder>] or s3://<bucket>[/<folder>]; at most 64 entries.",
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          },
+          "allowed_pubsub_topics": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "Replaces the key's allowed Pub/Sub topics as a whole. Omit (or send null) to leave it unchanged; send [] to clear it. Each entry is a full topic name, projects/<project>/topics/<topic>; at most 64 entries.",
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "maxLength": 1024
+            }
           },
           "metadata": {
             "type": [

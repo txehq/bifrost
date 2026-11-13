@@ -1847,6 +1847,10 @@ func (h *GovernanceHandler) RegisterRoutesWithOverrides(r *router.Router, overri
 	r.GET("/api/governance/budgets", lib.ChainMiddlewares(h.getBudgets, middlewares...))
 	r.GET("/api/governance/rate-limits", lib.ChainMiddlewares(h.getRateLimits, middlewares...))
 
+	// Storage folder claims (TXE-7259): list and release
+	r.GET("/api/governance/storage-folders", lib.ChainMiddlewares(h.getStorageFolders, middlewares...))
+	r.DELETE("/api/governance/storage-folders", lib.ChainMiddlewares(h.deleteStorageFolder, middlewares...))
+
 	// Routing Rules CRUD operations
 
 	// Model Config CRUD operations

@@ -1,0 +1,1003 @@
+{
+  "name": "498. An operator lists and releases output folder claims, and a key with no storage list does not claim a bucket root (storage folder claims) [SERIAL]",
+  "description": "TXE-7259. Local fixture regression, no live provider call: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. Since TXE-7121 (folder 497) a virtual key claims the output folder it first writes into, and no request releases a claim. Three things change here. A key with no allowed_storage_prefixes that writes to the root of a bucket does not claim the bucket (498.3 to 498.5): one request would otherwise take the whole bucket from every other key. An operator lists claims with GET /api/governance/storage-folders and releases one with DELETE /api/governance/storage-folders?folder=<uri> (498.6 to 498.12): after the release the next key to write there claims the folder. A deleted key keeps its claims until an operator releases them (498.13 to 498.15), since dropping them would hand the folder contents to every key with no storage list. 498.16 pins that only the four served batch creates reached the provider. The folder and bucket names carry a per-run suffix because a claim outlives the key that made it; 498.17 releases the one claim the run leaves.",
+  "item": [
+    {
+      "name": "498.1 [setup] virtual key A",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('claimVkA'); pm.collectionVariables.unset('claimVkAId'); pm.collectionVariables.unset('claimVkB'); pm.collectionVariables.unset('claimVkBId');",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('the fixture was reset', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "});",
+              "pm.collectionVariables.set('claimRun', String(Date.now()) + '-' + Math.floor(Math.random() * 1000000));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the virtual key was created', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var created = (pm.response.json() || {}).virtual_key || {};",
+              "pm.test('it has an id and a value', function () { pm.expect(created.id, pm.response.text()).to.be.a('string').and.not.equal(''); pm.expect(created.value, pm.response.text()).to.be.a('string').and.not.equal(''); });",
+              "pm.collectionVariables.set('claimVkA', created.value || ''); pm.collectionVariables.set('claimVkAId', created.id || '');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"name\":\"harness-498-a-{{$guid}}\",\"provider_configs\":[{\"provider\":\"storage_uri_files\",\"weight\":1,\"allowed_models\":[\"*\"],\"key_ids\":[\"*\"]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "498.2 [setup] virtual key B",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimRun')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the virtual key was created', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var created = (pm.response.json() || {}).virtual_key || {};",
+              "pm.test('it has an id and a value', function () { pm.expect(created.id, pm.response.text()).to.be.a('string').and.not.equal(''); pm.expect(created.value, pm.response.text()).to.be.a('string').and.not.equal(''); });",
+              "pm.collectionVariables.set('claimVkB', created.value || ''); pm.collectionVariables.set('claimVkBId', created.id || '');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"name\":\"harness-498-b-{{$guid}}\",\"provider_configs\":[{\"provider\":\"storage_uri_files\",\"weight\":1,\"allowed_models\":[\"*\"],\"key_ids\":[\"*\"]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "498.3 key A writes a batch to the root of a bucket",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimVkA') || !pm.collectionVariables.get('claimVkAId') || !pm.collectionVariables.get('claimRun')) { pm.execution.skipRequest(); return; }",
+              "if (!pm.collectionVariables.get('claimVkB')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the batch into the bare bucket is created', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{claimVkA}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"storage_uri_files/fixture-model\",\"input_file_id\":\"gs://bifrost-fixture-bucket/uploads/folder-ownership-input.jsonl\",\"endpoint\":\"/v1/chat/completions\",\"completion_window\":\"24h\",\"output_folder\":{\"url\":\"gs://bifrost-fixture-root-{{claimRun}}/\"}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "498.4 a key with no storage list does not claim the bucket root",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimVkA') || !pm.collectionVariables.get('claimVkAId') || !pm.collectionVariables.get('claimRun')) { pm.execution.skipRequest(); return; }",
+              "pm.collectionVariables.set('claimRootQ', encodeURIComponent(pm.variables.replaceIn('gs://bifrost-fixture-root-{{claimRun}}/')));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('the claims are listed', function () { pm.expect(pm.response.code, txt.slice(0, 400)).to.eql(200); });",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "var want = [];",
+              "var got = (body.storage_folders || []).map(function (c) { return { folder: c.folder, virtual_key_id: c.virtual_key_id }; });",
+              "pm.test('nothing is claimed in that bucket', function () { pm.expect(got, txt.slice(0, 600)).to.eql(want); pm.expect(body.total_count, txt.slice(0, 400)).to.eql(want.length); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/storage-folders?prefix={{claimRootQ}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "storage-folders"
+          ],
+          "query": [
+            {
+              "key": "prefix",
+              "value": "{{claimRootQ}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "498.5 so another key can still write to the same bucket root",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimVkA') || !pm.collectionVariables.get('claimVkAId') || !pm.collectionVariables.get('claimRun')) { pm.execution.skipRequest(); return; }",
+              "if (!pm.collectionVariables.get('claimVkB')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the other key batch into the bare bucket is created', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{claimVkB}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"storage_uri_files/fixture-model\",\"input_file_id\":\"gs://bifrost-fixture-bucket/uploads/folder-ownership-input.jsonl\",\"endpoint\":\"/v1/chat/completions\",\"completion_window\":\"24h\",\"output_folder\":{\"url\":\"gs://bifrost-fixture-root-{{claimRun}}/\"}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "498.6 key A writes a batch into a folder nobody has used",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimVkA') || !pm.collectionVariables.get('claimVkAId') || !pm.collectionVariables.get('claimRun')) { pm.execution.skipRequest(); return; }",
+              "if (!pm.collectionVariables.get('claimVkB')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the batch into the folder is created', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{claimVkA}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"storage_uri_files/fixture-model\",\"input_file_id\":\"gs://bifrost-fixture-bucket/uploads/folder-ownership-input.jsonl\",\"endpoint\":\"/v1/chat/completions\",\"completion_window\":\"24h\",\"output_folder\":{\"url\":\"gs://bifrost-fixture-bucket/claims-{{claimRun}}/out/\"}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "498.7 the folder is listed as claimed by key A",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimVkA') || !pm.collectionVariables.get('claimVkAId') || !pm.collectionVariables.get('claimRun')) { pm.execution.skipRequest(); return; }",
+              "pm.collectionVariables.set('claimFolderQ', encodeURIComponent(pm.variables.replaceIn('gs://bifrost-fixture-bucket/claims-{{claimRun}}/out/')));",
+              "pm.collectionVariables.set('claimPrefixQ', encodeURIComponent(pm.variables.replaceIn('gs://bifrost-fixture-bucket/claims-{{claimRun}}/')));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('the claims are listed', function () { pm.expect(pm.response.code, txt.slice(0, 400)).to.eql(200); });",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "var want = [{ folder: pm.variables.replaceIn('gs://bifrost-fixture-bucket/claims-{{claimRun}}/out/'), virtual_key_id: pm.collectionVariables.get('claimVkAId') }];",
+              "var got = (body.storage_folders || []).map(function (c) { return { folder: c.folder, virtual_key_id: c.virtual_key_id }; });",
+              "pm.test('key A holds the folder', function () { pm.expect(got, txt.slice(0, 600)).to.eql(want); pm.expect(body.total_count, txt.slice(0, 400)).to.eql(want.length); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/storage-folders?virtual_key_id={{claimVkAId}}&prefix={{claimPrefixQ}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "storage-folders"
+          ],
+          "query": [
+            {
+              "key": "virtual_key_id",
+              "value": "{{claimVkAId}}"
+            },
+            {
+              "key": "prefix",
+              "value": "{{claimPrefixQ}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "498.8 [EXPECT-404] key B cannot write into it",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimVkA') || !pm.collectionVariables.get('claimVkAId') || !pm.collectionVariables.get('claimRun')) { pm.execution.skipRequest(); return; }",
+              "if (!pm.collectionVariables.get('claimVkB')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('a batch into key A folder is 404', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404); });",
+              "pm.test('the refusal is the gateway and does not confirm the object', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.type, 'unexpected body: ' + txt.slice(0, 400)).to.eql('access_blocked');",
+              "  pm.expect(body.error && body.error.message, txt.slice(0, 400)).to.include('not found');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{claimVkB}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"storage_uri_files/fixture-model\",\"input_file_id\":\"gs://bifrost-fixture-bucket/uploads/folder-ownership-input.jsonl\",\"endpoint\":\"/v1/chat/completions\",\"completion_window\":\"24h\",\"output_folder\":{\"url\":\"gs://bifrost-fixture-bucket/claims-{{claimRun}}/out/\"}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "498.9 an operator releases the claim",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimVkA') || !pm.collectionVariables.get('claimVkAId') || !pm.collectionVariables.get('claimRun')) { pm.execution.skipRequest(); return; }",
+              "pm.collectionVariables.set('claimFolderQ', encodeURIComponent(pm.variables.replaceIn('gs://bifrost-fixture-bucket/claims-{{claimRun}}/out/')));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('the claim is released', function () { pm.expect(pm.response.code, txt.slice(0, 400)).to.eql(200); });",
+              "pm.test('the response names the key that held it', function () { pm.expect((pm.response.json() || {}).virtual_key_id, txt.slice(0, 400)).to.eql(pm.collectionVariables.get('claimVkAId')); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/storage-folders?folder={{claimFolderQ}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "storage-folders"
+          ],
+          "query": [
+            {
+              "key": "folder",
+              "value": "{{claimFolderQ}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "498.10 [EXPECT-404] releasing it again finds no claim",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimVkA') || !pm.collectionVariables.get('claimVkAId') || !pm.collectionVariables.get('claimRun')) { pm.execution.skipRequest(); return; }",
+              "pm.collectionVariables.set('claimFolderQ', encodeURIComponent(pm.variables.replaceIn('gs://bifrost-fixture-bucket/claims-{{claimRun}}/out/')));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('no claim is left to release', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.eql(404); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/storage-folders?folder={{claimFolderQ}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "storage-folders"
+          ],
+          "query": [
+            {
+              "key": "folder",
+              "value": "{{claimFolderQ}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "498.11 key B now writes into the released folder",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimVkA') || !pm.collectionVariables.get('claimVkAId') || !pm.collectionVariables.get('claimRun')) { pm.execution.skipRequest(); return; }",
+              "if (!pm.collectionVariables.get('claimVkB')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the batch into the released folder is created', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{claimVkB}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"storage_uri_files/fixture-model\",\"input_file_id\":\"gs://bifrost-fixture-bucket/uploads/folder-ownership-input.jsonl\",\"endpoint\":\"/v1/chat/completions\",\"completion_window\":\"24h\",\"output_folder\":{\"url\":\"gs://bifrost-fixture-bucket/claims-{{claimRun}}/out/\"}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "498.12 and the folder is claimed by key B",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimVkA') || !pm.collectionVariables.get('claimVkAId') || !pm.collectionVariables.get('claimRun')) { pm.execution.skipRequest(); return; }",
+              "pm.collectionVariables.set('claimPrefixQ', encodeURIComponent(pm.variables.replaceIn('gs://bifrost-fixture-bucket/claims-{{claimRun}}/')));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('the claims are listed', function () { pm.expect(pm.response.code, txt.slice(0, 400)).to.eql(200); });",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "var want = [{ folder: pm.variables.replaceIn('gs://bifrost-fixture-bucket/claims-{{claimRun}}/out/'), virtual_key_id: pm.collectionVariables.get('claimVkBId') }];",
+              "var got = (body.storage_folders || []).map(function (c) { return { folder: c.folder, virtual_key_id: c.virtual_key_id }; });",
+              "pm.test('key B holds the folder', function () { pm.expect(got, txt.slice(0, 600)).to.eql(want); pm.expect(body.total_count, txt.slice(0, 400)).to.eql(want.length); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/storage-folders?prefix={{claimPrefixQ}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "storage-folders"
+          ],
+          "query": [
+            {
+              "key": "prefix",
+              "value": "{{claimPrefixQ}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "498.13 key B is deleted",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimVkA') || !pm.collectionVariables.get('claimVkAId') || !pm.collectionVariables.get('claimRun')) { pm.execution.skipRequest(); return; }",
+              "if (!pm.collectionVariables.get('claimVkB')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the virtual key was deleted', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.collectionVariables.unset('claimVkB');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys/{{claimVkBId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{claimVkBId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "498.14 a deleted key keeps its claim",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimVkA') || !pm.collectionVariables.get('claimVkAId') || !pm.collectionVariables.get('claimRun')) { pm.execution.skipRequest(); return; }",
+              "pm.collectionVariables.set('claimPrefixQ', encodeURIComponent(pm.variables.replaceIn('gs://bifrost-fixture-bucket/claims-{{claimRun}}/')));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('the claims are listed', function () { pm.expect(pm.response.code, txt.slice(0, 400)).to.eql(200); });",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "var want = [{ folder: pm.variables.replaceIn('gs://bifrost-fixture-bucket/claims-{{claimRun}}/out/'), virtual_key_id: pm.collectionVariables.get('claimVkBId') }];",
+              "var got = (body.storage_folders || []).map(function (c) { return { folder: c.folder, virtual_key_id: c.virtual_key_id }; });",
+              "pm.test('the claim of the deleted key B is still listed', function () { pm.expect(got, txt.slice(0, 600)).to.eql(want); pm.expect(body.total_count, txt.slice(0, 400)).to.eql(want.length); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/storage-folders?prefix={{claimPrefixQ}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "storage-folders"
+          ],
+          "query": [
+            {
+              "key": "prefix",
+              "value": "{{claimPrefixQ}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "498.15 [EXPECT-404] so key A still cannot write into that folder",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimVkA') || !pm.collectionVariables.get('claimVkAId') || !pm.collectionVariables.get('claimRun')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('a batch into the deleted key folder is 404', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404); });",
+              "pm.test('the refusal is the gateway and does not confirm the object', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.type, 'unexpected body: ' + txt.slice(0, 400)).to.eql('access_blocked');",
+              "  pm.expect(body.error && body.error.message, txt.slice(0, 400)).to.include('not found');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{claimVkA}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"storage_uri_files/fixture-model\",\"input_file_id\":\"gs://bifrost-fixture-bucket/uploads/folder-ownership-input.jsonl\",\"endpoint\":\"/v1/chat/completions\",\"completion_window\":\"24h\",\"output_folder\":{\"url\":\"gs://bifrost-fixture-bucket/claims-{{claimRun}}/out/\"}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "498.16 only the four batch creates that were served reached the provider",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimVkA') || !pm.collectionVariables.get('claimVkAId') || !pm.collectionVariables.get('claimRun')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls.filter(function (c) { return String(c.path).indexOf('/pp/storage/') === 0; }).map(function (c) { return c.path; });",
+              "pm.test('four batch creates, nothing else', function () {",
+              "  pm.expect(calls, JSON.stringify(calls)).to.eql(['/pp/storage/v1/batches', '/pp/storage/v1/batches', '/pp/storage/v1/batches', '/pp/storage/v1/batches']);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__wire"
+      }
+    },
+    {
+      "name": "498.17 [cleanup] the deleted key claim is released",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimVkA') || !pm.collectionVariables.get('claimVkAId') || !pm.collectionVariables.get('claimRun')) { pm.execution.skipRequest(); return; }",
+              "pm.collectionVariables.set('claimFolderQ', encodeURIComponent(pm.variables.replaceIn('gs://bifrost-fixture-bucket/claims-{{claimRun}}/out/')));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the claim is released', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.eql(200); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/storage-folders?folder={{claimFolderQ}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "storage-folders"
+          ],
+          "query": [
+            {
+              "key": "folder",
+              "value": "{{claimFolderQ}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "498.18 [cleanup] virtual key A is deleted",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('claimVkAId')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the virtual key was deleted', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.collectionVariables.unset('claimVkA'); pm.collectionVariables.unset('claimVkAId'); pm.collectionVariables.unset('claimVkBId');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys/{{claimVkAId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{claimVkAId}}"
+          ]
+        }
+      }
+    }
+  ]
+}

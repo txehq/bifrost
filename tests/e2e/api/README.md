@@ -437,6 +437,10 @@ Folder 497 (TXE-7121) uses it for the folder rule: a key's first batch into an o
 second key is refused with 404 when it names a result file there as an input, or writes a batch or a task's output into
 that folder, a folder inside it or the folder that holds it, while a sibling folder is free. The folder names carry a
 per-run suffix, because a claim outlives the key that made it. It needs the same `setupToken`.
+Folder 498 (TXE-7259) covers what an operator does with those claims: a key with no storage list writes a batch to a
+bucket root without claiming it, `GET /api/governance/storage-folders` lists a claim, `DELETE
+/api/governance/storage-folders?folder=<uri>` releases it so the next key's batch claims the folder, and a deleted
+key's claim is kept until released. It needs the same `setupToken`, and it releases the one claim it leaves.
 
 The same fixture and gateway serve folder 416 (Kling video on the contract). The config's built-in
 `kling` provider points at the fixture with two keys, `kling-key-a` and `kling-key-b`
