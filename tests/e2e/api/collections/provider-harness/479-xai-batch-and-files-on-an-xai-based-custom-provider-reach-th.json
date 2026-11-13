@@ -1,0 +1,823 @@
+{
+  "name": "479. xAI batch and files on an xai-based custom provider reach the paths its request_path_overrides name (xai path overrides) [SERIAL]",
+  "description": "TXE-7084 regression, contract C3, C8, C12. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream (providerErrorFixtureUrl when it is not on http://127.0.0.1:8791). Every row is skipped otherwise. tkp_xaicompat is an xai-based custom provider for a vendor that serves xAI's batch and file API under /api/v2 instead of /v1: allowed_requests batch_* and file_*, one named key enabled for batches, and request_path_overrides for every batch and file request type. For a call that names a batch or a file the override is a template: {batch_id} or {file_id} is where the id goes (batch_cancel /api/v2/batches/{batch_id}:cancel, file_content /api/v2/files/{file_id}/content). xAI creates an inline batch in two calls; the second, POST {batch}/requests, names the batch the first created, so it follows the batch_create override with /{batch_id}/requests appended. Before the change every xAI batch and file call went to xAI's own /v1 path whatever the overrides said. The fixture answers only under /pp/xaicompat/api/v2, so a call on a default path is a 404 and fails its row, and GET /__wire returns each call with the name of the key it carried. Rows: (1) an inline batch is created at /api/v2/batches and its line added at /api/v2/batches/{id}/requests; (2) list, (3) retrieve, (4) results and (5) cancel reach /api/v2/batches and /api/v2/batches/{id}[/results|:cancel]; (6) upload, (7) list, (8) retrieve, (9) content and (10) delete reach /api/v2/files and /api/v2/files/{id}[/content]; (11) writing an xai-based provider whose batch_cancel override has no {batch_id} is refused. Run the whole folder in order.",
+  "item": [
+    {
+      "name": "tkp_xaicompat/grok-4.3 /v1/batches with an inline line: both calls of the create reach /api/v2/batches (xai path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('xai path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/xaicompat/api/v2';",
+              "var KEY = 'tk-key-xaicompat';",
+              "// wire: the calls that reached the fixture's xAI-compatible upstream, in order, each with its method, path, body and",
+              "// the name of the key it carried. The fixture answers only under ROOT, so a call built on xAI's own /v1 path is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path; }); }",
+              "function namedKeyOnly(calls) { pm.test('every upstream call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(seen(calls))).to.eql(calls.map(function () { return KEY; })); }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the batch is created and its id is the vendor\\'s', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.id, pm.response.text()).to.equal('xb_479');",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('the create and the add-requests call reached the vendor, on the overridden path', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['POST ' + ROOT + '/batches', 'POST ' + ROOT + '/batches/xb_479/requests']); });",
+              "  var added = {}; try { added = JSON.parse((calls[1] || {}).body || '{}'); } catch (e) { added = {}; }",
+              "  pm.test('the line is added under its custom_id', function () { pm.expect((added.batch_requests || []).map(function (r) { return r.batch_request_id; }), JSON.stringify(added)).to.eql(['line-1']); });",
+              "  namedKeyOnly(calls);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-xaicompat"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"tkp_xaicompat/grok-4.3\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\",\n  \"requests\": [\n    {\n      \"custom_id\": \"line-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"grok-4.3\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_xaicompat /v1/batches list reaches /api/v2/batches (xai path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('xai path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/xaicompat/api/v2';",
+              "var KEY = 'tk-key-xaicompat';",
+              "// wire: the calls that reached the fixture's xAI-compatible upstream, in order, each with its method, path, body and",
+              "// the name of the key it carried. The fixture answers only under ROOT, so a call built on xAI's own /v1 path is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path; }); }",
+              "function namedKeyOnly(calls) { pm.test('every upstream call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(seen(calls))).to.eql(calls.map(function () { return KEY; })); }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the vendor\\'s batches are listed', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect((body.data || []).map(function (b) { return b.id; }), pm.response.text()).to.include('xb_479');",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('one list reached the vendor, on the overridden path', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['GET ' + ROOT + '/batches']); });",
+              "  namedKeyOnly(calls);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-xaicompat"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches?provider=tkp_xaicompat&limit=10",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_xaicompat"
+            },
+            {
+              "key": "limit",
+              "value": "10"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_xaicompat /v1/batches/{id} retrieve reaches /api/v2/batches/{id} (xai path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('xai path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/xaicompat/api/v2';",
+              "var KEY = 'tk-key-xaicompat';",
+              "// wire: the calls that reached the fixture's xAI-compatible upstream, in order, each with its method, path, body and",
+              "// the name of the key it carried. The fixture answers only under ROOT, so a call built on xAI's own /v1 path is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path; }); }",
+              "function namedKeyOnly(calls) { pm.test('every upstream call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(seen(calls))).to.eql(calls.map(function () { return KEY; })); }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the batch is read back', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.id, pm.response.text()).to.equal('xb_479');",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('one retrieve reached the vendor, on the overridden path with the id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['GET ' + ROOT + '/batches/xb_479']); });",
+              "  namedKeyOnly(calls);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-xaicompat"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches/xb_479?provider=tkp_xaicompat",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches",
+            "xb_479"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_xaicompat"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_xaicompat /v1/batches/{id}/results reaches /api/v2/batches/{id}/results (xai path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('xai path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/xaicompat/api/v2';",
+              "var KEY = 'tk-key-xaicompat';",
+              "// wire: the calls that reached the fixture's xAI-compatible upstream, in order, each with its method, path, body and",
+              "// the name of the key it carried. The fixture answers only under ROOT, so a call built on xAI's own /v1 path is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path; }); }",
+              "function namedKeyOnly(calls) { pm.test('every upstream call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(seen(calls))).to.eql(calls.map(function () { return KEY; })); }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the results page carries the line', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  var line = (body.results || [])[0] || {};",
+              "  pm.expect(line.custom_id, pm.response.text()).to.equal('line-1');",
+              "  pm.expect(line.status, pm.response.text()).to.equal('succeeded');",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('one results call reached the vendor, on the overridden path with the id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['GET ' + ROOT + '/batches/xb_479/results']); });",
+              "  namedKeyOnly(calls);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-xaicompat"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches/xb_479/results?provider=tkp_xaicompat&limit=1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches",
+            "xb_479",
+            "results"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_xaicompat"
+            },
+            {
+              "key": "limit",
+              "value": "1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_xaicompat /v1/batches/{id}/cancel reaches /api/v2/batches/{id}:cancel (xai path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('xai path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/xaicompat/api/v2';",
+              "var KEY = 'tk-key-xaicompat';",
+              "// wire: the calls that reached the fixture's xAI-compatible upstream, in order, each with its method, path, body and",
+              "// the name of the key it carried. The fixture answers only under ROOT, so a call built on xAI's own /v1 path is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path; }); }",
+              "function namedKeyOnly(calls) { pm.test('every upstream call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(seen(calls))).to.eql(calls.map(function () { return KEY; })); }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the batch is returned', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.id, pm.response.text()).to.equal('xb_479');",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('one cancel reached the vendor, on the overridden path with the id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['POST ' + ROOT + '/batches/xb_479:cancel']); });",
+              "  namedKeyOnly(calls);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-xaicompat"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches/xb_479/cancel?provider=tkp_xaicompat",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches",
+            "xb_479",
+            "cancel"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_xaicompat"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_xaicompat /v1/files upload reaches /api/v2/files (xai path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('xai path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/xaicompat/api/v2';",
+              "var KEY = 'tk-key-xaicompat';",
+              "// wire: the calls that reached the fixture's xAI-compatible upstream, in order, each with its method, path, body and",
+              "// the name of the key it carried. The fixture answers only under ROOT, so a call built on xAI's own /v1 path is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path; }); }",
+              "function namedKeyOnly(calls) { pm.test('every upstream call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(seen(calls))).to.eql(calls.map(function () { return KEY; })); }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the file is uploaded and its id is the vendor\\'s', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.id, pm.response.text()).to.equal('xf_479');",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('one upload reached the vendor, on the overridden path', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['POST ' + ROOT + '/files']); });",
+              "  namedKeyOnly(calls);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-xaicompat"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/files",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files"
+          ]
+        },
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "src": "tests/e2e/api/fixtures/xai-batch-input.jsonl",
+              "type": "file"
+            },
+            {
+              "key": "purpose",
+              "value": "batch",
+              "type": "text"
+            },
+            {
+              "key": "provider",
+              "value": "tkp_xaicompat",
+              "type": "text"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_xaicompat /v1/files list reaches /api/v2/files (xai path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('xai path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/xaicompat/api/v2';",
+              "var KEY = 'tk-key-xaicompat';",
+              "// wire: the calls that reached the fixture's xAI-compatible upstream, in order, each with its method, path, body and",
+              "// the name of the key it carried. The fixture answers only under ROOT, so a call built on xAI's own /v1 path is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path; }); }",
+              "function namedKeyOnly(calls) { pm.test('every upstream call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(seen(calls))).to.eql(calls.map(function () { return KEY; })); }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the vendor\\'s files are listed', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect((body.data || []).map(function (f) { return f.id; }), pm.response.text()).to.include('xf_479');",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('one list reached the vendor, on the overridden path', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['GET ' + ROOT + '/files']); });",
+              "  namedKeyOnly(calls);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-xaicompat"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/files?provider=tkp_xaicompat&purpose=batch",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_xaicompat"
+            },
+            {
+              "key": "purpose",
+              "value": "batch"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_xaicompat /v1/files/{id} retrieve reaches /api/v2/files/{id} (xai path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('xai path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/xaicompat/api/v2';",
+              "var KEY = 'tk-key-xaicompat';",
+              "// wire: the calls that reached the fixture's xAI-compatible upstream, in order, each with its method, path, body and",
+              "// the name of the key it carried. The fixture answers only under ROOT, so a call built on xAI's own /v1 path is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path; }); }",
+              "function namedKeyOnly(calls) { pm.test('every upstream call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(seen(calls))).to.eql(calls.map(function () { return KEY; })); }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the file is read back', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.id, pm.response.text()).to.equal('xf_479');",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('one retrieve reached the vendor, on the overridden path with the id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['GET ' + ROOT + '/files/xf_479']); });",
+              "  namedKeyOnly(calls);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-xaicompat"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/files/xf_479?provider=tkp_xaicompat",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files",
+            "xf_479"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_xaicompat"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_xaicompat /v1/files/{id}/content reaches /api/v2/files/{id}/content (xai path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('xai path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/xaicompat/api/v2';",
+              "var KEY = 'tk-key-xaicompat';",
+              "// wire: the calls that reached the fixture's xAI-compatible upstream, in order, each with its method, path, body and",
+              "// the name of the key it carried. The fixture answers only under ROOT, so a call built on xAI's own /v1 path is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path; }); }",
+              "function namedKeyOnly(calls) { pm.test('every upstream call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(seen(calls))).to.eql(calls.map(function () { return KEY; })); }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the file\\'s bytes are returned', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.text()).to.include('\"custom_id\":\"line-1\"');",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('one content call reached the vendor, on the overridden path with the id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['GET ' + ROOT + '/files/xf_479/content']); });",
+              "  namedKeyOnly(calls);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-xaicompat"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/files/xf_479/content?provider=tkp_xaicompat",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files",
+            "xf_479",
+            "content"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_xaicompat"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tkp_xaicompat /v1/files/{id} delete reaches /api/v2/files/{id} (xai path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('xai path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var ROOT = '/pp/xaicompat/api/v2';",
+              "var KEY = 'tk-key-xaicompat';",
+              "// wire: the calls that reached the fixture's xAI-compatible upstream, in order, each with its method, path, body and",
+              "// the name of the key it carried. The fixture answers only under ROOT, so a call built on xAI's own /v1 path is a 404 there.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path; }); }",
+              "function namedKeyOnly(calls) { pm.test('every upstream call carried the named key', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(seen(calls))).to.eql(calls.map(function () { return KEY; })); }); }",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the file is deleted', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.id, pm.response.text()).to.equal('xf_479');",
+              "  pm.expect(body.deleted, pm.response.text()).to.equal(true);",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('one delete reached the vendor, on the overridden path with the id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['DELETE ' + ROOT + '/files/xf_479']); });",
+              "  namedKeyOnly(calls);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-xaicompat"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/files/xf_479?provider=tkp_xaicompat",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "files",
+            "xf_479"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_xaicompat"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] POST /api/providers: an xai-based provider whose batch_cancel override has no {batch_id} is refused when it is written (xai path overrides)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('xai path overrides setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the provider is refused with a 400 naming the override and its placeholder', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400); pm.expect(pm.response.text()).to.include('request_path_overrides.batch_cancel'); pm.expect(pm.response.text()).to.include('{batch_id}'); });",
+              "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/providers/harness-xaicompat-no-placeholder', method: 'GET' }, function (err, res) { pm.test('nothing was stored', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(404); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/providers",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "providers"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"provider\": \"harness-xaicompat-no-placeholder\",\n  \"keys\": [],\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"xai\",\n    \"allowed_requests\": {\n      \"batch_cancel\": true\n    },\n    \"request_path_overrides\": {\n      \"batch_cancel\": \"/api/v2/batches:cancel\"\n    }\n  }\n}"
+        }
+      }
+    }
+  ]
+}

@@ -329,6 +329,22 @@ PROVIDER_ERROR_FIXTURE_PORT=$FX PROVIDER_ERROR_FIXTURE_STALL_PORT=$ST PROVIDER_E
 scripts/test-offline.sh make dev PORT=$GW APP_DIR="$APP_DIR"     # config.json from provider-error-fixture.config.json
 scripts/test-offline.sh make run-provider-harness-test FEATURE="offline egress" BASE_URL=http://127.0.0.1:$GW \
   APP_DIR="$APP_DIR" ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 PARALLEL=0
+
+## xAI batch and files on an xai-based custom provider
+
+Folder 479 pins TXE-7084: `tkp_xaicompat` in the fixture config is an `xai`-based custom provider whose
+`request_path_overrides` move every batch and file call under `/api/v2`, with `{batch_id}` and `{file_id}` where
+the id goes. The fixture answers only under `/pp/xaicompat/api/v2` and records every call for `GET /__wire`, so
+a call built on xAI's own `/v1` path is a 404 and fails its row. Rows 1-10 assert each call's path: both calls
+of an inline create (`/api/v2/batches`, then `/api/v2/batches/{id}/requests`), list, retrieve, results and
+`:cancel`, and file upload, list, retrieve, content and delete. Row 11 asserts that an `xai`-based provider whose
+`batch_cancel` override has no `{batch_id}` is refused when it is written. Against the xAI provider before
+TXE-7084, rows 1-10 fail.
+
+Start the fixture and the isolated gateway under `scripts/test-offline.sh` (see Offline runs and egress above), then:
+
+```bash
+scripts/test-offline.sh make run-provider-harness-test FEATURE="xai path overrides" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
 ```
 
 ## Client config round trip

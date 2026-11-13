@@ -1692,6 +1692,43 @@ const vidvendorAnswer = (method, path) => {
 	if (method === "GET" && rest === "/answers/resp_477/inputs") return { status: 200, body: JSON.stringify({ object: "list", data: [{ id: "msg_in_477", type: "message", role: "user", content: [{ type: "input_text", text: "question" }] }], first_id: "msg_in_477", last_id: "msg_in_477", has_more: false }) };
 	return notFound;
 };
+
+// xAI-compatible batch and files (folder 479, TXE-7084). tkp_xaicompat in the fixture config is an xai-based custom
+// provider for a vendor that serves xAI's batch and file API under /api/v2 instead of /v1, its request_path_overrides
+// naming those paths ({batch_id} and {file_id} where the id goes). Every call under /pp/xaicompat is kept for
+// GET /__wire with its method, path, body and the name of the key it carried (never the key), and anything outside
+// /api/v2 is a 404, so a call the gateway built on xAI's own /v1 path fails and shows in the wire. The answers are
+// the xAI shapes core/providers/xai decodes (the two-call create: POST /batches, then POST /batches/{id}/requests).
+const XAICOMPAT_ROOT = "/pp/xaicompat/api/v2";
+const XAICOMPAT_BATCH_ID = "xb_479";
+const XAICOMPAT_FILE_ID = "xf_479";
+const XAICOMPAT_KEY_NAMES = { "Bearer xc-fixture-key": "tk-key-xaicompat" };
+const xaicompatBatch = (state) => ({ batch_id: XAICOMPAT_BATCH_ID, name: "bifrost-batch", create_time: "2026-11-11T00:00:00Z", state });
+const xaicompatFile = { id: XAICOMPAT_FILE_ID, object: "file", bytes: 64, filename: "xai-batch-input.jsonl", purpose: "batch", created_at: 1762819200 };
+const xaicompatChat = { id: "chatcmpl-xc", object: "chat.completion", created: 1762819200, model: "grok-4.3", choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }], usage: { prompt_tokens: 9, completion_tokens: 1, total_tokens: 10, cost_in_usd_ticks: 4200 } };
+const xaicompatAnswer = (method, path) => {
+	const notFound = { status: 404, body: errorBody(`the xAI-compatible vendor serves nothing at ${method} ${path}`, "invalid_request_error", "not_found") };
+	if (!path.startsWith(XAICOMPAT_ROOT + "/")) return notFound;
+	const rest = path.slice(XAICOMPAT_ROOT.length);
+	const ok = (body) => ({ status: 200, body: JSON.stringify(body) });
+	if (method === "POST" && rest === "/batches") return ok(xaicompatBatch({ num_requests: 0, num_pending: 0, num_success: 0, num_error: 0, num_cancelled: 0 }));
+	if (method === "POST" && rest === `/batches/${XAICOMPAT_BATCH_ID}/requests`) return ok({});
+	if (method === "GET" && rest === "/batches") return ok({ batches: [xaicompatBatch({ num_requests: 1, num_pending: 0, num_success: 1, num_error: 0, num_cancelled: 0 })], pagination_token: "" });
+	if (method === "GET" && rest === `/batches/${XAICOMPAT_BATCH_ID}`) return ok(xaicompatBatch({ num_requests: 1, num_pending: 0, num_success: 1, num_error: 0, num_cancelled: 0 }));
+	if (method === "POST" && rest === `/batches/${XAICOMPAT_BATCH_ID}:cancel`) return ok({ ...xaicompatBatch({ num_requests: 1, num_pending: 0, num_success: 1, num_error: 0, num_cancelled: 0 }), cancel_time: "2026-11-11T00:01:00Z" });
+	if (method === "GET" && rest === `/batches/${XAICOMPAT_BATCH_ID}/results`) {
+		return ok({ results: [{ batch_request_id: "line-1", batch_result: { response: { chat_get_completion: xaicompatChat } } }], pagination_token: "" });
+	}
+	if (method === "POST" && rest === "/files") return ok(xaicompatFile);
+	if (method === "GET" && rest === "/files") return ok({ data: [xaicompatFile], has_more: false });
+	if (method === "GET" && rest === `/files/${XAICOMPAT_FILE_ID}`) return ok(xaicompatFile);
+	if (method === "DELETE" && rest === `/files/${XAICOMPAT_FILE_ID}`) return ok({ id: XAICOMPAT_FILE_ID, deleted: true });
+	if (method === "GET" && rest === `/files/${XAICOMPAT_FILE_ID}/content`) {
+		return { status: 200, contentType: "application/octet-stream", body: '{"custom_id":"line-1","method":"POST","url":"/v1/chat/completions"}\n' };
+	}
+	return notFound;
+};
+
 // Reads and discards a request body (JSON or multipart) before answering, so the gateway's upload completes.
 const drain = (req, then) => {
 	req.on("data", () => {});
@@ -1904,6 +1941,17 @@ const handleRequest = (req, res) => {
 		drain(req, () => {
 			wireCalls.push({ method: req.method, path, query: new URL(req.url, "http://localhost").search, body: "", key: VIDVENDOR_KEY_NAMES[req.headers.authorization] || "unknown" });
 			const answer = vidvendorAnswer(req.method, path);
+			send(answer.status, answer.contentType ? { "Content-Type": answer.contentType } : {}, answer.body);
+		});
+		return undefined;
+	}
+	if (path.startsWith("/pp/xaicompat/")) {
+		const body = [];
+		req.on("data", (c) => body.push(c));
+		req.on("end", () => {
+			const bytes = Buffer.concat(body).toString("utf8");
+			wireCalls.push({ method: req.method, path, query: new URL(req.url, "http://localhost").search, body: bytes, key: XAICOMPAT_KEY_NAMES[req.headers.authorization] || "unknown" });
+			const answer = xaicompatAnswer(req.method, path);
 			send(answer.status, answer.contentType ? { "Content-Type": answer.contentType } : {}, answer.body);
 		});
 		return undefined;

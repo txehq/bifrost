@@ -133,7 +133,7 @@ func (provider *XAIProvider) FileUpload(ctx *schemas.BifrostContext, key schemas
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files")
+	req.SetRequestURI(provider.collectionURL(ctx, "/v1/files", schemas.FileUploadRequest))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType(writer.FormDataContentType())
 	if value := key.Value.GetValue(); value != "" {
@@ -211,7 +211,7 @@ func (provider *XAIProvider) FileList(ctx *schemas.BifrostContext, keys []schema
 	if nativeCursor != "" {
 		query.Set("pagination_token", nativeCursor)
 	}
-	resp, bifrostErr := provider.do(ctx, key, http.MethodGet, "/v1/files", query, nil)
+	resp, bifrostErr := provider.do(ctx, key, http.MethodGet, provider.collectionURL(ctx, "/v1/files", schemas.FileListRequest), query, nil)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -249,8 +249,12 @@ func (provider *XAIProvider) FileRetrieve(ctx *schemas.BifrostContext, keys []sc
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := provider.resourceURL("/v1/files/", escapedID, "", schemas.FileRetrieveRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 	return eachKey(keys, func(key schemas.Key) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
-		resp, bifrostErr := provider.do(ctx, key, http.MethodGet, "/v1/files/"+escapedID, nil, nil)
+		resp, bifrostErr := provider.do(ctx, key, http.MethodGet, requestURL, nil, nil)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -287,8 +291,12 @@ func (provider *XAIProvider) FileDelete(ctx *schemas.BifrostContext, keys []sche
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := provider.resourceURL("/v1/files/", escapedID, "", schemas.FileDeleteRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 	return eachKey(keys, func(key schemas.Key) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
-		resp, bifrostErr := provider.do(ctx, key, http.MethodDelete, "/v1/files/"+escapedID, nil, nil)
+		resp, bifrostErr := provider.do(ctx, key, http.MethodDelete, requestURL, nil, nil)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -323,13 +331,17 @@ func (provider *XAIProvider) FileContent(ctx *schemas.BifrostContext, keys []sch
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := provider.resourceURL("/v1/files/", escapedID, "/content", schemas.FileContentRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 	return eachKey(keys, func(key schemas.Key) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 		defer fasthttp.ReleaseRequest(req)
 		defer fasthttp.ReleaseResponse(resp)
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedID + "/content")
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodGet)
 		if value := key.Value.GetValue(); value != "" {
 			req.Header.Set("Authorization", "Bearer "+value)
