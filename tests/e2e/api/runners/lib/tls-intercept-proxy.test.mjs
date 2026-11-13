@@ -51,14 +51,17 @@ function fixtureConfigProblems(config) {
 	return problems;
 }
 
-// Every runner that imports the fixture library and takes --app-dir configures a gateway of its own.
+// Every runner that imports the fixture library, takes --app-dir and writes its config through
+// writeFixtureGatewayConfig configures a gateway of its own.
 function endpointFixtures() {
 	return fs
 		.readdirSync(runnersDir)
 		.filter((name) => name.endsWith(".mjs"))
 		.filter((name) => {
 			const source = fs.readFileSync(path.join(runnersDir, name), "utf8");
-			return /from\s+["']\.\/lib\/tls-intercept-proxy\.mjs["']/.test(source) && source.includes('"--app-dir"');
+			// A fixture writes its gateway config through the library. fixture-folders.mjs also imports
+			// the library and passes --app-dir, but to start fixtures, not to be one (TXE-7285).
+			return /from\s+["']\.\/lib\/tls-intercept-proxy\.mjs["']/.test(source) && source.includes('"--app-dir"') && source.includes("writeFixtureGatewayConfig(");
 		})
 		.sort();
 }

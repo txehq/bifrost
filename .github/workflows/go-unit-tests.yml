@@ -26,8 +26,11 @@ name: Go unit tests (offline)
 #   testtime.Scale(d) (<module>/internal/testtime, TXE-7128), and BIFROST_TEST_TIMEOUT_SCALE
 #   below multiplies them, so a test does not fail on time alone on a loaded shared
 #   runner. core/internal/testtime's tests fail on a literal one.
+# - Harness fixture folders (TXE-7285): fixture-folders runs every provider-harness folder that
+#   a local fixture can answer, offline, against a gateway built from the PR. Before it, no
+#   required check ran a harness row, so a stale row (161.11) and 9 failing ones sat on main.
 # - The required check is the `Go unit tests (offline)` job, which fails unless every shard
-#   passed. No paths filter: a path-filtered required check never reports on a PR outside its
+#   and fixture-folders passed. No paths filter: a path-filtered required check never reports on a PR outside its
 #   paths, which blocks that PR's merge. No concurrency group either: a cancelled run of a
 #   required check leaves the PR blocked beside a passing one (TXE-7104).
 # - On a push to main, warm-cache compiles every test binary and saves the go-unit build cache
@@ -166,10 +169,91 @@ jobs:
           SHARDS: ${{ strategy.job-total }}
         run: scripts/test-offline.sh python3 .github/workflows/scripts/go-unit-shards.py run --shard "$((SHARD + 1))" --shards "$SHARDS"
 
+  # Every provider-harness folder a local fixture can answer, run offline against a gateway built
+  # from the PR (TXE-7285). The live harness runs only in the release's test-core job, which every
+  # fork merge skips, so before this no required check sent a single harness row: row 161.11 kept
+  # asserting the behaviour TXE-6535 had changed, and 9 more rows failed on main unseen.
+  # tests/e2e/api/runners/fixture-folders.mjs owns the groups (fixture, gateway config, switches);
+  # tests/e2e/api/collections/fixture-folders.json lists the folders it cannot run yet and the rows
+  # quarantined with their tickets. A new fixture folder that no group runs fails
+  # fixture-folders.test.mjs in the API collection offline suites.
+  fixture-folders:
+    if: github.event_name == 'pull_request'
+    name: Harness fixture folders (offline)
+    # The same boundary as the shards: the job builds and runs the PR's own code.
+    environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          # setup-go, setup-node, the Go module proxy and npm for the pinned newman. The fixtures,
+          # the gateway and newman dial only loopback, and scripts/test-offline.sh refuses the rest.
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            nodejs.org:443
+            proxy.golang.org:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.3"
+          cache: false
+
+      - name: Restore the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: go-unit
+
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "25"
+
+      # The newman every harness runner uses, from the lockfile's integrity hashes.
+      - name: Install Newman (hash-pinned via lockfile)
+        run: npm ci --no-audit --no-fund
+        working-directory: .github/workflows/tools
+
+      # main.go's go:embed needs a nonempty ui directory; the harness drives the API only.
+      - name: Stub the UI directory
+        run: |
+          mkdir -p transports/bifrost-http/ui
+          [ -f transports/bifrost-http/ui/.gitkeep ] || echo placeholder > transports/bifrost-http/ui/.gitkeep
+
+      - name: Build the gateway
+        working-directory: transports
+        run: go build -o "$RUNNER_TEMP/bifrost-http" ./bifrost-http
+
+      - name: Run the fixture folders
+        run: scripts/test-offline.sh node tests/e2e/api/runners/fixture-folders.mjs run --gateway "$RUNNER_TEMP/bifrost-http" --work-dir "$RUNNER_TEMP/fixture-folders"
+
+      # Each group's fixture, gateway, augment and newman logs, and newman's JSON report.
+      - name: Upload the fixture-folder logs
+        if: failure()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: fixture-folders
+          path: ${{ runner.temp }}/fixture-folders
+          retention-days: 7
+          if-no-files-found: ignore
+
   # The one check to require on main: it fails unless every shard passed.
   go-unit-tests:
     if: always() && github.event_name == 'pull_request'
-    needs: [shard]
+    needs: [shard, fixture-folders]
     name: Go unit tests (offline)
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     timeout-minutes: 5
@@ -180,12 +264,14 @@ jobs:
           egress-policy: block
           allowed-endpoints: >+
 
-      - name: Every shard passed
+      - name: Every shard and the fixture folders passed
         env:
           RESULT: ${{ needs.shard.result }}
+          FIXTURE_FOLDERS: ${{ needs.fixture-folders.result }}
         run: |
           echo "shards: $RESULT"
-          [ "$RESULT" = success ]
+          echo "harness fixture folders: $FIXTURE_FOLDERS"
+          [ "$RESULT" = success ] && [ "$FIXTURE_FOLDERS" = success ]
 
   warm-cache:
     if: github.event_name == 'push'

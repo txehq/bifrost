@@ -722,7 +722,8 @@ Keys are picked with `x-bf-api-key`. The cases assert the host, the `locations/<
 and the headers Vertex would have received: global, `us`/`eu` multi-region, `us-east5`, a regional key
 that stays single-region for Gemini, Claude promoted to the `us` pool from an unpinned
 `us-central1` key and kept on `us-central1` with `force_single_region`, the OAuth token path, the
-service-tier shared request type header (global endpoint only), and extra-header forwarding, which
+service-tier shared request type header (global endpoint only; `service_tier: priority` on a regional key is
+refused with 400 `caller_unsupported_parameter` before any call, TXE-6535), and extra-header forwarding, which
 is how Provisioned Throughput spend-limit ids (`x-goog-spend-limit-id`) are sent.
 The fixture also serves the pricing and model-parameters datasheets a fresh gateway downloads on first start. The model-parameters row `claude-opus-4-7: { provider: vertex, vertex_multi_region_only: true }` is load-bearing: the promotion from an unpinned `us-central1` key to the `us` pool (161.7) is decided by that catalog flag, so without it exactly that case fails. As with the Bedrock fixture, start the gateway with `HTTPS_PROXY=http://127.0.0.1:9` to prove nothing leaves the machine.
 
@@ -731,7 +732,8 @@ answers the models `gemini-tts-ok`, `gemini-tts-blocked` and `gemini-tts-truncat
 `:streamGenerateContent`. The config the fixture writes turns `client.enforce_auth_on_inference` off, because a fresh
 gateway otherwise refuses these requests for lacking a virtual key.
 
-The cases are skipped unless `vertexEndpointFixture=1`.
+The cases are skipped unless `vertexEndpointFixture=1`. Every pull request runs them, with every other
+fixture folder, in the `Harness fixture folders (offline)` job (`runners/fixture-folders.mjs`, TXE-7285).
 
 The same fixture stands in for a Vertex batch (TXE-6971). It keeps what the gateway uploads to Cloud Storage
 (`POST /upload/storage/v1/b/<bucket>/o`), finishes a `batchPredictionJobs` job the moment it is created, and

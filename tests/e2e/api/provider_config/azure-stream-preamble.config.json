@@ -1,4 +1,7 @@
 {
+  "client": {
+    "enforce_auth_on_inference": false
+  },
   "providers": {
     "azure": {
       "keys": [
