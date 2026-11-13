@@ -490,6 +490,10 @@ func TestCheckExtraParamPriceFieldsForVendorNameBesideTheUnifiedField(t *testing
 			ExtraParams: map[string]interface{}{"ASPECTRATIO": "9:16"}}), "ASPECTRATIO"},
 		{"a pace that differs from the speed the request sent", Sarvam, speech(&SpeechParameters{
 			Speed: Ptr(1.0), ExtraParams: map[string]interface{}{"pace": 2.5}}), "pace"},
+		{"BFL's duration as a number, with no seconds sent (TXE-6617)", BFL, video(&VideoGenerationParameters{
+			ExtraParams: map[string]interface{}{"duration": 10}}), "duration"},
+		{"BFL's generate_audio, with no audio sent (TXE-6617)", BFL, video(&VideoGenerationParameters{
+			ExtraParams: map[string]interface{}{"generate_audio": true}}), "generate_audio"},
 	}
 	for _, tc := range refused {
 		t.Run(tc.name, func(t *testing.T) {

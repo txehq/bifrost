@@ -12655,6 +12655,7 @@ var unmappedVendorPriceNames = map[string]string{
 	"runware/taskType":                             "Runware's task selector (which kind of job), not the embedding task_type",
 	"bedrock/images":                               "additional input images for Bedrock image models; the converter does not read the unified input_images there yet",
 	"perplexity/num_images":                        "the number of images a search answer may return, on chat and responses, which are outside C4's table",
+	"bfl/keyframes":                                "FLUX 3 Video's keyframe list, frames at positions; the unified input_reference is one first frame, which the converter writes as keyframes, and TXE-6617 passes a caller's list unchanged",
 }
 
 // notPriceFieldNames are extra params a converter reads whose name matches

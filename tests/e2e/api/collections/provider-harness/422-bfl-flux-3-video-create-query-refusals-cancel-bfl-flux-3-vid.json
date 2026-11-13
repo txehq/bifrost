@@ -1,5 +1,5 @@
 {
-  "name": "422. BFL FLUX 3 Video: create, query, refusals, cancel (bfl flux 3 video)",
+  "name": "422. BFL FLUX 3 Video: create, query, download, refusals, cancel (bfl flux 3 video)",
   "description": "Pins TXE-6617 (contract C4 to C7, C9; BFL vendor sheet B15 to B19) on the unified video routes. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. The config points bfl at the fixture's /pp/bfl, which answers POST /v1/flux-3-video with task bfl-video-ready and GET /v1/get_result by task id. Row 2 creates a task and reads the task object: queued, an id {vendor id}:bfl, the credit cost; row 3 reads the bytes BFL received: seconds as duration, 1080p as fhd, mode t2v, an extra field merged unchanged, no unified name left. Row 4 queries it: completed, the MP4 link in videos[], expires_at two hours after BFL's end_time. Row 5 queries a moderated task: failed with content_filter. Rows 6 to 8 are refused with caller_unsupported_parameter before any upstream call: callback_url and client_reference_id (FLUX 3 Video has no webhook_url or external id), size (BFL has no size). Row 9 is the cancel route: 400 provider_cancel_unsupported. Row 10 reads the fixture: one create and one query of each task. Before the change every bfl video request answered unsupported_operation. Every status, the dropped-connection once-only create and the download path are pinned by core/providers/bfl's Go tests.",
   "item": [
     {
@@ -527,6 +527,212 @@
               "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
               "  var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/bfl/') === 0; });",
               "  pm.expect(calls.length, JSON.stringify(calls)).to.eql(1);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "422.12 bfl GET /v1/videos/{id}/content returns the file a Ready task's sample link names, as video/mp4, while the file host is still sending it (bfl flux 3 video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"base_url\": \"{{baseUrl}}\",\n  \"path\": \"/v1/videos/bfl-video-media-gapped%7Cflux-3-video:bfl/content\",\n  \"headers\": {{mediaProbeHeaders}}\n}"
+        },
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__probe/download",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__probe",
+            "download"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "// The probe calls the gateway itself, so it carries the gateway credential the harness would have sent.",
+              "var auth = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header');",
+              "var headers = {};",
+              "if (auth) { headers.Authorization = auth; }",
+              "pm.variables.set('mediaProbeHeaders', JSON.stringify(headers));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.expect(pm.response.code, 'probe failed: ' + pm.response.text()).to.equal(200);",
+              "var r = pm.response.json().data[0];",
+              "pm.test('/v1/videos/{id}/content answered 200 with the whole video/mp4 file', function () {",
+              "  pm.expect(r.status, JSON.stringify(r)).to.equal(200);",
+              "  pm.expect(r.content_type, JSON.stringify(r)).to.equal('video/mp4');",
+              "  pm.expect(r.bytes, JSON.stringify(r)).to.equal(2 * 256 * 1024);",
+              "  pm.expect(r.sends.length, 'the fixture wrote the file in ' + r.sends.length + ' halves: ' + JSON.stringify(r)).to.equal(2);",
+              "});",
+              "pm.test('the first bytes reach the caller before the file host has sent the second half: the file is not held whole', function () {",
+              "  pm.expect(r.first_byte_ms, 'the first byte arrived at ' + r.first_byte_ms + 'ms, after the file host wrote the second half at ' + r.sends[1] + 'ms: ' + JSON.stringify(r)).to.be.below(r.sends[1]);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "422.13 [EXPECT-500] bfl GET /v1/videos/{id}/content refuses a sample link on a loopback address (bfl flux 3 video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/bfl-video-media-loopback%7Cflux-3-video:bfl/content",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "bfl-video-media-loopback%7Cflux-3-video:bfl",
+            "content"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a task whose sample link is on loopback is refused, and the error does not carry the signed query', function () {",
+              "  pm.expect(pm.response.code, 'the loopback file was served: ' + pm.response.text().slice(0, 200)).to.equal(500);",
+              "  var body = pm.response.text();",
+              "  pm.expect(body, body).to.include('failed to download video');",
+              "  pm.expect(body, body).to.include('non-public address');",
+              "  pm.expect(body, body).to.not.include('X-Fixture-Signature');",
+              "  pm.expect(body, body).to.not.include('signed');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "422.14 [EXPECT-400] bfl GET /v1/videos/{id}/content refuses a bare BFL id: only the id the create returned is a video id (bfl flux 3 video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/bfl-video-media-gapped:bfl/content",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "bfl-video-media-gapped:bfl",
+            "content"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a bare BFL task id is not a FLUX 3 Video id', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+              "  pm.expect(pm.response.text()).to.include('not a BFL video task id');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "422.15 bfl downloads: each queried its task once, the file left through the proxy to the address the task named, the loopback file and the bare id reached nothing (bfl flux 3 video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__hits",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__hits"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "var hits = pm.response.json().data[0].hits;",
+              "var text = JSON.stringify(hits);",
+              "pm.test('one task query per download; the bare id queried nothing', function () {",
+              "  pm.expect(hits['bfl get_result bfl-video-media-gapped'], text).to.eql(1);",
+              "  pm.expect(hits['bfl get_result bfl-video-media-loopback'], text).to.eql(1);",
+              "});",
+              "pm.test('the file was asked for at the public address, through a tunnel the proxy opened to it', function () {",
+              "  pm.expect(hits['media.gapped@203.0.113.10'] || 0, text).to.be.at.least(1);",
+              "  pm.expect(hits['__media_tunnel_connects@203.0.113.10:80'] || 0, text).to.be.at.least(1);",
+              "});",
+              "pm.test('the loopback file was never asked for', function () {",
+              "  pm.expect(Object.keys(hits).filter(function (k) { return k.indexOf('media.internal') === 0; }), text).to.eql([]);",
               "});"
             ]
           }

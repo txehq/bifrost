@@ -771,6 +771,13 @@ const bflResult = (id) => {
 		return { id, status: "Ready", result: { sample: "https://delivery.example.test/bfl/sample.jpeg", end_time: 1762700000, seed: 7 }, progress: null, details: null, cost: 4 };
 	case "bfl-video-ready":
 		return { id, status: "Ready", result: { sample: "https://delivery.example.test/bfl/sample.mp4", end_time: 1762700000 }, progress: null, details: null, cost: 30 };
+	// The download rows of folder 422: a sample link at a public-looking address, which the gateway reaches
+	// through the media tunnel (bfl's proxy_config), and one on this fixture's own loopback address, which the
+	// gateway must refuse without asking for it.
+	case "bfl-video-media-gapped":
+		return { id, status: "Ready", result: { sample: `http://${MEDIA_PUBLIC_HOST}/pp/media/gapped.mp4?X-Fixture-Signature=signed`, end_time: 1762700000 }, progress: null, details: null, cost: 30 };
+	case "bfl-video-media-loopback":
+		return { id, status: "Ready", result: { sample: `http://127.0.0.1:${port}/pp/media/internal.mp4?X-Fixture-Signature=signed`, end_time: 1762700000 }, progress: null, details: null, cost: 30 };
 	case "bfl-moderated":
 		return { id, status: "Content Moderated", result: null, progress: null, details: { "Moderation Reasons": ["Derivative Works Filter"] }, cost: 0 };
 	case "bfl-pending":

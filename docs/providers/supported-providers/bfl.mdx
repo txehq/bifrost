@@ -151,7 +151,7 @@ A model outside this table receives only the prompt and the extra fields; any un
 
 ## FLUX 3 Video
 
-The model is `flux-3-video`; any other model on `POST /v1/videos` is refused with 400. A create is exactly one `POST /v1/flux-3-video`; a dropped connection is returned as the error and the create is never sent again. A query is one `GET /v1/get_result`, and the task id has the image task id's form, with the model `flux-3-video`.
+The model is `flux-3-video`; any other model on `POST /v1/videos` is refused with 400. A create is exactly one `POST /v1/flux-3-video`; a dropped connection is returned as the error and the create is never sent again. A query is one `GET /v1/get_result`, and the task id has the image task id's form, with the model `flux-3-video`. Only that id is a video id: a bare BFL id, or an image task's id, is refused with 400 on the query and the download, before the key is sent.
 
 | Unified field | BFL field | Notes |
 |---------------|-----------|-------|
@@ -166,6 +166,6 @@ The model is `flux-3-video`; any other model on `POST /v1/videos` is refused wit
 | `size`, `output_format`, `last_frame`, `reference_images` | | Refused: BFL has no counterpart |
 | `callback_url`, `client_reference_id`, `expires_after_seconds`, `output_storage_uri` | | Refused: the endpoint has no webhook, external id, deadline or storage target, so a lost create response cannot be recovered |
 
-Extra fields (`draft`, `draft_cache`, `keyframes`, `safety_tolerance`, ...) are sent unchanged. `seed` and `negative_prompt` have no BFL counterpart and are not sent.
+Extra fields (`draft`, `draft_cache`, `keyframes`, `safety_tolerance`, ...) are sent unchanged. `duration` and `generate_audio` are BFL's names for `seconds` and `audio`, which BFL bills by: as extra fields they are refused with 400 `caller_unsupported_parameter` unless the request sends the unified field with the same value, and the body is always written from the unified field. `seed` and `negative_prompt` have no BFL counterpart and are not sent.
 
-The query maps BFL's statuses as for image tasks. A completed task's `videos[]` holds the sample link (`type` `url`, `content_type` `video/mp4`), `expires_at` is two hours after BFL's `end_time`, and `usage.vendor_cost` is BFL's cost in credits. `GET /v1/videos/{video_id}/content` fetches the sample link through the media fetcher, which reaches public addresses only.
+The query maps BFL's statuses as for image tasks. A completed task's `videos[]` holds the sample link (`type` `url`, `content_type` `video/mp4`), `expires_at` is two hours after BFL's `end_time`, and `usage.vendor_cost` is BFL's cost in credits. `GET /v1/videos/{video_id}/content` fetches the sample link through the media fetcher, which reaches public addresses only, through the provider's proxy, and sends no key. The file is forwarded as it arrives, never held whole.

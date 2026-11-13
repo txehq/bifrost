@@ -188,6 +188,8 @@ var vendorPriceFieldNames = func() []VendorPriceFieldName {
 	transcription := []RequestType{TranscriptionRequest, TranscriptionStreamRequest}
 	return []VendorPriceFieldName{
 		{BytePlus, "ratio", "aspect_ratio", video},
+		{BFL, "duration", "seconds", video},
+		{BFL, "generate_audio", "audio", video},
 		{MiniMax, "ratio", "aspect_ratio", video},
 		{Gemini, "aspectRatio", "aspect_ratio", video},
 		{Vertex, "aspectRatio", "aspect_ratio", video},

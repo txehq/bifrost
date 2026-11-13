@@ -10,6 +10,7 @@ import (
 
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // FLUX 3 Video (TXE-6617, contract C4 to C7 and C9, BFL vendor sheet B15 to B19). BFL serves it
@@ -45,6 +46,23 @@ func toBFLVideoBody(request *schemas.BifrostVideoGenerationRequest) (*bflImageBo
 	if request.Params != nil {
 		// The typed unified fields are converted below; their raw copies must not reach BFL too.
 		extra = extraWithout(request.Params.ExtraParams, schemas.UnifiedVideoGenerationFields)
+	}
+	// duration and generate_audio are BFL's names for seconds and audio, and BFL bills by both
+	// (contract C4). Core refuses either as an extra param unless the request sent the unified
+	// field with the same value (schemas.VendorPriceFieldNames). That copy is dropped, since the
+	// body below is written from the unified field; without the unified field it is refused here
+	// too, so no path sends BFL a billed value the request does not show.
+	if _, given := extra["duration"]; given {
+		if request.Params == nil || request.Params.Seconds == nil {
+			return nil, refuse("duration", "FLUX 3 Video's duration is set through the request's seconds field, never through an extra param")
+		}
+		delete(extra, "duration")
+	}
+	if _, given := extra["generate_audio"]; given {
+		if request.Params == nil || request.Params.Audio == nil {
+			return nil, refuse("generate_audio", "FLUX 3 Video's generate_audio is set through the request's audio field, never through an extra param")
+		}
+		delete(extra, "generate_audio")
 	}
 	if request.Input != nil && request.Input.Prompt != "" {
 		fields["prompt"] = request.Input.Prompt
@@ -157,6 +175,14 @@ func (provider *BFLProvider) VideoRetrieve(ctx *schemas.BifrostContext, key sche
 	if !ok {
 		return nil, providerUtils.NewBifrostBadRequestError("invalid BFL task id")
 	}
+	// Only the id VideoGeneration handed out is a video id: {BFL id}|flux-3-video, with the
+	// polling host when there is one. A bare BFL id or an image task's id names a task the video
+	// routes never created, so it is refused before the key is sent anywhere. Governance binds a
+	// video to the virtual key under the id it recorded and fails closed on any other spelling
+	// (TXE-7119); this keeps the provider from answering one either.
+	if ref.model != videoModel {
+		return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("not a BFL video task id: a FLUX 3 Video id is the one POST /v1/videos returned, {task id}|%s", videoModel))
+	}
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 	body, latency, bifrostErr := provider.doRequest(ctx, key, http.MethodGet, ref.pollURL(provider.networkConfig.BaseURL), nil, false, sendBackRawResponse)
 	if bifrostErr != nil {
@@ -223,32 +249,34 @@ func videoContentType(link string) string {
 	return "video/mp4"
 }
 
-// VideoDownload fetches a completed task's video from BFL's result link (B18). The link comes
-// from BFL's response, so it goes through the SSRF-hardened media fetcher (public addresses only,
-// size and time bounded), not the provider client, and no key is sent.
+// VideoDownload fetches a completed task's video from BFL's result link (B18): one query, then
+// one download. The link comes from BFL's response, so it is fetched through the SSRF-hardened
+// media fetcher (public addresses only, checked at dial time and on every redirect, through the
+// provider's proxy), never the provider client: no BaseURL is passed, so even a link on the
+// API's own origin takes that path. No request is passed either, so the key reaches no file
+// host. A caller that asked for a stream gets the open response (contract C9; TXE-7036).
 func (provider *BFLProvider) VideoDownload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
 	task, bifrostErr := provider.VideoRetrieve(ctx, key, &schemas.BifrostVideoRetrieveRequest{Provider: request.Provider, ID: request.ID})
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 	if task.Status != schemas.VideoStatusCompleted {
-		return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("video not ready, current status: %s", task.Status), nil)
+		return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("video not ready, current status: %s", task.Status))
 	}
 	if len(task.Videos) == 0 || task.Videos[0].URL == nil || *task.Videos[0].URL == "" {
-		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil)
+		return nil, schemas.NewProviderEmptyResultError("bfl reported the task Ready with no video link")
 	}
 	videoURL := *task.Videos[0].URL
-	start := time.Now()
-	contentType, body, err := providerUtils.FetchMediaURL(ctx, videoURL)
-	latency := time.Since(start)
-	if err != nil {
-		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("failed to download video", err), latency)
-	}
-	resp := &schemas.BifrostVideoDownloadResponse{
-		VideoID:     request.ID,
-		Content:     body,
-		ContentType: providerUtils.VideoContentTypeOr(contentType, videoContentType(videoURL)),
-	}
-	resp.ExtraFields.Latency = latency.Milliseconds()
-	return resp, nil
+	return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
+		VendorURL:                videoURL,
+		Stream:                   request.Stream,
+		VideoID:                  request.ID,
+		StreamIdleTimeoutSeconds: provider.networkConfig.StreamIdleTimeoutInSeconds,
+		ParseError: func(resp *fasthttp.Response) *schemas.BifrostError {
+			return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()), nil)
+		},
+		ContentType: func(upstream string) string {
+			return providerUtils.VideoContentTypeOr(upstream, videoContentType(videoURL))
+		},
+	})
 }

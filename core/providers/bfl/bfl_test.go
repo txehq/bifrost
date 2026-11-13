@@ -697,6 +697,16 @@ func TestBFLVideoConversion(t *testing.T) {
 			req:        videoRequest(&schemas.VideoGenerationInput{Prompt: "p", InputReference: &ref}, &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"keyframes": []any{"a", "b"}}}),
 			wantRefuse: "input_reference",
 		},
+		// BFL's own names for seconds and audio are billed (TXE-6617): never sent without the
+		// unified field, and with it the body is written from the unified field only.
+		{name: "duration as an extra param without seconds is refused", req: videoRequest(nil, &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"duration": float64(10)}}), wantRefuse: "duration"},
+		{name: "generate_audio as an extra param without audio is refused", req: videoRequest(nil, &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"generate_audio": true}}), wantRefuse: "generate_audio"},
+		{
+			name: "duration and generate_audio beside seconds and audio are written from the unified fields",
+			req: videoRequest(nil, &schemas.VideoGenerationParameters{Seconds: str("5"), Audio: schemas.Ptr(true),
+				ExtraParams: map[string]any{"duration": float64(5), "generate_audio": true}}),
+			want: map[string]any{"duration": float64(5), "generate_audio": true},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -795,6 +805,19 @@ func TestBFLVideoSubmitAndQuery(t *testing.T) {
 	}
 	if rec.paths[1] != "/v1/get_result?id=v1" || got.Status != schemas.VideoStatusInProgress || got.ProviderStatus != "Generating" || got.ID != task.ID {
 		t.Fatalf("query %q -> %+v", rec.paths[1], got)
+	}
+	// Only the id the create handed out is a video id: a bare BFL id, or one naming an image
+	// model, is refused before the key is sent anywhere (TXE-6617 review).
+	for _, id := range []string{"v1", "v1:bfl", "v1|flux-pro-1.1", "v1|flux-3-image|api.us1.bfl.ai", "v1|FLUX-3-VIDEO"} {
+		if _, bifrostErr := provider.VideoRetrieve(imageTaskCtx(t), key, &schemas.BifrostVideoRetrieveRequest{Provider: schemas.BFL, ID: id}); bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+			t.Errorf("query of %q: got %+v, want 400", id, bifrostErr)
+		}
+		if _, bifrostErr := provider.VideoDownload(imageTaskCtx(t), key, &schemas.BifrostVideoDownloadRequest{Provider: schemas.BFL, ID: id}); bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+			t.Errorf("download of %q: got %+v, want 400", id, bifrostErr)
+		}
+	}
+	if len(rec.paths) != 2 {
+		t.Fatalf("a refused id reached BFL: %q", rec.paths)
 	}
 }
 
@@ -896,6 +919,19 @@ func TestBFLVideoDownload(t *testing.T) {
 	}
 	if string(got.Content) != "MP4 BYTES" || got.ContentType != "video/mp4" {
 		t.Fatalf("download = %q %q, want the bytes as video/mp4", got.Content, got.ContentType)
+	}
+	// A caller that asks for a stream gets the open response, with the same bytes and type.
+	streamed, bifrostErr := provider.VideoDownload(ctx, schemas.Key{Value: *schemas.NewSecretVar("k")}, &schemas.BifrostVideoDownloadRequest{Provider: schemas.BFL, ID: "v1|flux-3-video", Stream: true})
+	if bifrostErr != nil {
+		t.Fatalf("streamed download: %+v", bifrostErr.Error)
+	}
+	if streamed.Body == nil {
+		t.Fatalf("streamed download has no body: %+v", streamed)
+	}
+	streamedBytes, err := io.ReadAll(streamed.Body)
+	_ = streamed.Body.Close()
+	if err != nil || string(streamedBytes) != "MP4 BYTES" || streamed.ContentType != "video/mp4" {
+		t.Fatalf("streamed download = %q %q (%v), want the bytes as video/mp4", streamedBytes, streamed.ContentType, err)
 	}
 
 	var internalHits atomic.Int32
