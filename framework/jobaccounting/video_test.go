@@ -1593,3 +1593,33 @@ func TestVideoSettle_ResolutionTierSurvivesSettlementAndReprice(t *testing.T) {
 		})
 	}
 }
+
+// A custom provider on a Veo base renders the requested tier like Gemini does, so settlement and
+// reprice hand pricing the base provider to choose the band by (TXE-7349). The custom name still
+// prices the job.
+func TestVideoSettle_CustomProviderPricesWithItsBaseProvider(t *testing.T) {
+	retriever := &resolvingVideoRetriever{bases: map[schemas.ModelProvider]schemas.ModelProvider{"my-veo": schemas.Gemini}}
+	settler := NewVideoSettler(retriever)
+	dims := generationDims("sora-2-pro", "3840x2160", 8)
+	dims.Resolution = "1080p"
+	job := videoJob(t, "vid_custom_veo", dims)
+	pricing := &dimsRecordingPricing{}
+	settlement, err := settler.Settle(context.Background(), pricing, JobRequest{
+		Provider: "my-veo", ProviderJobID: job.JobID, FallbackModel: job.Model, Job: job,
+		Payload: VideoPayload{Response: &schemas.BifrostVideoGenerationResponse{
+			Status: schemas.VideoStatusCompleted, Seconds: bifrost.Ptr("8"),
+			Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+		}},
+	})
+	require.NoError(t, err)
+	require.Len(t, pricing.seen, 1)
+	assert.Equal(t, schemas.Gemini, pricing.seen[0].BaseProvider)
+
+	entry := &logstore.Log{Model: "sora-2-pro", Provider: "my-veo"}
+	settlement.ApplyDebug(entry)
+	_, err = settler.RepriceFromLog(entry, pricing)
+	require.NoError(t, err)
+	require.Len(t, pricing.seen, 2)
+	assert.Equal(t, schemas.Gemini, pricing.seen[1].BaseProvider)
+	assert.Equal(t, "1080p", pricing.seen[1].Resolution)
+}

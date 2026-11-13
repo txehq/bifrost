@@ -152,6 +152,17 @@ func (s *VideoSettler) SupportsProvider(provider schemas.ModelProvider) bool {
 	return false
 }
 
+// baseProvider is the base provider of a custom provider, or "" when the name is not one or the
+// retriever cannot say. Pricing reads it to know which converter rendered the job (TXE-7349).
+func (s *VideoSettler) baseProvider(provider schemas.ModelProvider) schemas.ModelProvider {
+	if resolver, ok := s.retriever.(BaseProviderResolver); ok {
+		if base := resolver.BaseProvider(provider); base != provider {
+			return base
+		}
+	}
+	return ""
+}
+
 // BaseProviderResolver is implemented by a VideoRetriever that can name the base provider of a
 // configured custom provider ("" when the name is not a custom provider). Fork addition.
 type BaseProviderResolver interface {
@@ -366,6 +377,7 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 		return settlement, nil
 	}
 
+	dims.BaseProvider = s.baseProvider(jobReq.Provider)
 	details := pricing.CalculateVideoCostDetails(dims, jobReq.Provider, jobReq.Scopes)
 	if !details.Priced {
 		settlement.UnpriceableReason = UnpriceableReasonMissingVideoPricing
@@ -471,9 +483,10 @@ func (s *VideoSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManage
 		Size:        accounting.Size,
 		// The settlement's audio flag (TXE-7306): without it an explicit audio false
 		// would reprice at the provider's default, the with-audio rate.
-		Audio:       accounting.Audio,
-		Resolution:  accounting.Resolution,
-		OutputCount: accounting.OutputCount,
+		Audio:        accounting.Audio,
+		Resolution:   accounting.Resolution,
+		BaseProvider: s.baseProvider(schemas.ModelProvider(entry.Provider)),
+		OutputCount:  accounting.OutputCount,
 	}, schemas.ModelProvider(entry.Provider), &scopes)
 	if !details.Priced {
 		return nil, fmt.Errorf("%w: no video rate for log %s", ErrPricingInputsUnavailable, entry.ID)

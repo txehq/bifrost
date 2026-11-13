@@ -43,6 +43,11 @@ type VideoPricingDimensions struct {
 	// aspect ratio and renders at the requested tier, so only a reported size outranks the
 	// tier. It is set by VideoDimensionsFromResponse and MergedWith and never persisted.
 	SizeReported bool `json:"-"`
+	// BaseProvider is the base provider of a custom provider, set by the caller that can
+	// resolve it. Pricing reads it only to know which converter rendered the job (see
+	// videoProvidersRenderingRequestedTier); the custom name still selects the rates. It is
+	// never persisted.
+	BaseProvider schemas.ModelProvider `json:"-"`
 
 	// Type is the operation selector ("upscale", "3d"). These do not bill per
 	// second of output at all, so a rate keyed only on duration is wrong for them.
@@ -225,7 +230,11 @@ func (d VideoPricingDimensions) bandSize(provider schemas.ModelProvider, pricing
 	if !sizeBand {
 		return tier
 	}
-	if _, ok := videoProvidersRenderingRequestedTier[provider]; ok {
+	renderer := provider
+	if d.BaseProvider != "" {
+		renderer = d.BaseProvider
+	}
+	if _, ok := videoProvidersRenderingRequestedTier[renderer]; ok {
 		return tier
 	}
 	if videoOutputPerSecondRate(pricing, tier, audio) > videoOutputPerSecondRate(pricing, d.Size, audio) {

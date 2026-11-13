@@ -8942,6 +8942,9 @@ func TestVideoPricingDimensions_BandSizePrecedence(t *testing.T) {
 	assert.Equal(t, "1920x1080", band(VideoPricingDimensions{Size: "1920x1080", Resolution: "480p"}, schemas.OpenAI))
 	assert.Equal(t, "1920x1080", band(VideoPricingDimensions{Size: "1920x1080", Extra: map[string]any{"resolution": "480p"}}, schemas.Runway))
 	assert.Equal(t, "4k", band(VideoPricingDimensions{Size: "854x480", Resolution: "4k"}, schemas.OpenAI))
+	// A custom provider takes its base provider's rule; the custom name alone is not on the list.
+	assert.Equal(t, "3840x2160", band(VideoPricingDimensions{Size: "3840x2160", Resolution: "1080p"}, "my-veo"))
+	assert.Equal(t, "1080p", band(VideoPricingDimensions{Size: "3840x2160", Resolution: "1080p", BaseProvider: schemas.Gemini}, "my-veo"))
 
 	assert.Equal(t, "", VideoPricingDimensions{Extra: map[string]any{"resolution": 1080}}.BandResolution(),
 		"a numeric resolution (Runware 3D) names no band")
