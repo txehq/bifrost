@@ -373,6 +373,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "vk_rotation_cooldown must not exceed 30 days")
 		return
 	}
+	// TXE-7148: 0 means the built-in limit; a negative one cannot be meant.
+	if payload.ClientConfig.MaxResponseBodySizeMB < 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "max_response_body_size_mb must not be negative")
+		return
+	}
 
 	// Validating framework config. An empty pricing_url or model_parameters_url
 	// (what the UI sends when the field is cleared) resets it to the default.
@@ -877,6 +882,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if _, present := clientConfigFields["disable_encrypted_reasoning_retry"]; present {
 		updatedConfig.DisableEncryptedReasoningRetry = payload.ClientConfig.DisableEncryptedReasoningRetry
 	}
+	// The response body limit (TXE-7148) is copied only when sent too, so a dashboard that
+	// predates it keeps the stored value; 0 sent explicitly restores the built-in limit.
+	if _, present := clientConfigFields["max_response_body_size_mb"]; present {
+		updatedConfig.MaxResponseBodySizeMB = payload.ClientConfig.MaxResponseBodySizeMB
+	}
 
 	// Rotation grace period; bounds validated up front. Copied unconditionally
 	// so 0 clears a previously stored cooldown.
@@ -968,6 +978,8 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	h.store.Mu.Lock()
 	*h.store.ClientConfig = *updatedConfig
 	h.store.Mu.Unlock()
+	// Every buffered upstream read takes the limit from here on (TXE-7148).
+	network.SetMaxResponseBodySizeMB(updatedConfig.MaxResponseBodySizeMB)
 	// Publish a saved allowlist change here rather than relying on the reload
 	// below: if its store read fails, a removed host would stay reachable.
 	if allowlistChanged {

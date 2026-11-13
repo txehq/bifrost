@@ -2024,3 +2024,62 @@ func TestConfigRoundTrip_ExplicitRetentionIsKept(t *testing.T) {
 		require.Equal(t, fasthttp.StatusOK, status, "from_db=%v: %s", fromDB, body)
 	}
 }
+
+// TXE-7148: client.max_response_body_size_mb is copied only when sent, applies to the next
+// buffered upstream read without a restart, reads back through GET /api/config, and a negative
+// value is refused before anything changes.
+func TestUpdateConfig_MaxResponseBodySizeMB(t *testing.T) {
+	SetLogger(&mockLogger{})
+	t.Cleanup(func() { network.SetMaxResponseBodySizeMB(0) })
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	assertLimit := func(mb int) {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		assert.Equal(t, mb, persisted.MaxResponseBodySizeMB, "stored max_response_body_size_mb")
+		assert.Equal(t, mb, cfg.ClientConfig.MaxResponseBodySizeMB, "live max_response_body_size_mb")
+		want := int64(network.DefaultMaxResponseBodySizeMB) << 20
+		if mb > 0 {
+			want = int64(mb) << 20
+		}
+		assert.Equal(t, want, network.MaxResponseBodyBytes(), "the limit buffered reads use")
+	}
+
+	assertLimit(0)
+
+	set := putConfigCtx(`{"client_config":{"log_retention_days":8,"max_response_body_size_mb":64}}`)
+	h.updateConfig(set)
+	require.Equal(t, fasthttp.StatusOK, set.Response.StatusCode(), string(set.Response.Body()))
+	assertLimit(64)
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":8}}`)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	assertLimit(64)
+
+	var readReq fasthttp.Request
+	readReq.Header.SetMethod("GET")
+	read := initCtx(&readReq)
+	h.getConfig(read)
+	require.Equal(t, fasthttp.StatusOK, read.Response.StatusCode(), string(read.Response.Body()))
+	var shown struct {
+		ClientConfig struct {
+			MaxResponseBodySizeMB int `json:"max_response_body_size_mb"`
+		} `json:"client_config"`
+	}
+	require.NoError(t, json.Unmarshal(read.Response.Body(), &shown), string(read.Response.Body()))
+	assert.Equal(t, 64, shown.ClientConfig.MaxResponseBodySizeMB, "GET /api/config shows the limit")
+
+	negative := putConfigCtx(`{"client_config":{"log_retention_days":8,"max_response_body_size_mb":-1}}`)
+	h.updateConfig(negative)
+	assert.Equal(t, fasthttp.StatusBadRequest, negative.Response.StatusCode(), string(negative.Response.Body()))
+	assertLimit(64)
+
+	reset := putConfigCtx(`{"client_config":{"log_retention_days":8,"max_response_body_size_mb":0}}`)
+	h.updateConfig(reset)
+	require.Equal(t, fasthttp.StatusOK, reset.Response.StatusCode(), string(reset.Response.Body()))
+	assertLimit(0)
+}

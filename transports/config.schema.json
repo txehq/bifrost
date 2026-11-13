@@ -353,6 +353,12 @@
           "description": "Fork (txehq/bifrost): turn off the SSE comment heartbeat on passthrough streams. When true, an idle text/event-stream passthrough response from any provider carries only the bytes the vendor sent, so a caller that promises its clients the vendor's exact protocol can read usage from the unchanged stream. The gateway then notices a disconnected client at the vendor's next event instead of during the idle gap. Honoured on a config save without a restart.",
           "default": false
         },
+        "max_response_body_size_mb": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Fork (txehq/bifrost): the largest upstream response body, in MB, that Bifrost reads into memory. It bounds every buffered provider answer, both as received and after decompression, and the gateway's other whole-body upstream reads (OAuth discovery, the pricing and model-parameter datasheets). A larger answer fails with a bifrost_internal error that names the limit; it is never cut short. The vendor may already have billed that request, and the gateway bears that cost. Streamed responses are not affected. 0 or unset means 512. Honoured on a config save without a restart.",
+          "default": 0
+        },
         "disable_encrypted_reasoning_retry": {
           "type": "boolean",
           "description": "Fork (txehq/bifrost): turn off the encrypted-reasoning retry. By default, when a request replays encrypted reasoning (an OpenAI encrypted_content item, an Anthropic signature or redacted_thinking block, a Gemini thought signature) and the upstream answers 400, Bifrost strips the encrypted content and calls the upstream once more on the same key. When true, that second call is not made and the caller gets the vendor's 400 unchanged, so one request is exactly one upstream call. Honoured on a config save without a restart.",

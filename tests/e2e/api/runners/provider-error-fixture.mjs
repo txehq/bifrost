@@ -5,6 +5,7 @@ import https from "node:https";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 
 const port = Number(process.env.PROVIDER_ERROR_FIXTURE_PORT || "8791");
 // The stall proxy: an HTTP proxy that accepts the TCP connection and never answers the CONNECT, so a
@@ -101,6 +102,22 @@ behaviours["azure-content-filter"] = () => ({
 			},
 		},
 	}),
+});
+// Answers past a 1 MB response limit (folder 513, TXE-7148). upstream-oversize is a 2 MiB chat completion;
+// upstream-oversize-gzip-500 is a 500 whose gzip body is a few KiB on the wire and 2 MiB once decompressed.
+const OVERSIZE_BYTES = 2 * 1024 * 1024;
+behaviours["upstream-oversize"] = () => {
+	const r = behaviours["upstream-ok"]();
+	const completion = JSON.parse(r.body);
+	completion.id = "chatcmpl-upstream-oversize";
+	completion.model = "upstream-oversize";
+	completion.choices[0].message.content = "x".repeat(OVERSIZE_BYTES);
+	return { ...r, body: JSON.stringify(completion) };
+};
+behaviours["upstream-oversize-gzip-500"] = () => ({
+	status: 500,
+	headers: { "Content-Encoding": "gzip" },
+	body: gzipSync(errorBody("x".repeat(OVERSIZE_BYTES), "server_error", "internal_error")),
 });
 // upstream-slow answers as upstream-ok does, after SLOW_MS.
 behaviours["upstream-slow"] = () => ({ ...behaviours["upstream-ok"](), delayMs: SLOW_MS });

@@ -1604,6 +1604,8 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 	if err := lib.ApplyMCPOAuthPrivateAllowlist(config.MCPOAuthPrivateAllowlist); err != nil {
 		logger.Warn("ignoring invalid mcp_oauth_private_allowlist during client config reload: %v", err)
 	}
+	// Cluster peers reload through here too, so one node's saved limit reaches every node (TXE-7148).
+	network.SetMaxResponseBodySizeMB(config.MaxResponseBodySizeMB)
 	// Reloading whitelisted routes from the client config
 	if s.AuthMiddleware != nil {
 		s.AuthMiddleware.UpdateWhitelistedRoutes(config.WhitelistedRoutes)

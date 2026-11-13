@@ -374,7 +374,14 @@ func openFetch(ctx context.Context, resourceURL string, limits fetchLimits, head
 	resp, err := DoHTTPRequest(client, req)
 	if err != nil {
 		if errors.Is(err, fasthttp.ErrBodyTooLarge) {
-			return nil, redacted, fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, limits.maxBytes)
+			// The transport reads under the tighter of this fetch's cap and
+			// client.max_response_body_size_mb (TXE-7148); name the one that applied.
+			limit := limits.maxBytes
+			var tooLarge *network.ResponseBodyTooLargeError
+			if errors.As(err, &tooLarge) && tooLarge.Limit > 0 && tooLarge.Limit < limit {
+				limit = tooLarge.Limit
+			}
+			return nil, redacted, fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, limit)
 		}
 		return nil, redacted, fmt.Errorf("failed to fetch from %q: %w", redacted, sanitizeFetchError(err, redacted))
 	}

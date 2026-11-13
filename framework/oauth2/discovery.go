@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -382,7 +381,7 @@ func fetchResourceMetadata(ctx context.Context, metadataURL string) ([]string, [
 	}
 
 	var data ResourceMetadata
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+	if err := json.NewDecoder(network.NewBoundedReader(resp.Body, 0)).Decode(&data); err != nil {
 		return nil, nil, "", fmt.Errorf("failed to decode resource metadata: %w", err)
 	}
 
@@ -479,7 +478,7 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 
 		if resp.StatusCode == http.StatusOK {
 			var metadata OAuthMetadata
-			bodyBytes, err := io.ReadAll(resp.Body)
+			bodyBytes, err := network.ReadAllBounded(resp.Body)
 			resp.Body.Close()
 
 			if err != nil {
@@ -666,7 +665,7 @@ func RegisterDynamicClient(ctx context.Context, registrationURL string, req *Dyn
 	defer resp.Body.Close()
 
 	// Read response
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := network.ReadAllBounded(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read registration response: %w", err)
 	}

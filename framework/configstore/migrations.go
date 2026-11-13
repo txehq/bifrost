@@ -576,6 +576,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_virtual_key_allowed_cloud_resource_columns"}, run: migrationAddVirtualKeyAllowedCloudResourceColumns},
 	{IDs: []string{"add_storage_prefix_indexes"}, run: migrationAddStoragePrefixIndexes},
 	{IDs: []string{"backfill_batch_output_folders"}, run: migrationBackfillBatchOutputFolders},
+	{IDs: []string{"add_client_config_max_response_body_size_mb_column"}, run: migrationAddClientConfigMaxResponseBodySizeMBColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16606,6 +16607,33 @@ func migrationAddVertexUseSessionRoutingColumn(ctx context.Context, db *gorm.DB,
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			return dropColumnIfExists(tx, logger, &tables.TableKey{}, "vertex_use_session_routing")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddClientConfigMaxResponseBodySizeMBColumn adds max_response_body_size_mb to
+// config_client (fork, TXE-7148). It defaults to 0, which reads as the built-in 512 MB limit, so
+// an upgrade gets the limit without a stored value.
+func migrationAddClientConfigMaxResponseBodySizeMBColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_max_response_body_size_mb_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "max_response_body_size_mb"); err != nil {
+				return err
+			}
+			return tx.Exec("UPDATE config_client SET max_response_body_size_mb = ? WHERE max_response_body_size_mb IS NULL", 0).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "max_response_body_size_mb")
 		},
 	}})
 	if err := m.Migrate(); err != nil {

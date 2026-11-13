@@ -12,6 +12,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,7 +22,9 @@ import (
 
 	"github.com/capsohq/bifrost/core/internal/testtime"
 
+	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
@@ -1927,5 +1931,49 @@ func TestDoStreamingRequest_FirstTokenDeadlineEndsAStalledDial(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("the first-token deadline did not end an attempt stalled in its dial")
+	}
+}
+
+// TXE-7148: with a large-response threshold above client.max_response_body_size_mb, the limit is
+// the threshold. Before, a chunked (or decompressed) answer between the two was buffered whole and
+// accepted, while the same answer with a Content-Length was refused. Now both are streamed through
+// as large responses and neither is held in memory.
+func TestFinalizeResponseWithLargeDetection_ThresholdAboveTheLimitStreams(t *testing.T) {
+	network.SetMaxResponseBodySizeMB(1)
+	t.Cleanup(func() { network.SetMaxResponseBodySizeMB(0) })
+	body := strings.Repeat("x", 2<<20)
+	for _, tc := range []struct {
+		name    string
+		chunked bool
+	}{{"chunked", true}, {"content-length", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if !tc.chunked {
+					w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+				}
+				for i := 0; i < len(body); i += 64 << 10 {
+					w.Write([]byte(body[i : i+64<<10])) //nolint:errcheck
+					if f, ok := w.(http.Flusher); ok && tc.chunked {
+						f.Flush()
+					}
+				}
+			}))
+			t.Cleanup(srv.Close)
+			ctx, resp, release := largeResponseRequest(t, srv, 5*time.Second)
+			defer release()
+			ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(8<<20))
+
+			buffered, isLarge, bifrostErr := FinalizeResponseWithLargeDetection(ctx, resp, nil)
+			require.Nil(t, bifrostErr)
+			require.True(t, isLarge, "an answer past the limit is streamed, not buffered")
+			require.Nil(t, buffered)
+			reader, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseReader).(io.ReadCloser)
+			require.True(t, ok)
+			streamed, err := io.ReadAll(reader)
+			require.NoError(t, err)
+			require.NoError(t, reader.Close())
+			require.Equal(t, len(body), len(streamed))
+		})
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -5001,5 +5002,103 @@ func TestUndeliverableServiceTierError(t *testing.T) {
 	}
 	if UndeliverableServiceTierError(schemas.Ptr(schemas.BifrostServiceTierDefault), schemas.Perplexity) != nil {
 		t.Fatal("the default tier is what the vendor serves without the field")
+	}
+}
+
+// TXE-7148: CheckAndDecodeBody holds every decoded stage to client.max_response_body_size_mb. A
+// 2 MiB body of zeros compresses to a few KiB, well inside the limit as received; before the
+// bound, every coding below expanded it in full. Under the limit, the body decodes unchanged.
+func TestCheckAndDecodeBody_DecodedSizeIsBounded(t *testing.T) {
+	network.SetMaxResponseBodySizeMB(1)
+	t.Cleanup(func() { network.SetMaxResponseBodySizeMB(0) })
+
+	over := make([]byte, 2<<20)
+	under := bytes.Repeat([]byte("a"), 512<<10)
+	encoders := map[string]func([]byte) []byte{
+		"gzip":    compressGzip,
+		"deflate": compressFlate,
+		"br":      compressBrotli,
+		"zstd":    compressZstd,
+	}
+	for encoding, encode := range encoders {
+		t.Run(encoding, func(t *testing.T) {
+			compressed := encode(over)
+			if len(compressed) >= 1<<20 {
+				t.Fatalf("test setup: %s body is %d bytes, not a small body that expands", encoding, len(compressed))
+			}
+			resp := fasthttp.AcquireResponse()
+			defer fasthttp.ReleaseResponse(resp)
+			resp.Header.Set("Content-Encoding", encoding)
+			resp.SetBody(compressed)
+			got, err := CheckAndDecodeBody(resp)
+			if got != nil || !errors.Is(err, network.ErrResponseBodyTooLarge) {
+				t.Fatalf("CheckAndDecodeBody = (%d bytes, %v), want (nil, ErrResponseBodyTooLarge)", len(got), err)
+			}
+			// The provider wraps it as a decode failure; the caller sees the limit, not "decode".
+			bifrostErr := NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+			if !bifrostErr.IsBifrostError || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeBifrostInternal {
+				t.Fatalf("wrapped error = %+v, want is_bifrost_error with error_type bifrost_internal", bifrostErr)
+			}
+			if !strings.Contains(bifrostErr.Error.Message, "limit 1 MiB") {
+				t.Fatalf("message %q does not name the limit", bifrostErr.Error.Message)
+			}
+
+			resp.SetBody(encode(under))
+			got, err = CheckAndDecodeBody(resp)
+			if err != nil || !bytes.Equal(got, under) {
+				t.Fatalf("under the limit: CheckAndDecodeBody = (%d bytes, %v), want the %d-byte body", len(got), err, len(under))
+			}
+		})
+	}
+
+	// A body set on the response directly (not read by the transport) is held to the limit too.
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+	resp.SetBody(over)
+	if _, err := CheckAndDecodeBody(resp); !errors.Is(err, network.ErrResponseBodyTooLarge) {
+		t.Fatalf("identity body over the limit: err = %v, want ErrResponseBodyTooLarge", err)
+	}
+}
+
+// Request path: every buffered gzip answer is decoded here once (TXE-7148 bounds the decode).
+func BenchmarkCheckAndDecodeBody_Gzip64KiB(b *testing.B) {
+	compressed := compressGzip(bytes.Repeat([]byte(`{"choices":[{"text":"hello"}]}`), 2200))
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+	resp.Header.Set("Content-Encoding", "gzip")
+	resp.SetBody(compressed)
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := CheckAndDecodeBody(resp); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// TXE-7148: a vendor error body that fits on the wire but decompresses past the limit is the
+// gateway's refusal. Before, the provider error parser kept the vendor's 500 and dropped the
+// error chain, so core could retry the request or try a fallback.
+func TestHandleProviderAPIError_ErrorBodyPastTheLimitIsBifrostsRefusal(t *testing.T) {
+	network.SetMaxResponseBodySizeMB(1)
+	t.Cleanup(func() { network.SetMaxResponseBodySizeMB(0) })
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+	resp.SetStatusCode(fasthttp.StatusInternalServerError)
+	resp.Header.Set("Content-Encoding", "gzip")
+	resp.SetBody(compressGzip([]byte(`{"error":{"message":"` + strings.Repeat("x", 2<<20) + `"}}`)))
+
+	var errorResp map[string]any
+	bifrostErr := HandleProviderAPIError(resp, &errorResp)
+	if bifrostErr == nil || !bifrostErr.IsBifrostError || bifrostErr.StatusCode != nil {
+		t.Fatalf("error = %+v, want is_bifrost_error with no vendor status", bifrostErr)
+	}
+	if bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeBifrostInternal {
+		t.Fatalf("error_type = %q, want bifrost_internal", bifrostErr.ExtraFields.ErrorType)
+	}
+	if bifrostErr.AllowFallbacks == nil || *bifrostErr.AllowFallbacks {
+		t.Fatal("an error body past the limit must not allow fallbacks")
+	}
+	if !errors.Is(bifrostErr.Error.Error, network.ErrResponseBodyTooLarge) {
+		t.Fatalf("error chain %v lost the limit error", bifrostErr.Error.Error)
 	}
 }

@@ -47,12 +47,14 @@ import (
 	"github.com/capsohq/bifrost/core/internal/memtest"
 	"github.com/capsohq/bifrost/core/keyselectors"
 	"github.com/capsohq/bifrost/core/mcp"
+	"github.com/capsohq/bifrost/core/network"
 	mistralprovider "github.com/capsohq/bifrost/core/providers/mistral"
 	openaiprovider "github.com/capsohq/bifrost/core/providers/openai"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/tidwall/gjson"
+	"github.com/valyala/fasthttp"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
@@ -13204,5 +13206,233 @@ func TestCallerRefusalsAreBoundedOnTheRequestPath(t *testing.T) {
 
 	if got := calls.Load(); got != 0 {
 		t.Errorf("refused requests made %d upstream calls, want 0", got)
+	}
+}
+
+// fasthttpClientsIn returns every *fasthttp.Client reachable from v through pointers, structs and
+// embedded fields, so a provider that embeds another (OpenAI-compatible providers do) or keeps a
+// second client (streaming, single-attempt) is covered too. Unexported fields can be read, not set,
+// through reflect, which is all this needs.
+func fasthttpClientsIn(v reflect.Value, path string, seen map[uintptr]bool, out map[string]reflect.Value) {
+	clientType := reflect.TypeOf((*fasthttp.Client)(nil))
+	switch v.Kind() {
+	case reflect.Pointer:
+		if v.IsNil() {
+			return
+		}
+		if v.Type() == clientType {
+			out[path] = v.Elem()
+			return
+		}
+		if seen[v.Pointer()] {
+			return
+		}
+		seen[v.Pointer()] = true
+		fasthttpClientsIn(v.Elem(), path, seen, out)
+	case reflect.Interface:
+		if !v.IsNil() {
+			fasthttpClientsIn(v.Elem(), path, seen, out)
+		}
+	case reflect.Struct:
+		// Only Bifrost's own structs: a library struct is not a provider's client to check.
+		if !strings.HasPrefix(v.Type().PkgPath(), "github.com/capsohq/bifrost/core") {
+			return
+		}
+		for i := 0; i < v.NumField(); i++ {
+			fasthttpClientsIn(v.Field(i), path+"."+v.Type().Field(i).Name, seen, out)
+		}
+	}
+}
+
+// TXE-7148: every provider's fasthttp clients read a buffered response under a limit. The context
+// transport applies client.max_response_body_size_mb when a client sets no cap of its own, so a
+// client is capped when it uses that transport or sets MaxResponseBodySize itself. A provider
+// built from a bare &fasthttp.Client{} without ConfigureDialer reads an unbounded body, and fails
+// here by name.
+func TestEveryProviderFasthttpClientCapsBufferedResponses(t *testing.T) {
+	contextTransport := reflect.TypeOf(providerUtils.NewContextTransport())
+	client := &Bifrost{logger: NewNoOpLogger()}
+	checked := 0
+	for _, providerKey := range schemas.StandardProviders {
+		provider, err := client.createBaseProvider(providerKey, &schemas.ProviderConfig{})
+		if err != nil {
+			t.Fatalf("construct %s with an empty configuration: %v", providerKey, err)
+		}
+		clients := map[string]reflect.Value{}
+		fasthttpClientsIn(reflect.ValueOf(provider), string(providerKey), map[uintptr]bool{}, clients)
+		for path, c := range clients {
+			checked++
+			transport := c.FieldByName("Transport")
+			viaContextTransport := !transport.IsNil() && transport.Elem().Type() == contextTransport
+			if !viaContextTransport && c.FieldByName("MaxResponseBodySize").Int() <= 0 {
+				t.Errorf("%s: fasthttp client reads a buffered response with no size limit; build it through providerUtils.ConfigureDialer (the context transport) or set MaxResponseBodySize", path)
+			}
+		}
+	}
+	if checked < len(schemas.StandardProviders) {
+		t.Fatalf("found %d fasthttp clients across %d providers: the walk is not reaching provider clients", checked, len(schemas.StandardProviders))
+	}
+}
+
+// unboundedReadAllowlist lists the whole-body reads in provider and network code that do not read
+// an upstream response, keyed by file and enclosing function. Each needs a reason.
+var unboundedReadAllowlist = map[string]string{
+	"providers/utils/utils.go (*fasthttpRoundTripper).RoundTrip": "reads the outbound request body a library hands to the provider's net/http client",
+	"providers/bedrock/bedrock.go signAWSRequest":                "hashes the outbound request body for the SigV4 signature",
+	"network/multipart.go ParseMultipartFormFields":              "reads parts of a caller's multipart request already in memory",
+	"network/multipart.go ReconstructMultipartBody":              "reads parts of a caller's multipart request already in memory",
+}
+
+// TXE-7148: provider and network code reads a whole upstream body only through
+// network.ReadAllBounded / ReadAllLimit / NewBoundedReader (or a read already capped by
+// io.LimitReader). Each of these, written anywhere else, reads an upstream body of any size into
+// memory: io.ReadAll or ioutil.ReadAll of an uncapped reader, fasthttp's BodyGunzip, BodyInflate,
+// BodyUnbrotli, BodyUnzstd and BodyUncompressed, a JSON decoder or a ReadFrom on a .Body. Before
+// this check, Bedrock read every answer with io.ReadAll(resp.Body) and CheckAndDecodeBody
+// decompressed without a bound.
+func TestNoUnboundedUpstreamBodyReads(t *testing.T) {
+	boundedWrappers := map[string]bool{"LimitReader": true, "NewBoundedReader": true}
+	decompressors := map[string]bool{"BodyGunzip": true, "BodyInflate": true, "BodyUnbrotli": true, "BodyUnzstd": true, "BodyUncompressed": true}
+	isBodyExpr := func(e ast.Expr) bool {
+		sel, ok := e.(*ast.SelectorExpr)
+		return ok && sel.Sel.Name == "Body"
+	}
+	isBoundedCall := func(e ast.Expr) bool {
+		call, ok := e.(*ast.CallExpr)
+		if !ok {
+			return false
+		}
+		switch fn := call.Fun.(type) {
+		case *ast.SelectorExpr:
+			return boundedWrappers[fn.Sel.Name]
+		case *ast.Ident:
+			return boundedWrappers[fn.Name]
+		}
+		return false
+	}
+	funcName := func(fd *ast.FuncDecl) string {
+		if fd.Recv == nil || len(fd.Recv.List) == 0 {
+			return fd.Name.Name
+		}
+		recv := fd.Recv.List[0].Type
+		star := ""
+		if s, ok := recv.(*ast.StarExpr); ok {
+			recv, star = s.X, "*"
+		}
+		if g, ok := recv.(*ast.IndexExpr); ok {
+			recv = g.X
+		}
+		if id, ok := recv.(*ast.Ident); ok {
+			return "(" + star + id.Name + ")." + fd.Name.Name
+		}
+		return fd.Name.Name
+	}
+
+	var violations []string
+	usedAllowlist := map[string]bool{}
+	for _, root := range []string{"providers", "network"} {
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, path, nil, 0)
+			if err != nil {
+				return err
+			}
+			for _, decl := range file.Decls {
+				fd, ok := decl.(*ast.FuncDecl)
+				if !ok || fd.Body == nil {
+					continue
+				}
+				key := filepath.ToSlash(path) + " " + funcName(fd)
+				ast.Inspect(fd.Body, func(n ast.Node) bool {
+					// A bounded read whose error is dropped turns an over-limit body into an empty
+					// one: the caller then reports the vendor's status, which core may retry or
+					// send to a fallback, instead of the gateway's refusal.
+					if assign, ok := n.(*ast.AssignStmt); ok && len(assign.Lhs) == 2 && len(assign.Rhs) == 1 {
+						if blank, ok := assign.Lhs[1].(*ast.Ident); ok && blank.Name == "_" {
+							if rc, ok := assign.Rhs[0].(*ast.CallExpr); ok {
+								if rsel, ok := rc.Fun.(*ast.SelectorExpr); ok && (rsel.Sel.Name == "ReadAllBounded" || rsel.Sel.Name == "ReadAllLimit") {
+									violations = append(violations, fmt.Sprintf("%s: the error of %s is discarded in %s; an over-limit body must fail the request (wrap it with providerUtils.NewBifrostOperationError)", fset.Position(assign.Pos()), rsel.Sel.Name, funcName(fd)))
+								}
+							}
+						}
+					}
+					call, ok := n.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					sel, ok := call.Fun.(*ast.SelectorExpr)
+					if !ok {
+						return true
+					}
+					pkg, _ := sel.X.(*ast.Ident)
+					what := ""
+					switch {
+					case sel.Sel.Name == "ReadAll" && pkg != nil && (pkg.Name == "io" || pkg.Name == "ioutil"):
+						if len(call.Args) == 1 && !isBoundedCall(call.Args[0]) {
+							what = pkg.Name + ".ReadAll of an uncapped reader"
+						}
+					case decompressors[sel.Sel.Name] && len(call.Args) == 0:
+						what = sel.Sel.Name + "(), which decompresses without a bound"
+					case sel.Sel.Name == "NewDecoder" && len(call.Args) == 1 && isBodyExpr(call.Args[0]):
+						what = "a decoder on an uncapped .Body"
+					case sel.Sel.Name == "ReadFrom" && len(call.Args) == 1 && isBodyExpr(call.Args[0]):
+						what = "ReadFrom of an uncapped .Body"
+					}
+					if what == "" {
+						return true
+					}
+					if _, ok := unboundedReadAllowlist[key]; ok {
+						usedAllowlist[key] = true
+						return true
+					}
+					violations = append(violations, fmt.Sprintf("%s: %s in %s; read upstream bodies with network.ReadAllBounded (or wrap the reader in network.NewBoundedReader)", fset.Position(call.Pos()), what, funcName(fd)))
+					return true
+				})
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", root, err)
+		}
+	}
+	for _, v := range violations {
+		t.Error(v)
+	}
+	// A stale entry would let a new read in that function through unseen.
+	for key := range unboundedReadAllowlist {
+		if !usedAllowlist[key] {
+			t.Errorf("unboundedReadAllowlist entry %q matches no read any more; remove it", key)
+		}
+	}
+}
+
+// TXE-7148: an answer past the response limit ends the request, on the primary and on a
+// fallback alike: another provider would be another request that may be billed. Core neither
+// retries it nor rotates the key either (ClassifyFailure: is_bifrost_error is Unknown).
+func TestResponseBodyTooLargeStopsFallbacksAndRetries(t *testing.T) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	tooLarge := providerUtils.NewResponseBodyTooLargeError(&network.ResponseBodyTooLargeError{Limit: 1 << 20})
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI, Model: "gpt-4o",
+			Fallbacks: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-sonnet-4-5"}},
+		},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if bifrost.shouldTryFallbacks(ctx, req, tooLarge) {
+		t.Fatal("a primary answer past the response limit must not fall back")
+	}
+	if bifrost.shouldContinueWithFallbacks(schemas.Fallback{Provider: schemas.Anthropic}, tooLarge) {
+		t.Fatal("a fallback answer past the response limit must end the fallback chain")
+	}
+	if class := ClassifyFailure(tooLarge); class == schemas.FailureClassTransient || class.IsPerKey() {
+		t.Fatalf("ClassifyFailure = %q: the same request gets the same answer, so it is neither retried nor rotated", class)
 	}
 }

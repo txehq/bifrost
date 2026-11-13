@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
+	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/network/proxytest"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -1022,4 +1023,53 @@ func TestBedrockTransportProxyMatrix(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TXE-7148: Bedrock reads its net/http answers through network.ReadAllBounded. Before, a 200 of
+// any size was read with io.ReadAll(resp.Body) and this request succeeded with the whole body in
+// memory. Over the limit it fails as Bifrost's own refusal, which core does not retry.
+func TestCompleteRequest_ResponseOverTheLimitFails(t *testing.T) {
+	network.SetMaxResponseBodySizeMB(1)
+	t.Cleanup(func() { network.SetMaxResponseBodySizeMB(0) })
+	size := 1 << 20
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"output":"` + strings.Repeat("x", size) + `"}`))
+	}))
+	defer ts.Close()
+
+	provider := newTestProviderWithServer(t, ts)
+	_, _, _, bifrostErr := provider.completeRequest(testBedrockCtx(), []byte(`{}`), "converse", testBedrockKey(), "anthropic.claude-sonnet-4-5")
+	require.NotNil(t, bifrostErr, "an answer over the limit must fail, not be read whole")
+	assert.True(t, bifrostErr.IsBifrostError)
+	assert.Equal(t, schemas.ErrorTypeBifrostInternal, bifrostErr.ExtraFields.ErrorType)
+	assert.Contains(t, bifrostErr.Error.Message, "limit 1 MiB")
+
+	size = 1024
+	body, _, _, bifrostErr := provider.completeRequest(testBedrockCtx(), []byte(`{}`), "converse", testBedrockKey(), "anthropic.claude-sonnet-4-5")
+	require.Nil(t, bifrostErr, "an answer under the limit is read")
+	assert.Len(t, body, size+len(`{"output":""}`))
+}
+
+// TXE-7148: a streaming request's error status whose body exceeds the limit is the gateway's
+// refusal. Before, the read error was dropped and the empty body parsed as the vendor's 500, which
+// core may retry or send to a fallback.
+func TestMakeStreamingRequest_ErrorBodyOverTheLimitIsBifrostsRefusal(t *testing.T) {
+	network.SetMaxResponseBodySizeMB(1)
+	t.Cleanup(func() { network.SetMaxResponseBodySizeMB(0) })
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"` + strings.Repeat("x", 2<<20) + `"}`))
+	}))
+	defer ts.Close()
+
+	provider := newTestProviderWithServer(t, ts)
+	_, bifrostErr := provider.makeStreamingRequest(testBedrockCtx(), []byte(`{}`), testBedrockKey(), "anthropic.claude-sonnet-4-5", "converse-stream")
+	require.NotNil(t, bifrostErr)
+	assert.True(t, bifrostErr.IsBifrostError, "the gateway refused the body: %+v", bifrostErr)
+	assert.Equal(t, schemas.ErrorTypeBifrostInternal, bifrostErr.ExtraFields.ErrorType)
+	require.NotNil(t, bifrostErr.AllowFallbacks)
+	assert.False(t, *bifrostErr.AllowFallbacks, "an over-limit answer must not go to a fallback")
 }

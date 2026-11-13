@@ -6853,3 +6853,25 @@ func TestDropAgentRegistrationOptionsKeepsPriorReleaseReadable(t *testing.T) {
 	require.Equal(t, "prior-tenant", rows[1].Tenant)
 	require.Equal(t, []string{"https://a2a.example.com/ext/one", "https://a2a.example.com/ext/two"}, rows[1].ExtensionURIs)
 }
+
+// TXE-7148: an upgrade adds max_response_body_size_mb as 0, which reads as the built-in 512 MB
+// limit, and the migration re-runs cleanly once the column exists.
+func TestMigrationAddClientConfigMaxResponseBodySizeMBColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, db.Create(&tables.TableClientConfig{}).Error)
+	mg := db.Migrator()
+	require.NoError(t, mg.DropColumn(&tables.TableClientConfig{}, "max_response_body_size_mb"))
+	require.False(t, mg.HasColumn(&tables.TableClientConfig{}, "max_response_body_size_mb"))
+
+	require.NoError(t, migrationAddClientConfigMaxResponseBodySizeMBColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableClientConfig{}, "max_response_body_size_mb"))
+
+	var cfg tables.TableClientConfig
+	require.NoError(t, db.First(&cfg).Error)
+	assert.Zero(t, cfg.MaxResponseBodySizeMB, "an upgrade stores no limit, so the built-in one applies")
+
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_max_response_body_size_mb_column").Error)
+	require.NoError(t, migrationAddClientConfigMaxResponseBodySizeMBColumn(ctx, db, testMigrationLogger))
+}

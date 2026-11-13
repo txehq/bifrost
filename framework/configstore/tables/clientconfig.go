@@ -69,6 +69,7 @@ type TableClientConfig struct {
 	EnforceVKObjectOwnership              bool                           `gorm:"default:true" json:"enforce_vk_object_ownership"`               // Restrict provider objects to the virtual key that created them
 	DisableProviderJobAccounting          bool                           `gorm:"default:false" json:"disable_provider_job_accounting"`          // Fork (TXE-6519): no accounting sweepers and no provider job rows
 	DisablePassthroughSSEHeartbeat        bool                           `gorm:"default:false" json:"disable_passthrough_sse_heartbeat"`        // Fork (TXE-6519): no SSE comment heartbeat on passthrough streams
+	MaxResponseBodySizeMB                 int                            `gorm:"default:0" json:"max_response_body_size_mb"`                    // Fork (TXE-7148): largest upstream response body read into memory, MB; 0 = default (512)
 	DisableEncryptedReasoningRetry        bool                           `gorm:"default:false" json:"disable_encrypted_reasoning_retry"`        // Fork (TXE-6527): no second upstream call after a rejected encrypted-reasoning replay
 	HiddenRequestTypesJSON                string                         `gorm:"type:text" json:"-"`                                            // JSON serialized []string of request types hidden from log reads
 	RoutingChainMaxDepth                  int                            `gorm:"default:10" json:"routing_chain_max_depth"`                     // Maximum depth for routing rule chain evaluation (default: 10)

@@ -1187,6 +1187,8 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	if err := ApplyMCPOAuthPrivateAllowlist(config.ClientConfig.MCPOAuthPrivateAllowlist); err != nil {
 		return nil, fmt.Errorf("mcp_oauth_private_allowlist: %w", err)
 	}
+	// The limit every buffered upstream response body is read under (TXE-7148).
+	network.SetMaxResponseBodySizeMB(config.ClientConfig.MaxResponseBodySizeMB)
 	if oc := config.ClientConfig.OAuth2ServerConfig; oc != nil && slices.Contains(oc.AllowedRedirectURIs, configstoreTables.AllowAnyRedirectURI) {
 		logger.Warn(`oauth2_server_config.allowed_redirect_uris contains "*": any MCP OAuth client may register any https callback, so only the consent page stands between a user and a phishing client`)
 	}
@@ -1493,6 +1495,10 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 	// but config.json and pre-existing DB rows reach the runtime through here.
 	// An out-of-range cooldown would keep a retired virtual key authenticating
 	// past the ceiling the API promises.
+	// TXE-7148: 0 is the built-in limit; a negative one is a typo, not a choice.
+	if cc.MaxResponseBodySizeMB < 0 {
+		return fmt.Errorf("max_response_body_size_mb %d must not be negative", cc.MaxResponseBodySizeMB)
+	}
 	if cd := cc.VKRotationCooldown.D(); cd < 0 {
 		return fmt.Errorf("vk_rotation_cooldown %s must not be negative", cd)
 	} else if cd > configstore.MaxVKRotationCooldown {

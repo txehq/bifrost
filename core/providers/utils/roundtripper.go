@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/capsohq/bifrost/core/network"
 	schemas "github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -238,7 +239,10 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 			hc.CloseConn(cc)
 			return retryOn(err), watcher.classify(err)
 		}
-		err = readBufferedBody(resp, br, hc.MaxResponseBodySize)
+		// Every buffered body is read under a limit (fork, TXE-7148): the client's own tighter
+		// cap when it set one, otherwise client.max_response_body_size_mb. A fasthttp client
+		// left at MaxResponseBodySize 0 would otherwise buffer whatever the upstream sends.
+		err = readBufferedBody(resp, br, network.EffectiveMaxResponseBodySize(hc.MaxResponseBodySize))
 		hc.ReleaseReader(br)
 		if err != nil {
 			hc.CloseConn(cc)
@@ -294,7 +298,7 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	// does, since a consumer may mark the connection unusable mid-body.
 	closeConn := resetConnection || req.ConnectionClose() || resp.ConnectionClose()
 	body := &streamBody{
-		reader:               newStreamBodyReader(resp, br),
+		reader:               boundStreamedErrorBody(resp, newStreamBodyReader(resp, br)),
 		truncationReadsAsEOF: isEventStream(resp) && resp.Header.ContentLength() < 0,
 		conn:                 conn,
 		release: func(discard bool) {
@@ -494,6 +498,11 @@ func readBufferedBody(resp *fasthttp.Response, br *bufio.Reader, maxBodySize int
 		return nil
 	}
 	if err := resp.ReadBody(br, maxBodySize); err != nil {
+		if errors.Is(err, fasthttp.ErrBodyTooLarge) {
+			// Name the limit, so the caller's error says why the answer was refused. The
+			// error still matches fasthttp.ErrBodyTooLarge.
+			return &network.ResponseBodyTooLargeError{Limit: int64(maxBodySize)}
+		}
 		return err
 	}
 	if resp.Header.ContentLength() == -1 {
@@ -511,6 +520,19 @@ func readBufferedBody(resp *fasthttp.Response, br *bufio.Reader, maxBodySize int
 // parsed headers. The returned reader ends with io.EOF once the body, including
 // any chunked trailer, has been consumed, which is what lets streamBody return
 // the connection to the pool.
+// boundStreamedErrorBody holds a streamed response's body to the response limit when the status is
+// not a success (fork, TXE-7148). An error answer is read whole, by resp.Body() or
+// CheckAndDecodeBody, so without this a streaming client buffered an error body of any size even
+// with client.max_response_body_size_mb set. A successful stream is left unbounded: it is consumed
+// incrementally. The client's own MaxResponseBodySize is not used here: on a streaming client it
+// is the large-response threshold, where an answer switches to passthrough, not a cap.
+func boundStreamedErrorBody(resp *fasthttp.Response, body io.Reader) io.Reader {
+	if status := resp.Header.StatusCode(); status >= 200 && status <= 299 {
+		return body
+	}
+	return network.NewBoundedReader(body, network.MaxResponseBodyBytes())
+}
+
 func newStreamBodyReader(resp *fasthttp.Response, br *bufio.Reader) io.Reader {
 	status := resp.Header.StatusCode()
 	if resp.SkipBody || status == fasthttp.StatusNoContent || status == fasthttp.StatusNotModified || (status >= 100 && status <= 199) {
