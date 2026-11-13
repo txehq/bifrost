@@ -1260,14 +1260,22 @@ func TestPromptDetailsSumAndConvertEveryCount(t *testing.T) {
 		}
 	}
 
-	// fill sets every int field of v to a distinct value and the cache-write split to one tier.
+	// fill sets every int field of v to a distinct value, and every int field of each split it
+	// points to (the cache-write split by lifetime, the cache-read split by modality, TXE-7361)
+	// to 7.
 	fill := func(v reflect.Value) {
 		for i := 0; i < v.NumField(); i++ {
 			switch v.Field(i).Kind() {
 			case reflect.Int:
 				v.Field(i).SetInt(int64(10 + i))
 			case reflect.Ptr:
-				v.Field(i).Set(reflect.ValueOf(&ChatCachedWriteTokenDetails{CachedWriteTokens1h: 7}))
+				split := reflect.New(v.Field(i).Type().Elem())
+				for j := 0; j < split.Elem().NumField(); j++ {
+					if split.Elem().Field(j).Kind() == reflect.Int {
+						split.Elem().Field(j).SetInt(7)
+					}
+				}
+				v.Field(i).Set(split)
 			}
 		}
 	}
@@ -1281,8 +1289,14 @@ func TestPromptDetailsSumAndConvertEveryCount(t *testing.T) {
 					t.Errorf("%s drops %s: got %d, want %d", label, name, g.Int(), scale*want.Field(i).Int())
 				}
 			case reflect.Ptr:
-				if g.IsNil() || g.Elem().FieldByName("CachedWriteTokens1h").Int() != scale*7 {
+				if g.IsNil() {
 					t.Errorf("%s drops %s", label, name)
+					continue
+				}
+				for j := 0; j < g.Elem().NumField(); j++ {
+					if f := g.Elem().Field(j); f.Kind() == reflect.Int && f.Int() != scale*7 {
+						t.Errorf("%s drops %s.%s: got %d, want %d", label, name, g.Elem().Type().Field(j).Name, f.Int(), scale*7)
+					}
 				}
 			}
 		}
@@ -1309,4 +1323,50 @@ func TestPromptDetailsSumAndConvertEveryCount(t *testing.T) {
 	check("ResponsesResponseUsage.ToBifrostLLMUsage", reflect.ValueOf(usage.PromptTokensDetails).Elem(), reflect.ValueOf(resp).Elem(), 1)
 	back := usage.ToResponsesResponseUsage()
 	check("BifrostLLMUsage.ToResponsesResponseUsage", reflect.ValueOf(back.InputTokensDetails).Elem(), reflect.ValueOf(resp).Elem(), 1)
+}
+
+// TXE-7361: OpenAI splits cached input by modality under cached_tokens_details. The split is kept
+// on chat and Responses usage, survives the trip between them and a merge, and is written back
+// under OpenAI's name as well as Bifrost's, so cached audio can be priced at its own rate.
+func TestCachedReadTokenDetailsRoundTrip(t *testing.T) {
+	var chat ChatPromptTokensDetails
+	if err := json.Unmarshal([]byte(`{"cached_tokens":600,"audio_tokens":800,"cached_tokens_details":{"text_tokens":100,"audio_tokens":500}}`), &chat); err != nil {
+		t.Fatal(err)
+	}
+	if chat.CachedReadTokens != 600 || chat.CachedReadTokenDetails == nil || chat.CachedReadTokenDetails.AudioTokens != 500 || chat.CachedReadTokenDetails.TextTokens != 100 {
+		t.Fatalf("chat details = %+v (split %+v), want 600 cached with 500 audio", chat, chat.CachedReadTokenDetails)
+	}
+	out, err := json.Marshal(chat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"cached_tokens_details":{"text_tokens":100,"audio_tokens":500}`, `"cached_read_token_details":{"text_tokens":100,"audio_tokens":500}`} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("marshalled %s, want it to contain %s", out, want)
+		}
+	}
+
+	var resp ResponsesResponseInputTokens
+	if err := json.Unmarshal([]byte(`{"cached_tokens":600,"cached_tokens_details":{"audio_tokens":500}}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.CachedReadTokenDetails.CachedAudioTokens() != 500 {
+		t.Fatalf("responses split = %+v, want 500 cached audio", resp.CachedReadTokenDetails)
+	}
+	back := (&ResponsesResponseUsage{InputTokens: 1000, InputTokensDetails: &resp}).ToBifrostLLMUsage()
+	if back.PromptTokensDetails.CachedReadTokenDetails.CachedAudioTokens() != 500 {
+		t.Fatalf("chat usage from responses lost the split: %+v", back.PromptTokensDetails)
+	}
+
+	merged := MergeBifrostLLMUsage(
+		&BifrostLLMUsage{PromptTokensDetails: &ChatPromptTokensDetails{CachedReadTokens: 600, CachedReadTokenDetails: &ChatCachedReadTokenDetails{AudioTokens: 500}}},
+		&BifrostLLMUsage{PromptTokensDetails: &ChatPromptTokensDetails{CachedReadTokens: 50, CachedReadTokenDetails: &ChatCachedReadTokenDetails{AudioTokens: 20, TextTokens: 30}}},
+	)
+	if got := merged.PromptTokensDetails.CachedReadTokenDetails; got == nil || got.AudioTokens != 520 || got.TextTokens != 30 {
+		t.Fatalf("merged split = %+v, want 520 audio and 30 text", got)
+	}
+	var nilSplit *ChatCachedReadTokenDetails
+	if nilSplit.CachedAudioTokens() != 0 {
+		t.Fatal("a nil split reads as zero")
+	}
 }

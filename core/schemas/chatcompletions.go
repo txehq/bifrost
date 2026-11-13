@@ -2153,6 +2153,39 @@ type ChatPromptTokensDetails struct {
 	CachedVideoTokens       int                          `json:"cached_video_tokens,omitempty"` // of the cached read tokens, those that are video (Gemini cacheTokensDetails VIDEO)
 	CachedWriteTokens       int                          `json:"cached_write_tokens,omitempty"`
 	CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details,omitempty"`
+	// CachedReadTokenDetails splits CachedReadTokens by modality, as OpenAI reports it
+	// (cached_tokens_details) and Gemini (cacheTokensDetails). Nil when the vendor did not split.
+	CachedReadTokenDetails *ChatCachedReadTokenDetails `json:"cached_read_token_details,omitempty"`
+}
+
+// ChatCachedReadTokenDetails splits cache-read tokens by modality (fork, TXE-7361). Cached audio
+// is priced at its own rate (cache_read_input_audio_token_cost), not the text cache rate.
+// OpenAI calls the object cached_tokens_details; Bifrost names it cached_read_token_details.
+type ChatCachedReadTokenDetails struct {
+	TextTokens  int `json:"text_tokens,omitempty"`
+	AudioTokens int `json:"audio_tokens,omitempty"`
+	ImageTokens int `json:"image_tokens,omitempty"`
+}
+
+// Plus sums two modality splits; a nil side counts as zero.
+func (d *ChatCachedReadTokenDetails) Plus(o *ChatCachedReadTokenDetails) ChatCachedReadTokenDetails {
+	var sum ChatCachedReadTokenDetails
+	for _, x := range []*ChatCachedReadTokenDetails{d, o} {
+		if x != nil {
+			sum.TextTokens += x.TextTokens
+			sum.AudioTokens += x.AudioTokens
+			sum.ImageTokens += x.ImageTokens
+		}
+	}
+	return sum
+}
+
+// CachedAudioTokens is the cached audio count, or 0 for a nil split.
+func (d *ChatCachedReadTokenDetails) CachedAudioTokens() int {
+	if d == nil {
+		return 0
+	}
+	return d.AudioTokens
 }
 
 // ChatCachedWriteTokenDetails splits cache-write tokens by cache lifetime. Anthropic and Bedrock
@@ -2230,6 +2263,10 @@ func (d *ChatPromptTokensDetails) Add(o *ChatPromptTokensDetails) {
 		sum := d.CachedWriteTokenDetails.Plus(o.CachedWriteTokenDetails)
 		d.CachedWriteTokenDetails = &sum
 	}
+	if d.CachedReadTokenDetails != nil || o.CachedReadTokenDetails != nil {
+		sum := d.CachedReadTokenDetails.Plus(o.CachedReadTokenDetails)
+		d.CachedReadTokenDetails = &sum
+	}
 }
 
 // ToResponsesInputTokens converts chat prompt details to the Responses input details, every
@@ -2248,6 +2285,7 @@ func (d *ChatPromptTokensDetails) ToResponsesInputTokens() *ResponsesResponseInp
 		CachedVideoTokens:       d.CachedVideoTokens,
 		CachedWriteTokens:       d.CachedWriteTokens,
 		CachedWriteTokenDetails: d.CachedWriteTokenDetails,
+		CachedReadTokenDetails:  d.CachedReadTokenDetails,
 	}
 }
 
@@ -2334,6 +2372,8 @@ func (d *ChatPromptTokensDetails) UnmarshalJSON(data []byte) error {
 		CachedTokens            *int                           `json:"cached_tokens"`
 		CacheWriteTokens        *int                           `json:"cache_write_tokens"`
 		CacheWriteTokensDetails *openAICacheWriteTokensDetails `json:"cache_write_tokens_details"`
+		CachedReadTokenDetails  *ChatCachedReadTokenDetails    `json:"cached_read_token_details"`
+		CachedTokensDetails     *ChatCachedReadTokenDetails    `json:"cached_tokens_details"`
 	}
 	if err := Unmarshal(data, &raw); err != nil {
 		return err
@@ -2357,6 +2397,11 @@ func (d *ChatPromptTokensDetails) UnmarshalJSON(data []byte) error {
 	}
 	// OpenAI splits cache writes by lifetime (30m, 12h) under cache_write_tokens_details.
 	d.CachedWriteTokenDetails = withOpenAICacheWriteTiers(d.CachedWriteTokenDetails, raw.CacheWriteTokensDetails)
+	// The modality split of cache reads: Bifrost's own name first, then OpenAI's (TXE-7361).
+	d.CachedReadTokenDetails = raw.CachedReadTokenDetails
+	if d.CachedReadTokenDetails == nil {
+		d.CachedReadTokenDetails = raw.CachedTokensDetails
+	}
 	return nil
 }
 
@@ -2380,6 +2425,9 @@ func (d ChatPromptTokensDetails) MarshalJSON() ([]byte, error) {
 		CacheWriteTokens int `json:"cache_write_tokens"`
 		// OpenAI's per-lifetime split of cache writes, present only when a 30m or 12h tier is set.
 		CacheWriteTokensDetails *openAICacheWriteTokensDetails `json:"cache_write_tokens_details,omitempty"`
+		// The modality split of cache reads under Bifrost's name and OpenAI's (TXE-7361).
+		CachedReadTokenDetails *ChatCachedReadTokenDetails `json:"cached_read_token_details,omitempty"`
+		CachedTokensDetails    *ChatCachedReadTokenDetails `json:"cached_tokens_details,omitempty"`
 	}
 	return MarshalSorted(raw{
 		TextTokens:              d.TextTokens,
@@ -2394,6 +2442,8 @@ func (d ChatPromptTokensDetails) MarshalJSON() ([]byte, error) {
 		CachedTokens:            d.CachedReadTokens,
 		CacheWriteTokens:        d.CachedWriteTokens,
 		CacheWriteTokensDetails: openAICacheWriteTiersOf(d.CachedWriteTokenDetails),
+		CachedReadTokenDetails:  d.CachedReadTokenDetails,
+		CachedTokensDetails:     d.CachedReadTokenDetails,
 	})
 }
 

@@ -528,3 +528,54 @@ test.describe("Custom pricing overrides - unmeasured video seconds", () => {
 		await expect(page.getByTestId(`pricing-override-field-input-${key}`)).toHaveValue("15");
 	});
 });
+
+// TXE-7361: the cached-audio rates are pricing override fields. An override that sets the
+// cached-audio rate and its priority rate as an explicit zero is saved with both in its patch and
+// reopens with both values.
+test.describe("Custom pricing overrides - cached audio rates", () => {
+	const name = `e2e-cached-audio-${Date.now()}`;
+
+	test.afterEach(async ({ request }) => {
+		const res = await request.get("/api/governance/pricing-overrides");
+		if (!res.ok()) return;
+		const body = await res.json();
+		for (const override of body.pricing_overrides ?? []) {
+			if (override.name === name) await request.delete(`/api/governance/pricing-overrides/${override.id}`);
+		}
+	});
+
+	test("saves a cached-audio rate and an explicit zero priority cached-audio rate, and reopens with both", async ({ page, request }) => {
+		await page.goto("/workspace/custom-pricing/overrides");
+		await page.getByTestId("pricing-override-create-btn").first().click();
+
+		await page.getByTestId("pricing-override-name-input").fill(name);
+		await page.getByTestId("pricing-override-pattern-input").fill("gpt-realtime-mini");
+		await page.getByTestId("pricing-override-request-types-btn").click();
+		await page.getByTestId("pricing-override-request-type-checkbox-live").click();
+		await page.keyboard.press("Escape");
+
+		await page.getByTestId("pricing-field-search").fill("Cache read / audio token");
+		await page.getByTestId("pricing-field-activate-cache_read_input_audio_token_cost").click();
+		await page.getByTestId("pricing-override-field-input-cache_read_input_audio_token_cost").fill("0.000003");
+		await page.getByTestId("pricing-field-activate-cache_read_input_audio_token_cost_priority").click();
+		await page.getByTestId("pricing-override-field-input-cache_read_input_audio_token_cost_priority").fill("0");
+
+		await page.getByTestId("pricing-override-save-btn").click();
+		await expect(page.getByTestId("pricing-override-save-btn")).toBeHidden();
+
+		const res = await request.get("/api/governance/pricing-overrides");
+		expect(res.ok()).toBeTruthy();
+		const saved = ((await res.json()).pricing_overrides ?? []).find((o: { name: string }) => o.name === name);
+		expect(saved, "the override was saved").toBeTruthy();
+		const patch = JSON.parse(saved.pricing_patch);
+		expect(patch.cache_read_input_audio_token_cost).toBe(0.000003);
+		expect(patch.cache_read_input_audio_token_cost_priority).toBe(0);
+
+		await page.reload();
+		await page.getByTestId(`pricing-override-actions-btn-${saved.id}`).click();
+		await page.getByTestId(`pricing-override-edit-btn-${saved.id}`).click();
+		await page.getByTestId("pricing-field-search").fill("Cache read / audio token");
+		await expect(page.getByTestId("pricing-override-field-input-cache_read_input_audio_token_cost")).toHaveValue("0.000003");
+		await expect(page.getByTestId("pricing-override-field-input-cache_read_input_audio_token_cost_priority")).toHaveValue("0");
+	});
+});

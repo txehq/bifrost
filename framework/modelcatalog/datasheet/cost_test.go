@@ -10362,6 +10362,41 @@ func TestComputeTextCost_CacheReadAbove128k(t *testing.T) {
 	assert.InDelta(t, 50000*1e-06+100000*2e-07, computeTextCostTotal(&p, usage, serviceTier{}), 1e-9)
 }
 
+// TXE-7361: azure/gpt-realtime-mini publishes cached audio at 3e-07 against the text cache rate
+// 6e-08. The fork billed every cached token at the text rate (cached audio 5x under). The uncached
+// audio is what remains of audio_tokens, which counts cached audio too.
+func TestComputeTextCost_CachedAudioTakesTheCachedAudioRate(t *testing.T) {
+	p := decodeEntry(t, `{
+		"provider": "azure", "mode": "chat",
+		"input_cost_per_token": 6e-07, "output_cost_per_token": 2.4e-06,
+		"input_cost_per_audio_token": 1e-05, "cache_read_input_token_cost": 6e-08,
+		"cache_read_input_audio_token_cost": 3e-07,
+		"cache_read_input_audio_token_cost_priority": 5.4e-07
+	}`)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, TotalTokens: 1000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{TextTokens: 200, AudioTokens: 800, CachedReadTokens: 600,
+			CachedReadTokenDetails: &schemas.ChatCachedReadTokenDetails{TextTokens: 100, AudioTokens: 500}}}
+	// Uncached: 400 tokens, 300 of them audio. Cached: 100 text, 500 audio.
+	want := 100*6e-07 + 300*1e-05 + 100*6e-08 + 500*3e-07
+	assert.InDelta(t, want, computeTextCostTotal(&p, usage, serviceTier{}), 1e-12)
+	wantPriority := 100*6e-07 + 300*1e-05 + 100*6e-08 + 500*5.4e-07
+	assert.InDelta(t, wantPriority, computeTextCostTotal(&p, usage, serviceTier{isPriority: true}), 1e-12)
+
+	// Without the split, every cached token stays at the text cache rate, as before.
+	plain := *usage
+	plainDetails := *usage.PromptTokensDetails
+	plainDetails.CachedReadTokenDetails = nil
+	plain.PromptTokensDetails = &plainDetails
+	assert.InDelta(t, 400*1e-05+600*6e-08, computeTextCostTotal(&p, &plain, serviceTier{}), 1e-12)
+
+	// A batch line prices cached audio at the explicit batch rate, else the synchronous rate at the
+	// batch ratio.
+	p.CacheReadInputAudioTokenCostBatches = bifrost.Ptr(1.5e-07)
+	batch := computeBatchTextCost(&p, usage, serviceTier{})
+	require.NotNil(t, batch)
+	assert.InDelta(t, 100*3e-07+300*5e-06+100*3e-08+500*1.5e-07, batch.TotalCost, 1e-12)
+}
+
 // empiriolabs/glm-5-1 prices above 32k at 1.1e-06 against 8.25e-07.
 func TestComputeTextCost_Above32kTier(t *testing.T) {
 	p := decodeEntry(t, `{

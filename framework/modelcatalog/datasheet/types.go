@@ -308,14 +308,20 @@ type Options struct {
 	CacheReadInputTokenCostAbove100kTokens             *float64 `json:"cache_read_input_token_cost_above_100k_tokens,omitempty"`
 	CacheCreationInputTokenCostAbove1hrAbove100kTokens *float64 `json:"cache_creation_input_token_cost_above_1hr_above_100k_tokens,omitempty"`
 	CacheCreationInputAudioTokenCost                   *float64 `json:"cache_creation_input_audio_token_cost,omitempty"`
-	CacheReadInputTokenCostPriority                    *float64 `json:"cache_read_input_token_cost_priority,omitempty"`
-	CacheReadInputTokenCostUltrafast                   *float64 `json:"cache_read_input_token_cost_ultrafast,omitempty"`
-	CacheReadInputTokenCostFlex                        *float64 `json:"cache_read_input_token_cost_flex,omitempty"`
-	CacheReadInputImageTokenCost                       *float64 `json:"cache_read_input_image_token_cost,omitempty"`
-	CacheReadInputTokenCostAbove272kTokens             *float64 `json:"cache_read_input_token_cost_above_272k_tokens,omitempty"`
-	CacheReadInputTokenCostAbove272kTokensPriority     *float64 `json:"cache_read_input_token_cost_above_272k_tokens_priority,omitempty"`
-	CacheReadInputTokenCostFlexAbove272kTokens         *float64 `json:"cache_read_input_token_cost_flex_above_272k_tokens,omitempty"`
-	CacheReadInputTokenCostAbove272kTokensUltrafast    *float64 `json:"cache_read_input_token_cost_above_272k_tokens_ultrafast,omitempty"`
+	// Cached audio input tokens, by service tier and in a batch (fork, TXE-7361). Without them a
+	// cached audio token is priced at the text cache-read rate.
+	CacheReadInputAudioTokenCost                    *float64 `json:"cache_read_input_audio_token_cost,omitempty"`
+	CacheReadInputAudioTokenCostFlex                *float64 `json:"cache_read_input_audio_token_cost_flex,omitempty"`
+	CacheReadInputAudioTokenCostPriority            *float64 `json:"cache_read_input_audio_token_cost_priority,omitempty"`
+	CacheReadInputAudioTokenCostBatches             *float64 `json:"cache_read_input_audio_token_cost_batches,omitempty"`
+	CacheReadInputTokenCostPriority                 *float64 `json:"cache_read_input_token_cost_priority,omitempty"`
+	CacheReadInputTokenCostUltrafast                *float64 `json:"cache_read_input_token_cost_ultrafast,omitempty"`
+	CacheReadInputTokenCostFlex                     *float64 `json:"cache_read_input_token_cost_flex,omitempty"`
+	CacheReadInputImageTokenCost                    *float64 `json:"cache_read_input_image_token_cost,omitempty"`
+	CacheReadInputTokenCostAbove272kTokens          *float64 `json:"cache_read_input_token_cost_above_272k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove272kTokensPriority  *float64 `json:"cache_read_input_token_cost_above_272k_tokens_priority,omitempty"`
+	CacheReadInputTokenCostFlexAbove272kTokens      *float64 `json:"cache_read_input_token_cost_flex_above_272k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove272kTokensUltrafast *float64 `json:"cache_read_input_token_cost_above_272k_tokens_ultrafast,omitempty"`
 	// OpenAI cache-write (cache-creation) tiered rates, added with gpt-5.6.
 	CacheCreationInputTokenCostAbove272kTokens          *float64 `json:"cache_creation_input_token_cost_above_272k_tokens,omitempty"`
 	CacheCreationInputTokenCostFlex                     *float64 `json:"cache_creation_input_token_cost_flex,omitempty"`
@@ -1089,16 +1095,21 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		InputCostPerImageTokenBatches:                              entry.InputCostPerImageTokenBatches,
 		OutputCostPerImageTokenBatches:                             entry.OutputCostPerImageTokenBatches,
 		// Fork, TXE-7355: long-context tiers.
-		InputCostPerTokenAbove32kTokens:            entry.InputCostPerTokenAbove32kTokens,
-		OutputCostPerTokenAbove32kTokens:           entry.OutputCostPerTokenAbove32kTokens,
-		CacheReadInputTokenCostAbove32kTokens:      entry.CacheReadInputTokenCostAbove32kTokens,
-		CacheReadInputTokenCostAbove128kTokens:     entry.CacheReadInputTokenCostAbove128kTokens,
-		InputCostPerTokenAbove256kTokens:           entry.InputCostPerTokenAbove256kTokens,
-		OutputCostPerTokenAbove256kTokens:          entry.OutputCostPerTokenAbove256kTokens,
-		CacheReadInputTokenCostAbove256kTokens:     entry.CacheReadInputTokenCostAbove256kTokens,
-		InputCostPerTokenAbove512kTokens:           entry.InputCostPerTokenAbove512kTokens,
-		OutputCostPerTokenAbove512kTokens:          entry.OutputCostPerTokenAbove512kTokens,
-		CacheReadInputTokenCostAbove512kTokens:     entry.CacheReadInputTokenCostAbove512kTokens,
+		InputCostPerTokenAbove32kTokens:        entry.InputCostPerTokenAbove32kTokens,
+		OutputCostPerTokenAbove32kTokens:       entry.OutputCostPerTokenAbove32kTokens,
+		CacheReadInputTokenCostAbove32kTokens:  entry.CacheReadInputTokenCostAbove32kTokens,
+		CacheReadInputTokenCostAbove128kTokens: entry.CacheReadInputTokenCostAbove128kTokens,
+		InputCostPerTokenAbove256kTokens:       entry.InputCostPerTokenAbove256kTokens,
+		OutputCostPerTokenAbove256kTokens:      entry.OutputCostPerTokenAbove256kTokens,
+		CacheReadInputTokenCostAbove256kTokens: entry.CacheReadInputTokenCostAbove256kTokens,
+		InputCostPerTokenAbove512kTokens:       entry.InputCostPerTokenAbove512kTokens,
+		OutputCostPerTokenAbove512kTokens:      entry.OutputCostPerTokenAbove512kTokens,
+		CacheReadInputTokenCostAbove512kTokens: entry.CacheReadInputTokenCostAbove512kTokens,
+		// Fork, TXE-7361: cached audio.
+		CacheReadInputAudioTokenCost:               entry.CacheReadInputAudioTokenCost,
+		CacheReadInputAudioTokenCostFlex:           entry.CacheReadInputAudioTokenCostFlex,
+		CacheReadInputAudioTokenCostPriority:       entry.CacheReadInputAudioTokenCostPriority,
+		CacheReadInputAudioTokenCostBatches:        entry.CacheReadInputAudioTokenCostBatches,
 		InputCostPerTokenFast:                      entry.InputCostPerTokenFast,
 		OutputCostPerTokenFast:                     entry.OutputCostPerTokenFast,
 		InputCostPerTokenAbove200kTokens:           entry.InputCostPerTokenAbove200kTokens,
@@ -1362,16 +1373,21 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		InputCostPerImageTokenBatches:                              pricing.InputCostPerImageTokenBatches,
 		OutputCostPerImageTokenBatches:                             pricing.OutputCostPerImageTokenBatches,
 		// Fork, TXE-7355: long-context tiers.
-		InputCostPerTokenAbove32kTokens:            pricing.InputCostPerTokenAbove32kTokens,
-		OutputCostPerTokenAbove32kTokens:           pricing.OutputCostPerTokenAbove32kTokens,
-		CacheReadInputTokenCostAbove32kTokens:      pricing.CacheReadInputTokenCostAbove32kTokens,
-		CacheReadInputTokenCostAbove128kTokens:     pricing.CacheReadInputTokenCostAbove128kTokens,
-		InputCostPerTokenAbove256kTokens:           pricing.InputCostPerTokenAbove256kTokens,
-		OutputCostPerTokenAbove256kTokens:          pricing.OutputCostPerTokenAbove256kTokens,
-		CacheReadInputTokenCostAbove256kTokens:     pricing.CacheReadInputTokenCostAbove256kTokens,
-		InputCostPerTokenAbove512kTokens:           pricing.InputCostPerTokenAbove512kTokens,
-		OutputCostPerTokenAbove512kTokens:          pricing.OutputCostPerTokenAbove512kTokens,
-		CacheReadInputTokenCostAbove512kTokens:     pricing.CacheReadInputTokenCostAbove512kTokens,
+		InputCostPerTokenAbove32kTokens:        pricing.InputCostPerTokenAbove32kTokens,
+		OutputCostPerTokenAbove32kTokens:       pricing.OutputCostPerTokenAbove32kTokens,
+		CacheReadInputTokenCostAbove32kTokens:  pricing.CacheReadInputTokenCostAbove32kTokens,
+		CacheReadInputTokenCostAbove128kTokens: pricing.CacheReadInputTokenCostAbove128kTokens,
+		InputCostPerTokenAbove256kTokens:       pricing.InputCostPerTokenAbove256kTokens,
+		OutputCostPerTokenAbove256kTokens:      pricing.OutputCostPerTokenAbove256kTokens,
+		CacheReadInputTokenCostAbove256kTokens: pricing.CacheReadInputTokenCostAbove256kTokens,
+		InputCostPerTokenAbove512kTokens:       pricing.InputCostPerTokenAbove512kTokens,
+		OutputCostPerTokenAbove512kTokens:      pricing.OutputCostPerTokenAbove512kTokens,
+		CacheReadInputTokenCostAbove512kTokens: pricing.CacheReadInputTokenCostAbove512kTokens,
+		// Fork, TXE-7361: cached audio.
+		CacheReadInputAudioTokenCost:               pricing.CacheReadInputAudioTokenCost,
+		CacheReadInputAudioTokenCostFlex:           pricing.CacheReadInputAudioTokenCostFlex,
+		CacheReadInputAudioTokenCostPriority:       pricing.CacheReadInputAudioTokenCostPriority,
+		CacheReadInputAudioTokenCostBatches:        pricing.CacheReadInputAudioTokenCostBatches,
 		InputCostPerTokenFast:                      pricing.InputCostPerTokenFast,
 		OutputCostPerTokenFast:                     pricing.OutputCostPerTokenFast,
 		InputCostPerTokenAbove200kTokens:           pricing.InputCostPerTokenAbove200kTokens,
