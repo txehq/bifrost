@@ -684,6 +684,22 @@ The fixture also serves the pricing and model-parameters datasheets a fresh gate
 
 The cases are skipped unless `vertexEndpointFixture=1`.
 
+The same fixture stands in for a Vertex batch (TXE-6971). It keeps what the gateway uploads to Cloud Storage
+(`POST /upload/storage/v1/b/<bucket>/o`), finishes a `batchPredictionJobs` job the moment it is created, and
+writes the job's `predictions.jsonl` from the uploaded lines: each line's request as it was sent, labels
+included, beside a canned response. Object list and download (with `Range`) are served from the same store,
+and `GET /__gcs` on the control port returns every object. Folder 344 rows 1 and 2 use it: row 1 reads the
+`bifrost_custom_id` and `bifrost_custom_id_b32_<n>` labels on the uploaded lines, row 2 reads each
+`custom_id` back from `GET /v1/batches/<id>/results`. Every fixture key has `use_for_batch_api` set.
+
+```bash
+newman run tmp/provider-harness.json \
+  --folder "344. A Vertex batch line's custom_id that cannot be a request label is encoded, or refused when too long (vertex batch custom_id)" \
+  --env-var baseUrl=http://127.0.0.1:8793 \
+  --env-var vertexEndpointFixture=1 \
+  --env-var vertexGcsBucket=fixture-bucket
+```
+
 Stop the fixture and isolated gateway with Ctrl+C after testing.
 
 ## Bedrock passthrough for operations without native routes

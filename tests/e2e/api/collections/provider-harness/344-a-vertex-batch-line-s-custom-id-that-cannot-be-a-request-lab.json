@@ -1,0 +1,173 @@
+{
+  "name": "344. A Vertex batch line's custom_id that cannot be a request label is encoded, or refused when too long (vertex batch custom_id)",
+  "description": "Contract C8 (TXE-6971): a Vertex Gemini batch line has no native custom_id, so the gateway carries it in request labels, whose values hold at most 63 lowercase letters, digits, underscores and dashes. A custom_id that is a label value travels as it is in bifrost_custom_id; any other (an uppercase letter, a dot, more than 63 characters) is base32-encoded across bifrost_custom_id_b32_<n> labels and decoded on results, so it comes back unchanged and never reaches Vertex as a label its rules forbid. A custom_id that has to be encoded and is longer than 256 bytes is refused with a 400 caller_unsupported_parameter naming requests[i].custom_id before anything is uploaded. Rows 1 and 2 run on the Vertex endpoint fixture (vertex-endpoint-fixture.mjs, vertexEndpointFixture=1), which keeps the JSONL the gateway uploads to Cloud Storage, finishes the batch job at once and writes its predictions file from the uploaded lines: row 1 reads the labels the gateway sent, row 2 reads each custom_id back from results. They are skipped without the fixture, since a live pin would need a batch run to completion. Row 3 is answered by the gateway alone, with no vendor call.",
+  "item": [
+    {
+      "name": "344.1 vertex vertex batch custom_id: every custom_id is uploaded as labels Vertex accepts, encoded when it is not a label value",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('the batch is created on the fixture', function () { pm.expect(j.id, pm.response.text().slice(0, 400)).to.match(/batchPredictionJobs\\/\\d+$/); });",
+              "pm.collectionVariables.set('vertexCustomIdBatchId', String(j.id || '').split('/').pop());",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8792/__gcs', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var input = res.json().data.filter(function (o) { return /harness-vertex-batch-custom-id\\/input\\/.*-input\\.jsonl$/.test(o.name); }).pop() || { body: '' };",
+              "  var labels = input.body.split('\\n').filter(Boolean).map(function (line) { return JSON.parse(line).request.labels || {}; });",
+              "  pm.test('three lines were uploaded', function () { pm.expect(labels.length, input.body.slice(0, 400)).to.equal(3); });",
+              "  pm.test('every label key and value the gateway sent is one Vertex accepts', function () {",
+              "    labels.forEach(function (l) { Object.keys(l).forEach(function (k) {",
+              "      pm.expect(k, JSON.stringify(l)).to.match(/^[a-z][a-z0-9_-]{0,62}$/);",
+              "      pm.expect(l[k], JSON.stringify(l)).to.match(/^[a-z0-9_-]{0,63}$/);",
+              "    }); });",
+              "  });",
+              "  pm.test('a custom_id that is a label value travels as it is', function () { pm.expect(labels[0], JSON.stringify(labels[0])).to.include({ bifrost_custom_id: 'order-42' }); pm.expect(labels[0]).to.not.have.property('bifrost_custom_id_b32_0'); });",
+              "  pm.test('a custom_id with characters a label forbids is encoded in one label', function () { pm.expect(labels[1], JSON.stringify(labels[1])).to.have.property('bifrost_custom_id_b32_0'); pm.expect(labels[1]).to.not.have.property('bifrost_custom_id'); pm.expect(labels[1]).to.not.have.property('bifrost_custom_id_b32_1'); });",
+              "  pm.test('a longer custom_id is encoded across several labels', function () { pm.expect(labels[2], JSON.stringify(labels[2])).to.have.property('bifrost_custom_id_b32_0'); pm.expect(labels[2]).to.have.property('bifrost_custom_id_b32_1'); pm.expect(labels[2]).to.not.have.property('bifrost_custom_id'); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"output_folder\": {\n    \"url\": \"gs://fixture-bucket/harness-vertex-batch-custom-id/output/\"\n  },\n  \"requests\": [\n    {\n      \"custom_id\": \"order-42\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    },\n    {\n      \"custom_id\": \"Order.42:Retry\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    },\n    {\n      \"custom_id\": \"Tenant/7:Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.End\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "344.2 vertex vertex batch custom_id: results return each custom_id exactly as the caller sent it",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "var ids = (j.results || []).map(function (r) { return r.custom_id; });",
+              "pm.test('the three results carry the caller\\'s custom_ids, unchanged and in order', function () { pm.expect(ids, pm.response.text().slice(0, 600)).to.eql([\"order-42\",\"Order.42:Retry\",\"Tenant/7:Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.Line.End\"]); });",
+              "pm.test('each result is a chat completion', function () { (j.results || []).forEach(function (r) { pm.expect(((r.response || {}).body || {}).object, JSON.stringify(r).slice(0, 300)).to.equal('chat.completion'); }); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches/{{vertexCustomIdBatchId}}/results?provider=vertex",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches",
+            "{{vertexCustomIdBatchId}}",
+            "results"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "vertex"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] vertex vertex batch custom_id: a custom_id too long to carry is refused naming the line, before anything is uploaded",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a 300-character custom_id that is not a label value is a 400 caller_unsupported_parameter naming requests[1].custom_id', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect((j.error || {}).param, pm.response.text()).to.eql('requests[1].custom_id');",
+              "  pm.expect((j.extra_fields || {}).error_type, pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(pm.response.text()).to.include('300 bytes');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"output_folder\": {\n    \"url\": \"gs://{{vertexGcsBucket}}/harness-vertex-batch-custom-id/output/\"\n  },\n  \"requests\": [\n    {\n      \"custom_id\": \"Order.42:Retry\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    },\n    {\n      \"custom_id\": \"Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    }
+  ]
+}
