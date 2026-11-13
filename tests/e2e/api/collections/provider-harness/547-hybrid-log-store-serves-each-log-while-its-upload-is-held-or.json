@@ -1,0 +1,362 @@
+{
+  "name": "547. Hybrid log store serves each log while its upload is held or fails (hybrid-logstore) [SERIAL]",
+  "description": "TXE-7326. The hybrid log store keeps a summary row in the database and offloads each log's payload to object storage, and its bugs live in the order of those uploads (TXE-7318, TXE-7325). This folder proves the harness can reach that: the hybrid-logstore group of tests/e2e/api/runners/fixture-folders.mjs runs the provider-error gateway with logs_store.object_storage pointing at the S3-compatible store that provider-error-fixture.mjs serves on its main port (tests/e2e/api/runners/lib/s3-object-fixture.mjs). Rows hold or fail a chosen PUT through that store's control API (/__s3/control) and read the log back through GET /api/logs/{id}. Pins: a landed upload is stored under the log's key and the log is served from it with its output; while the upload is held the log is served from its row (the last user message, no output) and from the object once the upload lands; a failed upload stores nothing and the row is served. Red without the group's object storage (no PUT reaches the store, so every state wait times out); green on this change.",
+  "item": [
+    {
+      "name": "547.1 a landed upload is stored under the log's key and the log is served from it - hybrid-logstore",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{hlsRun}}-stored"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/upstream-ok\",\"messages\":[{\"role\":\"user\",\"content\":\"stored question {{hlsRun}}\"}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('hybridLogstoreFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "function control(method, op, body, done) {",
+              "  var req = { url: FX + '/__s3/control/' + op, method: method };",
+              "  if (body) { req.header = { 'Content-Type': 'application/json' }; req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) { done(err, res); });",
+              "}",
+              "function state(query, done) {",
+              "  pm.sendRequest({ url: FX + '/__s3/control/state?' + query, method: 'GET' }, function (err, res) { done(err ? { error: String(err) } : res.json()); });",
+              "}",
+              "function readLog(id, want, tries, done) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(id), method: 'GET' }, function (err, res) {",
+              "    var row = (!err && res.code === 200) ? res.json() : null;",
+              "    if ((!row || !want(row)) && tries > 0) { setTimeout(function () { readLog(id, want, tries - 1, done); }, 250); return; }",
+              "    done(row, err ? String(err) : res.text());",
+              "  });",
+              "}",
+              "function output(row) { return JSON.stringify((row && row.output_message) || ''); }",
+              "function input(row) { return JSON.stringify((row && row.input_history) || ''); }",
+              "pm.variables.set('hlsRun', 'harness-hybrid-logstore-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));",
+              "pm.collectionVariables.set('hlsRun', pm.variables.get('hlsRun'));",
+              "control('POST', 'reset', {}, function (err, res) {",
+              "  pm.test('hybrid-logstore: the object store resets', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var BASE = pm.variables.get('baseUrl');",
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "function control(method, op, body, done) {",
+              "  var req = { url: FX + '/__s3/control/' + op, method: method };",
+              "  if (body) { req.header = { 'Content-Type': 'application/json' }; req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) { done(err, res); });",
+              "}",
+              "function state(query, done) {",
+              "  pm.sendRequest({ url: FX + '/__s3/control/state?' + query, method: 'GET' }, function (err, res) { done(err ? { error: String(err) } : res.json()); });",
+              "}",
+              "function readLog(id, want, tries, done) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(id), method: 'GET' }, function (err, res) {",
+              "    var row = (!err && res.code === 200) ? res.json() : null;",
+              "    if ((!row || !want(row)) && tries > 0) { setTimeout(function () { readLog(id, want, tries - 1, done); }, 250); return; }",
+              "    done(row, err ? String(err) : res.text());",
+              "  });",
+              "}",
+              "function output(row) { return JSON.stringify((row && row.output_message) || ''); }",
+              "function input(row) { return JSON.stringify((row && row.input_history) || ''); }",
+              "var id = pm.collectionVariables.get('hlsRun') + '-stored';",
+              "pm.test('hybrid-logstore: the call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "state('match=' + encodeURIComponent(id) + '&settled=1&timeoutMs=15000', function (s) {",
+              "  pm.test('hybrid-logstore: the log upload was stored under the log\\'s key', function () {",
+              "    pm.expect(s.timedOut, JSON.stringify(s)).to.not.equal(true);",
+              "    pm.expect((s.puts || []).map(function (p) { return p.outcome; }), JSON.stringify(s)).to.eql(['stored']);",
+              "    pm.expect((s.objects || []).length, JSON.stringify(s)).to.equal(1);",
+              "    pm.expect(s.objects[0].key, JSON.stringify(s)).to.contain('/logs/');",
+              "  });",
+              "  readLog(id, function (row) { return output(row).indexOf('hello') !== -1; }, 60, function (row, text) {",
+              "    pm.test('hybrid-logstore: the log is served from the object, with its output', function () {",
+              "      pm.expect(output(row), text).to.contain('hello');",
+              "      pm.expect(input(row), text).to.contain('stored question');",
+              "    });",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "547.2 while the upload is held the log is served from its row, and from the object once it lands - hybrid-logstore",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{hlsRun}}-held"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/upstream-ok\",\"messages\":[{\"role\":\"user\",\"content\":\"held question {{hlsRun}}\"}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('hybridLogstoreFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "function control(method, op, body, done) {",
+              "  var req = { url: FX + '/__s3/control/' + op, method: method };",
+              "  if (body) { req.header = { 'Content-Type': 'application/json' }; req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) { done(err, res); });",
+              "}",
+              "function state(query, done) {",
+              "  pm.sendRequest({ url: FX + '/__s3/control/state?' + query, method: 'GET' }, function (err, res) { done(err ? { error: String(err) } : res.json()); });",
+              "}",
+              "function readLog(id, want, tries, done) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(id), method: 'GET' }, function (err, res) {",
+              "    var row = (!err && res.code === 200) ? res.json() : null;",
+              "    if ((!row || !want(row)) && tries > 0) { setTimeout(function () { readLog(id, want, tries - 1, done); }, 250); return; }",
+              "    done(row, err ? String(err) : res.text());",
+              "  });",
+              "}",
+              "function output(row) { return JSON.stringify((row && row.output_message) || ''); }",
+              "function input(row) { return JSON.stringify((row && row.input_history) || ''); }",
+              "var id = pm.collectionVariables.get('hlsRun') + '-held';",
+              "control('POST', 'rules', { rules: [{ match: id, nth: 1, action: 'hold' }] }, function (err, res) {",
+              "  pm.test('hybrid-logstore: the hold is armed', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var BASE = pm.variables.get('baseUrl');",
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "function control(method, op, body, done) {",
+              "  var req = { url: FX + '/__s3/control/' + op, method: method };",
+              "  if (body) { req.header = { 'Content-Type': 'application/json' }; req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) { done(err, res); });",
+              "}",
+              "function state(query, done) {",
+              "  pm.sendRequest({ url: FX + '/__s3/control/state?' + query, method: 'GET' }, function (err, res) { done(err ? { error: String(err) } : res.json()); });",
+              "}",
+              "function readLog(id, want, tries, done) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(id), method: 'GET' }, function (err, res) {",
+              "    var row = (!err && res.code === 200) ? res.json() : null;",
+              "    if ((!row || !want(row)) && tries > 0) { setTimeout(function () { readLog(id, want, tries - 1, done); }, 250); return; }",
+              "    done(row, err ? String(err) : res.text());",
+              "  });",
+              "}",
+              "function output(row) { return JSON.stringify((row && row.output_message) || ''); }",
+              "function input(row) { return JSON.stringify((row && row.input_history) || ''); }",
+              "var id = pm.collectionVariables.get('hlsRun') + '-held';",
+              "pm.test('hybrid-logstore: the call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "state('match=' + encodeURIComponent(id) + '&held=1&timeoutMs=15000', function (s) {",
+              "  pm.test('hybrid-logstore: the log upload is held at the store', function () {",
+              "    pm.expect(s.timedOut, JSON.stringify(s)).to.not.equal(true);",
+              "    pm.expect((s.held || []).length, JSON.stringify(s)).to.equal(1);",
+              "    pm.expect((s.objects || []).length, JSON.stringify(s)).to.equal(0);",
+              "  });",
+              "  readLog(id, function (row) { return row.status === 'success'; }, 60, function (row, text) {",
+              "    pm.test('hybrid-logstore: while held, the log is served from its row: the question, no output', function () {",
+              "      pm.expect(row && row.status, text).to.equal('success');",
+              "      pm.expect(input(row), text).to.contain('held question');",
+              "      pm.expect(output(row), text).to.not.contain('hello');",
+              "    });",
+              "    control('POST', 'release', { match: id }, function (err, res) {",
+              "      pm.test('hybrid-logstore: the held upload is released', function () {",
+              "        pm.expect(err, String(err)).to.equal(null);",
+              "        pm.expect(res.json().released, res.text()).to.have.lengthOf(1);",
+              "      });",
+              "      readLog(id, function (r) { return output(r).indexOf('hello') !== -1; }, 60, function (after, text2) {",
+              "        pm.test('hybrid-logstore: once the upload lands, the log is served from the object, with its output', function () {",
+              "          pm.expect(output(after), text2).to.contain('hello');",
+              "        });",
+              "      });",
+              "    });",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "547.3 a failed upload stores nothing and the log is served from its row - hybrid-logstore",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{hlsRun}}-failed"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/upstream-ok\",\"messages\":[{\"role\":\"user\",\"content\":\"failed question {{hlsRun}}\"}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('hybridLogstoreFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "function control(method, op, body, done) {",
+              "  var req = { url: FX + '/__s3/control/' + op, method: method };",
+              "  if (body) { req.header = { 'Content-Type': 'application/json' }; req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) { done(err, res); });",
+              "}",
+              "function state(query, done) {",
+              "  pm.sendRequest({ url: FX + '/__s3/control/state?' + query, method: 'GET' }, function (err, res) { done(err ? { error: String(err) } : res.json()); });",
+              "}",
+              "function readLog(id, want, tries, done) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(id), method: 'GET' }, function (err, res) {",
+              "    var row = (!err && res.code === 200) ? res.json() : null;",
+              "    if ((!row || !want(row)) && tries > 0) { setTimeout(function () { readLog(id, want, tries - 1, done); }, 250); return; }",
+              "    done(row, err ? String(err) : res.text());",
+              "  });",
+              "}",
+              "function output(row) { return JSON.stringify((row && row.output_message) || ''); }",
+              "function input(row) { return JSON.stringify((row && row.input_history) || ''); }",
+              "var id = pm.collectionVariables.get('hlsRun') + '-failed';",
+              "control('POST', 'rules', { rules: [{ match: id, nth: 1, action: 'fail' }] }, function (err, res) {",
+              "  pm.test('hybrid-logstore: the failure is armed', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var BASE = pm.variables.get('baseUrl');",
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "function control(method, op, body, done) {",
+              "  var req = { url: FX + '/__s3/control/' + op, method: method };",
+              "  if (body) { req.header = { 'Content-Type': 'application/json' }; req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) { done(err, res); });",
+              "}",
+              "function state(query, done) {",
+              "  pm.sendRequest({ url: FX + '/__s3/control/state?' + query, method: 'GET' }, function (err, res) { done(err ? { error: String(err) } : res.json()); });",
+              "}",
+              "function readLog(id, want, tries, done) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(id), method: 'GET' }, function (err, res) {",
+              "    var row = (!err && res.code === 200) ? res.json() : null;",
+              "    if ((!row || !want(row)) && tries > 0) { setTimeout(function () { readLog(id, want, tries - 1, done); }, 250); return; }",
+              "    done(row, err ? String(err) : res.text());",
+              "  });",
+              "}",
+              "function output(row) { return JSON.stringify((row && row.output_message) || ''); }",
+              "function input(row) { return JSON.stringify((row && row.input_history) || ''); }",
+              "var id = pm.collectionVariables.get('hlsRun') + '-failed';",
+              "pm.test('hybrid-logstore: the call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "state('match=' + encodeURIComponent(id) + '&settled=1&timeoutMs=15000', function (s) {",
+              "  pm.test('hybrid-logstore: the log upload failed and nothing was stored', function () {",
+              "    pm.expect(s.timedOut, JSON.stringify(s)).to.not.equal(true);",
+              "    pm.expect((s.puts || []).map(function (p) { return p.outcome; }), JSON.stringify(s)).to.eql(['failed']);",
+              "    pm.expect((s.objects || []).length, JSON.stringify(s)).to.equal(0);",
+              "  });",
+              "  readLog(id, function (row) { return row.status === 'success'; }, 60, function (row, text) {",
+              "    pm.test('hybrid-logstore: the log is served from its row', function () {",
+              "      pm.expect(row && row.status, text).to.equal('success');",
+              "      pm.expect(input(row), text).to.contain('failed question');",
+              "    });",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

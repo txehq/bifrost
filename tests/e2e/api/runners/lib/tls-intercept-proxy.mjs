@@ -194,8 +194,12 @@ export function remapLoopbackPorts(text, mapping) {
 // fixtureGatewayConfig writes: inference auth must be off in the file itself (a config that leaves
 // it on is refused, naming the file, since every case would get 401), and a config that names no
 // datasheet gets datasheetOrigin's, so a fresh gateway does not download them.
-export function writeCheckedInFixtureConfig(appDir, { source, mapping = [], datasheetOrigin }) {
+// patch, when given, edits the parsed config in place before the checks, for a runner group that needs
+// one setting the checked-in file does not carry (fixture-folders.mjs's hybrid-logstore group adds the
+// object-storage log store whose sqlite path lies in the app dir).
+export function writeCheckedInFixtureConfig(appDir, { source, mapping = [], datasheetOrigin, patch }) {
 	const config = JSON.parse(remapLoopbackPorts(fs.readFileSync(source, "utf8"), mapping));
+	if (patch) patch(config);
 	if (config.client?.enforce_auth_on_inference !== false) {
 		throw new Error(`${source} must set client.enforce_auth_on_inference: false; fixture cases send no virtual key, so every one would get 401`);
 	}

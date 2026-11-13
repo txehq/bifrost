@@ -16,10 +16,10 @@
 import assert from "node:assert";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
-import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { freeLoopbackPort } from "./loopback-port.mjs";
 import { fixtureGatewayConfig, writeFixtureGatewayConfig } from "./tls-intercept-proxy.mjs";
 
 const libDir = path.dirname(fileURLToPath(import.meta.url));
@@ -67,20 +67,8 @@ function endpointFixtures() {
 }
 
 // A free loopback port p with p+2 and p+4 free too (the Bedrock fixture listens on all three),
-// taken from the range the shared machines reserve for test fixtures.
-async function freePortTriple() {
-	const isFree = (port) =>
-		new Promise((resolve) => {
-			const srv = net.createServer();
-			srv.once("error", () => resolve(false));
-			srv.listen(port, "127.0.0.1", () => srv.close(() => resolve(true)));
-		});
-	for (let attempt = 0; attempt < 50; attempt++) {
-		const port = 20000 + Math.floor(Math.random() * 39990);
-		if ((await isFree(port)) && (await isFree(port + 2)) && (await isFree(port + 4))) return port;
-	}
-	throw new Error("no free loopback port triple found");
-}
+// from lib/loopback-port.mjs, below the ephemeral ranges.
+const freePortTriple = () => freeLoopbackPort([0, 2, 4]);
 
 // Starts a fixture on a scratch app dir, waits until it reports that it is listening, and returns
 // the config it wrote. The fixture is stopped before this returns.

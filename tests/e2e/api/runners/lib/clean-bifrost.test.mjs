@@ -7,6 +7,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomLoopbackPort } from "./loopback-port.mjs";
 
 let passed = 0;
 function test(name, fn) {
@@ -94,7 +95,7 @@ test("a wiring runner resolves a relative --binary from the directory it was sta
   chmodSync(join(bin, "newman"), 0o755);
   for (const runner of ["run-newman-routing-wiring-tests.sh", "run-newman-model-catalog-wiring-tests.sh"]) {
     const script = join(dirname(SCRIPT), "..", "individual", runner);
-    const port = String(20000 + Math.floor(Math.random() * 20000));
+    const port = String(randomLoopbackPort());
     let out;
     try {
       out = execFileSync("bash", [script, "--binary", "./fake-bifrost", "--port", port], {

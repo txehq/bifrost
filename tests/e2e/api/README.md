@@ -527,6 +527,36 @@ When the gateway needs a setup token for its management API, run the folder thro
 `make run-provider-harness-test FEATURE=routing-error-fixture ENV_FILE=<an environment setting
 providerErrorFixture=1>` instead, which adds the token to every management call.
 
+### Hybrid log store: hold or fail an upload (TXE-7326)
+
+The hybrid log store keeps a summary row in the database and offloads each log's payload to object
+storage. Its bugs live in the order of those uploads, so the fixture also serves an S3-compatible
+object store on its main port (`runners/lib/s3-object-fixture.mjs`). It works path-style, under the
+bucket `harness-objects`. The fixture-folder runner's `hybrid-logstore` group runs the
+provider-error gateway with `logs_store.object_storage` pointing at it, and its sqlite log store in
+the group's app dir. Only the folders the group pins run there, since offloading changes what every
+other folder's log reads see. Folder 547 proves the setup: a landed upload, a held one, and a
+failed one, each read back through `GET /api/logs/{id}`.
+
+A row drives the store through its control API at `{{providerErrorFixtureUrl}}/__s3/control`:
+
+| Call | Effect |
+| --- | --- |
+| `POST /reset` | Forget every object, rule and PUT; held PUTs fail. |
+| `POST /rules` `{"rules": [{"match": "<key substring>", "nth": 1, "action": "hold" \| "fail"}]}` | From now on, the nth PUT whose key contains `match` is held until released, or answered 403 (not retried). |
+| `POST /release` `{"match": "<key substring>"}` | Held PUTs whose key contains `match` land. |
+| `GET /state?match=&held=N&settled=N&timeoutMs=T` | Objects, PUTs and held keys for `match`. It waits until N PUTs are held, or N have finished, or the timeout passes (then `timedOut: true`). |
+| `GET /object?key=` | One stored body, decompressed. |
+
+Log keys are `harness/logs/YYYY/MM/DD/HH/<log id>.json.gz`, and a caller's `x-request-id` is the log
+id, so a row matches its own uploads by the id it sends. A held PUT lands on its own after 20 s,
+inside the gateway's 30 s upload deadline. A new folder that needs this store joins the group's
+`files` list in `fixture-folders.mjs` and reads `hybridLogstoreFixture`.
+
+```bash
+scripts/test-offline.sh node tests/e2e/api/runners/fixture-folders.mjs run --gateway <bifrost-http binary> --group hybrid-logstore
+```
+
 The fixture also runs a stall proxy on port 8799 (`PROVIDER_ERROR_FIXTURE_STALL_PORT`): an
 HTTP proxy that accepts the connection and never answers the CONNECT, holding it for 15 seconds, and
 counts each CONNECT it reads as `__stall_proxy_connects` in `/__hits`. The `acquisition-first-token`

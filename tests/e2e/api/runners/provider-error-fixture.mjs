@@ -6,6 +6,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
+import { createS3ObjectFixture } from "./lib/s3-object-fixture.mjs";
 
 const port = Number(process.env.PROVIDER_ERROR_FIXTURE_PORT || "8791");
 // The stall proxy: an HTTP proxy that accepts the TCP connection and never answers the CONNECT, so a
@@ -2393,7 +2394,17 @@ const handleRequest = (req, res) => {
 // the test-key check, every chat answers as upstream-ok, and its hit is counted under "any-key:<model>", so a
 // case tells this upstream's attempts from the strict one's on the same model name.
 const ANY_KEY_PREFIX = "/any-key/";
+// The S3-compatible object store a hybrid log store offloads to (TXE-7326), with a control API that
+// holds or fails a chosen PUT; lib/s3-object-fixture.mjs documents both.
+const s3Objects = createS3ObjectFixture();
 const server = http.createServer((req, res) => {
+	const url = new URL(req.url, "http://localhost");
+	if (s3Objects.handles(url.pathname)) {
+		const chunks = [];
+		req.on("data", (c) => chunks.push(c));
+		req.on("end", () => s3Objects.handle(req, res, url, Buffer.concat(chunks)));
+		return;
+	}
 	if (req.url.startsWith(ANY_KEY_PREFIX)) {
 		req.url = req.url.slice(ANY_KEY_PREFIX.length - 1);
 		req.anyKey = true;
