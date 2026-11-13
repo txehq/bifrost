@@ -869,6 +869,65 @@
         "default_request_timeout_in_seconds": 10
       }
     },
+      "tkp_vidvendor": {
+        "keys": [
+          {
+            "name": "tk-key-vidvendor",
+            "value": "vv-fixture-key",
+            "models": [
+              "*"
+            ],
+            "weight": 1
+          }
+        ],
+        "custom_provider_config": {
+          "base_provider_type": "openai",
+          "allowed_requests": {
+            "list_models": true,
+            "model_retrieve": true,
+            "video_retrieve": true,
+            "video_download": true,
+            "video_delete": true,
+            "video_remix": true,
+            "container_retrieve": true,
+            "container_delete": true,
+            "container_file_create": true,
+            "container_file_list": true,
+            "container_file_retrieve": true,
+            "container_file_content": true,
+            "container_file_delete": true,
+            "responses_retrieve": true,
+            "responses_retrieve_stream": true,
+            "responses_delete": true,
+            "responses_cancel": true,
+            "responses_input_items": true
+          },
+          "request_path_overrides": {
+            "model_retrieve": "/api/v3/models/{model}",
+            "video_retrieve": "/api/v3/tasks/{video_id}",
+            "video_download": "/api/v3/tasks/{video_id}/file",
+            "video_delete": "/api/v3/tasks/{video_id}",
+            "video_remix": "/api/v3/tasks/{video_id}/remix",
+            "container_retrieve": "/api/v3/boxes/{container_id}",
+            "container_delete": "/api/v3/boxes/{container_id}",
+            "container_file_create": "/api/v3/boxes/{container_id}/items",
+            "container_file_list": "/api/v3/boxes/{container_id}/items",
+            "container_file_retrieve": "/api/v3/items/{file_id}/in/{container_id}",
+            "container_file_content": "/api/v3/items/{file_id}/in/{container_id}/bytes",
+            "container_file_delete": "/api/v3/items/{file_id}/in/{container_id}",
+            "responses_retrieve": "/api/v3/answers/{response_id}",
+            "responses_retrieve_stream": "/api/v3/answers/{response_id}/events",
+            "responses_delete": "/api/v3/answers/{response_id}",
+            "responses_cancel": "/api/v3/answers/{response_id}/stop",
+            "responses_input_items": "/api/v3/answers/{response_id}/inputs"
+          }
+        },
+        "network_config": {
+          "base_url": "http://127.0.0.1:8791/pp/vidvendor",
+          "max_retries": 0,
+          "default_request_timeout_in_seconds": 10
+        }
+      },
     "tkp_bigmodel": {
       "keys": [
         {

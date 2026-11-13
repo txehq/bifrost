@@ -9813,8 +9813,8 @@ func ValidateCustomProvider(config configstore.ProviderConfig, provider schemas.
 		return fmt.Errorf("custom provider validation failed: Bedrock providers cannot be keyless (is_key_less=true)")
 	}
 
-	// On the openai base an override for a call that names a batch or a file by id is a
-	// template. One without its placeholder would fail every such request, so it is refused
+	// On the openai base an override for a call that names a resource by id (a batch, a
+	// file, a model, a video, a container, a stored response) is a template. One without its placeholder would fail every such request, so it is refused
 	// here, when the provider is written. The other base types do not read these overrides.
 	if cpc.BaseProviderType == schemas.OpenAI {
 		requestTypes := make([]string, 0, len(cpc.RequestPathOverrides))

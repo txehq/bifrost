@@ -1641,6 +1641,52 @@ const collect = (req, then) => {
 	req.on("data", (c) => chunks.push(c));
 	req.on("end", () => then(Buffer.concat(chunks).toString("utf8")));
 };
+
+// Resource ids on an openai-based custom provider (folder 477, TXE-7020). tkp_vidvendor in the fixture config is an
+// openai-based custom provider whose request_path_overrides are templates off /v1: {video_id}, {model},
+// {container_id} with {file_id}, and {response_id}. This upstream answers only under /pp/vidvendor/api/v3 and only
+// for the ids below, so a call on a default /v1 path, or one that lost or misplaced an id, is a 404 and shows in
+// GET /__wire.
+const VIDVENDOR_ROOT = "/pp/vidvendor/api/v3";
+const VIDVENDOR_KEY_NAMES = { "Bearer vv-fixture-key": "tk-key-vidvendor" };
+const vidvendorAnswer = (method, path) => {
+	const notFound = { status: 404, body: errorBody(`vidvendor serves nothing at ${method} ${path}`, "invalid_request_error", "not_found") };
+	if (!path.startsWith(VIDVENDOR_ROOT + "/")) return notFound;
+	const rest = path.slice(VIDVENDOR_ROOT.length);
+	if (method === "GET" && rest === "/tasks/video_477") {
+		return { status: 200, body: JSON.stringify({ id: "video_477", object: "video", model: "glm-video-1", status: "completed", progress: 100, created_at: 1715959000, completed_at: 1715959060, seconds: "4", size: "720x1280" }) };
+	}
+	if (method === "DELETE" && rest === "/tasks/video_477") {
+		return { status: 200, body: JSON.stringify({ id: "video_477", object: "video.deleted", deleted: true }) };
+	}
+	if (method === "GET" && rest === "/models/glm-video-1") {
+		return { status: 200, body: JSON.stringify({ id: "glm-video-1", object: "model", created: 1715959000, owned_by: "vidvendor" }) };
+	}
+	const video = { id: "video_477", object: "video", model: "glm-video-1", status: "completed", progress: 100, created_at: 1715959000, completed_at: 1715959060, seconds: "4", size: "720x1280" };
+	if (method === "GET" && rest === "/tasks/video_477/file") return { status: 200, contentType: "video/mp4", body: "vidvendor video bytes" };
+	if (method === "POST" && rest === "/tasks/video_477/remix") return { status: 200, body: JSON.stringify({ ...video, id: "video_478", status: "queued", progress: 0, remixed_from_video_id: "video_477" }) };
+	const container = { id: "cntr_477", object: "container", created_at: 1715959000, status: "running", name: "harness" };
+	const containerFile = { id: "cfile_477", object: "container.file", created_at: 1715959000, bytes: 5, container_id: "cntr_477", path: "/mnt/data/a.txt", source: "user" };
+	if (method === "GET" && rest === "/boxes/cntr_477") return { status: 200, body: JSON.stringify(container) };
+	if (method === "DELETE" && rest === "/boxes/cntr_477") return { status: 200, body: JSON.stringify({ id: "cntr_477", object: "container.deleted", deleted: true }) };
+	if (method === "POST" && rest === "/boxes/cntr_477/items") return { status: 200, body: JSON.stringify(containerFile) };
+	if (method === "GET" && rest === "/boxes/cntr_477/items") return { status: 200, body: JSON.stringify({ object: "list", data: [containerFile], first_id: "cfile_477", last_id: "cfile_477", has_more: false }) };
+	// These templates name the file before its container: an id placed by position would swap them.
+	if (method === "GET" && rest === "/items/cfile_477/in/cntr_477") return { status: 200, body: JSON.stringify(containerFile) };
+	if (method === "GET" && rest === "/items/cfile_477/in/cntr_477/bytes") return { status: 200, contentType: "text/plain", body: "hello" };
+	if (method === "DELETE" && rest === "/items/cfile_477/in/cntr_477") return { status: 200, body: JSON.stringify({ id: "cfile_477", object: "container.file.deleted", deleted: true }) };
+	const response = { id: "resp_477", object: "response", created_at: 1715959000, status: "completed", model: "glm-video-1", output: [{ id: "msg_477", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "stored answer", annotations: [] }] }], usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 } };
+	if (method === "GET" && rest === "/answers/resp_477") return { status: 200, body: JSON.stringify(response) };
+	// The streamed retrieve has its own template, so it is told apart from the plain one on the wire.
+	if (method === "GET" && rest === "/answers/resp_477/events") {
+		const events = [{ type: "response.created", sequence_number: 0, response: { ...response, status: "in_progress", output: [] } }, { type: "response.completed", sequence_number: 1, response }];
+		return { status: 200, contentType: "text/event-stream", body: events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join("") };
+	}
+	if (method === "DELETE" && rest === "/answers/resp_477") return { status: 200, body: JSON.stringify({ id: "resp_477", object: "response", deleted: true }) };
+	if (method === "POST" && rest === "/answers/resp_477/stop") return { status: 200, body: JSON.stringify({ ...response, status: "cancelled", output: [] }) };
+	if (method === "GET" && rest === "/answers/resp_477/inputs") return { status: 200, body: JSON.stringify({ object: "list", data: [{ id: "msg_in_477", type: "message", role: "user", content: [{ type: "input_text", text: "question" }] }], first_id: "msg_in_477", last_id: "msg_in_477", has_more: false }) };
+	return notFound;
+};
 // Reads and discards a request body (JSON or multipart) before answering, so the gateway's upload completes.
 const drain = (req, then) => {
 	req.on("data", () => {});
@@ -1848,6 +1894,14 @@ const handleRequest = (req, res) => {
 	if (req.method === "GET" && path === "/__wire/summary") {
 		const calls = wireCalls.map((c) => ({ path: c.path, bytes: Buffer.byteLength(c.body), head: c.body.slice(0, 400), tail: c.body.slice(-400) }));
 		return send(200, {}, JSON.stringify({ data: [{ calls }] }));
+	}
+	if (path.startsWith("/pp/vidvendor/")) {
+		drain(req, () => {
+			wireCalls.push({ method: req.method, path, query: new URL(req.url, "http://localhost").search, body: "", key: VIDVENDOR_KEY_NAMES[req.headers.authorization] || "unknown" });
+			const answer = vidvendorAnswer(req.method, path);
+			send(answer.status, answer.contentType ? { "Content-Type": answer.contentType } : {}, answer.body);
+		});
+		return undefined;
 	}
 	if (path.startsWith("/pp/bigmodel/")) {
 		const body = [];

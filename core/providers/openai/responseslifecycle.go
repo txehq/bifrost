@@ -66,13 +66,17 @@ func (provider *OpenAIProvider) executeResponsesLifecycleUnary(
 	ctx *schemas.BifrostContext,
 	method string,
 	relativePath string,
+	escapedResponseID string,
 	requestType schemas.RequestType,
 	rawQuery string,
 	key schemas.Key,
 	body []byte,
 ) ([]byte, int64, map[string]string, *schemas.BifrostError) {
 	effectiveBody := body
-	fullURL := provider.buildRequestURL(ctx, relativePath, requestType)
+	fullURL, urlErr := provider.buildResourceURLForIDs(ctx, relativePath, requestType, escapedResponseID)
+	if urlErr != nil {
+		return nil, 0, nil, urlErr
+	}
 	if rawQuery != "" {
 		fullURL = fullURL + "?" + rawQuery
 	}
@@ -158,7 +162,7 @@ func (provider *OpenAIProvider) ResponsesRetrieve(ctx *schemas.BifrostContext, k
 
 	path := "/v1/responses/" + escapedResponseID
 	bodyBytes, latencyMs, headers, bifrostErr := provider.executeResponsesLifecycleUnary(
-		ctx, http.MethodGet, path, schemas.ResponsesRetrieveRequest, buildResponsesRetrieveQuery(req), key, nil)
+		ctx, http.MethodGet, path, escapedResponseID, schemas.ResponsesRetrieveRequest, buildResponsesRetrieveQuery(req), key, nil)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -205,7 +209,10 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
-	fullURL := provider.buildRequestURL(ctx, "/v1/responses/"+escapedResponseID, schemas.ResponsesRetrieveStreamRequest)
+	fullURL, urlErr := provider.buildResourceURLForIDs(ctx, "/v1/responses/"+escapedResponseID, schemas.ResponsesRetrieveStreamRequest, escapedResponseID)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 	if rawQuery := buildResponsesRetrieveQuery(req); rawQuery != "" {
 		fullURL = fullURL + "?" + rawQuery
 	}
@@ -401,7 +408,7 @@ func (provider *OpenAIProvider) ResponsesDelete(ctx *schemas.BifrostContext, key
 
 	path := "/v1/responses/" + escapedResponseID
 	bodyBytes, latencyMs, headers, bifrostErr := provider.executeResponsesLifecycleUnary(
-		ctx, http.MethodDelete, path, schemas.ResponsesDeleteRequest, "", key, nil)
+		ctx, http.MethodDelete, path, escapedResponseID, schemas.ResponsesDeleteRequest, "", key, nil)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -441,7 +448,7 @@ func (provider *OpenAIProvider) ResponsesCancel(ctx *schemas.BifrostContext, key
 
 	path := "/v1/responses/" + escapedResponseID + "/cancel"
 	bodyBytes, latencyMs, headers, bifrostErr := provider.executeResponsesLifecycleUnary(
-		ctx, http.MethodPost, path, schemas.ResponsesCancelRequest, "", key, nil)
+		ctx, http.MethodPost, path, escapedResponseID, schemas.ResponsesCancelRequest, "", key, nil)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -485,7 +492,7 @@ func (provider *OpenAIProvider) ResponsesInputItems(ctx *schemas.BifrostContext,
 
 	path := "/v1/responses/" + escapedResponseID + "/input_items"
 	bodyBytes, latencyMs, headers, bifrostErr := provider.executeResponsesLifecycleUnary(
-		ctx, http.MethodGet, path, schemas.ResponsesInputItemsRequest, buildResponsesInputItemsQuery(req), key, nil)
+		ctx, http.MethodGet, path, escapedResponseID, schemas.ResponsesInputItemsRequest, buildResponsesInputItemsQuery(req), key, nil)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
