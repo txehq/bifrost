@@ -12805,6 +12805,13 @@ type nestedPriceProbe struct {
 	send func(ctx *schemas.BifrostContext, provider schemas.Provider, key schemas.Key, model string, variant int) bool
 }
 
+// nestedPriceProbeVideoBaseSeconds is the duration every video probe names on a provider that
+// refuses a create naming none: Replicate, whose hosted model would pick its own length and
+// report neither it nor a cost (TXE-7297).
+var nestedPriceProbeVideoBaseSeconds = map[schemas.ModelProvider]string{
+	schemas.Replicate: "4",
+}
+
 func nestedPriceProbes() []nestedPriceProbe {
 	text := guardOriginalText
 	images := []*schemas.ImageGenerationParameters{
@@ -12860,6 +12867,12 @@ func nestedPriceProbes() []nestedPriceProbe {
 				return false
 			}
 			params := *videos[variant]
+			// A provider that refuses a create naming no seconds sends nothing for the bare
+			// variant, so every variant names a base duration there; the seconds variants
+			// differ from it, so the field is still seen landing.
+			if base, needed := nestedPriceProbeVideoBaseSeconds[pr.GetProviderKey()]; needed && params.Seconds == nil {
+				params.Seconds = schemas.Ptr(base)
+			}
 			_, _ = pr.VideoGeneration(ctx, key, &schemas.BifrostVideoGenerationRequest{Provider: pr.GetProviderKey(), Model: model, Input: &schemas.VideoGenerationInput{Prompt: text}, Params: &params})
 			return true
 		}},

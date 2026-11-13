@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -12,9 +13,24 @@ func ToReplicateVideoGenerationInput(bifrostReq *schemas.BifrostVideoGenerationR
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil, fmt.Errorf("bifrost request or input is nil")
 	}
+	// A hosted model picks its own length when the create names none, and Replicate's prediction
+	// reports neither the rendered duration nor a cost, so such a job could not be priced: it
+	// would settle unpriced and never be charged to a budget (TXE-7297). The create must name
+	// seconds; nothing is sent to Replicate otherwise. The value must be a whole number greater
+	// than zero: "0" or "-3" would reach Replicate, and the pricer reads neither as a duration.
+	if bifrostReq.Params == nil || bifrostReq.Params.Seconds == nil || strings.TrimSpace(*bifrostReq.Params.Seconds) == "" {
+		return nil, providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError("seconds",
+			"a Replicate video create must name seconds: the hosted model picks its own length otherwise, and Replicate reports neither the duration it rendered nor a cost, so the job could not be priced"))
+	}
+	seconds, err := strconv.Atoi(strings.TrimSpace(*bifrostReq.Params.Seconds))
+	if err != nil || seconds <= 0 {
+		return nil, providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError("seconds",
+			"a Replicate video create must name seconds as a whole number greater than zero, the duration the job is priced at"))
+	}
 
 	input := &ReplicatePredictionRequestInput{
-		Prompt: &bifrostReq.Input.Prompt,
+		Prompt:   &bifrostReq.Input.Prompt,
+		Duration: &seconds,
 	}
 
 	if bifrostReq.Input.InputReference != nil {
@@ -34,14 +50,6 @@ func ToReplicateVideoGenerationInput(bifrostReq *schemas.BifrostVideoGenerationR
 	// Map parameters if available
 	if bifrostReq.Params != nil {
 		params := bifrostReq.Params
-
-		if params.Seconds != nil {
-			seconds, err := strconv.Atoi(*params.Seconds)
-			if err != nil {
-				return nil, fmt.Errorf("invalid seconds value: %w", err)
-			}
-			input.Duration = &seconds
-		}
 
 		if params.Seed != nil {
 			input.Seed = params.Seed

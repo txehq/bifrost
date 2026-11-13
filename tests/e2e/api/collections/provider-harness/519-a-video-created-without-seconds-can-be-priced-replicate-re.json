@@ -1,0 +1,664 @@
+{
+  "name": "519. A video created without seconds can be priced: replicate refuses it, runway records the duration it sent, kling's fractional duration settles at its whole seconds (video without seconds) [SERIAL]",
+  "item": [
+    {
+      "name": "519.1 reset the fixture's record (video without seconds)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__reset",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__reset"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.expect(pm.response.code, pm.response.text()).to.eql(200);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "519.2 [EXPECT-400] replicate/google/veo-3 POST /v1/videos with no seconds is refused: the hosted model picks its own length and Replicate reports neither it nor a cost (video without seconds)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"replicate/google/veo-3\",\n  \"prompt\": \"a paper boat drifting down a rain gutter\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a create with no seconds is caller_unsupported_parameter naming seconds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('seconds');",
+              "  pm.expect(j.error.message, pm.response.text()).to.include('could not be priced');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "519.3 replicate/google/veo-3 POST /v1/videos with seconds creates the prediction and the task carries the seconds (video without seconds)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"replicate/google/veo-3\",\n  \"prompt\": \"a paper boat drifting down a rain gutter\",\n  \"seconds\": \"8\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create with seconds is a queued task', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.include('pred_fixture_no_urls');",
+              "  pm.expect(j.seconds, pm.response.text()).to.eql('8');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "519.4 only the create with seconds reached Replicate, with input.duration 8 (video without seconds)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__wire",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__wire"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('one prediction create, the one of row 3', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/replicate/') === 0 && /\\/predictions$/.test(c.path); });",
+              "  pm.expect(calls.length, JSON.stringify(calls)).to.eql(1);",
+              "  var sent = JSON.parse(calls[0].body);",
+              "  pm.expect(sent.input.duration, calls[0].body).to.eql(8);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "519.5 runway/gen4_turbo POST /v1/videos with no seconds records the duration Bifrost sent Runway (video without seconds)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"runway/gen4_turbo\",\n  \"prompt\": \"a paper boat drifting down a rain gutter\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the task carries the gen model default the converter sent, so the job can be priced', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.include('runway-fixture-task');",
+              "  pm.expect(j.seconds, 'seconds: ' + pm.response.text()).to.eql('2');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "519.6 the Runway create carried duration 2, the value the task records (video without seconds)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__wire",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__wire"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('one text_to_video create with duration 2', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path === '/pp/runway/v1/text_to_video'; });",
+              "  pm.expect(calls.length, JSON.stringify(calls)).to.eql(1);",
+              "  pm.expect(JSON.parse(calls[0].body).duration, calls[0].body).to.eql(2);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "519.7 the fixture gateway runs with provider job accounting off; its client config is kept to restore at the end (video without seconds)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.unset('videoAcctClientConfig');",
+              "pm.collectionVariables.unset('videoAcctKlingId');",
+              "pm.collectionVariables.unset('videoAcctRetry');",
+              "pm.test('accounting reads back off', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.client_config && j.client_config.disable_provider_job_accounting, pm.response.text().slice(0, 400)).to.equal(true);",
+              "});",
+              "var cc = pm.response.code === 200 ? pm.response.json().client_config : null;",
+              "if (cc) { pm.collectionVariables.set('videoAcctClientConfig', JSON.stringify(cc)); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "519.8 [EXPECT-200] turn provider job accounting on, which starts the video sweeper (video without seconds)",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{{videoAcctOnBody}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var saved = pm.collectionVariables.get('videoAcctClientConfig');",
+              "if (!saved) {",
+              "  // 519.7 kept no config: leave the switch alone rather than write a partial one.",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var cc = JSON.parse(saved);",
+              "  cc.disable_provider_job_accounting = false;",
+              "  pm.variables.set('videoAcctOnBody', JSON.stringify({ client_config: cc }));",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('accounting turned on', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "519.9 kling/kling-3.0 POST /v1/videos asking for 10 seconds is queued, and Kling will report a 5.1 second clip (video without seconds)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"kling/kling-3.0\",\n  \"prompt\": \"a paper boat drifts across a still pond at dawn\",\n  \"seconds\": \"10\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('create returns the queued Kling task', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.eql('893605946402811985:kling');",
+              "  pm.expect(j.status, pm.response.text()).to.eql('queued');",
+              "});",
+              "if (pm.response.code === 200) { pm.collectionVariables.set('videoAcctKlingId', pm.response.json().id); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "519.10 kling GET /v1/videos/{id} reports the task succeeded with a 5.1 second clip, so the job is due for settlement (video without seconds)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/{{videoAcctKlingId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "{{videoAcctKlingId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the retrieve reports the rendered duration with its fraction', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.status, pm.response.text()).to.eql('completed');",
+              "  pm.expect(j.seconds, pm.response.text()).to.eql('5.1');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "519.11 the settled Kling job is priced at 5 whole seconds of the reported 5.1 at the datasheet rate, not at the 10 the create asked for (video without seconds)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs?providers=kling&models=kling-3.0&limit=50",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "providers",
+              "value": "kling"
+            },
+            {
+              "key": "models",
+              "value": "kling-3.0"
+            },
+            {
+              "key": "limit",
+              "value": "50"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var retry = Number(pm.collectionVariables.get('videoAcctRetry') || 0);",
+              "if (retry > 0) {",
+              "  // The video sweeper ticks every 30 s; newman drains pending timers before it sends.",
+              "  var until = Date.now() + 2000;",
+              "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('logs query responds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "});",
+              "if (pm.response.code !== 200) { pm.collectionVariables.unset('videoAcctRetry'); return; }",
+              "// The settlement row is the one whose video_debug carries accounting; the submission and",
+              "// the retrieve rows carry video_debug without it.",
+              "var row = null;",
+              "(pm.response.json().logs || []).forEach(function (l) {",
+              "  var vd = l.video_debug;",
+              "  if (!row && vd && vd.accounting && String(vd.video_id || '').indexOf('893605946402811985') === 0) { row = l; }",
+              "});",
+              "var retry = Number(pm.collectionVariables.get('videoAcctRetry') || 0);",
+              "if (!row && retry < 45) {",
+              "  pm.collectionVariables.set('videoAcctRetry', retry + 1);",
+              "  postman.setNextRequest(pm.info.requestName);",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('videoAcctRetry');",
+              "pm.test('the job settled within 90 s of the retrieve', function () {",
+              "  pm.expect(row, 'no settlement row: ' + pm.response.text().slice(0, 1500)).to.not.equal(null);",
+              "});",
+              "if (!row) { return; }",
+              "pm.test('settled at 5 seconds: 5.1 rounded, where an integer-only read dropped the fraction and fell back to the 10 requested', function () {",
+              "  pm.expect(row.video_debug.accounting.seconds, JSON.stringify(row.video_debug)).to.equal(5);",
+              "});",
+              "pm.test('priced at 5 s x $0.10, the fixture datasheet rate for kling-3.0', function () {",
+              "  pm.expect(row.cost, JSON.stringify(row).slice(0, 1500)).to.be.closeTo(0.5, 1e-9);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "519.12 [EXPECT-200] teardown: provider job accounting is turned back off with the client config 519.7 kept, whatever the rows above did (video without seconds)",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{{videoAcctOffBody}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var saved = pm.collectionVariables.get('videoAcctClientConfig');",
+              "if (!saved) {",
+              "  // 519.8 did not run either, so accounting was never turned on.",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var cc = JSON.parse(saved);",
+              "  cc.disable_provider_job_accounting = true;",
+              "  pm.variables.set('videoAcctOffBody', JSON.stringify({ client_config: cc }));",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.unset('videoAcctRetry');",
+              "pm.test('accounting turned back off', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.eql(200);",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config', method: 'GET', header: { 'X-Bifrost-Setup-Token': 'bifrost-e2e-setup-token' } }, function (err, res) {",
+              "  pm.test('accounting reads back off', function () {",
+              "    pm.expect(err, 'gateway unreachable: ' + err).to.equal(null);",
+              "    var j = res.json();",
+              "    pm.expect(j.client_config && j.client_config.disable_provider_job_accounting, res.text().slice(0, 400)).to.equal(true);",
+              "  });",
+              "});",
+              "pm.collectionVariables.unset('videoAcctClientConfig');",
+              "pm.collectionVariables.unset('videoAcctKlingId');"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

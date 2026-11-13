@@ -1,6 +1,7 @@
 package datasheet
 
 import (
+	"math"
 	"strconv"
 	"strings"
 
@@ -177,6 +178,26 @@ func videoClipCount(outputs []schemas.VideoOutput) int {
 // actually reports. What that amounts to varies enormously by provider — OpenAI
 // echoes model, duration and size; several others report only a status and a URL —
 // which is precisely why the submitted request is kept as the fallback.
+// VideoSeconds reads a video duration as the whole seconds a per-second rate is multiplied by.
+// Vendors report a rendered clip's length with a fraction (Kling "5.1", xAI 6.04, DashScope
+// 5.0), which is rounded to the nearest second, and never below one second for a clip that has
+// a length. ok is false for a value that is not a positive number, such as "auto". A fraction
+// that was dropped instead left the job with no duration, and it settled unpriced (TXE-7297).
+func VideoSeconds(value string) (seconds int, ok bool) {
+	value = strings.TrimSpace(value)
+	if whole, err := strconv.Atoi(value); err == nil {
+		if whole <= 0 {
+			return 0, false
+		}
+		return whole, true
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed <= 0 {
+		return 0, false
+	}
+	return max(1, int(math.Round(parsed))), true
+}
+
 func VideoDimensionsFromResponse(resp *schemas.BifrostVideoGenerationResponse) VideoPricingDimensions {
 	if resp == nil {
 		return VideoPricingDimensions{}
@@ -187,7 +208,7 @@ func VideoDimensionsFromResponse(resp *schemas.BifrostVideoGenerationResponse) V
 		OutputCount: videoClipCount(resp.Videos),
 	}
 	if resp.Seconds != nil {
-		if seconds, err := strconv.Atoi(*resp.Seconds); err == nil {
+		if seconds, ok := VideoSeconds(*resp.Seconds); ok {
 			dims.Seconds = &seconds
 		}
 	}

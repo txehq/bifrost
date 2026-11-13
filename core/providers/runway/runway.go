@@ -4,8 +4,10 @@ package runway
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -445,6 +447,13 @@ func (provider *RunwayProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 		},
 	}
 
+	// Runway's task reports no duration, and the converter sends one Runway did not get from
+	// the request (its model default, or an extra param). The task carries the duration that
+	// was sent, so the job is priced for the clip Runway renders (TXE-7297).
+	if seconds := runwaySentDuration(jsonData); seconds != nil {
+		bifrostResp.Seconds = seconds
+	}
+
 	if sendBackRawRequest {
 		bifrostResp.ExtraFields.RawRequest = rawRequest
 	}
@@ -780,4 +789,15 @@ func (provider *RunwayProvider) Passthrough(_ *schemas.BifrostContext, _ schemas
 
 func (provider *RunwayProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+}
+
+// runwaySentDuration is the duration a create body sent to Runway, nil when it sent none.
+func runwaySentDuration(body []byte) *string {
+	var sent struct {
+		Duration *int `json:"duration"`
+	}
+	if err := json.Unmarshal(body, &sent); err != nil || sent.Duration == nil || *sent.Duration <= 0 {
+		return nil
+	}
+	return schemas.Ptr(strconv.Itoa(*sent.Duration))
 }

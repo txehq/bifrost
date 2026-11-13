@@ -1,6 +1,7 @@
 package runway
 
 import (
+	"encoding/json"
 	"testing"
 
 	schemas "github.com/capsohq/bifrost/core/schemas"
@@ -149,5 +150,51 @@ func TestToRunwayVideoGenerationRequest_EmptyVideoURI(t *testing.T) {
 		require.NotNil(t, out.VideoURI)
 		assert.Equal(t, "https://example.com/clip.mp4", *out.VideoURI)
 		assert.Equal(t, "/v1/video_to_video", getRunwayEndpoint(req))
+	})
+}
+
+// TestRunwaySentDurationIsRecorded pins TXE-7297: Runway's task reports no duration, so the
+// create records the duration its body sent (a model default when the request named none),
+// and the job is priced for the clip Runway renders.
+func TestRunwaySentDurationIsRecorded(t *testing.T) {
+	body, err := ToRunwayVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{Model: "gen4_turbo", Input: &schemas.VideoGenerationInput{Prompt: "p"}})
+	require.NoError(t, err)
+	encoded, err := json.Marshal(body)
+	require.NoError(t, err)
+	got := runwaySentDuration(encoded)
+	require.NotNil(t, got, "the gen model's default duration is sent and must be recorded: %s", encoded)
+	assert.Equal(t, "2", *got)
+	assert.Nil(t, runwaySentDuration([]byte(`{"model":"x"}`)), "no duration sent, none recorded")
+}
+
+// BenchmarkRunwayVideoCreateBody measures the request-path cost TXE-7297 adds to a Runway
+// video create (AGENTS.md cost rule): "before" builds and encodes the body; "after" also reads
+// back the duration the body sends, which the task records so the job can be priced.
+func BenchmarkRunwayVideoCreateBody(b *testing.B) {
+	req := &schemas.BifrostVideoGenerationRequest{Model: "gen4_turbo", Input: &schemas.VideoGenerationInput{Prompt: "a paper boat drifting down a rain gutter"}}
+	build := func(b *testing.B) []byte {
+		body, err := ToRunwayVideoGenerationRequest(req)
+		if err != nil {
+			b.Fatal(err)
+		}
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			b.Fatal(err)
+		}
+		return encoded
+	}
+	b.Run("before", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = build(b)
+		}
+	})
+	b.Run("after", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if runwaySentDuration(build(b)) == nil {
+				b.Fatal("no duration read back")
+			}
+		}
 	})
 }

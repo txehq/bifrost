@@ -14,6 +14,7 @@ import (
 
 	"github.com/capsohq/bifrost/core/internal/llmtests"
 	"github.com/capsohq/bifrost/core/providers/replicate"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1988,5 +1989,28 @@ func BenchmarkPredictionPollURL(b *testing.B) {
 		if _, bifrostErr := replicate.PredictionPollURL(created); bifrostErr != nil {
 			b.Fatal(bifrostErr.Error.Message)
 		}
+	}
+}
+
+// TestReplicateVideoCreateMustNameSeconds pins TXE-7297: a hosted model picks its own length
+// when the create names none, and Replicate reports neither that length nor a cost, so the job
+// could not be priced. The create is refused, naming seconds; with seconds it converts. A value
+// the pricer cannot read as a duration ("0", "-3") would reach Replicate and settle unpriced, so
+// seconds must be a whole number greater than zero.
+func TestReplicateVideoCreateMustNameSeconds(t *testing.T) {
+	refused := []*schemas.VideoGenerationParameters{nil, {}}
+	for _, seconds := range []string{" ", "0", "-3", "2.5", "abc", "NaN"} {
+		refused = append(refused, &schemas.VideoGenerationParameters{Seconds: schemas.Ptr(seconds)})
+	}
+	for _, params := range refused {
+		_, err := replicate.ToReplicateVideoGenerationInput(&schemas.BifrostVideoGenerationRequest{Model: "google/veo-3", Input: &schemas.VideoGenerationInput{Prompt: "p"}, Params: params})
+		bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
+		if !ok || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error == nil || bifrostErr.Error.Param != "seconds" {
+			t.Fatalf("params %+v: got %v, want caller_unsupported_parameter naming seconds", params, err)
+		}
+	}
+	req, err := replicate.ToReplicateVideoGenerationInput(&schemas.BifrostVideoGenerationRequest{Model: "google/veo-3", Input: &schemas.VideoGenerationInput{Prompt: "p"}, Params: &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("8")}})
+	if err != nil || req.Input == nil || req.Input.Duration == nil || *req.Input.Duration != 8 {
+		t.Fatalf("a create naming seconds must convert with duration 8: %+v, %v", req, err)
 	}
 }

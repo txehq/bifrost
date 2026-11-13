@@ -382,6 +382,9 @@ const fixturePricing = {
 	"fixture-image-safety": { provider: "gemini", mode: "image_generation", input_cost_per_token: 0.000001, output_cost_per_image: 0.04 },
 	// A provider the datasheet knows and list-models cannot enumerate, for run-bounds-wire.mjs.
 	"fireworks_ai/accounts/fixture/models/known": { provider: "fireworks_ai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
+	// TXE-7297: a per-second Kling video rate, so folder 519 can read the price a settled job got from the 5.1 second
+	// clip the Kling query reports. Nothing settles a video unless a row turns provider job accounting on.
+	"kling-3.0": { provider: "kling", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
 };
 
 // Provider wire capture, TXE-5539. The config points each provider these rows use at /pp/<provider>, so one fixture
@@ -1100,6 +1103,8 @@ const wireAnswer = (path, body, bytes) => {
 	if (path.startsWith("/pp/storage/")) return storageAnswer(path, body);
 	if (path === "/pp/bfl/v1/flux-3-video") return { status: 200, body: JSON.stringify(bflVideoSubmitAnswer()) };
 	if (path.startsWith("/pp/bfl/v1/")) return { status: 200, body: JSON.stringify(bflSubmitAnswer()) };
+	// Runway's task create (folder 519, TXE-7297): the answer is the task id only, as Runway's is.
+	if (path.startsWith("/pp/runway/v1/") && path.endsWith("_to_video")) return { status: 200, body: JSON.stringify({ id: "runway-fixture-task" }) };
 	if (isOpenAIImagePath(path)) return openAIImageAnswer(body, bytes, path.endsWith("/images/edits"));
 	const geminiImage = geminiImageAnswerFor(path);
 	if (geminiImage) return geminiImage;

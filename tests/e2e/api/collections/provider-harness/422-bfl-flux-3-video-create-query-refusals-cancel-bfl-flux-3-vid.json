@@ -191,6 +191,8 @@
               "  pm.expect(j.completed_at).to.eql(1762700000);",
               "  pm.expect(j.expires_at).to.eql(1762707200);",
               "  pm.expect(j.usage.vendor_cost).to.eql({ amount: 30, unit: 'credit' });",
+              "  // TXE-7297: the settled credits are also usage.cost in USD at BFL's documented 1 credit = $0.01.",
+              "  pm.expect(j.usage.cost, 'usage.cost: ' + pm.response.text()).to.eql({ total_cost: 0.3 });",
               "});"
             ]
           }

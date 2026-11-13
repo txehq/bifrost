@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -753,6 +754,15 @@ func TestBFLVideoTask(t *testing.T) {
 	}
 	if ready.Usage == nil || ready.Usage.VendorCost == nil || ready.Usage.VendorCost.Amount != 30 || ready.Usage.VendorCost.Unit != schemas.VendorCostUnitCredit {
 		t.Errorf("usage = %+v", ready.Usage)
+	}
+	// TXE-7297: the settled credits are also usage.cost in USD at BFL's documented $0.01 per
+	// credit, so settlement prices the task at BFL's own figure whatever its duration.
+	if ready.Usage.Cost == nil || math.Abs(ready.Usage.Cost.TotalCost-0.30) > 1e-9 {
+		t.Errorf("usage.cost = %+v, want 30 credits as $0.30", ready.Usage.Cost)
+	}
+	free := toVideoTask(&BFLResultResponse{ID: "v1", Status: "Content Moderated", Cost: schemas.Ptr(0.0)})
+	if free.Usage == nil || free.Usage.Cost != nil {
+		t.Errorf("a zero cost must leave usage.cost unset: %+v", free.Usage)
 	}
 	for raw, want := range map[string]schemas.VideoStatus{
 		"Pending": schemas.VideoStatusQueued, "Reasoning": schemas.VideoStatusInProgress, "Generating": schemas.VideoStatusInProgress,
