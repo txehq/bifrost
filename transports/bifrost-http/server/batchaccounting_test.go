@@ -2,7 +2,7 @@ package server
 
 import (
 	"context"
-	"errors"
+	"encoding/binary"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -274,8 +274,7 @@ func (a *replicateVideoAccount) GetConfigForProvider(_ schemas.ModelProvider) (*
 // TXE-7329: the sweeper's retriever downloads a finished Replicate prediction's video through
 // core, and the settler prices the length it rendered. The prediction was asked for 5 seconds
 // and its output is TXE-6774's 12-second ffmpeg MP4; Replicate's prediction reports neither.
-// A file past client.max_response_body_size_mb (TXE-7148) is final: the job is charged the
-// requested seconds as a floor, and the file is not downloaded again.
+// A file past client.max_response_body_size_mb (TXE-7148) is measured from the streamed download.
 func TestBifrostVideoRetrieverMeasuresTheRenderedReplicateVideo(t *testing.T) {
 	video, err := os.ReadFile("../../../framework/videoduration/testdata/twelve-seconds.mp4")
 	if err != nil {
@@ -329,19 +328,38 @@ func TestBifrostVideoRetrieverMeasuresTheRenderedReplicateVideo(t *testing.T) {
 		t.Fatalf("poll = %+v, rendered seconds %v; want settleable at the 12 rendered seconds", poll, payload.RenderedSeconds)
 	}
 
+	// TXE-7334: the download is streamed, so a file past client.max_response_body_size_mb (TXE-7148)
+	// is measured too. The same clip with 3 MB more media in its mdat, against a 1 MB limit.
 	network.SetMaxResponseBodySizeMB(1)
 	t.Cleanup(func() { network.SetMaxResponseBodySizeMB(0) })
-	video = append(video, make([]byte, 2<<20)...)
-	_, err = retriever.DownloadVideo(context.Background(), job)
-	if !errors.Is(err, jobaccounting.ErrVideoDurationUnmeasurable) {
-		t.Fatalf("a video past the response body limit: got %v, want ErrVideoDurationUnmeasurable", err)
-	}
-	// Final on the first poll: settled at the requested seconds as a floor, not downloaded again.
+	video = inflateMdat(t, video, 3<<20)
 	poll, err = jobaccounting.NewVideoSettler(retriever).Poll(context.Background(), job)
-	if err != nil || !poll.Settleable {
-		t.Fatalf("poll past the limit = %+v, %v; want settleable at the floor", poll, err)
+	if err != nil {
+		t.Fatalf("Poll past the limit: %v", err)
 	}
-	if payload, _ := poll.Payload.(jobaccounting.VideoPayload); payload.RenderedSeconds != nil || payload.RenderedUnmeasurable == "" {
-		t.Fatalf("poll past the limit measured %v (%q); want it marked unmeasurable", payload.RenderedSeconds, payload.RenderedUnmeasurable)
+	if payload, _ := poll.Payload.(jobaccounting.VideoPayload); !poll.Settleable || payload.RenderedSeconds == nil || *payload.RenderedSeconds != 12 {
+		t.Fatalf("poll of a %d-byte file past the 1 MB limit = %+v (%q); want the 12 rendered seconds", len(video), payload.RenderedSeconds, payload.RenderedUnmeasurable)
 	}
+}
+
+// inflateMdat returns the MP4 with n zero bytes added after the media in its top-level mdat. The
+// samples' chunk offsets point before them, so the clip is the same; a moov after the mdat moves.
+func inflateMdat(t *testing.T, data []byte, n int) []byte {
+	t.Helper()
+	for at := 0; at+8 <= len(data); {
+		size := int(binary.BigEndian.Uint32(data[at:]))
+		if size < 8 || at+size > len(data) {
+			t.Fatalf("a box at byte %d of %d bytes", at, size)
+		}
+		if string(data[at+4:at+8]) == "mdat" {
+			out := make([]byte, 0, len(data)+n)
+			out = append(out, data[:at+size]...)
+			binary.BigEndian.PutUint32(out[at:], uint32(size+n))
+			out = append(out, make([]byte, n)...)
+			return append(out, data[at+size:]...)
+		}
+		at += size
+	}
+	t.Fatal("no mdat")
+	return nil
 }

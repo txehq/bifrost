@@ -8,6 +8,7 @@ import (
 	"io"
 	"runtime"
 	"testing"
+	"time"
 
 	mp4 "github.com/abema/go-mp4"
 )
@@ -114,6 +115,40 @@ func TestReadStreamFailuresAreTheCallers(t *testing.T) {
 	_, err = ReadStream(ctx, bytes.NewReader(data), DefaultReadLimits, 1<<40)
 	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrUnmeasurable) {
 		t.Fatalf("got %v, want context.Canceled alone", err)
+	}
+}
+
+// The sparse image reads held bytes as held and every gap as zero, across segment boundaries, and a
+// read finds its segments by search: 100,000 reads of a 100,000-segment image take a moment, where a
+// pass over every segment per read would take minutes.
+func TestSparseFileReadAt(t *testing.T) {
+	f := &sparseFile{size: 12, segments: []sparseSegment{{offset: 2, data: []byte("ab")}, {offset: 6, data: []byte("cde")}}}
+	p := make([]byte, 12)
+	if n, err := f.ReadAt(p, 0); n != 12 || err != nil || !bytes.Equal(p, []byte("\x00\x00ab\x00\x00cde\x00\x00\x00")) {
+		t.Fatalf("got %d %v %q", n, err, p)
+	}
+	q := make([]byte, 4)
+	if n, err := f.ReadAt(q, 3); n != 4 || err != nil || !bytes.Equal(q, []byte("b\x00\x00c")) {
+		t.Fatalf("got %d %v %q", n, err, q)
+	}
+	if n, err := f.ReadAt(q, 10); n != 2 || err != io.EOF || !bytes.Equal(q[:2], []byte{0, 0}) {
+		t.Fatalf("a read past the end: got %d %v", n, err)
+	}
+
+	const segments = 100_000
+	big := &sparseFile{size: segments * 16}
+	for i := range segments {
+		big.segments = append(big.segments, sparseSegment{offset: int64(i) * 16, data: []byte{byte(i), 1, 2, 3, 4, 5, 6, 7}})
+	}
+	start := time.Now()
+	b := make([]byte, 1)
+	for i := range segments {
+		if _, err := big.ReadAt(b, int64(i)*16); err != nil || b[0] != byte(i) {
+			t.Fatalf("segment %d: got %d %v", i, b[0], err)
+		}
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("%d reads of a %d-segment image took %v", segments, segments, elapsed)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 )
 
 // ReadStream reads the duration of the MP4 r streams, holding only its header (fork, TXE-7334).
@@ -52,7 +53,15 @@ func (f *sparseFile) ReadAt(p []byte, off int64) (int, error) {
 		n = int(rest)
 	}
 	clear(p[:n])
-	for _, s := range f.segments {
+	// Segments are in file order and do not overlap: start at the first that ends past off and stop
+	// at the first that starts past the read, so a file of many boxes costs a search per read, not
+	// a pass over every box.
+	i := sort.Search(len(f.segments), func(i int) bool {
+		s := f.segments[i]
+		return s.offset+int64(len(s.data)) > off
+	})
+	for ; i < len(f.segments) && f.segments[i].offset < off+int64(n); i++ {
+		s := f.segments[i]
 		start, end := max(off, s.offset), min(off+int64(n), s.offset+int64(len(s.data)))
 		if start < end {
 			copy(p[start-off:end-off], s.data[start-s.offset:end-s.offset])

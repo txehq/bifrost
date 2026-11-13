@@ -1,9 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -220,11 +222,13 @@ func (f *bifrostVideoRetriever) RetrieveVideo(ctx context.Context, job *cstables
 	return resp, nil
 }
 
-// DownloadVideo implements jobaccounting.VideoDownloader: the provider's own buffered download of
-// a finished job's video, so the settler can read its rendered length (fork, TXE-7329). The
-// download is held to client.max_response_body_size_mb (TXE-7148); a file past it is final, and
-// the job is charged the seconds its create named as a floor, marked incomplete.
-func (f *bifrostVideoRetriever) DownloadVideo(ctx context.Context, job *cstables.TableProviderJob) ([]byte, error) {
+// DownloadVideo implements jobaccounting.VideoDownloader: the provider's own download of a finished
+// job's video, so the settler can read its rendered length (fork, TXE-7329). It asks for a stream
+// (TXE-7334): the settler reads the MP4's header as it arrives and the media past it, so a file of
+// any size is measured without being held. A provider that cannot stream answers with the file,
+// held to client.max_response_body_size_mb (TXE-7148); a file past that is final, and the job is
+// charged the seconds its create named as a floor, marked incomplete.
+func (f *bifrostVideoRetriever) DownloadVideo(ctx context.Context, job *cstables.TableProviderJob) (io.ReadCloser, error) {
 	if f == nil || f.client == nil {
 		return nil, fmt.Errorf("bifrost client is nil")
 	}
@@ -234,6 +238,7 @@ func (f *bifrostVideoRetriever) DownloadVideo(ctx context.Context, job *cstables
 	resp, bifrostErr := f.client.VideoDownloadRequest(internalJobContext(ctx, job.SelectedKeyID), &schemas.BifrostVideoDownloadRequest{
 		Provider: schemas.ModelProvider(job.Provider),
 		ID:       job.JobID,
+		Stream:   true,
 	})
 	if bifrostErr != nil {
 		// Past the limit on the provider's own client, or on the media fetcher that downloads a
@@ -247,9 +252,7 @@ func (f *bifrostVideoRetriever) DownloadVideo(ctx context.Context, job *cstables
 		return nil, fmt.Errorf("video download returned nil response for job %s", job.ID)
 	}
 	if resp.Body != nil {
-		// Not asked for a stream; a provider that answers with one anyway is not read here.
-		_ = resp.Body.Close()
-		return nil, fmt.Errorf("video download for job %s answered with a stream", job.ID)
+		return resp.Body, nil
 	}
-	return resp.Content, nil
+	return io.NopCloser(bytes.NewReader(resp.Content)), nil
 }

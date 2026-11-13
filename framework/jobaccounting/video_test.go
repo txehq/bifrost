@@ -1,6 +1,7 @@
 package jobaccounting
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -44,12 +45,12 @@ func (f *fakeVideoRetriever) RetrieveVideo(ctx context.Context, job *cstables.Ta
 	return f.resp, nil
 }
 
-func (f *fakeVideoRetriever) DownloadVideo(ctx context.Context, job *cstables.TableProviderJob) ([]byte, error) {
+func (f *fakeVideoRetriever) DownloadVideo(ctx context.Context, job *cstables.TableProviderJob) (io.ReadCloser, error) {
 	f.downloads++
 	if f.downloadErr != nil {
 		return nil, f.downloadErr
 	}
-	return f.video, nil
+	return io.NopCloser(bytes.NewReader(f.video)), nil
 }
 
 // videoJob builds a submitted video job row carrying the dimensions the request

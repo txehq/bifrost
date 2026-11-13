@@ -1,10 +1,10 @@
 package jobaccounting
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -94,16 +94,21 @@ type VideoRetriever interface {
 }
 
 // VideoDownloader is implemented by a VideoRetriever that can fetch a finished job's video file:
-// the provider's own buffered download of its first clip, held to the gateway's response body
-// limit (client.max_response_body_size_mb, TXE-7148). An error wrapping
-// ErrVideoDurationUnmeasurable, or a provider call's (NewProviderCallError) that a retrieve would
-// treat as final, is final; any other error is retried a few polls (fork, TXE-7329).
+// the provider's own download of its first clip, streamed where the provider can stream it, so the
+// settler holds the MP4's header and never its media (fork, TXE-7329, TXE-7334). The caller closes
+// the reader. An error wrapping ErrVideoDurationUnmeasurable, or a provider call's
+// (NewProviderCallError) that a retrieve would treat as final, is final; any other error is retried.
 type VideoDownloader interface {
-	DownloadVideo(ctx context.Context, job *cstables.TableProviderJob) ([]byte, error)
+	DownloadVideo(ctx context.Context, job *cstables.TableProviderJob) (io.ReadCloser, error)
 }
 
+// maxRenderedVideoBytes bounds what the settler reads of one rendered video, media included. The
+// media is read past, never held, so this bounds the time and bandwidth one measurement takes; a
+// file past it is unmeasurable and charged its floor.
+const maxRenderedVideoBytes int64 = 16 << 30
+
 // ErrVideoDurationUnmeasurable marks a VideoDownloader error that no retry can change, such as a
-// file past the response body limit.
+// buffered file past the response body limit.
 var ErrVideoDurationUnmeasurable = errors.New("rendered video duration is unmeasurable")
 
 // VideoSettler prices provider video jobs. It is the Settler for
@@ -267,7 +272,7 @@ func (s *VideoSettler) measureRenderedVideo(ctx context.Context, job *cstables.T
 	}
 	callCtx, cancel := context.WithTimeout(ctx, defaultProviderPollTimeout)
 	defer cancel()
-	content, err := downloader.DownloadVideo(callCtx, job)
+	body, err := downloader.DownloadVideo(callCtx, job)
 	if err != nil {
 		// A file past the size limit, or a download the vendor refuses (the output expired, the
 		// key was revoked), is final; anything else may pass on a later poll.
@@ -276,7 +281,8 @@ func (s *VideoSettler) measureRenderedVideo(ctx context.Context, job *cstables.T
 		}
 		return 0, fmt.Errorf("%w: download video for job %s: %w", errRenderedDurationRetry, job.ID, err)
 	}
-	duration, err := videoduration.Read(callCtx, bytes.NewReader(content), int64(len(content)))
+	defer body.Close()
+	duration, err := videoduration.ReadStream(callCtx, body, videoduration.DefaultReadLimits, maxRenderedVideoBytes)
 	if err != nil {
 		if errors.Is(err, videoduration.ErrUnmeasurable) {
 			return 0, err
