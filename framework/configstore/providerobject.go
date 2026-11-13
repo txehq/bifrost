@@ -228,6 +228,54 @@ func (s *RDBConfigStore) HasForeignProviderJobFileUnderPrefix(ctx context.Contex
 	return false, nil
 }
 
+// ProviderObjectQuery selects a page of provider objects of one kind (ListProviderObjects).
+type ProviderObjectQuery struct {
+	Kind string
+	// VirtualKeyID, when set, keeps the objects of that key only.
+	VirtualKeyID string
+	// Prefix, when set, keeps the objects whose id starts with it, byte for byte.
+	Prefix string
+	Limit  int
+	Offset int
+}
+
+// maxProviderObjectPage bounds one page of ListProviderObjects.
+const maxProviderObjectPage = 1000
+
+// ListProviderObjects returns a page of the provider objects of query.Kind, in object id
+// order, and how many match in all. A limit outside 1..maxProviderObjectPage is
+// maxProviderObjectPage.
+func (s *RDBConfigStore) ListProviderObjects(ctx context.Context, query ProviderObjectQuery) ([]*tables.TableProviderObject, int64, error) {
+	if query.Kind == "" {
+		return nil, 0, fmt.Errorf("provider object kind is required")
+	}
+	if query.Limit <= 0 || query.Limit > maxProviderObjectPage {
+		query.Limit = maxProviderObjectPage
+	}
+	if query.Offset < 0 {
+		query.Offset = 0
+	}
+	db := s.DB().WithContext(ctx).Model(&tables.TableProviderObject{}).Where("kind = ?", query.Kind)
+	if query.VirtualKeyID != "" {
+		db = db.Where("virtual_key_id = ?", query.VirtualKeyID)
+	}
+	if query.Prefix != "" {
+		from, to, ok := prefixRange(query.Prefix)
+		if !ok {
+			return nil, 0, fmt.Errorf("invalid object id prefix")
+		}
+		column := s.bytewise("object_id")
+		db = db.Where(column+" >= ? AND "+column+" < ?", from, to)
+	}
+	var total int64
+	if err := db.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var objects []*tables.TableProviderObject
+	err := db.Order(s.bytewise("object_id")).Order("id").Limit(query.Limit).Offset(query.Offset).Find(&objects).Error
+	return objects, total, err
+}
+
 // DeleteProviderObject forgets a provider object's creator once the object itself
 // is gone. Deleting an id with no row is not an error.
 func (s *RDBConfigStore) DeleteProviderObject(ctx context.Context, id string) error {

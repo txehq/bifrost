@@ -575,6 +575,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_client_config_disable_encrypted_reasoning_retry_column"}, run: migrationAddClientConfigDisableEncryptedReasoningRetryColumn},
 	{IDs: []string{"add_virtual_key_allowed_cloud_resource_columns"}, run: migrationAddVirtualKeyAllowedCloudResourceColumns},
 	{IDs: []string{"add_storage_prefix_indexes"}, run: migrationAddStoragePrefixIndexes},
+	{IDs: []string{"backfill_batch_output_folders"}, run: migrationBackfillBatchOutputFolders},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added

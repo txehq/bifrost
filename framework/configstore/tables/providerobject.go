@@ -1,6 +1,9 @@
 package tables
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Provider object kinds: the families of provider-side objects whose creating
 // virtual key is recorded so later requests can be bound to it.
@@ -47,4 +50,15 @@ func (TableProviderObject) TableName() string {
 // kind, provider and provider-side id.
 func ProviderObjectID(kind, provider, objectID string) string {
 	return kind + ":" + provider + ":" + objectID
+}
+
+// StorageFolderProvider is the provider name a storage_folder row is recorded under: the
+// storage system, not the provider a request went to. A bucket is the same bucket through
+// every provider name configured on it, and one row per folder is what makes a claim
+// exclusive, so every writer of folder rows builds the name here.
+func StorageFolderProvider(uri string) string {
+	if strings.HasPrefix(uri, "gs://") {
+		return "gcs"
+	}
+	return "s3"
 }

@@ -1062,6 +1062,10 @@ type ConfigStore interface {
 	// HasForeignProviderJobFileUnderPrefix reports whether a job row of another virtual key
 	// names an output or error file starting with prefix.
 	HasForeignProviderJobFileUnderPrefix(ctx context.Context, prefix, virtualKeyID string) (bool, error)
+	// ListProviderObjects returns a page of the provider objects of kind, in object id order,
+	// optionally only those of one virtual key or under one object id prefix, and how many
+	// match in all.
+	ListProviderObjects(ctx context.Context, query ProviderObjectQuery) ([]*tables.TableProviderObject, int64, error)
 	DeleteProviderObject(ctx context.Context, id string) error
 	// DeleteProviderObjectsByObjectIDSuffix forgets the provider objects of kind on
 	// provider that virtualKeyID created and whose provider-side id ends in
