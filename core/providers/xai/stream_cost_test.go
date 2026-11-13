@@ -2,11 +2,13 @@ package xai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -353,5 +355,243 @@ func TestXAIVendorCostFromTicksStreamedAndNot(t *testing.T) {
 		if string(got) != string(want) {
 			t.Fatalf("response.completed usage differs from non-streamed usage\n got: %s\nwant: %s", got, want)
 		}
+	})
+}
+
+// xaiCapturingServer answers every request with body and records what it received.
+type xaiCapturingServer struct {
+	*httptest.Server
+	mu     sync.Mutex
+	paths  []string
+	bodies [][]byte
+}
+
+func newXAICapturingServer(t *testing.T, contentType, body string) *xaiCapturingServer {
+	t.Helper()
+	s := &xaiCapturingServer{}
+	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received, _ := io.ReadAll(r.Body)
+		s.mu.Lock()
+		s.paths = append(s.paths, r.URL.Path)
+		s.bodies = append(s.bodies, received)
+		s.mu.Unlock()
+		w.Header().Set("Content-Type", contentType)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	t.Cleanup(s.Close)
+	return s
+}
+
+func (s *xaiCapturingServer) requests() ([]string, [][]byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.paths...), append([][]byte(nil), s.bodies...)
+}
+
+func xaiChatRequest(params *schemas.ChatParameters) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
+		Provider: schemas.XAI,
+		Model:    "grok-4.5",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+		Params: params,
+	}
+}
+
+// xaiToolUsage is the usage of an xAI chat answer that ran server-side tools.
+const xaiToolUsage = `{"prompt_tokens":220,"completion_tokens":56,"total_tokens":276,"cost_in_usd_ticks":5584000,"server_side_tool_usage_details":{"web_search_calls":2,"x_search_calls":1,"code_interpreter_calls":0,"file_search_calls":0,"mcp_calls":0,"document_search_calls":0}}`
+
+// TXE-7043 (contract C5, chat B1): the per-tool call counts xAI reports for tools it ran
+// itself reach the unified chat usage, and the final streamed frame carries the same counts
+// as the non-streamed answer.
+func TestChatUsageCarriesServerSideToolUsageDetails(t *testing.T) {
+	want := &schemas.ResponsesServerSideToolUsageDetails{WebSearchCalls: 2, XSearchCalls: 1}
+	key := schemas.Key{Value: schemas.SecretVar{Val: "test-key"}}
+
+	t.Run("non-streamed", func(t *testing.T) {
+		server := newXAICapturingServer(t, "application/json",
+			`{"id":"chatcmpl-xai","object":"chat.completion","created":1,"model":"grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}],"usage":`+xaiToolUsage+`}`)
+		response, bifrostErr := newXAITestProvider(server.URL).ChatCompletion(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, xaiChatRequest(nil))
+		if bifrostErr != nil {
+			t.Fatalf("chat completion failed: %+v", bifrostErr.Error)
+		}
+		if got := response.Usage.ServerSideToolUsageDetails; got == nil || *got != *want {
+			t.Fatalf("server_side_tool_usage_details = %+v, want %+v", got, want)
+		}
+		encoded, err := schemas.Marshal(response.Usage)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !strings.Contains(string(encoded), `"server_side_tool_usage_details":{"web_search_calls":2,"x_search_calls":1,`) {
+			t.Fatalf("the wire usage does not carry the counts: %s", encoded)
+		}
+	})
+
+	t.Run("streamed: the final frame matches", func(t *testing.T) {
+		server := newXAICapturingServer(t, "text/event-stream",
+			"data: {\"id\":\"chatcmpl-xai\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"grok-4.5\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"answer\"}}]}\n\n"+
+				"data: {\"id\":\"chatcmpl-xai\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"grok-4.5\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"+
+				"data: {\"id\":\"chatcmpl-xai\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"grok-4.5\",\"choices\":[],\"usage\":"+xaiToolUsage+"}\n\n"+
+				"data: [DONE]\n\n")
+		stream, bifrostErr := newXAITestProvider(server.URL).ChatCompletionStream(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), passthroughStreamCostPostHook, nil, key, xaiChatRequest(nil))
+		if bifrostErr != nil {
+			t.Fatalf("stream setup failed: %+v", bifrostErr.Error)
+		}
+		var final *schemas.BifrostChatResponse
+		for chunk := range stream {
+			if chunk.BifrostError != nil {
+				t.Fatalf("stream returned error: %+v", chunk.BifrostError)
+			}
+			if chunk.BifrostChatResponse != nil && chunk.BifrostChatResponse.Usage != nil {
+				final = chunk.BifrostChatResponse
+			}
+		}
+		if final == nil {
+			t.Fatal("stream did not emit terminal usage")
+		}
+		if got := final.Usage.ServerSideToolUsageDetails; got == nil || *got != *want {
+			t.Fatalf("final frame server_side_tool_usage_details = %+v, want %+v", got, want)
+		}
+	})
+
+	// An answer that ran no server-side tool reports none, and none is invented.
+	t.Run("absent when xAI reports none", func(t *testing.T) {
+		server := newXAICapturingServer(t, "application/json",
+			`{"id":"chatcmpl-xai","object":"chat.completion","created":1,"model":"grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		response, bifrostErr := newXAITestProvider(server.URL).ChatCompletion(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, xaiChatRequest(nil))
+		if bifrostErr != nil {
+			t.Fatalf("chat completion failed: %+v", bifrostErr.Error)
+		}
+		if response.Usage.ServerSideToolUsageDetails != nil {
+			t.Fatalf("server_side_tool_usage_details = %+v, want none", response.Usage.ServerSideToolUsageDetails)
+		}
+	})
+}
+
+// TXE-7043 (contract C4, chat B2): a prompt-cache field the model cannot take is refused with
+// 400 caller_unsupported_parameter naming it, streamed or not, and nothing is sent. Before,
+// the field was removed and the request went out without it.
+func TestChatRefusesUndeliverablePromptCacheFields(t *testing.T) {
+	key := schemas.Key{Value: schemas.SecretVar{Val: "test-key"}}
+	cases := map[string]*schemas.ChatParameters{
+		schemas.FieldPromptCacheKey:       {PromptCacheKey: schemas.Ptr("conversation-1")},
+		schemas.FieldPromptCacheRetention: {PromptCacheRetention: schemas.Ptr("24h")},
+		schemas.FieldPromptCacheOptions:   {PromptCacheOptions: &schemas.PromptCacheOptions{}},
+	}
+	for field, params := range cases {
+		t.Run(field, func(t *testing.T) {
+			server := newXAICapturingServer(t, "application/json", `{}`)
+			provider := newXAITestProvider(server.URL)
+			requireRefused := func(bifrostErr *schemas.BifrostError) {
+				t.Helper()
+				if bifrostErr == nil {
+					t.Fatal("the request was sent")
+				}
+				if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest ||
+					bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error.Param != field {
+					t.Fatalf("status/error_type/param = %v/%q/%v, want 400/caller_unsupported_parameter/%s", bifrostErr.StatusCode, bifrostErr.ExtraFields.ErrorType, bifrostErr.Error.Param, field)
+				}
+			}
+			_, bifrostErr := provider.ChatCompletion(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, xaiChatRequest(params))
+			requireRefused(bifrostErr)
+			_, bifrostErr = provider.ChatCompletionStream(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), passthroughStreamCostPostHook, nil, key, xaiChatRequest(params))
+			requireRefused(bifrostErr)
+			if paths, _ := server.requests(); len(paths) != 0 {
+				t.Fatalf("a refused request reached xAI: %v", paths)
+			}
+		})
+	}
+
+	// A request without those fields is sent as before.
+	server := newXAICapturingServer(t, "application/json",
+		`{"id":"chatcmpl-xai","object":"chat.completion","created":1,"model":"grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	if _, bifrostErr := newXAITestProvider(server.URL).ChatCompletion(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, xaiChatRequest(&schemas.ChatParameters{})); bifrostErr != nil {
+		t.Fatalf("a plain chat request failed: %+v", bifrostErr.Error)
+	}
+}
+
+// TXE-7043 (contract C4, responses B3): a caller's field outside the unified structure, such
+// as xAI's max_turns, reaches /v1/responses unchanged, streamed or not, whether or not the
+// extra-params header was sent.
+func TestResponsesMergesExtraFields(t *testing.T) {
+	key := schemas.Key{Value: schemas.SecretVar{Val: "test-key"}}
+	request := func() *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: schemas.XAI,
+			Model:    "grok-4.5",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+			Params: &schemas.ResponsesParameters{ExtraParams: map[string]interface{}{"max_turns": 3}},
+		}
+	}
+	requireMaxTurns := func(t *testing.T, server *xaiCapturingServer) {
+		t.Helper()
+		paths, bodies := server.requests()
+		if len(paths) != 1 || paths[0] != "/v1/responses" {
+			t.Fatalf("requests = %v, want one to /v1/responses", paths)
+		}
+		var sent map[string]any
+		if err := json.Unmarshal(bodies[0], &sent); err != nil {
+			t.Fatalf("request body is not JSON: %v", err)
+		}
+		if got, ok := sent["max_turns"].(float64); !ok || got != 3 {
+			t.Fatalf("max_turns on the wire = %v, want 3; body: %s", sent["max_turns"], bodies[0])
+		}
+	}
+
+	// The merge is xAI's for the length of its own call: afterwards the context holds the
+	// caller's setting again, so a fallback provider on the same context is not sent
+	// max_turns unless the caller asked for extra params to pass.
+	requirePassthrough := func(t *testing.T, ctx *schemas.BifrostContext, want bool) {
+		t.Helper()
+		if got, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); got != want {
+			t.Fatalf("extra-params passthrough left on the context = %v, want the caller's %v", got, want)
+		}
+	}
+
+	for name, callerSetting := range map[string]bool{"non-streamed": false, "non-streamed, caller enabled passthrough": true} {
+		t.Run(name, func(t *testing.T) {
+			server := newXAICapturingServer(t, "application/json",
+				`{"id":"resp_1","object":"response","created_at":1,"model":"grok-4.5","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if callerSetting {
+				ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+			}
+			if _, bifrostErr := newXAITestProvider(server.URL).Responses(ctx, key, request()); bifrostErr != nil {
+				t.Fatalf("responses failed: %+v", bifrostErr.Error)
+			}
+			requireMaxTurns(t, server)
+			requirePassthrough(t, ctx, callerSetting)
+		})
+	}
+	t.Run("a failed call restores the setting too", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = fmt.Fprint(w, `{"code":"service_unavailable","error":"overloaded"}`)
+		}))
+		t.Cleanup(server.Close)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := newXAITestProvider(server.URL).Responses(ctx, key, request()); bifrostErr == nil {
+			t.Fatal("want xAI's 503")
+		}
+		requirePassthrough(t, ctx, false)
+	})
+	t.Run("streamed", func(t *testing.T) {
+		server := newXAICapturingServer(t, "text/event-stream",
+			"event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"model\":\"grok-4.5\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stream, bifrostErr := newXAITestProvider(server.URL).ResponsesStream(ctx, passthroughStreamCostPostHook, nil, key, request())
+		if bifrostErr != nil {
+			t.Fatalf("stream setup failed: %+v", bifrostErr.Error)
+		}
+		requirePassthrough(t, ctx, false)
+		for range stream {
+		}
+		requireMaxTurns(t, server)
 	})
 }

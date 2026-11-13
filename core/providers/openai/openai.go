@@ -1114,8 +1114,8 @@ func HandleOpenAIChatCompletionRequest(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			// Refused here, before anything is sent: see ChatServiceTierError.
-			if tierErr := ChatServiceTierError(ctx, request); tierErr != nil {
+			// Refused here, before anything is sent: see ChatRequestRefusal.
+			if tierErr := ChatRequestRefusal(ctx, request); tierErr != nil {
 				return nil, providerUtils.ConverterBifrostError(tierErr)
 			}
 			reqBody := ToOpenAIChatRequest(ctx, request)
@@ -1328,8 +1328,8 @@ func HandleOpenAIChatCompletionStreaming(
 			if customRequestConverter != nil {
 				return customRequestConverter(request)
 			}
-			// Refused here, before the stream is opened: see ChatServiceTierError.
-			if tierErr := ChatServiceTierError(ctx, request); tierErr != nil {
+			// Refused here, before the stream is opened: see ChatRequestRefusal.
+			if tierErr := ChatRequestRefusal(ctx, request); tierErr != nil {
 				return nil, providerUtils.ConverterBifrostError(tierErr)
 			}
 			reqBody := ToOpenAIChatRequest(ctx, request)

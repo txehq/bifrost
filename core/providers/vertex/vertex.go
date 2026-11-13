@@ -765,7 +765,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 				} else {
 					// Use centralized OpenAI converter for non-Claude models
 					// Same refusal the shared OpenAI chat handlers make before sending.
-					if tierErr := openai.ChatServiceTierError(ctx, request); tierErr != nil {
+					if tierErr := openai.ChatRequestRefusal(ctx, request); tierErr != nil {
 						return nil, providerUtils.ConverterBifrostError(tierErr)
 					}
 					reqBody := openai.ToOpenAIChatRequest(ctx, request)

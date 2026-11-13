@@ -333,6 +333,52 @@ func serviceTierError(ctx *schemas.BifrostContext, provider schemas.ModelProvide
 		"service_tier \""+string(*tier)+"\" is not supported by model "+model+" on provider "+string(provider))
 }
 
+// ChatPromptCacheFieldError is the refusal for an xAI chat request that carries a
+// prompt-cache field the target model cannot take: 400 caller_unsupported_parameter naming
+// the field, and nil otherwise. These fields decide what is cached and for how long, so they
+// change the price; the xAI branch of the converter used to remove one silently, which sent
+// a different request from the one the caller made (contract C4). A model the catalog lists
+// the field for takes it as sent.
+//
+// Only xAI is checked: the other OpenAI-compatible branches keep their behaviour until their
+// own tickets decide it.
+func ChatPromptCacheFieldError(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) *schemas.BifrostError {
+	if bifrostReq == nil || bifrostReq.Provider != schemas.XAI || bifrostReq.Params == nil {
+		return nil
+	}
+	params := bifrostReq.Params
+	if params.PromptCacheKey == nil && params.PromptCacheRetention == nil && params.PromptCacheOptions == nil {
+		return nil
+	}
+	caps := schemas.ResolveModelCaps(bifrostReq.Provider, schemas.ResolveCanonicalModel(ctx, bifrostReq.Model))
+	refuse := func(field string, set bool) *schemas.BifrostError {
+		if !set || !caps.FieldUnsupported(field, true) {
+			return nil
+		}
+		return schemas.NewUnsupportedParameterError(field,
+			field+" is not supported by model "+bifrostReq.Model+" on provider "+string(bifrostReq.Provider))
+	}
+	if err := refuse(schemas.FieldPromptCacheKey, params.PromptCacheKey != nil); err != nil {
+		return err
+	}
+	if err := refuse(schemas.FieldPromptCacheRetention, params.PromptCacheRetention != nil); err != nil {
+		return err
+	}
+	return refuse(schemas.FieldPromptCacheOptions, params.PromptCacheOptions != nil)
+}
+
+// ChatRequestRefusal is the one check every path that sends a ToOpenAIChatRequest body runs
+// first, inside its request converter, so a refused request makes no upstream call: a
+// service tier the model cannot take (ChatServiceTierError), then a prompt-cache field xAI
+// cannot take (ChatPromptCacheFieldError). A refusal added later goes here, not at the call
+// sites.
+func ChatRequestRefusal(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) *schemas.BifrostError {
+	if tierErr := ChatServiceTierError(ctx, bifrostReq); tierErr != nil {
+		return tierErr
+	}
+	return ChatPromptCacheFieldError(ctx, bifrostReq)
+}
+
 // Filter OpenAI Specific Parameters
 func (req *OpenAIChatRequest) filterOpenAISpecificParameters(caps schemas.ModelCaps) {
 	req.filterOpenAISpecificParametersInternal(caps, true)

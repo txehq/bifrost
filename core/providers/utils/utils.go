@@ -2892,6 +2892,20 @@ func ExtraParamConflictError(param, field string) error {
 	return ConverterBifrostError(bifrostErr)
 }
 
+// ForceExtraParamsPassthrough switches the extra-params merge on for one provider call and
+// returns the function that puts the caller's own setting back. A provider that always
+// forwards the caller's extra fields calls it and defers the result, so the switch does not
+// outlive the call: a fallback to another provider runs on the same context, and with the
+// switch left on it would be sent fields only the first vendor knows.
+func ForceExtraParamsPassthrough(ctx *schemas.BifrostContext) (restore func()) {
+	previous, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool)
+	if previous {
+		return func() {}
+	}
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	return func() { ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, false) }
+}
+
 // ExtraParamNamesField reports whether an extra param named key names one of fields
 // under the extra-params rule's comparison, which ignores case and underscores.
 func ExtraParamNamesField(key string, fields ...string) bool {

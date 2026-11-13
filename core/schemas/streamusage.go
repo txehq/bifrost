@@ -67,6 +67,9 @@ func (u *BifrostLLMUsage) MergeStreamFrame(frame *BifrostLLMUsage) {
 	if frame.VendorCost != nil {
 		u.VendorCost = frame.VendorCost
 	}
+	if frame.ServerSideToolUsageDetails != nil {
+		u.ServerSideToolUsageDetails = frame.ServerSideToolUsageDetails
+	}
 	if frame.StateTokens != nil {
 		u.StateTokens = frame.StateTokens
 	}

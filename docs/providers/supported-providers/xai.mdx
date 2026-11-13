@@ -103,11 +103,16 @@ xAI supports all standard OpenAI chat completion parameters. For full parameter 
 
 ### Filtered Parameters
 
+Refused, never removed: `prompt_cache_key`, `prompt_cache_retention` and `prompt_cache_options` set what is cached and for how long, so they change the price. When the model's capability record does not list one, the request returns `400 caller_unsupported_parameter` naming the field and nothing is sent to xAI.
+
 Removed for xAI compatibility:
-- `prompt_cache_key` - Not supported
 - `verbosity` - Anthropic-specific
 - `store` - Not supported
 - `service_tier` - Not supported
+
+### Usage
+
+`usage.server_side_tool_usage_details` carries the per-tool call counts xAI reports for tools it ran itself (`web_search_calls`, `x_search_calls`, `code_interpreter_calls`, `file_search_calls`, `mcp_calls`, `document_search_calls`), on chat completions as on Responses. The final streamed frame carries the same counts as the non-streamed answer. It is absent when xAI reports none.
 
 ### Reasoning Support
 
@@ -162,6 +167,8 @@ ResponsesRequest → /v1/responses → ResponsesResponse
 ```
 
 Same parameter support and message handling as Chat Completions. Full streaming support available.
+
+Fields outside the unified structure, such as xAI's `max_turns`, are merged into the request sent to `/v1/responses` unchanged, streamed or not, with or without `x-bf-passthrough-extra-params`.
 
 ---
 
