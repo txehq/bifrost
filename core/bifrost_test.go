@@ -12686,6 +12686,10 @@ var notPriceFieldNames = map[string]bool{
 // converter reads from the extra params; a key built at run time is not seen.
 func TestConvertersReadNoUnlistedVendorPriceName(t *testing.T) {
 	read := regexp.MustCompile(`(?:ExtraParams|extraParams|extra|ep)\["([A-Za-z0-9_\-]+)"\]`)
+	// A name the converter writes at the top level, through a struct's JSON tag, may be
+	// mapped too (TXE-7295); TestNestedPriceFieldsAreDeclaredAndRefused finds those.
+	tag := regexp.MustCompile("json:\"([A-Za-z0-9_\\-]+)[,\"]")
+	written := map[string]bool{}
 	unified := map[string]bool{}
 	for _, requestType := range []schemas.RequestType{
 		schemas.EmbeddingRequest, schemas.ImageGenerationRequest, schemas.ImageEditRequest,
@@ -12724,6 +12728,9 @@ func TestConvertersReadNoUnlistedVendorPriceName(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		for _, match := range tag.FindAllStringSubmatch(string(source), -1) {
+			written[parts[1]+"/"+match[1]] = true
+		}
 		for _, match := range read.FindAllStringSubmatch(string(source), -1) {
 			name := match[1]
 			key := parts[1] + "/" + name
@@ -12752,8 +12759,9 @@ func TestConvertersReadNoUnlistedVendorPriceName(t *testing.T) {
 	}
 	// A stale entry hides nothing but misleads the next reader.
 	for key := range mapped {
-		if !seen[key] && !seen["gemini/"+strings.TrimPrefix(key, "vertex/")] {
-			t.Errorf("schemas.VendorPriceFieldNames lists %s, but no converter of that provider reads it", key)
+		geminiKey := "gemini/" + strings.TrimPrefix(key, "vertex/")
+		if !seen[key] && !seen[geminiKey] && !written[key] && !written[geminiKey] {
+			t.Errorf("schemas.VendorPriceFieldNames lists %s, but no converter of that provider reads it or writes it", key)
 		}
 	}
 	for key := range unmappedVendorPriceNames {
@@ -12782,11 +12790,18 @@ var nestedPriceProbeModels = map[schemas.ModelProvider][]string{
 	schemas.DashScope: {"wan2.6-t2v", "qwen-image-" + guardAllowedModel},
 }
 
+// voicelessVariant asks a probe for its operation with no voice at all. Every speech variant
+// names a voice, since several providers refuse a request without one, so a key written from
+// the voice is in each of them; the voiceless request shows the keys an extra param could add
+// when the caller sends none (TXE-7295).
+const voicelessVariant = -1
+
 // nestedPriceProbe is one request type sent bare and then once per price-affecting field.
 type nestedPriceProbe struct {
 	requestType schemas.RequestType
 	// send runs the operation with the n-th variant of its parameters; variant 0 is the
-	// bare request the others are compared with. It returns false past the last variant.
+	// bare request the others are compared with. It returns false past the last variant, and
+	// for voicelessVariant on every operation but speech.
 	send func(ctx *schemas.BifrostContext, provider schemas.Provider, key schemas.Key, model string, variant int) bool
 }
 
@@ -12825,7 +12840,7 @@ func nestedPriceProbes() []nestedPriceProbe {
 	}
 	return []nestedPriceProbe{
 		{schemas.ImageGenerationRequest, func(ctx *schemas.BifrostContext, pr schemas.Provider, key schemas.Key, model string, variant int) bool {
-			if variant >= len(images) {
+			if variant < 0 || variant >= len(images) {
 				return false
 			}
 			params := *images[variant]
@@ -12833,7 +12848,7 @@ func nestedPriceProbes() []nestedPriceProbe {
 			return true
 		}},
 		{schemas.ImageEditRequest, func(ctx *schemas.BifrostContext, pr schemas.Provider, key schemas.Key, model string, variant int) bool {
-			if variant >= len(edits) {
+			if variant < 0 || variant >= len(edits) {
 				return false
 			}
 			params := *edits[variant]
@@ -12841,7 +12856,7 @@ func nestedPriceProbes() []nestedPriceProbe {
 			return true
 		}},
 		{schemas.VideoGenerationRequest, func(ctx *schemas.BifrostContext, pr schemas.Provider, key schemas.Key, model string, variant int) bool {
-			if variant >= len(videos) {
+			if variant < 0 || variant >= len(videos) {
 				return false
 			}
 			params := *videos[variant]
@@ -12850,14 +12865,18 @@ func nestedPriceProbes() []nestedPriceProbe {
 		}},
 		{schemas.SpeechRequest, func(ctx *schemas.BifrostContext, pr schemas.Provider, key schemas.Key, model string, variant int) bool {
 			variants := speeches(guardSpeechVoice(pr.GetProviderKey(), model))
-			if variant >= len(variants) {
+			if variant == voicelessVariant {
+				_, _ = pr.Speech(ctx, key, &schemas.BifrostSpeechRequest{Provider: pr.GetProviderKey(), Model: model, Input: &schemas.SpeechInput{Input: text}, Params: &schemas.SpeechParameters{}})
+				return true
+			}
+			if variant < 0 || variant >= len(variants) {
 				return false
 			}
 			_, _ = pr.Speech(ctx, key, &schemas.BifrostSpeechRequest{Provider: pr.GetProviderKey(), Model: model, Input: &schemas.SpeechInput{Input: text}, Params: variants[variant]})
 			return true
 		}},
 		{schemas.EmbeddingRequest, func(ctx *schemas.BifrostContext, pr schemas.Provider, key schemas.Key, model string, variant int) bool {
-			if variant >= len(embeddings) {
+			if variant < 0 || variant >= len(embeddings) {
 				return false
 			}
 			params := *embeddings[variant]
@@ -12865,7 +12884,7 @@ func nestedPriceProbes() []nestedPriceProbe {
 			return true
 		}},
 		{schemas.TranscriptionRequest, func(ctx *schemas.BifrostContext, pr schemas.Provider, key schemas.Key, model string, variant int) bool {
-			if variant >= len(transcriptions) {
+			if variant < 0 || variant >= len(transcriptions) {
 				return false
 			}
 			params := *transcriptions[variant]
@@ -12873,6 +12892,61 @@ func nestedPriceProbes() []nestedPriceProbe {
 			return true
 		}},
 	}
+}
+
+// nestedField is a body field the probe found written with a price-affecting field: its
+// dotted path (a single name at the top level), the model it was found on and the value.
+type nestedField struct {
+	requestType schemas.RequestType
+	path        string
+	model       string
+	value       string
+}
+
+// topLevelPriceNamesNotRefused are top-level body keys that a converter writes, or changes,
+// when a C4 price field is sent, and that core does not refuse as an extra param, with the
+// reason each is safe or left out. Keyed by provider, request type and key. A key here is one
+// TestNestedPriceFieldsAreDeclaredAndRefused found; one it no longer finds fails the test.
+var topLevelPriceNamesNotRefused = map[string]string{
+	"byteplus/image_generation/sequential_image_generation": "Seedream's group mode, written as auto when n asks for more than one image; the converter also reads it, and unmappedVendorPriceNames gives the reason it is not mapped",
+	"byteplus/image_edit/sequential_image_generation":       "Seedream's group mode on an edit; see byteplus/image_generation/sequential_image_generation",
+}
+
+// topLevelPriceNamesFound collects, across the providers of one run, the keys of
+// topLevelPriceNamesNotRefused that the probe found, so an entry no converter writes any more
+// is reported.
+var topLevelPriceNamesFound = map[string]bool{}
+
+// checkTopLevelPriceNames is the top-level half of TestNestedPriceFieldsAreDeclaredAndRefused
+// (TXE-7295). Extra params merge into the converted body, so a key a converter writes from a
+// price field, under the vendor's own name, is added unchecked by an extra param of that name
+// whenever the request leaves the unified field out: BFL's duration for seconds (PR #196).
+// Every top-level key that appears or changes against the bare body when a C4 field is sent
+// must be refused as an extra param by schemas.CheckExtraParamPriceFieldsFor (the unified name
+// itself, or a vendor name in schemas.VendorPriceFieldNames), or be listed in
+// topLevelPriceNamesNotRefused with the reason.
+func checkTopLevelPriceNames(t *testing.T, providerKey schemas.ModelProvider, written []nestedField) (refused int) {
+	t.Helper()
+	for _, field := range written {
+		var planted interface{}
+		if err := json.Unmarshal([]byte(field.value), &planted); err != nil {
+			t.Fatalf("%s %s: %v", field.requestType, field.path, err)
+		}
+		req := nestedPriceRequest(field.requestType, providerKey, field.model, field.path, planted)
+		bifrostErr := schemas.CheckExtraParamPriceFieldsFor(providerKey, &req)
+		if bifrostErr != nil && bifrostErr.StatusCode != nil && *bifrostErr.StatusCode == 400 && bifrostErr.ExtraFields.ErrorType == schemas.ErrorTypeCallerUnsupportedParameter {
+			refused++
+			continue
+		}
+		key := string(providerKey) + "/" + string(field.requestType) + "/" + field.path
+		if _, listed := topLevelPriceNamesNotRefused[key]; listed {
+			topLevelPriceNamesFound[key] = true
+			continue
+		}
+		t.Errorf("%s on %s (model %s) writes %s at the top-level key %q when a price-affecting field is sent, and an extra param %q is not refused. Map it to its unified field in schemas.VendorPriceFieldNames (core/schemas/unifiedfields.go), or list %q in topLevelPriceNamesNotRefused with the reason. Got %+v",
+			providerKey, field.requestType, field.model, field.value, field.path, field.path, key, bifrostErr)
+	}
+	return refused
 }
 
 // nestedBodyLeaves flattens a JSON body into its leaves below the top level, keyed by
@@ -12941,6 +13015,12 @@ func nestedPriceRequest(requestType schemas.RequestType, provider schemas.ModelP
 //
 // And every path schemas.NestedPriceFields lists must be one a converter writes, so the
 // table cannot keep a path no provider has.
+//
+// The same probe covers the top level (TXE-7295): a key the bare body lacks that a price
+// field adds is one an extra param could add with no unified field showing it, so it must
+// be refused by core's check (the unified name, or the vendor's name in
+// schemas.VendorPriceFieldNames) or be listed in topLevelPriceNamesNotRefused with the
+// reason. checkTopLevelPriceNames has the detail.
 func TestNestedPriceFieldsAreDeclaredAndRefused(t *testing.T) {
 	upstream := newGuardUpstream(t)
 	client := &Bifrost{logger: NewNoOpLogger()}
@@ -12959,13 +13039,7 @@ func TestNestedPriceFieldsAreDeclaredAndRefused(t *testing.T) {
 		}
 	}
 
-	type nestedField struct {
-		requestType schemas.RequestType
-		path        string
-		model       string
-		value       string
-	}
-	total, found := 0, 0
+	total, found, probed, topRefused := 0, 0, 0, 0
 	for _, providerKey := range schemas.StandardProviders {
 		t.Run(string(providerKey), func(t *testing.T) {
 			config := &schemas.ProviderConfig{
@@ -12978,7 +13052,7 @@ func TestNestedPriceFieldsAreDeclaredAndRefused(t *testing.T) {
 			if err != nil {
 				t.Fatalf("construct: %v", err)
 			}
-			body := func(probe nestedPriceProbe, model string, variant int) (leaves map[string]string, sent, more bool) {
+			body := func(probe nestedPriceProbe, model string, variant int) (leaves, top map[string]string, sent, more bool) {
 				key := guardKey(providerKey)
 				// The Vertex Interactions API, which an Omni model runs on, serves the
 				// locations global, us and eu only; any other region is a configuration
@@ -12995,25 +13069,31 @@ func TestNestedPriceFieldsAreDeclaredAndRefused(t *testing.T) {
 					defer func() { _ = recover() }()
 					more = probe.send(ctx, provider, key, model, variant)
 				}()
-				leaves = map[string]string{}
+				leaves, top = map[string]string{}, map[string]string{}
 				for _, request := range upstream.take() {
 					var decoded interface{}
 					if json.Unmarshal(request.body, &decoded) == nil {
 						nestedBodyLeaves("", decoded, leaves)
+						if object, isObject := decoded.(map[string]interface{}); isObject {
+							for name, value := range object {
+								encoded, _ := json.Marshal(value)
+								top[name] = string(encoded)
+							}
+						}
 						sent = true
 						break
 					}
 				}
-				return leaves, sent, more
+				return leaves, top, sent, more
 			}
 
-			var nested []nestedField
-			seen := map[string]bool{}
+			var nested, topLevel []nestedField
+			seen, seenTop := map[string]bool{}, map[string]bool{}
 			for _, model := range append([]string{guardModel(providerKey)}, nestedPriceProbeModels[providerKey]...) {
 				for _, probe := range probes {
-					bare, bareSent, _ := body(probe, model, 0)
+					bare, bareTop, bareSent, _ := body(probe, model, 0)
 					for variant := 1; ; variant++ {
-						with, _, more := body(probe, model, variant)
+						with, withTop, _, more := body(probe, model, variant)
 						if !more {
 							break
 						}
@@ -13029,9 +13109,35 @@ func TestNestedPriceFieldsAreDeclaredAndRefused(t *testing.T) {
 								nested = append(nested, nestedField{probe.requestType, path, model, value})
 							}
 						}
+						// Only a top-level key the bare body lacks can be added by an extra
+						// param: the merge refuses one naming a key the converter set, even
+						// to "" (utils.MergeExtraParamsIntoJSON), and nestedBodyLeaves covers
+						// what lies inside an object.
+						for name, value := range withTop {
+							id := string(probe.requestType) + " " + name
+							if _, inBare := bareTop[name]; inBare || seenTop[id] {
+								continue
+							}
+							seenTop[id] = true
+							topLevel = append(topLevel, nestedField{probe.requestType, name, model, value})
+						}
+					}
+					// The bare speech request names a voice; the keys it has that a
+					// voiceless one lacks are written from the voice.
+					if _, voicelessTop, voicelessSent, isSpeech := body(probe, model, voicelessVariant); isSpeech && bareSent && voicelessSent {
+						for name, value := range bareTop {
+							id := string(probe.requestType) + " " + name
+							if _, inVoiceless := voicelessTop[name]; inVoiceless || seenTop[id] {
+								continue
+							}
+							seenTop[id] = true
+							topLevel = append(topLevel, nestedField{probe.requestType, name, model, value})
+						}
 					}
 				}
 			}
+			topRefused += checkTopLevelPriceNames(t, providerKey, topLevel)
+			probed++
 			sort.Slice(nested, func(i, j int) bool {
 				if nested[i].requestType != nested[j].requestType {
 					return nested[i].requestType < nested[j].requestType
@@ -13141,7 +13247,21 @@ func TestNestedPriceFieldsAreDeclaredAndRefused(t *testing.T) {
 			t.Logf("%s: %d nested price fields found and refused through the worker, %d listed", providerKey, sent, listed)
 		})
 	}
-	t.Logf("%d nested price fields across all providers, %d table entries", found, total)
+	// A stale entry hides nothing but misleads the next reader. Only a run over every
+	// provider can tell.
+	if probed == len(schemas.StandardProviders) {
+		// Every unified name a converter writes at the top level is among these, so a run
+		// that refuses none is not seeing the bodies.
+		if topRefused < 50 {
+			t.Errorf("only %d top-level price fields written and refused across all providers; the probe is not seeing the bodies", topRefused)
+		}
+		for key := range topLevelPriceNamesNotRefused {
+			if !topLevelPriceNamesFound[key] {
+				t.Errorf("topLevelPriceNamesNotRefused lists %s, but no converter writes it unrefused any more", key)
+			}
+		}
+	}
+	t.Logf("%d nested price fields across all providers, %d table entries; %d top-level price fields refused", found, total, topRefused)
 	if total == 0 {
 		t.Fatal("no provider has a listed nested price field: the table or the probes no longer work")
 	}

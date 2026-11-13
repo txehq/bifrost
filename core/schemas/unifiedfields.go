@@ -164,28 +164,39 @@ func PriceAffectingUnifiedFields(requestType RequestType) []string {
 }
 
 // VendorPriceFieldName is a vendor's own name for a price-affecting unified field, as one
-// provider's converter reads it from the extra params on some operations.
+// provider's converter reads it from the extra params, or writes it at the top level of its
+// body, on some operations.
 type VendorPriceFieldName struct {
-	Provider ModelProvider // the provider whose converter reads the name
-	Name     string        // the vendor's name, as the converter reads it
+	Provider ModelProvider // the provider whose converter reads or writes the name
+	Name     string        // the vendor's name, as the converter reads or writes it
 	Field    string        // the unified field it stands for
-	Requests []RequestType // the operations on which the converter reads it
+	Requests []RequestType // the operations on which the converter reads or writes it
 }
 
-// vendorPriceFieldNames maps each vendor-own spelling of a C4 price field that a
-// converter reads from the extra params to the unified field (TXE-7065). The check below
-// treats the vendor's name as the unified field: "ratio" on a BytePlus video is
-// aspect_ratio, and is refused unless the request sent aspect_ratio with that value.
+// vendorPriceFieldNames maps each vendor-own spelling of a C4 price field to the unified
+// field. The check below treats the vendor's name as the unified field: "ratio" on a
+// BytePlus video is aspect_ratio, and is refused unless the request sent aspect_ratio with
+// that value. A name is listed when either holds:
+//
+//   - the converter reads it from the extra params (TXE-7065), so the value reaches the
+//     vendor with no unified field showing it;
+//   - the converter writes it at the top level of the body from the unified field (TXE-7295).
+//     Extra params are merged into the body, so an extra param of that name adds the field
+//     whenever the request left the unified one out: an extra "duration" on a BytePlus video
+//     with no seconds.
 //
 // A name is listed only when the provider's converter delivers the unified field, so a
 // caller who is refused the vendor's name can send the unified one and get the same
 // result. core's TestConvertersReadNoUnlistedVendorPriceName fails when a converter reads
 // a price-looking extra param that is neither here nor in that test's list of names left
-// out on purpose, with the reason for each.
+// out on purpose, with the reason for each; TestNestedPriceFieldsAreDeclaredAndRefused
+// fails when a converter writes a C4 field under a top-level name that is not refused.
 var vendorPriceFieldNames = func() []VendorPriceFieldName {
 	video := []RequestType{VideoGenerationRequest}
 	speech := []RequestType{SpeechRequest, SpeechStreamRequest}
 	transcription := []RequestType{TranscriptionRequest, TranscriptionStreamRequest}
+	imageGeneration := []RequestType{ImageGenerationRequest, ImageGenerationStreamRequest}
+	image := []RequestType{ImageGenerationRequest, ImageGenerationStreamRequest, ImageEditRequest, ImageEditStreamRequest}
 	return []VendorPriceFieldName{
 		{Gemini, "taskType", "task_type", []RequestType{EmbeddingRequest}},
 		{BytePlus, "ratio", "aspect_ratio", video},
@@ -200,6 +211,19 @@ var vendorPriceFieldNames = func() []VendorPriceFieldName {
 		{Sarvam, "pace", "speed", speech},
 		{Sarvam, "target_language_code", "language_code", speech},
 		{Sarvam, "language_code", "language", transcription},
+		// Written at the top level, not read (TXE-7295).
+		{BytePlus, "duration", "seconds", video},
+		{BytePlus, "generate_audio", "audio", video},
+		{MiniMax, "width", "size", imageGeneration},
+		{MiniMax, "height", "size", imageGeneration},
+		{Nebius, "width", "size", imageGeneration},
+		{Nebius, "height", "size", imageGeneration},
+		{Nebius, "response_extension", "output_format", imageGeneration},
+		{Runway, "outputCount", "n", image},
+		{Runway, "duration", "seconds", video},
+		{Voyage, "output_dimension", "dimensions", []RequestType{EmbeddingRequest}},
+		{XAI, "duration", "seconds", video},
+		{XAI, "voice_id", "voice", speech},
 	}
 }()
 

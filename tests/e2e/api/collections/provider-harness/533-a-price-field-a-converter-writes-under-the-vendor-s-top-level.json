@@ -1,0 +1,581 @@
+{
+  "name": "533. A price field a converter writes under the vendor's top-level name is checked like the unified field (written-price-name)",
+  "description": "Fork contract C4, TXE-7295. Folder 434 pins the vendor names a converter reads from the extra params. A converter that only writes a C4 field at the top level of its body, under the vendor's own name, was not covered: extra params are merged into the converted body, so an extra param of that name added the field whenever the request left the unified one out, and the vendor billed for a value no unified field showed (PR #196 found it on BFL's duration and generate_audio). core's TestNestedPriceFieldsAreDeclaredAndRefused now sends every C4 field through every provider's converter and fails on a top-level key the field adds that core does not refuse; schemas.VendorPriceFieldNames maps each one it found to its unified field. These rows pin the refusal on the native routes, where an unknown top-level field or form field is an extra param (Runway's outputCount on /v1/images/edits in both body shapes, JSON and multipart): 400 caller_unsupported_parameter naming the vendor's field, before any upstream call, so none creates a task or a charge. Nebius's width, height and response_extension are mapped too and are covered in Go only: no harness gateway configuration has a Nebius provider. The last row is the other half: the unified seconds and audio still reach BytePlus as duration and generate_audio. An accepted video create is a billed task at a real vendor, so it runs only on the provider error fixture (providerErrorFixture=1), which answers BytePlus's task shape and returns what it was sent from /__wire; elsewhere it is skipped.",
+  "item": [
+    {
+      "name": "[EXPECT-400] byteplus dreamina-seedance-2-5-260628 written-price-name: /v1/videos - duration without seconds is refused",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('written-price-name byteplus duration: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('written-price-name byteplus duration: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('duration');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('seconds');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-5-260628\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"duration\": 12\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] byteplus dreamina-seedance-2-5-260628 written-price-name: /v1/videos - generate_audio without audio is refused",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('written-price-name byteplus generate_audio: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('written-price-name byteplus generate_audio: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('generate_audio');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('audio');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-5-260628\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"generate_audio\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] byteplus dreamina-seedance-2-5-260628 written-price-name: /v1/videos - duration that differs from the seconds the request sent is refused",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('written-price-name byteplus duration: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('written-price-name byteplus duration: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('duration');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('seconds');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-5-260628\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"seconds\": \"5\",\n  \"duration\": 12\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] runway gen4_turbo written-price-name: /v1/videos - duration without seconds is refused",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('written-price-name runway duration: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('written-price-name runway duration: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('duration');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('seconds');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"runway/gen4_turbo\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"duration\": 10\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] xai grok-imagine-video-1.5 written-price-name: /v1/videos - duration without seconds is refused",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('written-price-name xai duration: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('written-price-name xai duration: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('duration');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('seconds');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-imagine-video-1.5\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"duration\": 15\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] minimax image-01 written-price-name: /v1/images/generations - width and height without size are refused",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('written-price-name minimax height: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('written-price-name minimax height: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('height');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('size');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"minimax/image-01\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"width\": 2048,\n  \"height\": 2048\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] runway gen4_image written-price-name: /v1/images/generations - outputCount without n is refused",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('written-price-name runway outputCount: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('written-price-name runway outputCount: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('outputCount');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('n');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"runway/gen4_image\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"outputCount\": 4\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] runway gen4_image written-price-name: /v1/images/edits - JSON body - outputCount without n is refused",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('written-price-name runway outputCount: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('written-price-name runway outputCount: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('outputCount');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('n');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"runway/gen4_image\",\n  \"prompt\": \"make the background a deep blue\",\n  \"images\": [\n    \"https://images.example/day.png\"\n  ],\n  \"outputCount\": 4\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] runway gen4_image written-price-name: /v1/images/edits - multipart body - an outputCount form field without n is refused",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('written-price-name runway outputCount: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('written-price-name runway outputCount: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('outputCount');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('n');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "runway/gen4_image",
+              "type": "text"
+            },
+            {
+              "key": "prompt",
+              "value": "make the background a deep blue",
+              "type": "text"
+            },
+            {
+              "key": "image",
+              "src": "tests/e2e/api/fixtures/sample.png",
+              "type": "file"
+            },
+            {
+              "key": "outputCount",
+              "value": "4",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] voyage voyage-4 written-price-name: /v1/embeddings - output_dimension without dimensions is refused",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('written-price-name voyage output_dimension: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('written-price-name voyage output_dimension: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('output_dimension');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('dimensions');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"voyage/voyage-4\",\n  \"input\": \"hello\",\n  \"output_dimension\": 2048\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] xai grok-voice-tts written-price-name: /v1/audio/speech - voice_id that differs from the voice the request sent is refused",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('written-price-name xai voice_id: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('written-price-name xai voice_id: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('voice_id');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('voice');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/grok-voice-tts\",\n  \"input\": \"Hello from xAI through Bifrost.\",\n  \"voice\": \"ara\",\n  \"voice_id\": \"eve\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      }
+    },
+    {
+      "name": "byteplus dreamina-seedance-2-5-260628 written-price-name: /v1/videos - the unified seconds and audio reach the vendor as duration and generate_audio (provider error fixture)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// The vendor here is the local fixture. Against a real vendor this row would create a billed task.",
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text();",
+              "pm.test('written-price-name byteplus delivery: the video create is accepted', function () { pm.expect(pm.response.code, text.slice(0, 600)).to.eql(200); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('written-price-name byteplus delivery: the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/byteplus/api/v3/contents/generations/tasks' && c.body.indexOf('written-price-name-byteplus-delivery') !== -1; });",
+              "  pm.test('written-price-name byteplus delivery: the request reached the vendor', function () { pm.expect(calls.length, 'no captured call on /pp/byteplus/api/v3/contents/generations/tasks').to.be.above(0); });",
+              "  if (!calls.length) { return; }",
+              "  var sent = JSON.parse(calls[calls.length - 1].body);",
+              "  pm.test('written-price-name byteplus delivery: the vendor received seconds as duration and audio as generate_audio', function () {",
+              "    pm.expect(sent.duration, calls[calls.length - 1].body).to.eql(5);",
+              "    pm.expect(sent.generate_audio, calls[calls.length - 1].body).to.eql(true);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-5-260628\",\n  \"prompt\": \"a paper boat on a pond written-price-name-byteplus-delivery\",\n  \"seconds\": \"5\",\n  \"audio\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      }
+    }
+  ]
+}
