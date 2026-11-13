@@ -75,7 +75,8 @@ func foldersAbove(folder string) []string {
 
 // exclusiveBatchOutputFolders returns, from the output folders of every recorded batch by key,
 // the ones the backfill may claim: named by one key only, with no other key's folder inside or
-// around them. Of one key's nested folders only the outermost is kept; it covers the rest.
+// around them. Of one key's nested folders only the outermost claimable one is kept; it
+// covers the rest.
 func exclusiveBatchOutputFolders(byFolder map[string]map[string]struct{}) map[string]string {
 	folders := make([]string, 0, len(byFolder))
 	for folder := range byFolder {
@@ -112,10 +113,13 @@ func exclusiveBatchOutputFolders(byFolder map[string]map[string]struct{}) map[st
 			if _, named := byFolder[outer]; !named {
 				continue
 			}
-			if owner[outer] == vk {
-				covered = true
-			} else {
+			// An ancestor sorts before its descendants, so keep already holds its answer. Only an
+			// ancestor that is itself claimed covers this folder; one of the key's that could not
+			// be claimed leaves this one to stand on its own.
+			if owner[outer] != vk {
 				conflict = true
+			} else if keep[outer] == vk {
+				covered = true
 			}
 		}
 		if !conflict && !covered {

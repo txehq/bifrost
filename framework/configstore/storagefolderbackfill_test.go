@@ -94,3 +94,28 @@ func TestBatchOutputFolderOf(t *testing.T) {
 		assert.Equal(t, want, got, location)
 	}
 }
+
+// A folder of one key inside another of its folders that cannot be claimed (another key's
+// directory is also inside it) is claimed on its own; only a claimed ancestor covers it. The
+// other key's folder inside it stays unclaimed: it lies in a folder the first key wrote into.
+func TestExclusiveBatchOutputFoldersKeepsAnInnerFolderUnderAnUnclaimableOne(t *testing.T) {
+	named := func(vks ...string) map[string]struct{} {
+		out := map[string]struct{}{}
+		for _, vk := range vks {
+			out[vk] = struct{}{}
+		}
+		return out
+	}
+	got := exclusiveBatchOutputFolders(map[string]map[string]struct{}{
+		"gs://b/out/":      named("vk-a"),
+		"gs://b/out/a/":    named("vk-a"),
+		"gs://b/out/a/x/":  named("vk-a"),
+		"gs://b/out/b/":    named("vk-b"),
+		"gs://b/mine/":     named("vk-a"),
+		"gs://b/mine/sub/": named("vk-a"),
+	})
+	assert.Equal(t, map[string]string{
+		"gs://b/out/a/": "vk-a",
+		"gs://b/mine/":  "vk-a",
+	}, got, "out/b/ lies in a folder another key's batch wrote into, so it is left alone")
+}
