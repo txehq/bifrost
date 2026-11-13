@@ -2021,6 +2021,28 @@ func BenchmarkPredictionPollURL(b *testing.B) {
 	}
 }
 
+// TestReplicateVideoCreateRefusesVideoURI pins TXE-7374: Replicate's converter maps video_uri to no
+// model input, so a create carrying one is refused naming video_uri, before any upstream call,
+// rather than rendered without the video. A blank video_uri is no source video and converts.
+func TestReplicateVideoCreateRefusesVideoURI(t *testing.T) {
+	params := &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("5")}
+	_, err := replicate.ToReplicateVideoGenerationInput(&schemas.BifrostVideoGenerationRequest{
+		Model: "bytedance/seedance-2.0", Params: params,
+		Input: &schemas.VideoGenerationInput{Prompt: "p", VideoURI: schemas.Ptr("https://example.com/in.mp4")},
+	})
+	bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
+	if !ok || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error == nil || bifrostErr.Error.Param != "video_uri" {
+		t.Fatalf("got %v, want caller_unsupported_parameter naming video_uri", err)
+	}
+	req, err := replicate.ToReplicateVideoGenerationInput(&schemas.BifrostVideoGenerationRequest{
+		Model: "bytedance/seedance-2.0", Params: params,
+		Input: &schemas.VideoGenerationInput{Prompt: "p", VideoURI: schemas.Ptr("  ")},
+	})
+	if err != nil || req == nil {
+		t.Fatalf("a blank video_uri must convert: %v", err)
+	}
+}
+
 // TestReplicateVideoCreateMustNameSeconds pins TXE-7297: a hosted model picks its own length
 // when the create names none, and Replicate reports neither that length nor a cost, so the job
 // could not be priced. The create is refused, naming seconds; with seconds it converts. A value
