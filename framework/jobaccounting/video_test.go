@@ -1116,8 +1116,9 @@ func (r *retrieveOnly) RetrieveVideo(context.Context, *cstables.TableProviderJob
 	return r.resp, nil
 }
 
-// A download that fails for a reason a retry could change is retried for a few polls, with the job
-// still due; after renderedDurationAttempts the job settles at its floor.
+// A download that fails for a reason a retry could change is retried, with the job still due, even
+// for a job that spent most of its polls rendering; the last attempt before the sweeper's cap
+// settles it at its floor rather than letting the cap park it uncharged.
 func TestVideoPoll_TransientDownloadFailureRetriesThenSettlesAtTheFloor(t *testing.T) {
 	transient := errors.New("connection reset")
 	retriever := &fakeVideoRetriever{resp: silentReplicateResponse("pred_dl"), downloadErr: transient}
@@ -1133,7 +1134,11 @@ func TestVideoPoll_TransientDownloadFailureRetriesThenSettlesAtTheFloor(t *testi
 	assert.Equal(t, cstables.ProviderJobAccountingStatusPending, rescheduled.AccountingStatus)
 	assert.Equal(t, 1, rescheduled.PollAttempts)
 
-	job.PollAttempts = renderedDurationAttempts - 1
+	job.PollAttempts = 30 // rendered for 30 polls, then the first download failed
+	_, err = NewVideoSettler(retriever).Poll(context.Background(), job)
+	require.ErrorIs(t, err, transient, "the polls spent rendering do not use up the download's retries")
+
+	job.PollAttempts = MaxPollAttempts - 1
 	poll, err := NewVideoSettler(retriever).Poll(context.Background(), job)
 	require.NoError(t, err)
 	assert.True(t, poll.Settleable, "the last attempt settles at the floor rather than run out the poll cap uncharged")

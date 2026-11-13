@@ -203,7 +203,7 @@ func (s *VideoSettler) Poll(ctx context.Context, job *cstables.TableProviderJob)
 		switch {
 		case unmeasurable == nil:
 			payload.RenderedSeconds = &seconds
-		case errors.Is(unmeasurable, errRenderedDurationRetry) && job.PollAttempts+1 < renderedDurationAttempts:
+		case errors.Is(unmeasurable, errRenderedDurationRetry) && job.PollAttempts+1 < MaxPollAttempts:
 			return nil, unmeasurable
 		default:
 			payload.RenderedUnmeasurable = unmeasurable.Error()
@@ -234,12 +234,11 @@ func RenderedDurationRequired(resp *schemas.BifrostVideoGenerationResponse) bool
 	return observed.Seconds == nil && observed.ProviderCost == nil
 }
 
-// renderedDurationAttempts is how many polls a finished job's download may fail for a reason a
-// retry could change (a timeout, a reset connection, a vendor 5xx) before the job is settled at
-// its floor. With the sweeper's 30-second interval that is about five minutes.
-const renderedDurationAttempts = 10
-
-// errRenderedDurationRetry marks a measurement failure a later poll could get past.
+// errRenderedDurationRetry marks a measurement failure a later poll could get past (a timeout, a
+// reset connection, a vendor 5xx). Poll retries it for as long as the sweeper's poll budget
+// lasts, and on the last attempt settles the job at its floor instead of letting the cap park it
+// uncharged. The budget is the job's whole one: PollAttempts also counts the polls that found it
+// still running, so a smaller budget would be spent before the video was ever finished.
 var errRenderedDurationRetry = errors.New("rendered video duration not measured yet")
 
 // measureRenderedVideo downloads a finished job's video through the provider and reads its
