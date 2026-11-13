@@ -29,7 +29,7 @@ var imageTaskFields = []string{
 // imageEditTaskFields adds the edit's mask, which only the fill endpoint takes.
 var imageEditTaskFields = append(append([]string(nil), imageTaskFields...), "mask")
 
-// SupportedUnifiedFields declares the unified fields of the image task operations. Of the four
+// SupportedUnifiedFields declares the unified fields of the image task operations and of FLUX 3 Video. Of the four
 // task control fields only callback_url is declared: BFL has no external task id, deadline or
 // storage target, so the other three are refused before any upstream call (contract C7).
 func (provider *BFLProvider) SupportedUnifiedFields(requestType schemas.RequestType) ([]string, bool) {
@@ -38,6 +38,10 @@ func (provider *BFLProvider) SupportedUnifiedFields(requestType schemas.RequestT
 		return imageTaskFields, true
 	case schemas.ImageEditTaskRequest:
 		return imageEditTaskFields, true
+	case schemas.VideoGenerationRequest:
+		// FLUX 3 Video (TXE-6617): no task control field, since the endpoint has no webhook_url,
+		// external id or deadline.
+		return videoFields, true
 	}
 	return nil, false
 }

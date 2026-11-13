@@ -639,6 +639,10 @@ test("the BFL stand-in answers a submit and the task query by id", async (t) => 
   assert.equal(await status("bfl-ready"), "Ready");
   assert.equal(await status("bfl-moderated"), "Content Moderated");
   assert.equal(await status("bfl-pending"), "Pending");
+  const video = await (await post({ prompt: "a boat", mode: "t2v" }, "/pp/bfl/v1/flux-3-video")).json();
+  assert.equal(video.id, "bfl-video-ready");
+  const videoResult = await (await fetch(`${base}/pp/bfl/v1/get_result?id=bfl-video-ready`)).json();
+  assert.equal(videoResult.result.sample, "https://delivery.example.test/bfl/sample.mp4");
   assert.equal(await status("nope"), "Task not found");
   const hits = (await (await fetch(`${base}/__hits`)).json()).data[0].hits;
   assert.equal(hits["bfl get_result bfl-ready"], 1);

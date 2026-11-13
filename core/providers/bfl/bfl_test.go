@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/capsohq/bifrost/core/network/proxytest"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -86,7 +87,7 @@ func TestBFLRequestSendsXKeyToConfiguredBase(t *testing.T) {
 	}
 }
 
-// TestBFLOperationsAreUnsupported pins that every operation answers the
+// TestBFLOperationsAreUnsupported pins that every operation other than FLUX 3 Video answers the
 // unsupported-operation error, naming its own request type, without calling upstream.
 func TestBFLOperationsAreUnsupported(t *testing.T) {
 	var calls atomic.Int32
@@ -103,7 +104,9 @@ func TestBFLOperationsAreUnsupported(t *testing.T) {
 	value := reflect.ValueOf(provider)
 	for i := 0; i < iface.NumMethod(); i++ {
 		method := iface.Method(i)
-		if method.Name == "GetProviderKey" {
+		// FLUX 3 Video (TXE-6617) is served; every other operation of the interface is not.
+		switch method.Name {
+		case "GetProviderKey", "VideoGeneration", "VideoRetrieve", "VideoDownload":
 			continue
 		}
 		fn := value.MethodByName(method.Name)
@@ -639,5 +642,329 @@ func TestBFLImageBodyIsSorted(t *testing.T) {
 	}
 	if want := `{"height":768,"prompt":"p","seed":1,"webhook_url":"https://h/x","width":1024}`; string(data) != want {
 		t.Fatalf("body = %s, want %s", data, want)
+	}
+}
+
+// --- FLUX 3 Video (TXE-6617) ---
+
+func videoRequest(input *schemas.VideoGenerationInput, params *schemas.VideoGenerationParameters) *schemas.BifrostVideoGenerationRequest {
+	if input == nil {
+		input = &schemas.VideoGenerationInput{Prompt: "a paper boat"}
+	}
+	return &schemas.BifrostVideoGenerationRequest{Provider: schemas.BFL, Model: "flux-3-video", Input: input, Params: params}
+}
+
+// TestBFLVideoConversion pins the /v1/flux-3-video body (contract C4, B15): seconds as duration,
+// the unified resolution tiers as BFL's, audio as generate_audio, the mode from the inputs unless
+// the caller names one, extras merged unchanged and the raw copies of converted fields dropped.
+func TestBFLVideoConversion(t *testing.T) {
+	str := schemas.Ptr[string]
+	ref := "https://example.test/first.png"
+	cases := []struct {
+		name       string
+		req        *schemas.BifrostVideoGenerationRequest
+		want       map[string]any
+		absent     []string
+		wantRefuse string
+	}{
+		{
+			name: "text to video",
+			req: videoRequest(nil, &schemas.VideoGenerationParameters{Seconds: str("5"), AspectRatio: "16:9", Resolution: "1080p", Audio: schemas.Ptr(false),
+				ExtraParams: map[string]any{"draft": true, "safety_tolerance": float64(2), "resolution": "1080p", "aspect_ratio": "16:9"}}),
+			want: map[string]any{"prompt": "a paper boat", "mode": "t2v", "duration": float64(5), "aspect_ratio": "16:9", "resolution": "fhd",
+				"generate_audio": false, "draft": true, "safety_tolerance": float64(2)},
+		},
+		{
+			name: "input_reference is the first keyframe, image to video",
+			req:  videoRequest(&schemas.VideoGenerationInput{Prompt: "p", InputReference: &ref}, nil),
+			want: map[string]any{"mode": "i2v", "keyframes": ref},
+		},
+		{
+			name: "video_uri is the start video, video to video",
+			req:  videoRequest(&schemas.VideoGenerationInput{Prompt: "p", VideoURI: str("https://example.test/in.mp4")}, nil),
+			want: map[string]any{"mode": "v2v", "start_video": "https://example.test/in.mp4"},
+		},
+		{
+			name:   "a mode the caller names is BFL's and wins",
+			req:    videoRequest(nil, &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"mode": "draft_enhance", "draft_cache": "c1"}}),
+			want:   map[string]any{"mode": "draft_enhance", "draft_cache": "c1"},
+			absent: []string{"keyframes"},
+		},
+		{name: "a fractional duration is refused", req: videoRequest(nil, &schemas.VideoGenerationParameters{Seconds: str("4.5")}), wantRefuse: "seconds"},
+		{name: "a resolution BFL has no tier for is refused", req: videoRequest(nil, &schemas.VideoGenerationParameters{Resolution: "480p"}), wantRefuse: "resolution"},
+		{
+			name:       "input_reference and keyframes together are refused",
+			req:        videoRequest(&schemas.VideoGenerationInput{Prompt: "p", InputReference: &ref}, &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"keyframes": []any{"a", "b"}}}),
+			wantRefuse: "input_reference",
+		},
+		// BFL's own names for seconds and audio are billed (TXE-6617): never sent without the
+		// unified field, and with it the body is written from the unified field only.
+		{name: "duration as an extra param without seconds is refused", req: videoRequest(nil, &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"duration": float64(10)}}), wantRefuse: "duration"},
+		{name: "generate_audio as an extra param without audio is refused", req: videoRequest(nil, &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"generate_audio": true}}), wantRefuse: "generate_audio"},
+		{
+			name: "duration and generate_audio beside seconds and audio are written from the unified fields",
+			req: videoRequest(nil, &schemas.VideoGenerationParameters{Seconds: str("5"), Audio: schemas.Ptr(true),
+				ExtraParams: map[string]any{"duration": float64(5), "generate_audio": true}}),
+			want: map[string]any{"duration": float64(5), "generate_audio": true},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := toBFLVideoBody(tc.req)
+			if tc.wantRefuse != "" {
+				if got := refusedParam(err); got != tc.wantRefuse {
+					t.Fatalf("refusal param = %q (err %v), want %q", got, err, tc.wantRefuse)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			got := marshalBody(t, body)
+			for key, want := range tc.want {
+				if !reflect.DeepEqual(got[key], want) {
+					t.Errorf("%s = %#v, want %#v", key, got[key], want)
+				}
+			}
+			for _, key := range tc.absent {
+				if _, ok := got[key]; ok {
+					t.Errorf("%s present, want absent", key)
+				}
+			}
+		})
+	}
+}
+
+// TestBFLVideoTask pins the query mapping (contract C6, C7, C9, B17): the nine statuses one to
+// one with provider_status verbatim, content_filter for both Moderated states, the sample link,
+// expires_at two hours after BFL's end time, the settled cost in credits.
+func TestBFLVideoTask(t *testing.T) {
+	ready := toVideoTask(&BFLResultResponse{ID: "v1", Status: "Ready", Cost: schemas.Ptr(30.0),
+		Result: json.RawMessage(`{"sample":"https://delivery.bfl.ai/v/sample.mp4?se=1","end_time":1700000000}`)})
+	if ready.Status != schemas.VideoStatusCompleted || ready.ProviderStatus != "Ready" {
+		t.Fatalf("ready status = %q / %q", ready.Status, ready.ProviderStatus)
+	}
+	if len(ready.Videos) != 1 || *ready.Videos[0].URL != "https://delivery.bfl.ai/v/sample.mp4?se=1" || ready.Videos[0].ContentType != "video/mp4" || ready.Videos[0].Type != schemas.VideoOutputTypeURL {
+		t.Fatalf("videos = %+v", ready.Videos)
+	}
+	if ready.ExpiresAt == nil || *ready.ExpiresAt != 1700000000+7200 {
+		t.Errorf("expires_at = %v, want end_time + 2h", ready.ExpiresAt)
+	}
+	if ready.Usage == nil || ready.Usage.VendorCost == nil || ready.Usage.VendorCost.Amount != 30 || ready.Usage.VendorCost.Unit != schemas.VendorCostUnitCredit {
+		t.Errorf("usage = %+v", ready.Usage)
+	}
+	for raw, want := range map[string]schemas.VideoStatus{
+		"Pending": schemas.VideoStatusQueued, "Reasoning": schemas.VideoStatusInProgress, "Generating": schemas.VideoStatusInProgress,
+		"Request Moderated": schemas.VideoStatusFailed, "Content Moderated": schemas.VideoStatusFailed, "No Card Generated": schemas.VideoStatusFailed,
+		"Error": schemas.VideoStatusFailed, "Task not found": schemas.VideoStatusFailed,
+	} {
+		task := toVideoTask(&BFLResultResponse{ID: "v1", Status: raw, Details: map[string]any{"Moderation Reasons": []any{"r1"}}})
+		if task.Status != want || task.ProviderStatus != raw || len(task.Videos) != 0 || task.ExpiresAt != nil {
+			t.Errorf("%s: %+v", raw, task)
+		}
+		if moderated := moderatedStatuses[raw]; moderated != (task.ContentFilter != nil) {
+			t.Errorf("%s: content_filter = %+v", raw, task.ContentFilter)
+		}
+		if want == schemas.VideoStatusFailed && (task.Error == nil || task.Error.Code != raw) {
+			t.Errorf("%s: error = %+v", raw, task.Error)
+		}
+	}
+	noEnd := toVideoTask(&BFLResultResponse{ID: "v1", Status: "Ready", Result: json.RawMessage(`{"sample":"https://x/s.mp4"}`)})
+	if noEnd.ExpiresAt != nil {
+		t.Errorf("no end_time: expires_at %v, want none", noEnd.ExpiresAt)
+	}
+}
+
+// TestBFLVideoSubmitAndQuery pins the two calls against a recording server (B15 to B17): one POST
+// /v1/flux-3-video, a task id that carries the model, then one GET of get_result.
+func TestBFLVideoSubmitAndQuery(t *testing.T) {
+	rec := &bflRecorder{}
+	server := httptest.NewServer(http.HandlerFunc(rec.serve))
+	defer server.Close()
+	rec.submit = `{"id":"v1","polling_url":"` + server.URL + `/v1/get_result?id=v1","cost":30}`
+	rec.result = `{"id":"v1","status":"Generating","progress":0.4}`
+	provider := newTestProvider(t, schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true})
+	key := schemas.Key{Value: *schemas.NewSecretVar("bfl-key")}
+
+	task, bifrostErr := provider.VideoGeneration(imageTaskCtx(t), key, videoRequest(nil, &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("5")}))
+	if bifrostErr != nil {
+		t.Fatalf("create: %+v", bifrostErr.Error)
+	}
+	if rec.paths[0] != "/v1/flux-3-video" || rec.keys[0] != "bfl-key" {
+		t.Fatalf("create went to %q", rec.paths[0])
+	}
+	if task.ID != "v1%7Cflux-3-video:bfl" || task.Status != schemas.VideoStatusQueued || task.Seconds == nil || *task.Seconds != "5" {
+		t.Fatalf("created task = %+v", task)
+	}
+	if task.Usage == nil || task.Usage.VendorCost == nil || task.Usage.VendorCost.Amount != 30 {
+		t.Fatalf("created usage = %+v", task.Usage)
+	}
+	got, bifrostErr := provider.VideoRetrieve(imageTaskCtx(t), key, &schemas.BifrostVideoRetrieveRequest{Provider: schemas.BFL, ID: "v1|flux-3-video"})
+	if bifrostErr != nil {
+		t.Fatalf("query: %+v", bifrostErr.Error)
+	}
+	if rec.paths[1] != "/v1/get_result?id=v1" || got.Status != schemas.VideoStatusInProgress || got.ProviderStatus != "Generating" || got.ID != task.ID {
+		t.Fatalf("query %q -> %+v", rec.paths[1], got)
+	}
+	// Only the id the create handed out is a video id: a bare BFL id, or one naming an image
+	// model, is refused before the key is sent anywhere (TXE-6617 review).
+	for _, id := range []string{"v1", "v1:bfl", "v1|flux-pro-1.1", "v1|flux-3-image|api.us1.bfl.ai", "v1|FLUX-3-VIDEO"} {
+		if _, bifrostErr := provider.VideoRetrieve(imageTaskCtx(t), key, &schemas.BifrostVideoRetrieveRequest{Provider: schemas.BFL, ID: id}); bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+			t.Errorf("query of %q: got %+v, want 400", id, bifrostErr)
+		}
+		if _, bifrostErr := provider.VideoDownload(imageTaskCtx(t), key, &schemas.BifrostVideoDownloadRequest{Provider: schemas.BFL, ID: id}); bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+			t.Errorf("download of %q: got %+v, want 400", id, bifrostErr)
+		}
+	}
+	if len(rec.paths) != 2 {
+		t.Fatalf("a refused id reached BFL: %q", rec.paths)
+	}
+}
+
+// TestBFLVideoCreateIsSentOnce pins that the create reaches BFL exactly once, also when BFL's
+// connection fails: the failure is returned, never retried by the provider. A model other than
+// flux-3-video is refused with no call, and BFL has no cancel API, so no VideoCanceller.
+func TestBFLVideoCreateIsSentOnce(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			_ = conn.Close() // the connection drops before any answer
+		}
+	}))
+	defer server.Close()
+	provider := newTestProvider(t, schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true})
+	key := schemas.Key{Value: *schemas.NewSecretVar("bfl-key")}
+
+	if _, bifrostErr := provider.VideoGeneration(imageTaskCtx(t), key, videoRequest(nil, nil)); bifrostErr == nil {
+		t.Fatal("a dropped connection must be an error")
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("the create reached BFL %d times, want exactly once", n)
+	}
+	other := videoRequest(nil, nil)
+	other.Model = "flux-pro-1.1"
+	if _, bifrostErr := provider.VideoGeneration(imageTaskCtx(t), key, other); bifrostErr == nil || *bifrostErr.StatusCode != 400 {
+		t.Fatalf("non-video model: got %+v, want 400", bifrostErr)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("the refused model reached BFL")
+	}
+	if _, ok := any(provider).(schemas.VideoCanceller); ok {
+		t.Fatal("BFL has no cancel API; the provider must not implement VideoCanceller")
+	}
+}
+
+// TestBFLVideoRefusesTaskControlFields pins that FLUX 3 Video declares none of the four task
+// control fields, so core refuses each before a key is chosen (contract C7, B15), and refuses
+// the unified fields BFL has no counterpart for.
+func TestBFLVideoRefusesTaskControlFields(t *testing.T) {
+	provider := newTestProvider(t, schemas.NetworkConfig{})
+	for _, field := range schemas.TaskControlFields {
+		params := &schemas.VideoGenerationParameters{}
+		switch field {
+		case schemas.TaskControlFieldCallbackURL:
+			params.CallbackURL = schemas.Ptr("https://hooks.example.test/v/1")
+		case schemas.TaskControlFieldClientReferenceID:
+			params.ClientReferenceID = schemas.Ptr("t1")
+		case schemas.TaskControlFieldExpiresAfterSeconds:
+			params.ExpiresAfterSeconds = schemas.Ptr(600)
+		case schemas.TaskControlFieldOutputStorageURI:
+			params.OutputStorageURI = schemas.Ptr("gs://b/t1")
+		}
+		req := &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: videoRequest(nil, params)}
+		if err := schemas.CheckTaskControlFields(provider, req); err == nil || err.Error.Param != field {
+			t.Errorf("%s: got %+v, want caller_unsupported_parameter naming it", field, err)
+		}
+	}
+	for _, params := range []*schemas.VideoGenerationParameters{{Size: "1280x720"}, {OutputFormat: schemas.Ptr("mp4")}, {LastFrame: "https://x/l.png"}} {
+		req := &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: videoRequest(nil, params)}
+		if err := schemas.CheckDeclaredUnifiedFields(provider, req); err == nil {
+			t.Errorf("%+v: want caller_unsupported_parameter", params)
+		}
+	}
+}
+
+// TestBFLVideoDownload pins B18: the download reads the completed task's sample link and fetches
+// it through the SSRF-hardened media fetcher, here through a forward proxy, as bifrost sets it on
+// each attempt. The served bytes keep a video type even when the host says otherwise, and a sample
+// link on a loopback address is refused without being dialed.
+func TestBFLVideoDownload(t *testing.T) {
+	proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Host == "203.0.113.20" && r.URL.Path == "/v1/get_result":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"v1","status":"Ready","result":{"sample":"http://203.0.113.10/v/sample.mp4","end_time":1700000000}}`))
+		case r.URL.Host == "203.0.113.10" && r.URL.Path == "/v/sample.mp4":
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte("MP4 BYTES"))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	proxyConfig := &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(proxy.URL)}
+	provider, err := NewBFLProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: "http://203.0.113.20", DefaultRequestTimeoutInSeconds: 30},
+		ProxyConfig:   proxyConfig,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := imageTaskCtx(t)
+	ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, proxyConfig)
+	got, bifrostErr := provider.VideoDownload(ctx, schemas.Key{Value: *schemas.NewSecretVar("k")}, &schemas.BifrostVideoDownloadRequest{Provider: schemas.BFL, ID: "v1|flux-3-video"})
+	if bifrostErr != nil {
+		t.Fatalf("download: %+v", bifrostErr.Error)
+	}
+	if string(got.Content) != "MP4 BYTES" || got.ContentType != "video/mp4" {
+		t.Fatalf("download = %q %q, want the bytes as video/mp4", got.Content, got.ContentType)
+	}
+	// A caller that asks for a stream gets the open response, with the same bytes and type.
+	streamed, bifrostErr := provider.VideoDownload(ctx, schemas.Key{Value: *schemas.NewSecretVar("k")}, &schemas.BifrostVideoDownloadRequest{Provider: schemas.BFL, ID: "v1|flux-3-video", Stream: true})
+	if bifrostErr != nil {
+		t.Fatalf("streamed download: %+v", bifrostErr.Error)
+	}
+	if streamed.Body == nil {
+		t.Fatalf("streamed download has no body: %+v", streamed)
+	}
+	streamedBytes, err := io.ReadAll(streamed.Body)
+	_ = streamed.Body.Close()
+	if err != nil || string(streamedBytes) != "MP4 BYTES" || streamed.ContentType != "video/mp4" {
+		t.Fatalf("streamed download = %q %q (%v), want the bytes as video/mp4", streamedBytes, streamed.ContentType, err)
+	}
+
+	var internalHits atomic.Int32
+	internal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		internalHits.Add(1)
+		_, _ = w.Write([]byte("internal"))
+	}))
+	defer internal.Close()
+	rec := &bflRecorder{result: `{"id":"v2","status":"Ready","result":{"sample":"` + internal.URL + `/s.mp4"}}`}
+	bfl := httptest.NewServer(http.HandlerFunc(rec.serve))
+	defer bfl.Close()
+	local := newTestProvider(t, schemas.NetworkConfig{BaseURL: bfl.URL, AllowPrivateNetwork: true})
+	if _, bifrostErr := local.VideoDownload(imageTaskCtx(t), schemas.Key{Value: *schemas.NewSecretVar("k")}, &schemas.BifrostVideoDownloadRequest{Provider: schemas.BFL, ID: "v2|flux-3-video"}); bifrostErr == nil {
+		t.Fatal("a loopback sample link must be refused")
+	}
+	if n := internalHits.Load(); n != 0 {
+		t.Fatalf("the download dialed the loopback link %d times", n)
+	}
+}
+
+// BenchmarkBFLVideoConversion measures the FLUX 3 Video create's body conversion and encode, the
+// provider's own work on the request path (AGENTS.md cost rule).
+func BenchmarkBFLVideoConversion(b *testing.B) {
+	req := videoRequest(nil, &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("5"), AspectRatio: "16:9", Resolution: "1080p",
+		ExtraParams: map[string]any{"safety_tolerance": float64(2), "resolution": "1080p"}})
+	b.ReportAllocs()
+	for b.Loop() {
+		body, err := toBFLVideoBody(req)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, err := providerUtils.MarshalConvertedRequestBody(body, true); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
