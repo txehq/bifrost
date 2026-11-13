@@ -1227,6 +1227,22 @@ func TestPatchPricing_VideoResolutionBandRates(t *testing.T) {
 	assert.Equal(t, 0.70, *patched.OutputCostPerVideoPerSecond1080p)
 	assert.Equal(t, 0.60, *patched.OutputCostPerVideoPerSecond4k)
 
+	// Upstream's output_cost_per_second_<band> keys (TXE-7349) pass through too.
+	patched = patchPricing(base, Options{
+		OutputCostPerSecond480p:  bifrost.Ptr(0.041),
+		OutputCostPerSecond720p:  bifrost.Ptr(0.082),
+		OutputCostPerSecond768p:  bifrost.Ptr(0.08),
+		OutputCostPerSecond1080p: bifrost.Ptr(0.165),
+		OutputCostPerSecond2k:    bifrost.Ptr(0.13),
+		OutputCostPerSecond4k:    bifrost.Ptr(0.6),
+	})
+	assert.Equal(t, 0.041, *patched.OutputCostPerSecond480p)
+	assert.Equal(t, 0.082, *patched.OutputCostPerSecond720p)
+	assert.Equal(t, 0.08, *patched.OutputCostPerSecond768p)
+	assert.Equal(t, 0.165, *patched.OutputCostPerSecond1080p)
+	assert.Equal(t, 0.13, *patched.OutputCostPerSecond2k)
+	assert.Equal(t, 0.6, *patched.OutputCostPerSecond4k)
+
 	// Unpatched fields keep their base values.
 	assert.Equal(t, 0.30, *patched.OutputCostPerVideoPerSecond)
 }

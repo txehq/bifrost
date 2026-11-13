@@ -1542,3 +1542,54 @@ func TestVertexVeoWithoutSecondsGetsVeosDefault(t *testing.T) {
 		t.Fatalf("a Vertex Veo create with no seconds settles with no duration: seconds %v", resp.Seconds)
 	}
 }
+
+// dimsRecordingPricing is fakePricing that keeps the dimensions it was asked to price.
+type dimsRecordingPricing struct {
+	fakePricing
+	seen []modelcatalog.VideoPricingDimensions
+}
+
+func (p *dimsRecordingPricing) CalculateVideoCostDetails(dims modelcatalog.VideoPricingDimensions, provider schemas.ModelProvider, scopes *modelcatalog.PricingLookupScopes) modelcatalog.VideoCostDetails {
+	p.seen = append(p.seen, dims)
+	return p.fakePricing.CalculateVideoCostDetails(dims, provider, scopes)
+}
+
+// A tier-only request (Veo "4k", Wan "480P") has no size, so the tier is the only record of its
+// rate band. The settlement row must carry it and a reprice must hand it back to pricing, or a
+// repriced 4K Veo clip falls back to the unbanded rate (TXE-7349).
+func TestVideoSettle_ResolutionTierSurvivesSettlementAndReprice(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		dims modelcatalog.VideoPricingDimensions
+	}{
+		{name: "typed resolution", dims: func() modelcatalog.VideoPricingDimensions {
+			d := generationDims("sora-2-pro", "", 8)
+			d.Resolution = "4k"
+			return d
+		}()},
+		{name: "job row written before Resolution existed", dims: func() modelcatalog.VideoPricingDimensions {
+			d := generationDims("sora-2-pro", "", 8)
+			d.Extra = map[string]any{"resolution": "4k"}
+			return d
+		}()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			job := videoJob(t, "vid_tier", tc.dims)
+			settlement := settleVideoRendered(t, job, &schemas.BifrostVideoGenerationResponse{
+				Status: schemas.VideoStatusCompleted,
+				Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+			}, 8)
+			require.NotNil(t, settlement.ApplyDebug)
+			entry := &logstore.Log{Model: "sora-2-pro", Provider: string(schemas.OpenAI)}
+			settlement.ApplyDebug(entry)
+			require.NotNil(t, entry.VideoDebugParsed.Accounting)
+			assert.Equal(t, "4k", entry.VideoDebugParsed.Accounting.Resolution)
+
+			pricing := &dimsRecordingPricing{}
+			_, err := NewVideoSettler(nil).RepriceFromLog(entry, pricing)
+			require.NoError(t, err)
+			require.Len(t, pricing.seen, 1)
+			assert.Equal(t, "4k", pricing.seen[0].Resolution)
+		})
+	}
+}

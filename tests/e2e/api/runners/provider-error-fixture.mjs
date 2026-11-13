@@ -447,7 +447,15 @@ const fixturePricing = {
 		output_cost_per_video_per_second_720p: 0.025,
 		output_cost_per_video_per_second_720p_audio: 0.05,
 	},
+	// TXE-7349: MiniMax-H3's live band rates (getbifrost.ai/datasheet, 14 Nov 2026), $0.08/s unbanded and at 768P,
+	// $0.13/s at 2K, under upstream's output_cost_per_second_<band> keys. Folder 521 settles a 2K job at the 2K rate.
+	// MiniMax-H3's input_cost_per_video_per_second is left out: it is billed on the output length (TXE-7351).
+	"fixture-minimax-2k": { provider: "minimax", mode: "video_generation", output_cost_per_second: 0.08, output_cost_per_second_768p: 0.08, output_cost_per_second_2k: 0.13 },
 };
+
+// TXE-7349: the fixture-minimax-2k task (folder 521) finishes as a 6 second 2K clip and names no ratio, so the
+// response carries no size and the job is priced from the resolution tier the request named.
+const MINIMAX_BAND_TASK = "fixture-band-2k";
 
 // Provider wire capture, TXE-5539. The config points each provider these rows use at /pp/<provider>, so one fixture
 // plays them all; the bytes that arrive are kept for the row to compare, and GET /__wire returns them. Nothing here
@@ -1222,6 +1230,7 @@ const wireAnswer = (path, body, bytes) => {
 	if (path === "/pp/minimax/v1/t2a_v2") return miniMaxSpeechAnswer(body);
 	// Video create, accepted (folder 434, TXE-7065): each vendor's own task answer, so a row can read what the
 	// converter sent from /__wire without creating a billed task. MiniMax's base-resp models are answered above.
+	if (path === "/pp/minimax/v2/video_generation" && body.model === "fixture-minimax-2k") return { status: 200, body: JSON.stringify({ task_id: MINIMAX_BAND_TASK, base_resp: { status_code: 0, status_msg: "success" } }) };
 	if (path === "/pp/minimax/v2/video_generation") return { status: 200, body: JSON.stringify({ task_id: "fixture-video-task", base_resp: { status_code: 0, status_msg: "success" } }) };
 	if (path === "/pp/byteplus/api/v3/contents/generations/tasks") return { status: 200, body: JSON.stringify({ id: "cgt-fixture-video-task" }) };
 	if (path.startsWith("/pp/gemini/models/") && path.endsWith(":predictLongRunning")) return { status: 200, body: JSON.stringify({ name: `${path.slice("/pp/gemini/".length, -":predictLongRunning".length)}/operations/fixture-video-op` }) };
@@ -2150,7 +2159,12 @@ const handleRequest = (req, res) => {
 	}
 	if (req.method === "GET" && path.startsWith("/pp/minimax/v2/query/video_generation/")) {
 		wireCalls.push({ path, query: new URL(req.url, "http://localhost").search, body: "" });
-		const answer = miniMaxBaseRespAnswer(decodeURIComponent(path.slice("/pp/minimax/v2/query/video_generation/".length)));
+		const taskId = decodeURIComponent(path.slice("/pp/minimax/v2/query/video_generation/".length));
+		if (taskId === MINIMAX_BAND_TASK) {
+			countHit(`minimax.query ${taskId}`);
+			return send(200, {}, JSON.stringify({ task: { id: taskId, model: "fixture-minimax-2k", status: "succeeded", content: { url: `http://127.0.0.1:${port}/pp/media/internal.mp4` }, resolution: "2K", duration: 6 } }));
+		}
+		const answer = miniMaxBaseRespAnswer(taskId);
 		if (answer) return send(answer.status, {}, answer.body);
 		return send(404, {}, JSON.stringify({ error: "unknown fixture task" }));
 	}

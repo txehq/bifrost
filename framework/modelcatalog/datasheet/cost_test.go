@@ -8831,3 +8831,120 @@ func TestComputeDecisionCost_Above272kAndCacheRates(t *testing.T) {
 	flat := decodeEntry(t, `{"provider": "openai", "mode": "chat", "input_cost_per_token": 1e-07, "input_cost_per_token_decisions": 1e-07, "output_cost_per_token_decisions": 0}`)
 	assert.InDelta(t, 300000*1e-07, computeDecisionCostTotal(&flat, usage(300000), serviceTier{}), 1e-12)
 }
+
+// resolutionBandStore loads rows copied verbatim from the live upstream datasheet
+// (getbifrost.ai/datasheet, fetched 14 Nov 2026) through the same Entry parse and row
+// conversion a datasheet sync uses, so a band key the fork does not parse leaves the
+// row without that band exactly as it would in production (TXE-7349).
+func resolutionBandStore(t *testing.T) (*Store, map[string]configstoreTables.TableModelPricing) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "resolution-bands.json"))
+	require.NoError(t, err)
+	var entries map[string]Entry
+	require.NoError(t, json.Unmarshal(data, &entries))
+	rows := make(map[string]configstoreTables.TableModelPricing, len(entries))
+	byKey := make(map[string]configstoreTables.TableModelPricing, len(entries))
+	for modelKey, entry := range entries {
+		row := convertEntryToTablePricing(modelKey, entry)
+		rows[makeKey(row.Model, row.Provider, row.Mode)] = row
+		byKey[modelKey] = row
+	}
+	return testStoreWithPricing(rows), byKey
+}
+
+// The three mispriced rows TXE-7349 names, each billed at its resolution band's rate.
+// On main these bill Veo 3.1 4K at 0.4, Wan 3.0 480p at 0.165025 and MiniMax-H3 2K at 0.08.
+func TestCalculateVideoCostDetails_UpstreamResolutionBands(t *testing.T) {
+	store, rows := resolutionBandStore(t)
+	for _, tc := range []struct {
+		name       string
+		modelKey   string
+		seconds    int
+		size       string
+		resolution string
+		extra      map[string]any
+		wantRate   float64
+	}{
+		{name: "gemini veo 3.1 4k by tier", modelKey: "gemini/veo-3.1-generate-001", seconds: 8, resolution: "4k", wantRate: 0.6},
+		{name: "vertex veo 3.1 4k by tier", modelKey: "vertex_ai/veo-3.1-generate-001", seconds: 8, resolution: "4k", wantRate: 0.6},
+		{name: "veo 3.1 4k by size", modelKey: "gemini/veo-3.1-generate-001", seconds: 8, size: "3840x2160", wantRate: 0.6},
+		// A job row written before Resolution existed holds the tier only in Extra.
+		{name: "veo 3.1 4k from extra on an older job row", modelKey: "gemini/veo-3.1-generate-001", seconds: 8, extra: map[string]any{"resolution": "4k"}, wantRate: 0.6},
+		{name: "veo 3.1 1080p has no band, unbanded rate", modelKey: "gemini/veo-3.1-generate-001", seconds: 8, resolution: "1080p", wantRate: 0.4},
+		{name: "wan 3.0 480p by tier", modelKey: "dashscope/wan3.0-video", seconds: 5, resolution: "480P", wantRate: 0.041256},
+		{name: "wan 3.0 720p by tier", modelKey: "dashscope/wan3.0-video", seconds: 5, resolution: "720P", wantRate: 0.082513},
+		{name: "wan 480p by legacy size", modelKey: "dashscope/wan3.0-video", seconds: 5, size: "832x480", wantRate: 0.041256},
+		{name: "minimax H3 2K by tier", modelKey: "minimax/MiniMax-H3", seconds: 6, resolution: "2K", wantRate: 0.13},
+		// miniMaxVideoSize reports a finished 2K task as 2560x1440.
+		{name: "minimax H3 2K by reported size", modelKey: "minimax/MiniMax-H3", seconds: 6, size: "2560x1440", wantRate: 0.13},
+		{name: "minimax H3 768P by tier", modelKey: "minimax/MiniMax-H3", seconds: 6, resolution: "768P", wantRate: 0.08},
+		// Both families publish a 480p band here and disagree; the row's own source says
+		// $0.36/s at 480p, which is the fork's video-specific key.
+		{name: "seedance2 480p reads the video-specific band first", modelKey: "runwayml/seedance2", seconds: 5, resolution: "480p", wantRate: 0.36},
+		{name: "seedance2 4k", modelKey: "runwayml/seedance2", seconds: 5, resolution: "4k", wantRate: 1.5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row, ok := rows[tc.modelKey]
+			require.True(t, ok, "row %s missing from testdata", tc.modelKey)
+			seconds := tc.seconds
+			details := store.CalculateVideoCostDetails(VideoPricingDimensions{
+				Model:       row.Model,
+				RequestType: schemas.VideoGenerationRequest,
+				Seconds:     &seconds,
+				Size:        tc.size,
+				Resolution:  tc.resolution,
+				Extra:       tc.extra,
+				OutputCount: 1,
+			}, schemas.ModelProvider(row.Provider), nil)
+			require.True(t, details.Priced)
+			require.NotNil(t, details.Breakdown)
+			want := float64(tc.seconds) * tc.wantRate
+			assert.InDelta(t, want, details.Breakdown.OutputCost, 1e-9)
+			if row.InputCostPerVideoPerSecond == nil {
+				assert.InDelta(t, want, details.Cost, 1e-9)
+			}
+			// MiniMax-H3 also carries input_cost_per_video_per_second, which computeVideoCost
+			// bills on the output duration; that input-side defect is TXE-7351, so only the
+			// output component is pinned for those rows.
+		})
+	}
+}
+
+// A size that names a band wins over the tier label, since it is what the provider
+// reported; a size that names none leaves the tier to decide.
+func TestVideoPricingDimensions_BandSizePrefersSize(t *testing.T) {
+	assert.Equal(t, "1920x1080", VideoPricingDimensions{Size: "1920x1080", Resolution: "4k"}.bandSize())
+	assert.Equal(t, "4k", VideoPricingDimensions{Size: "auto", Resolution: "4k"}.bandSize())
+	assert.Equal(t, "2K", VideoPricingDimensions{Extra: map[string]any{"resolution": "2K"}}.bandSize())
+	assert.Equal(t, "", VideoPricingDimensions{Extra: map[string]any{"resolution": 1080}}.BandResolution(),
+		"a numeric resolution (Runware 3D) names no band")
+}
+
+func TestVideoResolutionBand_TierLabels(t *testing.T) {
+	for label, want := range map[string]int{
+		"480p": 480, "480P": 480, "720p": 720, "768P": 768, "1080p": 1080,
+		"2K": 1440, "2k": 1440, "4k": 2160, "4K": 2160, " 4k ": 2160,
+		"540p": 0, "auto": 0, "": 0,
+	} {
+		assert.Equal(t, want, videoResolutionBand(label), label)
+	}
+}
+
+func TestComputeVideoCost_UpstreamBandKeys(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerSecond:      bifrost.Ptr(0.40),
+		OutputCostPerSecond480p:  bifrost.Ptr(0.05),
+		OutputCostPerSecond720p:  bifrost.Ptr(0.10),
+		OutputCostPerSecond768p:  bifrost.Ptr(0.08),
+		OutputCostPerSecond1080p: bifrost.Ptr(0.20),
+		OutputCostPerSecond2k:    bifrost.Ptr(0.13),
+		OutputCostPerSecond4k:    bifrost.Ptr(0.60),
+	}
+	seconds := 10
+	for size, rate := range map[string]float64{
+		"854x480": 0.05, "1280x720": 0.10, "1366x768": 0.08, "1920x1080": 0.20,
+		"2560x1440": 0.13, "3840x2160": 0.60, "1792x1024": 0.40, "640x360": 0.40,
+	} {
+		assert.InDelta(t, 10*rate, computeVideoCostTotalSized(&p, nil, &seconds, size, 1, serviceTier{}), 1e-12, size)
+	}
+}

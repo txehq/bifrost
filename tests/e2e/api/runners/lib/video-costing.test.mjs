@@ -55,9 +55,19 @@ test("bands match exactly — an off-band size falls through to unbanded", () =>
   assert.equal(bandKeyFor("960x540"), "540p");
   // 576p sits between published bands and has no rate of its own.
   assert.equal(bandKeyFor("1024x576"), null);
-  // 1440p sits between published bands and has no rate of its own.
-  assert.equal(bandKeyFor("2560x1440"), null);
+  // 1440p is upstream's 2K band (MiniMax 2K is 2560x1440, TXE-7349).
+  assert.equal(bandKeyFor("2560x1440"), "2k");
+  assert.equal(bandKeyFor("1366x768"), "768p");
   assert.equal(bandKeyFor("garbage"), null);
+});
+
+test("a tier label names its band like a size does (TXE-7349)", () => {
+  assert.equal(bandKeyFor("4k"), "4k");
+  assert.equal(bandKeyFor("480P"), "480p");
+  assert.equal(bandKeyFor("2K"), "2k");
+  assert.equal(bandKeyFor("768P"), "768p");
+  assert.equal(bandKeyFor("540p"), "540p");
+  assert.equal(bandKeyFor("576p"), null);
 });
 
 test("rate mode multiplies rate by the seconds and clip count actually billed", () => {

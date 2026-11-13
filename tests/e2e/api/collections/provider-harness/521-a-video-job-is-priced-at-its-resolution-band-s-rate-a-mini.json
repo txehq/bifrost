@@ -1,0 +1,379 @@
+{
+  "name": "521. A video job is priced at its resolution band's rate: a MiniMax 2K clip settles at the datasheet's output_cost_per_second_2k, not the unbanded rate (video resolution band) [SERIAL]",
+  "item": [
+    {
+      "name": "521.1 the fixture gateway runs with provider job accounting off; its client config is kept to restore at the end (video resolution band)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.unset('bandAcctClientConfig');",
+              "pm.collectionVariables.unset('bandAcctVideoId');",
+              "pm.collectionVariables.unset('bandAcctRetry');",
+              "pm.test('accounting reads back off', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.client_config && j.client_config.disable_provider_job_accounting, pm.response.text().slice(0, 400)).to.equal(true);",
+              "});",
+              "var cc = pm.response.code === 200 ? pm.response.json().client_config : null;",
+              "if (cc) { pm.collectionVariables.set('bandAcctClientConfig', JSON.stringify(cc)); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "521.2 [EXPECT-200] turn provider job accounting on, which starts the video sweeper (video resolution band)",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{{bandAcctOnBody}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var saved = pm.collectionVariables.get('bandAcctClientConfig');",
+              "if (!saved) {",
+              "  // 521.1 kept no config: leave the switch alone rather than write a partial one.",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var cc = JSON.parse(saved);",
+              "  cc.disable_provider_job_accounting = false;",
+              "  pm.variables.set('bandAcctOnBody', JSON.stringify({ client_config: cc }));",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('accounting turned on', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "521.3 minimax/fixture-minimax-2k POST /v1/videos naming resolution 2K and no size is queued (video resolution band)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"minimax/fixture-minimax-2k\",\n  \"prompt\": \"a paper boat drifts across a still pond at dawn\",\n  \"seconds\": \"6\",\n  \"resolution\": \"2K\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('create returns the queued MiniMax task', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.eql('fixture-band-2k:minimax');",
+              "});",
+              "if (pm.response.code === 200) { pm.collectionVariables.set('bandAcctVideoId', pm.response.json().id); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "521.4 minimax GET /v1/videos/{id} reports the 6 second clip finished with no size, so the job is due for settlement (video resolution band)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/{{bandAcctVideoId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "{{bandAcctVideoId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the retrieve reports a finished 6 second clip and no size', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.status, pm.response.text()).to.eql('completed');",
+              "  pm.expect(j.seconds, pm.response.text()).to.eql('6');",
+              "  pm.expect(j.size || '', 'a size would band the job without the tier: ' + pm.response.text()).to.eql('');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "521.5 the settled job is priced at 6 s x $0.13, the 2K band rate, where main billed the unbanded $0.08 (video resolution band)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs?providers=minimax&models=fixture-minimax-2k&limit=50",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "providers",
+              "value": "minimax"
+            },
+            {
+              "key": "models",
+              "value": "fixture-minimax-2k"
+            },
+            {
+              "key": "limit",
+              "value": "50"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var retry = Number(pm.collectionVariables.get('bandAcctRetry') || 0);",
+              "if (retry > 0) {",
+              "  // The video sweeper ticks every 30 s; newman drains pending timers before it sends.",
+              "  var until = Date.now() + 2000;",
+              "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('logs query responds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "});",
+              "if (pm.response.code !== 200) { pm.collectionVariables.unset('bandAcctRetry'); return; }",
+              "// The settlement row is the one whose video_debug carries accounting.",
+              "var row = null;",
+              "(pm.response.json().logs || []).forEach(function (l) {",
+              "  var vd = l.video_debug;",
+              "  if (!row && vd && vd.accounting && String(vd.video_id || '').indexOf('fixture-band-2k') === 0) { row = l; }",
+              "});",
+              "var retry = Number(pm.collectionVariables.get('bandAcctRetry') || 0);",
+              "if (!row && retry < 45) {",
+              "  pm.collectionVariables.set('bandAcctRetry', retry + 1);",
+              "  postman.setNextRequest(pm.info.requestName);",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('bandAcctRetry');",
+              "pm.test('the job settled within 90 s of the retrieve', function () {",
+              "  pm.expect(row, 'no settlement row: ' + pm.response.text().slice(0, 1500)).to.not.equal(null);",
+              "});",
+              "if (!row) { return; }",
+              "pm.test('the settlement records the 2K tier it was priced from', function () {",
+              "  pm.expect(row.video_debug.accounting.resolution, JSON.stringify(row.video_debug)).to.equal('2K');",
+              "  pm.expect(row.video_debug.accounting.seconds, JSON.stringify(row.video_debug)).to.equal(6);",
+              "});",
+              "pm.test('priced at 6 s x $0.13, output_cost_per_second_2k, not 6 s x $0.08 unbanded', function () {",
+              "  pm.expect(row.cost, JSON.stringify(row).slice(0, 1500)).to.be.closeTo(0.78, 1e-9);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "521.6 [EXPECT-200] teardown: provider job accounting is turned back off with the client config 521.1 kept, whatever the rows above did (video resolution band)",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{{bandAcctOffBody}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var saved = pm.collectionVariables.get('bandAcctClientConfig');",
+              "if (!saved) {",
+              "  // 521.2 did not run either, so accounting was never turned on.",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var cc = JSON.parse(saved);",
+              "  cc.disable_provider_job_accounting = true;",
+              "  pm.variables.set('bandAcctOffBody', JSON.stringify({ client_config: cc }));",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.unset('bandAcctRetry');",
+              "pm.test('accounting turned back off', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.eql(200);",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config', method: 'GET', header: { 'X-Bifrost-Setup-Token': 'bifrost-e2e-setup-token' } }, function (err, res) {",
+              "  pm.test('accounting reads back off', function () {",
+              "    pm.expect(err, 'gateway unreachable: ' + err).to.equal(null);",
+              "    var j = res.json();",
+              "    pm.expect(j.client_config && j.client_config.disable_provider_job_accounting, res.text().slice(0, 400)).to.equal(true);",
+              "  });",
+              "});",
+              "pm.collectionVariables.unset('bandAcctClientConfig');",
+              "pm.collectionVariables.unset('bandAcctVideoId');"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

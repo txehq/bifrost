@@ -310,13 +310,6 @@ func sortedKeys[V any](m map[string]V) []string {
 // ticket that decides it. TXE-7350 owns every key here that names it: each family is parsed or
 // recorded as deliberately ignored with its reason, and its entries leave this list.
 var ignoredUpstreamCostKeys = map[string]string{
-	// Video resolution bands under output_cost_per_second_<band>: parsed by TXE-7349.
-	"output_cost_per_second_1080p": "TXE-7349: video resolution band",
-	"output_cost_per_second_2k":    "TXE-7349: video resolution band",
-	"output_cost_per_second_480p":  "TXE-7349: video resolution band",
-	"output_cost_per_second_4k":    "TXE-7349: video resolution band",
-	"output_cost_per_second_720p":  "TXE-7349: video resolution band",
-	"output_cost_per_second_768p":  "TXE-7349: video resolution band",
 	// Batch tiers.
 	"annotation_cost_per_page_batches":                                     "TXE-7350: batch tier",
 	"cache_creation_input_token_cost_above_100k_tokens_batches":            "TXE-7350: batch tier",

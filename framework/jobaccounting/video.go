@@ -396,6 +396,7 @@ func videoDebugFor(videoID string, status schemas.VideoStatus, dims modelcatalog
 				Seconds:      dims.Seconds,
 				Size:         dims.Size,
 				Audio:        dims.Audio,
+				Resolution:   dims.BandResolution(),
 				OutputCount:  dims.OutputCount,
 				Incomplete:   incomplete,
 				RequestType:  videoRequestTypeFor(dims.RequestType),
@@ -471,6 +472,7 @@ func (s *VideoSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManage
 		// The settlement's audio flag (TXE-7306): without it an explicit audio false
 		// would reprice at the provider's default, the with-audio rate.
 		Audio:       accounting.Audio,
+		Resolution:  accounting.Resolution,
 		OutputCount: accounting.OutputCount,
 	}, schemas.ModelProvider(entry.Provider), &scopes)
 	if !details.Priced {

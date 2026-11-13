@@ -33,6 +33,10 @@ type VideoPricingDimensions struct {
 	// today. Size is "WxH"; the rate is banded on its short edge.
 	Seconds *int   `json:"seconds,omitempty"`
 	Size    string `json:"size,omitempty"`
+	// Resolution is the tier label ("480p", "2K", "4k") a request names instead of a size.
+	// Veo, Wan 2.7+ and MiniMax take one; it selects the rate band when Size names none
+	// (TXE-7349).
+	Resolution string `json:"resolution,omitempty"`
 
 	// Type is the operation selector ("upscale", "3d"). These do not bill per
 	// second of output at all, so a rate keyed only on duration is wrong for them.
@@ -58,7 +62,8 @@ type VideoPricingDimensions struct {
 	// Extra carries request knobs that are not modeled above yet. It is the
 	// research hatch: capture a provider-specific parameter here as soon as it
 	// looks price-relevant, and promote it to a typed field once its rate is
-	// actually published. Nothing reads it during pricing today.
+	// actually published. Pricing reads only its "resolution", and only for rows
+	// written before Resolution existed (see BandResolution).
 	Extra map[string]any `json:"extra,omitempty"`
 }
 
@@ -83,6 +88,9 @@ func (d VideoPricingDimensions) MergedWith(observed VideoPricingDimensions) Vide
 	}
 	if observed.Size != "" {
 		out.Size = observed.Size
+	}
+	if observed.Resolution != "" {
+		out.Resolution = observed.Resolution
 	}
 	if observed.Type != nil {
 		out.Type = observed.Type
@@ -159,11 +167,37 @@ func (s *Store) CalculateVideoCostDetails(dims VideoPricingDimensions, provider 
 	// billed as if they were a per-second generation of the same length.
 	// The audio flag the create captured selects a band's with-audio rate where the model has
 	// one (TXE-7306); an unstated flag takes the provider's audio default.
-	breakdown := computeVideoCost(pricing, nil, dims.Seconds, dims.Size, dims.OutputCount, VideoPricedWithAudio(provider, dims.Audio), serviceTier{})
+	breakdown := computeVideoCost(pricing, nil, dims.Seconds, dims.bandSize(), dims.OutputCount, VideoPricedWithAudio(provider, dims.Audio), serviceTier{})
 	if breakdown == nil || breakdown.TotalCost <= 0 {
 		return VideoCostDetails{}
 	}
 	return VideoCostDetails{Cost: breakdown.TotalCost, Priced: true, Breakdown: breakdown}
+}
+
+// BandResolution returns the resolution tier label that names a rate band: Resolution,
+// else a "resolution" captured in Extra, else "". Extra covers job rows written before
+// Resolution existed, which hold the tier only there, so a job in flight across the
+// upgrade still settles at its band (TXE-7349).
+func (d VideoPricingDimensions) BandResolution() string {
+	if videoResolutionBand(d.Resolution) > 0 {
+		return d.Resolution
+	}
+	if resolution, ok := d.Extra["resolution"].(string); ok && videoResolutionBand(resolution) > 0 {
+		return resolution
+	}
+	return ""
+}
+
+// bandSize returns what the rate band is read from: Size when it names a band, else the
+// resolution tier. Size wins because it is what the provider reports back.
+func (d VideoPricingDimensions) bandSize() string {
+	if videoResolutionBand(d.Size) > 0 {
+		return d.Size
+	}
+	if resolution := d.BandResolution(); resolution != "" {
+		return resolution
+	}
+	return d.Size
 }
 
 // videoClipCount counts the billable clips in outputs, skipping image outputs such as a task's last frame.

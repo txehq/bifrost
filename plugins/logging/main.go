@@ -928,6 +928,13 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 			return dims
 		}
 		dims.Size = params.Size
+		dims.Resolution = string(params.Resolution)
+		if dims.Resolution == "" {
+			// Veo reads its tier from extra_params, where the unified field also stays.
+			if resolution, ok := params.ExtraParams["resolution"].(string); ok {
+				dims.Resolution = resolution
+			}
+		}
 		dims.Type = params.Type
 		dims.Audio = params.Audio
 		dims.UpscaleFactor = params.UpscaleFactor
@@ -963,6 +970,9 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 func applyVideoDimensionsFromMap(dims *modelcatalog.VideoPricingDimensions, params map[string]any) {
 	if size, ok := params["size"].(string); ok {
 		dims.Size = size
+	}
+	if resolution, ok := params["resolution"].(string); ok {
+		dims.Resolution = resolution
 	}
 	if operation, ok := params["type"].(string); ok {
 		dims.Type = &operation
