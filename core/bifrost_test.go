@@ -14560,3 +14560,101 @@ func TestEveryVideoDeleteAcceptsAnEmptySuccessBody(t *testing.T) {
 		}
 	}
 }
+
+// allowedRequestsGateCalls are the calls TestCustomProviderAllowedRequestsGateEveryCall sends
+// besides resourceOverrideCalls: one of each kind a custom provider is commonly enabled for.
+var allowedRequestsGateCalls = map[schemas.RequestType]resourceOverrideCall{
+	schemas.ChatCompletionRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, _ []string) *schemas.BifrostError {
+		text := "hi"
+		_, err := p.ChatCompletion(ctx, keys[0], &schemas.BifrostChatRequest{Provider: base, Model: "m", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &text}}}})
+		return err
+	},
+	schemas.EmbeddingRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, _ []string) *schemas.BifrostError {
+		text := "hi"
+		_, err := p.Embedding(ctx, keys[0], &schemas.BifrostEmbeddingRequest{Provider: base, Model: "m", Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}}})
+		return err
+	},
+	schemas.VideoGenerationRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, _ []string) *schemas.BifrostError {
+		_, err := p.VideoGeneration(ctx, keys[0], &schemas.BifrostVideoGenerationRequest{Provider: base, Model: "owner/m", Input: &schemas.VideoGenerationInput{Prompt: "p"}, Params: &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("4")}})
+		return err
+	},
+	schemas.FileUploadRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, _ []string) *schemas.BifrostError {
+		_, err := p.FileUpload(ctx, keys[0], &schemas.BifrostFileUploadRequest{Provider: base, File: []byte(`{"a":1}`), Filename: "a.jsonl", Purpose: "batch"})
+		return err
+	},
+	schemas.FileListRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, _ []string) *schemas.BifrostError {
+		_, err := p.FileList(ctx, keys, &schemas.BifrostFileListRequest{Provider: base})
+		return err
+	},
+}
+
+// allowedRequestsGateGaps are the (base, request type) pairs that still reach the upstream with
+// the request type disabled, each with the ticket that closes it. The test fails on a stale
+// entry. TXE-7370 moves the check into core for every base.
+var allowedRequestsGateGaps = map[schemas.ModelProvider]map[schemas.RequestType]string{
+	schemas.DeepSeek: {schemas.ChatCompletionRequest: "TXE-7370"},
+	schemas.GLM:      {schemas.ChatCompletionRequest: "TXE-7370"},
+	schemas.Moonshot: {schemas.ChatCompletionRequest: "TXE-7370"},
+	schemas.Qwen:     {schemas.ChatCompletionRequest: "TXE-7370"},
+	schemas.XAI:      {schemas.ChatCompletionRequest: "TXE-7370", schemas.ModelRetrieveRequest: "TXE-7370"},
+}
+
+// TestCustomProviderAllowedRequestsGateEveryCall builds a custom provider of every base with
+// nothing in allowed_requests and sends every listed call. None may reach the upstream: a custom
+// provider is served with its own keys, so its allowed_requests is the operator's
+// least-privilege control (TXE-7085; the volcengine and modelark bases, and replicate's file
+// calls, did not check it). A pair that still leaks is a recorded gap (allowedRequestsGateGaps).
+func TestCustomProviderAllowedRequestsGateEveryCall(t *testing.T) {
+	upstream := newGuardUpstream(t)
+	client := &Bifrost{logger: NewNoOpLogger()}
+	calls := make(map[schemas.RequestType]resourceOverrideCall, len(resourceOverrideCalls)+len(allowedRequestsGateCalls))
+	for requestType, call := range resourceOverrideCalls {
+		calls[requestType] = call
+	}
+	for requestType, call := range allowedRequestsGateCalls {
+		calls[requestType] = call
+	}
+	requestTypes := make([]schemas.RequestType, 0, len(calls))
+	for requestType := range calls {
+		requestTypes = append(requestTypes, requestType)
+	}
+	slices.Sort(requestTypes)
+
+	for _, base := range schemas.SupportedBaseProviders {
+		t.Run(string(base), func(t *testing.T) {
+			name := schemas.ModelProvider("gated-" + string(base))
+			config := &schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{BaseURL: "http://" + guardUpstreamHost, DefaultRequestTimeoutInSeconds: 10},
+				ProxyConfig: &schemas.ProxyConfig{
+					Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(upstream.proxyURL), CACertPEM: schemas.NewSecretVar(upstream.caPEM),
+				},
+				CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: string(name), BaseProviderType: base, AllowedRequests: &schemas.AllowedRequests{}},
+			}
+			provider, err := client.createBaseProvider(name, config)
+			if err != nil {
+				t.Fatalf("construct: %v", err)
+			}
+			keys := []schemas.Key{guardKey(base)}
+			for _, requestType := range requestTypes {
+				ids := resourceOverrideIDs
+				if placeholders, ok := providerUtils.ResourcePathPlaceholders[requestType]; ok {
+					ids = resourceOverrideIDs[:len(placeholders)]
+				}
+				upstream.take()
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				func() {
+					defer func() { _ = recover() }()
+					_ = calls[requestType](ctx, provider, keys, base, ids)
+				}()
+				leaked := len(upstream.take()) > 0
+				ticket, gap := allowedRequestsGateGaps[base][requestType]
+				switch {
+				case leaked && !gap:
+					t.Errorf("%s %s reached the upstream with %s disabled in allowed_requests", base, requestType, requestType)
+				case gap && !leaked:
+					t.Errorf("%s %s: the gap entry (%s) is stale: the call is gated now; remove it", base, requestType, ticket)
+				}
+			}
+		})
+	}
+}

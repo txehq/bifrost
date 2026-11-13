@@ -2927,6 +2927,9 @@ func (provider *ReplicateProvider) BatchResults(_ *schemas.BifrostContext, _ []s
 
 // FileUpload uploads a file to Replicate's Files API.
 func (provider *ReplicateProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Replicate, provider.customProviderConfig, schemas.FileUploadRequest); err != nil {
+		return nil, err
+	}
 	providerName := provider.GetProviderKey()
 
 	if len(request.File) == 0 {
@@ -3065,6 +3068,9 @@ func (provider *ReplicateProvider) FileUpload(ctx *schemas.BifrostContext, key s
 // FileList lists files using serial pagination across keys.
 // Exhausts all pages from one key before moving to the next.
 func (provider *ReplicateProvider) FileList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Replicate, provider.customProviderConfig, schemas.FileListRequest); err != nil {
+		return nil, err
+	}
 	providerName := provider.GetProviderKey()
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
@@ -3200,6 +3206,9 @@ func (provider *ReplicateProvider) FileList(ctx *schemas.BifrostContext, keys []
 
 // FileRetrieve retrieves file metadata from Replicate's Files API by trying each key until found.
 func (provider *ReplicateProvider) FileRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Replicate, provider.customProviderConfig, schemas.FileRetrieveRequest); err != nil {
+		return nil, err
+	}
 	providerName := provider.GetProviderKey()
 
 	if request.FileID == "" {
@@ -3285,6 +3294,9 @@ func (provider *ReplicateProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 
 // FileDelete deletes a file from Replicate's Files API by trying each key until successful.
 func (provider *ReplicateProvider) FileDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Replicate, provider.customProviderConfig, schemas.FileDeleteRequest); err != nil {
+		return nil, err
+	}
 	providerName := provider.GetProviderKey()
 
 	if request.FileID == "" {
