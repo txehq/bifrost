@@ -349,6 +349,7 @@ func TestFetchClientFor_OneClientPerResolvedProxy(t *testing.T) {
 	}
 
 	env := &schemas.ProxyConfig{Type: schemas.EnvProxy}
+	proxytest.IsolateEnv(t)
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:3128")
 	first := clientFor(env)
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:3129")
@@ -441,9 +442,6 @@ func TestFetchAndEncodeURL_EnvironmentProxyFollowsTheRequestScheme(t *testing.T)
 
 	plain := proxytest.NewHTTPRecorder(t, "http-proxy", "tcp4")
 	secure := proxytest.NewHTTPRecorder(t, "https-proxy", "tcp4")
-	for _, name := range []string{"http_proxy", "https_proxy", "no_proxy", "NO_PROXY", "ALL_PROXY", "all_proxy"} {
-		t.Setenv(name, "")
-	}
 	t.Setenv("HTTP_PROXY", "http://127.0.0.1:"+plain.Port())
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:"+secure.Port())
 
@@ -494,9 +492,7 @@ func TestFetchAndEncodeURL_EnvironmentProxyFollowsTheRequestScheme(t *testing.T)
 // records are held only while a request needs them, so a client that reached many
 // distinct hosts holds none once they are done.
 func TestProviderHTTPClient_SchemeRecordsDoNotOutliveRequests(t *testing.T) {
-	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy"} {
-		t.Setenv(name, "")
-	}
+	proxytest.IsolateEnv(t)
 	client := NewProviderHTTPClient(nil, schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 2}, nil)
 	rt := client.Transport.(*fasthttpRoundTripper)
 	for range 5 {
@@ -1358,9 +1354,6 @@ func TestClientForVendorURLChoosesTheEnvironmentProxyByScheme(t *testing.T) {
 
 	plain := proxytest.NewHTTPRecorder(t, "http-proxy", "tcp4")
 	secure := proxytest.NewHTTPRecorder(t, "https-proxy", "tcp4")
-	for _, name := range []string{"http_proxy", "https_proxy", "no_proxy", "NO_PROXY", "ALL_PROXY", "all_proxy"} {
-		t.Setenv(name, "")
-	}
 	t.Setenv("HTTP_PROXY", "http://127.0.0.1:"+plain.Port())
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:"+secure.Port())
 

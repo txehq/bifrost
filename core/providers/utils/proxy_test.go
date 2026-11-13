@@ -378,9 +378,7 @@ func TestNewProviderHTTPClient_WithoutProxyConfigKeepsEnvironment(t *testing.T) 
 	proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
 	})
-	for _, name := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "REQUEST_METHOD"} {
-		t.Setenv(name, "")
-	}
+	proxytest.IsolateEnv(t)
 	t.Setenv("HTTP_PROXY", proxy.URL)
 
 	for name, cfg := range map[string]*schemas.ProxyConfig{"nil": nil, "none": {Type: schemas.NoProxy}} {
@@ -441,9 +439,7 @@ func TestNewProviderHTTPClient_EnvironmentProxyFollowsRequestScheme(t *testing.T
 		http.Error(w, "recorded", http.StatusBadGateway)
 	}))
 	t.Cleanup(httpsProxy.Close)
-	for _, name := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "REQUEST_METHOD"} {
-		t.Setenv(name, "")
-	}
+	proxytest.IsolateEnv(t)
 	t.Setenv("HTTPS_PROXY", httpsProxy.URL)
 
 	client := NewProviderHTTPClient(nil, schemas.DefaultNetworkConfig, testLogger{})
@@ -677,9 +673,7 @@ func TestNetHTTPProxy_NoProxyConnectsDirectly(t *testing.T) {
 // rules. fasthttpproxy's env dialer dialed such targets itself, so with type
 // "environment" a NO_PROXY entry for a private address skipped the check entirely.
 func TestConfigureProxy_EnvironmentNoProxyKeepsPrivateNetworkCheck(t *testing.T) {
-	for _, name := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "REQUEST_METHOD"} {
-		t.Setenv(name, "")
-	}
+	proxytest.IsolateEnv(t)
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
 	t.Setenv("NO_PROXY", "10.0.0.5")
 
@@ -730,9 +724,7 @@ func TestConfigureProxy_UnresponsiveProxyDoesNotHang(t *testing.T) {
 	defer func() { proxyHandshakeTimeout = previous }()
 
 	addr := listener.Addr().String()
-	for _, name := range proxytest.EnvNames {
-		t.Setenv(name, "")
-	}
+	proxytest.IsolateEnv(t)
 	t.Setenv("HTTPS_PROXY", "http://"+addr)
 
 	for name, cfg := range map[string]*schemas.ProxyConfig{
@@ -761,9 +753,7 @@ func TestConfigureProxy_UnresponsiveProxyDoesNotHang(t *testing.T) {
 // than the target being dialed directly.
 func TestConfigureProxy_EnvironmentHTTPSProxyTrustsProxyCA(t *testing.T) {
 	recorder := proxytest.NewHTTPSRecorder(t, "env-tls")
-	for _, name := range proxytest.EnvNames {
-		t.Setenv(name, "")
-	}
+	proxytest.IsolateEnv(t)
 	t.Setenv("HTTPS_PROXY", "https://127.0.0.1:"+recorder.Port())
 	const target = "api.bifrost.test:443"
 

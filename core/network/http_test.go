@@ -775,6 +775,14 @@ func sendFactoryMatrixRequest(t *testing.T, factory *HTTPClientFactory, purpose 
 	return nil
 }
 
+// hostileEnv points every proxy variable Go reads at an env recorder, so a factory client
+// that consulted the environment would reach one of them instead of the route its row
+// expects.
+var hostileEnv = proxytest.Env{Name: "hostile", Vars: map[string]string{
+	"HTTPS_PROXY": "env-https", "https_proxy": "env-https",
+	"HTTP_PROXY": "env-http", "http_proxy": "env-http",
+}}
+
 // factoryMatrixSSRFPolicy is the policy the "ssrf" client kind enforces.
 var factoryMatrixSSRFPolicy = SSRFPolicy(nil)
 
@@ -785,8 +793,13 @@ var factoryMatrixTLS = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: "cu
 // factory hands out, where a request goes for every global proxy state: which proxy saw
 // it, for which target, with which credentials, that it went direct, or that it failed
 // rather than going direct when the proxy refused the login.
+//
+// Every row runs with the proxy environment pointing at the env recorders (hostileEnv):
+// factory clients never read it, so a configured proxy wins over it and a client with no
+// global proxy for its purpose goes direct rather than through it (TXE-7276).
 func TestHTTPClientFactoryProxyMatrix(t *testing.T) {
 	set := proxytest.NewSet(t)
+	proxytest.SetEnv(t, set, hostileEnv, "")
 	for _, purpose := range []ClientPurpose{ClientPurposeSCIM, ClientPurposeAPI, ClientPurposeInference} {
 		for _, source := range factoryMatrixSources {
 			for _, kind := range []string{"fasthttp", "http", "tls", "grpc", "ssrf"} {
@@ -912,6 +925,7 @@ func TestDialPolicyPreservesConfiguredProxyTLS(t *testing.T) {
 // would silently ignore every later change.
 func TestHTTPClientFactoryClientsAreLive(t *testing.T) {
 	set := proxytest.NewSet(t)
+	proxytest.SetEnv(t, set, hostileEnv, "")
 	factory := NewHTTPClientFactory(nil, noopTestLogger{})
 	hostPort := net.JoinHostPort(proxytest.TargetHost, "443")
 	targetURL := "https://" + hostPort + "/resource"

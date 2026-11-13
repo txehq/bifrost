@@ -95,14 +95,7 @@ func (r *Recorder) Port() string {
 // an absolute-URI request gets an empty 200.
 func NewHTTPRecorder(t *testing.T, name, network string) *Recorder {
 	t.Helper()
-	addr := "127.0.0.1:0"
-	if network == "tcp6" {
-		addr = "[::1]:0"
-	}
-	listener, err := net.Listen(network, addr)
-	if err != nil {
-		t.Fatalf("%s: listen %s: %v", name, network, err)
-	}
+	listener := listenLoopback(t, name, network)
 	r := &Recorder{Name: name, listener: listener}
 	server := &http.Server{Handler: r.forwardProxyHandler()}
 	go func() { _ = server.Serve(listener) }()
@@ -115,10 +108,7 @@ func NewHTTPRecorder(t *testing.T, name, network string) *Recorder {
 // ::1 and example.com, so a URL naming localhost fails verification.
 func NewHTTPSRecorder(t *testing.T, name string) *Recorder {
 	t.Helper()
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("%s: listen: %v", name, err)
-	}
+	listener := listenLoopback(t, name, "tcp4")
 	r := &Recorder{Name: name, listener: listener}
 	server := httptest.NewUnstartedServer(r.forwardProxyHandler())
 	server.Listener.Close()
@@ -155,10 +145,7 @@ func (r *Recorder) forwardProxyHandler() http.Handler {
 // RejectedPass. A CONNECT is recorded and reported successful, then the connection closes.
 func NewSOCKS5Recorder(t *testing.T, name string) *Recorder {
 	t.Helper()
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("%s: listen: %v", name, err)
-	}
+	listener := listenLoopback(t, name, "tcp4")
 	r := &Recorder{Name: name, listener: listener}
 	go func() {
 		for {
@@ -298,8 +285,11 @@ type Set struct {
 	All       []*Recorder
 }
 
-// NewSet starts every recorder a matrix needs.
+// NewSet starts every recorder a matrix needs, with the proxy environment cleared
+// (IsolateEnv) for the rest of t.
 func NewSet(t *testing.T) *Set {
+	t.Helper()
+	IsolateEnv(t)
 	s := &Set{
 		Config:    NewHTTPRecorder(t, "config", "tcp4"),
 		Config6:   NewHTTPRecorder(t, "config6", "tcp6"),
@@ -494,13 +484,11 @@ func EnvURL(s *Set, spec string) (string, Route) {
 	}
 }
 
-// SetEnv clears every variable httpproxy reads, then applies env. targetHost replaces a
+// SetEnv clears every variable httpproxy reads (IsolateEnv), then applies env. targetHost replaces a
 // NO_PROXY value of "target".
 func SetEnv(t *testing.T, s *Set, env Env, targetHost string) {
 	t.Helper()
-	for _, name := range EnvNames {
-		t.Setenv(name, "")
-	}
+	IsolateEnv(t)
 	for name, value := range env.Vars {
 		if strings.EqualFold(name, "NO_PROXY") {
 			if value == "target" {
