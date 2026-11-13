@@ -5,7 +5,7 @@
   "description": "Pinned CI-only CLI tooling (newman, and pg for the API runners that read the logs database). Not published, not part of the product build. Installed with `npm ci` so package-lock.json's integrity hashes are enforced, which is what OpenSSF Scorecard's Pinned-Dependencies check requires; a bare `npm install -g newman@x` pins the version but verifies nothing.",
   "overridesRationale": "newman pins vulnerable transitive deps (handlebars, lodash, node-forge, flatted, underscore, qs, jose, uuid, csv-parse). Patched registry releases are forced where available. csv-parse-compat adapts the patched parser's export and relax_quotes option to Newman's v4 API. node-forge has no patched release for GHSA-86w9-cpqp-85rv: node-forge-compat uses Node crypto for the RSA key conversion APIs consumed by postman-runtime's ASAP authorizer. micromatch-compat replaces the HTML reporter's glob matcher with Picomatch and a nesting bound, removing the unpatched braces dependency (GHSA-vfj7-8cjw-p6xm). These adapters support only the APIs used by the pinned consumers; review them when upgrading Newman or its reporter. npm test covers CSV parsing, glob behavior, ASAP signing and HTML report generation. Drop overrides when upstream dependencies no longer need them.",
   "scripts": {
-    "test": "node --test csv-parse.test.js"
+    "test": "node --test *.test.js"
   },
   "dependencies": {
     "csv-parse": "file:./csv-parse-compat",
