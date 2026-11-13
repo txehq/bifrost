@@ -84,6 +84,12 @@ type upstreamRateAliases struct {
 	AliasOutputCostPerTokenFastAbove272kTokens          *float64 `json:"output_cost_per_token_fast_above_272k_tokens,omitempty"`
 	AliasCacheReadInputTokenCostFastAbove272kTokens     *float64 `json:"cache_read_input_token_cost_fast_above_272k_tokens,omitempty"`
 	AliasCacheCreationInputTokenCostFastAbove272kTokens *float64 `json:"cache_creation_input_token_cost_fast_above_272k_tokens,omitempty"`
+
+	// Older names for the cache-read rate (DeepSeek and Tencent rows; equal to
+	// cache_read_input_token_cost on every row that has both) and for the flat per-request fee
+	// (legacy Perplexity rows) (fork, TXE-7358).
+	AliasInputCostPerTokenCacheHit *float64 `json:"input_cost_per_token_cache_hit,omitempty"`
+	AliasInputCostPerRequest       *float64 `json:"input_cost_per_request,omitempty"`
 }
 
 // foldInto copies each alias into its Options field when the field is unset, in order of
@@ -109,6 +115,9 @@ func (a upstreamRateAliases) foldInto(o *Options) {
 	fill(&o.OutputCostPerTokenAbove272kTokensPriority, a.AliasOutputCostPerTokenPriorityAbove272kTokens, a.AliasOutputCostPerTokenFastAbove272kTokens)
 	fill(&o.CacheReadInputTokenCostAbove272kTokensPriority, a.AliasCacheReadInputTokenCostPriorityAbove272kTokens, a.AliasCacheReadInputTokenCostFastAbove272kTokens)
 	fill(&o.CacheCreationInputTokenCostAbove272kTokensPriority, a.AliasCacheCreationInputTokenCostPriorityAbove272kTokens, a.AliasCacheCreationInputTokenCostFastAbove272kTokens)
+
+	fill(&o.CacheReadInputTokenCost, a.AliasInputCostPerTokenCacheHit)
+	fill(&o.CostPerRequest, a.AliasInputCostPerRequest)
 }
 
 // UnmarshalJSON handles the special case where search_context_cost_per_query
