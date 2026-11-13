@@ -947,10 +947,13 @@ type batchModalityTokens struct {
 	ImageTokens    int `json:"image_tokens"`
 	VideoTokens    int `json:"video_tokens"`
 	DocumentTokens int `json:"document_tokens"`
+	// CachedVideoTokens are the cached part of VideoTokens, billed at the cache-read rate.
+	CachedVideoTokens int `json:"cached_video_tokens"`
 }
 
 func (d *batchModalityTokens) empty() bool {
-	return d.TextTokens == 0 && d.AudioTokens == 0 && d.ImageTokens == 0 && d.VideoTokens == 0 && d.DocumentTokens == 0
+	return d.TextTokens == 0 && d.AudioTokens == 0 && d.ImageTokens == 0 && d.VideoTokens == 0 && d.DocumentTokens == 0 &&
+		d.CachedVideoTokens == 0
 }
 
 // applyTo sets each reported count on dst, leaving a count this line did not report as it was.
@@ -960,7 +963,7 @@ func (d *batchModalityTokens) applyTo(dst *schemas.ChatPromptTokensDetails) {
 		src int
 	}{
 		{&dst.TextTokens, d.TextTokens}, {&dst.AudioTokens, d.AudioTokens}, {&dst.ImageTokens, d.ImageTokens},
-		{&dst.VideoTokens, d.VideoTokens}, {&dst.DocumentTokens, d.DocumentTokens},
+		{&dst.VideoTokens, d.VideoTokens}, {&dst.DocumentTokens, d.DocumentTokens}, {&dst.CachedVideoTokens, d.CachedVideoTokens},
 	} {
 		if f.src > 0 {
 			*f.dst = f.src

@@ -315,10 +315,28 @@ func (d VideoPricingDimensions) bandSize(provider schemas.ModelProvider, pricing
 	if rendered {
 		return tier
 	}
-	if videoOutputPerSecondRate(pricing, tier, audio) > videoOutputPerSecondRate(pricing, d.Size, audio) {
+	job := d.job()
+	if videoBandCharge(pricing, tier, audio, d.Seconds, job) > videoBandCharge(pricing, d.Size, audio, d.Seconds, job) {
 		return tier
 	}
 	return d.Size
+}
+
+// videoBandCharge is what a job of this length is charged when its band is read from size: the
+// band's per-clip price for the length, else the job's per-second rate at the band (video-input,
+// band, mode, unbanded) for its seconds. bandSize compares two sizes by it, so a model priced
+// only per clip (MiniMax Hailuo's 768p and 1080p clips, TXE-7357) still prices a requested tier
+// the provider may ignore when that tier is dearer.
+func videoBandCharge(pricing *configstoreTables.TableModelPricing, size string, audio bool, seconds *int, job videoJob) float64 {
+	band := videoResolutionBand(size)
+	if clip := videoClipRate(pricing, band, seconds); clip != nil {
+		return *clip
+	}
+	length := 1
+	if seconds != nil && *seconds > 0 {
+		length = *seconds
+	}
+	return videoJobOutputPerSecondRate(pricing, band, audio, job) * float64(length)
 }
 
 // TierOnlyResolution is the tier a settlement that could not be priced records: a tier the

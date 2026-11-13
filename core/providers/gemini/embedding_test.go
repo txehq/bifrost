@@ -392,3 +392,22 @@ func TestEmbeddingUsageKeepsPromptModalities(t *testing.T) {
 	require.NoError(t, sonic.UnmarshalString(`{"embeddings":[{"values":[0.1]}],"usageMetadata":{"promptTokenCount":5,"totalTokenCount":5}}`, &plain))
 	require.Nil(t, ToBifrostEmbeddingResponse(&plain, "gemini-embedding-2").Usage.PromptTokensDetails)
 }
+
+// TestUsageKeepsCachedVideoTokens pins TXE-7357: the cached part of a VIDEO prompt
+// (cacheTokensDetails) is billed at the cache-read rate, so the chat and Responses usage carry
+// it apart for the video-token rate to skip.
+func TestUsageKeepsCachedVideoTokens(t *testing.T) {
+	var metadata GenerateContentResponseUsageMetadata
+	require.NoError(t, sonic.UnmarshalString(`{"promptTokenCount":1500,"candidatesTokenCount":10,"totalTokenCount":1510,
+		"cachedContentTokenCount":1000,
+		"promptTokensDetails":[{"modality":"TEXT","tokenCount":500},{"modality":"VIDEO","tokenCount":1000}],
+		"cacheTokensDetails":[{"modality":"VIDEO","tokenCount":1000}]}`, &metadata))
+	chat := ConvertGeminiUsageMetadataToChatUsage(&metadata)
+	require.NotNil(t, chat.PromptTokensDetails)
+	require.Equal(t, 1000, chat.PromptTokensDetails.VideoTokens)
+	require.Equal(t, 1000, chat.PromptTokensDetails.CachedReadTokens)
+	require.Equal(t, 1000, chat.PromptTokensDetails.CachedVideoTokens)
+	responses := ConvertGeminiUsageMetadataToResponsesUsage(&metadata)
+	require.NotNil(t, responses.InputTokensDetails)
+	require.Equal(t, 1000, responses.InputTokensDetails.CachedVideoTokens)
+}

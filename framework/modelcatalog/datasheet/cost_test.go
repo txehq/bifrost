@@ -9669,6 +9669,11 @@ func TestCalculateVideoCostDetails_TXE7357(t *testing.T) {
 		// Replicate's Hailuo has a flat per-clip price too, which needs no length.
 		{"replicate hailuo no length", schemas.Replicate, VideoPricingDimensions{Model: "minimax/hailuo-2.3"}, 0.28},
 		{"replicate hailuo 768p 10s", schemas.Replicate, VideoPricingDimensions{Model: "minimax/hailuo-2.3", Seconds: bifrost.Ptr(10), Size: "1366x768"}, 0.56},
+		// A tier named only as resolution (Replicate forwards it as an input) with no size is
+		// priced at its clip: Hailuo publishes no per-second rate to compare tiers by.
+		{"replicate hailuo resolution 768p 10s", schemas.Replicate, VideoPricingDimensions{Model: "minimax/hailuo-2.3", Seconds: bifrost.Ptr(10), Extra: map[string]any{"resolution": "768p"}}, 0.56},
+		{"replicate hailuo resolution 1080p 6s", schemas.Replicate, VideoPricingDimensions{Model: "minimax/hailuo-2.3", Seconds: bifrost.Ptr(6), Extra: map[string]any{"resolution": "1080p"}}, 0.49},
+		{"replicate hailuo unified resolution 1080p 6s", schemas.Replicate, VideoPricingDimensions{Model: "minimax/hailuo-2.3", Seconds: bifrost.Ptr(6), Resolution: "1080p"}, 0.49},
 		// Kling v3 on Replicate: pro is $0.224/s upstream; the fork billed every mode at $0.168/s.
 		{"kling pro silent", schemas.Replicate, VideoPricingDimensions{Model: "kwaivgi/kling-v3-video", Seconds: bifrost.Ptr(5), Audio: &off, Extra: map[string]any{"mode": "pro"}}, 5 * 0.224},
 		{"kling pro with audio", schemas.Replicate, VideoPricingDimensions{Model: "kwaivgi/kling-v3-video", Seconds: bifrost.Ptr(5), Audio: &on, Extra: map[string]any{"mode": "pro"}}, 5 * 0.336},
@@ -9754,6 +9759,17 @@ func TestInputVideoTokens_TXE7357(t *testing.T) {
 	// A vendor reporting more video tokens than the prompt has cannot price more than the prompt.
 	over := &schemas.BifrostLLMUsage{PromptTokens: 100, TotalTokens: 100, PromptTokensDetails: &schemas.ChatPromptTokensDetails{VideoTokens: 900}}
 	assert.InDelta(t, 100*0.000012, computeEmbeddingCost(&emb, over, serviceTier{}).TotalCost, 1e-12)
+
+	// Cached video is in the video count but billed at the cache-read rate: 1,500 prompt tokens,
+	// 1,000 of them cached video, 500 fresh text, take no video adjustment at all. With 1,200
+	// video of which 1,000 cached, only the 200 fresh video tokens take the video rate.
+	cachedUsage := func(video, cachedVideo int) *schemas.BifrostLLMUsage {
+		return &schemas.BifrostLLMUsage{PromptTokens: 1500, CompletionTokens: 100, TotalTokens: 1600,
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 1000, VideoTokens: video, CachedVideoTokens: cachedVideo}}
+	}
+	noVideo := computeTextCost(&live, cachedUsage(0, 0), serviceTier{}).TotalCost
+	assert.InDelta(t, noVideo, computeTextCost(&live, cachedUsage(1000, 1000), serviceTier{}).TotalCost, 1e-12, "fresh text was priced as video")
+	assert.InDelta(t, noVideo+200*(0.000001-7.5e-7), computeTextCost(&live, cachedUsage(1200, 1000), serviceTier{}).TotalCost, 1e-12)
 }
 
 // /v1/responses reports video tokens on input_tokens_details; both the ordinary and the streamed

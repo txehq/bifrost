@@ -2217,6 +2217,7 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 					VideoTokens:       usage.PromptTokensDetails.VideoTokens,
 					DocumentTokens:    usage.PromptTokensDetails.DocumentTokens,
 					CachedReadTokens:  usage.PromptTokensDetails.CachedReadTokens,
+					CachedVideoTokens: usage.PromptTokensDetails.CachedVideoTokens,
 					CachedWriteTokens: usage.PromptTokensDetails.CachedWriteTokens,
 					// The 5m/1h split drives tieredCacheCreationInputAbove1hrTokenRate.
 					// Dropping it silently bills 1h cache writes at the cheaper 5m rate.

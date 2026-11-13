@@ -911,6 +911,7 @@ func ConvertGeminiUsageMetadataToChatUsage(metadata *GenerateContentResponseUsag
 		// Add cached tokens if present
 		if metadata.CachedContentTokenCount > 0 {
 			usage.PromptTokensDetails.CachedReadTokens = int(metadata.CachedContentTokenCount)
+			usage.PromptTokensDetails.CachedVideoTokens = geminiCachedVideoTokens(metadata)
 		}
 	}
 
@@ -943,6 +944,18 @@ func ConvertGeminiUsageMetadataToChatUsage(metadata *GenerateContentResponseUsag
 	usage.ToolUsePromptTokensDetails = convertGeminiToolUsePromptTokensDetails(metadata.ToolUsePromptTokensDetails)
 
 	return usage
+}
+
+// geminiCachedVideoTokens is how many of the cached prompt tokens are video (cacheTokensDetails).
+// They are part of promptTokensDetails' VIDEO count and are billed at the cache-read rate, so the
+// video-token rate must not apply to them again (TXE-7357).
+func geminiCachedVideoTokens(metadata *GenerateContentResponseUsageMetadata) int {
+	for _, detail := range metadata.CacheTokensDetails {
+		if detail != nil && detail.Modality == ModalityVideo {
+			return int(detail.TokenCount)
+		}
+	}
+	return 0
 }
 
 // applyGeminiPromptModalities copies Gemini's per-modality prompt counts (promptTokensDetails)
@@ -1295,6 +1308,7 @@ func ConvertGeminiUsageMetadataToResponsesUsage(metadata *GenerateContentRespons
 			}
 		}
 	}
+	usage.InputTokensDetails.CachedVideoTokens = geminiCachedVideoTokens(metadata)
 	usage.ToolUsePromptTokens = int(metadata.ToolUsePromptTokenCount)
 	usage.ToolUsePromptTokensDetails = convertGeminiToolUsePromptTokensDetails(metadata.ToolUsePromptTokensDetails)
 

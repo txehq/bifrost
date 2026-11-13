@@ -986,6 +986,7 @@ func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.Bi
 			VideoTokens:             u.InputTokensDetails.VideoTokens, // priced at input_cost_per_video_token (TXE-7357)
 			DocumentTokens:          u.InputTokensDetails.DocumentTokens,
 			CachedReadTokens:        u.InputTokensDetails.CachedReadTokens,
+			CachedVideoTokens:       u.InputTokensDetails.CachedVideoTokens,
 			CachedWriteTokens:       u.InputTokensDetails.CachedWriteTokens,
 			CachedWriteTokenDetails: u.InputTokensDetails.CachedWriteTokenDetails,
 		}
@@ -1494,7 +1495,9 @@ func videoTokenAdjustment(videoRate *float64, usage *schemas.BifrostLLMUsage, av
 	if videoRate == nil || usage == nil || usage.PromptTokensDetails == nil {
 		return 0
 	}
-	tokens := min(usage.PromptTokensDetails.VideoTokens, available)
+	// Cached video tokens are in the video count but billed at the cache-read rate, which
+	// available already excludes; only the fresh video takes the video rate.
+	tokens := min(usage.PromptTokensDetails.VideoTokens-usage.PromptTokensDetails.CachedVideoTokens, available)
 	if tokens <= 0 {
 		return 0
 	}

@@ -144,6 +144,11 @@ ChatPromptTokensDetails:
         included in prompt_tokens and are billed at the reduced cache-read rate.
         Populated for all providers that support prompt caching (Anthropic, Bedrock,
         OpenAI, Gemini, xAI, etc.).
+    cached_video_tokens:
+      type: integer
+      description: >
+        Of cached_read_tokens, the tokens that are video (Gemini and Vertex
+        cacheTokensDetails). Already included in both video_tokens and cached_read_tokens.
     cached_write_tokens:
       type: integer
       description: >
