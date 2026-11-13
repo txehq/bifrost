@@ -1295,6 +1295,7 @@ type LoggerPlugin struct {
 	done                         chan struct{}
 	cleanupOnce                  sync.Once // Ensures cleanup only runs once
 	wg                           sync.WaitGroup
+	callbackWG                   sync.WaitGroup // Post-write callback goroutines started by processBatch; Cleanup waits for them (bounded)
 	logger                       schemas.Logger
 	logCallback                  LogCallback
 	logSubscribers               map[uint64]LogCallback
@@ -2804,12 +2805,38 @@ func (p *LoggerPlugin) Cleanup() error {
 		// Close the channel as hygiene. The defer/recover in enqueueLogEntry
 		// (writer.go:254-259) absorbs any racing producer send.
 		close(p.writeQueue)
+		// The batches written above, by batchWriter and by the drain, each handed
+		// their post-write callbacks to a goroutine. A reconcile callback re-reads
+		// its row from the store, so Cleanup must not return while one still runs:
+		// the caller closes the store next, and a read racing that close (or the
+		// removal of a SQLite store's files) touches a store that is going away.
+		p.waitForWriteCallbacks()
 		// wg.Wait covers the cleanupWorker (exited via close(p.done)) and
 		// any in-flight deferred usage updater goroutines. batchWriter has
 		// already called wg.Done before closing batchWriterDone above.
 		p.wg.Wait()
 	})
 	return nil
+}
+
+// waitForWriteCallbacks waits for the post-write callback goroutines that
+// processBatch started, for at most cleanupCallbackTimeout: a subscriber that
+// blocks must not hold the server's shutdown. Every processBatch call happens
+// before this wait (batchWriter has exited and the drain is synchronous), so no
+// callback goroutine can be added while it runs.
+func (p *LoggerPlugin) waitForWriteCallbacks() {
+	done := make(chan struct{})
+	go func() {
+		p.callbackWG.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(cleanupCallbackTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		p.logger.Warn("logging plugin cleanup: post-write log callbacks still running after %s; not waiting further", cleanupCallbackTimeout)
+	}
 }
 
 // drainPending processes p.recoveredBatch followed by any entries still

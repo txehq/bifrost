@@ -632,8 +632,9 @@ func TestProcessBatchHandsBackDuplicateWhoseRepairWasInterrupted(t *testing.T) {
 	if got.Cost == nil || *got.Cost != cost {
 		t.Fatalf("stored cost = %v, want %v", got.Cost, cost)
 	}
-	waitFor(t, "the drain's callback", func() bool { return callbacks.Load() == 1 })
-	time.Sleep(20 * time.Millisecond)
+	// Every post-write callback goroutine processBatch started has finished, so a
+	// second callback would already have been counted.
+	plugin.callbackWG.Wait()
 	if n := callbacks.Load(); n != 1 {
 		t.Fatalf("callback ran %d times, want once (only after the repair landed)", n)
 	}

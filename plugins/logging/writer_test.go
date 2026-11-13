@@ -1786,6 +1786,74 @@ func TestPostLLMHookReconcilesOnlyItsOwnPartialRow(t *testing.T) {
 	}
 }
 
+// afterWriteReadStore holds the first FindByID that follows a BatchUpdate (the
+// reconcile callback's re-read of its row) until the test says Cleanup returned,
+// and records whether the read ran after that point. The hold is capped so a
+// Cleanup that waits for the callback, as it must, still finishes.
+type afterWriteReadStore struct {
+	logstore.LogStore
+	written          atomic.Bool
+	held             atomic.Bool
+	cleanupReturned  chan struct{}
+	readDone         chan struct{}
+	readAfterCleanup atomic.Bool
+}
+
+func (s *afterWriteReadStore) BatchUpdate(ctx context.Context, entries []*logstore.Log) error {
+	err := s.LogStore.BatchUpdate(ctx, entries)
+	s.written.Store(true)
+	return err
+}
+
+func (s *afterWriteReadStore) FindByID(ctx context.Context, id string) (*logstore.Log, error) {
+	if !s.written.Load() || !s.held.CompareAndSwap(false, true) {
+		return s.LogStore.FindByID(ctx, id)
+	}
+	defer close(s.readDone)
+	select {
+	case <-s.cleanupReturned:
+		s.readAfterCleanup.Store(true)
+	case <-time.After(500 * time.Millisecond): // literal-timing: must stay under cleanupCallbackTimeout (5s), which Cleanup waits at most
+	}
+	return s.LogStore.FindByID(ctx, id)
+}
+
+// TestCleanupWaitsForTheReconcileCallbacksRead pins TXE-7299: a reconcile's
+// post-write callback re-reads its row from the store on a goroutine of its own.
+// Cleanup returned without waiting for it, so the read could run after the
+// caller had moved on to closing the store; in the unit tests it reopened a
+// SQLite file while t.TempDir was removing it ("directory not empty"). Cleanup
+// must return only once that read is over.
+func TestCleanupWaitsForTheReconcileCallbacksRead(t *testing.T) {
+	store := &afterWriteReadStore{
+		LogStore:        newTestStore(t),
+		cleanupReturned: make(chan struct{}),
+		readDone:        make(chan struct{}),
+	}
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	const id = "req-callback-read"
+	seedOwnedRow(t, store, id, "processing", "")
+	plugin.evictedPartials.Store(id, markerFor("", ""))
+	if _, _, err := plugin.PostLLMHook(hiddenFinishCtx(id, ""), evictionChatResult("the answer"), nil); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	close(store.cleanupReturned)
+	select {
+	case <-store.readDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the reconcile callback never re-read its row")
+	}
+	if store.readAfterCleanup.Load() {
+		t.Fatal("the reconcile callback read the store after Cleanup returned")
+	}
+}
+
 // Another caller reusing the request ID must not use up the marker: the request it
 // belongs to still finishes its row afterwards.
 func TestForeignRequestLeavesTheEvictionMarkerStanding(t *testing.T) {
@@ -1844,7 +1912,7 @@ func TestPostLLMHookReconcileLosesToACompletionAfterItsRead(t *testing.T) {
 		t.Fatalf("Cleanup() error = %v", err)
 	}
 	requireRowUntouched(t, inner, id, "success")
-	time.Sleep(100 * time.Millisecond)
+	// Cleanup returned, so every post-write callback has finished.
 	if n := announced.Load(); n != 0 {
 		t.Fatalf("a refused finish notified log subscribers %d times", n)
 	}
