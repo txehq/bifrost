@@ -27,6 +27,18 @@ type BifrostSpeechResponse struct {
 	ExtraFields         BifrostResponseExtraFields `json:"extra_fields"`
 
 	ContentType string `json:"content_type,omitempty"` // media type of Audio as the provider reported or converted it; empty when unknown
+
+	// Fork (TXE-6433, contract C9): a vendor that answers with a link to the audio instead of
+	// the bytes (DashScope Qwen3-TTS) leaves Audio empty and sets URL, the vendor's own link,
+	// and ExpiresAt, when the link stops working (Unix seconds, as the vendor reported it).
+	// Bifrost never downloads the link; the HTTP route answers JSON carrying it and usage.
+	URL       *string `json:"url,omitempty"`
+	ExpiresAt *int64  `json:"expires_at,omitempty"`
+}
+
+// HasAudioURL reports whether the response carries the vendor's audio link instead of bytes.
+func (r *BifrostSpeechResponse) HasAudioURL() bool {
+	return r != nil && r.URL != nil && *r.URL != ""
 }
 
 // BackfillParams fills Usage.InputChars with the code-point count of the input only when the

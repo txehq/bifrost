@@ -1043,3 +1043,107 @@ func TestXAIImageGenerationIngressToEgress(t *testing.T) {
 		require.Zero(t, egress.calls())
 	})
 }
+
+// DashScope Qwen3-TTS answers with a link to the audio, not the bytes. /v1/audio/speech must
+// answer JSON carrying the vendor's url, expires_at and usage (billed_characters from the
+// vendor's characters), not a 502 for missing audio bytes (TXE-6433, contract C9 and C5).
+// Qwen3-ASR takes an audio URL unchanged and reports seconds.
+func TestDashScopeSpeechLinkAndTranscriptionURL(t *testing.T) {
+	const audioLink = "https://dashscope-result-sgp.oss-ap-southeast-1.aliyuncs.com/1d/a.wav?Expires=1766113409&Signature=x"
+	tts := &audioUpstream{contentType: "application/json", body: []byte(`{"status_code":200,"request_id":"5c63c65c","code":"","message":"",` +
+		`"output":{"text":null,"finish_reason":"stop","choices":null,"audio":{"data":"","url":"` + audioLink + `","id":"audio_5c63c65c","expires_at":1766113409}},` +
+		`"usage":{"input_tokens":0,"output_tokens":0,"characters":195}}`)}
+	h := newAudioTestHandler(t, map[schemas.ModelProvider]*audioUpstream{schemas.DashScope: tts})
+
+	t.Run("speech link", func(t *testing.T) {
+		ctx := speechCtx(`{"model":"dashscope/qwen3-tts-flash","input":"Hello","voice":"Cherry","language_code":"English"}`)
+		h.speech(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("status %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		if got := string(ctx.Response.Header.ContentType()); !strings.HasPrefix(got, "application/json") {
+			t.Fatalf("Content-Type = %q, want JSON", got)
+		}
+		var body struct {
+			URL       string         `json:"url"`
+			ExpiresAt int64          `json:"expires_at"`
+			Usage     map[string]any `json:"usage"`
+		}
+		if err := json.Unmarshal(ctx.Response.Body(), &body); err != nil {
+			t.Fatalf("body is not JSON: %v: %s", err, ctx.Response.Body())
+		}
+		if body.URL != audioLink || body.ExpiresAt != 1766113409 {
+			t.Fatalf("url, expires_at = %q, %d; want the vendor's link and expiry", body.URL, body.ExpiresAt)
+		}
+		if body.Usage["billed_characters"] != float64(195) {
+			t.Fatalf("usage = %v, want billed_characters 195", body.Usage)
+		}
+		if usage := speechUsageHeader(t, ctx); usage["billed_characters"] != float64(195) {
+			t.Fatalf("x-bifrost-usage = %v, want billed_characters 195", usage)
+		}
+		tts.mu.Lock()
+		sent := string(tts.gotBody)
+		tts.mu.Unlock()
+		for _, want := range []string{`"text":"Hello"`, `"voice":"Cherry"`, `"language_type":"English"`} {
+			if !strings.Contains(sent, want) {
+				t.Fatalf("vendor body %s lacks %s", sent, want)
+			}
+		}
+		if strings.Contains(sent, `"language_code"`) {
+			t.Fatalf("vendor body carries the unified language_code: %s", sent)
+		}
+	})
+
+	t.Run("speech refuses speed without an upstream call", func(t *testing.T) {
+		tts.mu.Lock()
+		before := tts.gotRequests
+		tts.mu.Unlock()
+		ctx := speechCtx(`{"model":"dashscope/qwen3-tts-flash","input":"Hello","voice":"Cherry","speed":1.5}`)
+		h.speech(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+			t.Fatalf("status %d: %s, want 400", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		if !strings.Contains(string(ctx.Response.Body()), `"caller_unsupported_parameter"`) || !strings.Contains(string(ctx.Response.Body()), `"param":"speed"`) {
+			t.Fatalf("body = %s, want caller_unsupported_parameter naming speed", ctx.Response.Body())
+		}
+		tts.mu.Lock()
+		after := tts.gotRequests
+		tts.mu.Unlock()
+		if after != before {
+			t.Fatalf("a refused request reached the vendor")
+		}
+	})
+
+	t.Run("transcription url", func(t *testing.T) {
+		const clip = "https://example.com/audio/clip.wav"
+		tts.mu.Lock()
+		tts.body = []byte(`{"output":{"choices":[{"finish_reason":"stop","message":{"annotations":[{"language":"en","type":"audio_info","emotion":"neutral"}],` +
+			`"content":[{"text":"Welcome to Alibaba Cloud."}],"role":"assistant"}}]},` +
+			`"usage":{"input_tokens_details":{"text_tokens":0},"output_tokens_details":{"text_tokens":6},"seconds":1},"request_id":"568e2bf0"}`)
+		tts.mu.Unlock()
+		ctx := multipartTranscriptionCtxWithoutFile(t, [][2]string{{"model", "dashscope/qwen3-asr-flash"}, {"url", clip}})
+		h.transcription(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("status %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		var body struct {
+			Text  string         `json:"text"`
+			Usage map[string]any `json:"usage"`
+		}
+		if err := json.Unmarshal(ctx.Response.Body(), &body); err != nil {
+			t.Fatalf("body is not JSON: %v", err)
+		}
+		if body.Text != "Welcome to Alibaba Cloud." || body.Usage["seconds"] != float64(1) || body.Usage["type"] != "duration" {
+			t.Fatalf("body = %s, want the vendor's text and seconds", ctx.Response.Body())
+		}
+		tts.mu.Lock()
+		sent := string(tts.gotBody)
+		tts.mu.Unlock()
+		if !strings.Contains(sent, `{"audio":"`+clip+`"}`) {
+			t.Fatalf("vendor body %s does not carry the URL unchanged", sent)
+		}
+		if strings.Contains(sent, `"url"`) {
+			t.Fatalf("vendor body carries the url extra param at the top level: %s", sent)
+		}
+	})
+}

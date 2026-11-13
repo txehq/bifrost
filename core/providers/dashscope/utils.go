@@ -10,8 +10,11 @@ import (
 const DefaultBaseURL = "https://dashscope-intl.aliyuncs.com"
 
 // isWorkspaceOperation reports whether an operation goes to the workspace base. Wan video
-// is served from the workspace address; images, speech and transcription from the
-// regional base.
+// and Qwen3-ASR transcription are served from the workspace address (the Qwen3-ASR API
+// reference names {WorkspaceId}.ap-southeast-1.maas.aliyuncs.com for Singapore); images
+// and Qwen3-TTS speech from the regional base (the Qwen3-TTS reference names
+// dashscope-intl.aliyuncs.com). Which Singapore host each serves is not settled
+// (TXE-6433); both bases are configurable.
 func isWorkspaceOperation(requestType schemas.RequestType) bool {
 	switch requestType {
 	case schemas.VideoGenerationRequest,
@@ -21,7 +24,8 @@ func isWorkspaceOperation(requestType schemas.RequestType) bool {
 		schemas.VideoDownloadRequest,
 		schemas.VideoDeleteRequest,
 		schemas.VideoListRequest,
-		schemas.VideoRemixRequest:
+		schemas.VideoRemixRequest,
+		schemas.TranscriptionRequest:
 		return true
 	}
 	return false

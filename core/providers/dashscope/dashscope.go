@@ -4,9 +4,10 @@
 // OpenAI-compatible mode.
 //
 // This file registers the provider. Wan video (create, query, cancel, download) is in
-// videos.go. Every other operation answers the unsupported-operation error until the ticket
-// that adds it lands, so a configured provider never calls upstream for an operation it
-// cannot convert.
+// videos.go, images in images.go, speech in speech.go and transcription in
+// transcription.go. Every other operation answers the unsupported-operation error until
+// the ticket that adds it lands, so a configured provider never calls upstream for an
+// operation it cannot convert.
 package dashscope
 
 import (
@@ -142,7 +143,7 @@ func (provider *DashScopeProvider) doDashScopeRequest(ctx *schemas.BifrostContex
 // SupportedUnifiedFields declares, per operation, the unified fields the provider delivers, so
 // core refuses any other with caller_unsupported_parameter before a key is chosen (contract C4,
 // BF4). It is the one declaration for the provider: each operation family keeps its field list
-// next to its converter (videos.go, images.go) and adds its case here. Operations with no case
+// next to its converter (videos.go, images.go, speech.go) and adds its case here. Operations with no case
 // are not checked.
 func (provider *DashScopeProvider) SupportedUnifiedFields(requestType schemas.RequestType) ([]string, bool) {
 	switch requestType {
@@ -152,6 +153,10 @@ func (provider *DashScopeProvider) SupportedUnifiedFields(requestType schemas.Re
 		return dashScopeImageGenerationFields, true
 	case schemas.ImageEditRequest:
 		return dashScopeImageEditFields, true
+	case schemas.SpeechRequest:
+		return speechFields, true
+	case schemas.TranscriptionRequest:
+		return transcriptionFields, true
 	}
 	return nil, false
 }
@@ -226,19 +231,9 @@ func (provider *DashScopeProvider) OCR(_ *schemas.BifrostContext, _ schemas.Key,
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, provider.GetProviderKey())
 }
 
-// Speech is not supported by the DashScope provider yet.
-func (provider *DashScopeProvider) Speech(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechRequest, provider.GetProviderKey())
-}
-
 // SpeechStream is not supported by the DashScope provider yet.
 func (provider *DashScopeProvider) SpeechStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
-}
-
-// Transcription is not supported by the DashScope provider yet.
-func (provider *DashScopeProvider) Transcription(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionRequest, provider.GetProviderKey())
 }
 
 // TranscriptionStream is not supported by the DashScope provider yet.

@@ -1887,6 +1887,16 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// A vendor that answers with a link to the audio (DashScope Qwen3-TTS) has no bytes to
+	// write: the response is JSON carrying the vendor's url, expires_at and usage
+	// (TXE-6433, contract C9 and C5). Bifrost does not download the link.
+	if resp.HasAudioURL() {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
+		lib.SetSpeechUsageHeader(ctx, resp.Usage)
+		SendJSON(ctx, resp)
+		return
+	}
+
 	// Preserve the attachment header through the large-response shortcut; the
 	// normal binary path sets this explicitly after the stream check.
 	if !(bifrostSpeechReq.Provider == schemas.Elevenlabs && req.WithTimestamps != nil && *req.WithTimestamps) {

@@ -18,7 +18,10 @@ speech:
           Successful response. Without `stream_format` the body is the audio itself, and its
           `Content-Type` names the format actually returned (for example `audio/wav`,
           `audio/flac`, or Gemini's `audio/L16;codec=pcm;rate=24000`), not always `audio/mpeg`.
-          The unified usage of that response is in the `x-bifrost-usage` header.
+          The unified usage of that response is in the `x-bifrost-usage` header. A provider
+          that answers with a link to the audio instead of the bytes (DashScope Qwen3-TTS) gets
+          an `application/json` body carrying the provider's `url`, its `expires_at` and `usage`;
+          Bifrost does not download the link.
         headers:
           x-bifrost-usage:
             description: |
