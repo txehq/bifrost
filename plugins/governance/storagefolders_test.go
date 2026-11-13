@@ -424,21 +424,35 @@ func BenchmarkStorageFolderCheck(b *testing.B) {
 	}
 }
 
-// TXE-7259 (A2): a key with no allowed_storage_prefixes writes to a bare bucket unclaimed, so
-// one request cannot take the whole bucket from every other key. A key whose list covers the
-// root claims it as any other folder.
-func TestBucketRootIsClaimedOnlyByAKeyWithAStorageList(t *testing.T) {
+// TXE-7259 (A1): a key with no allowed_storage_prefixes may not write to a bucket root, as a
+// batch's output folder or a task's output location: claiming the root would take the whole
+// bucket from every other key, and writing there unclaimed would leave its results readable by
+// them. The 400 names the fix. A key whose list covers the root claims it as any other folder.
+func TestBucketRootIsAnOutputLocationOnlyForAKeyWithAStorageList(t *testing.T) {
 	plugin, store := newStorageFolderTestPlugin(t)
-	for _, location := range []string{"gs://bare-bucket/", "gs://bare-bucket"} {
-		_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), storageFolderSurfaces{provider: schemas.Vertex}.batchInto(location))
-		require.NoError(t, err)
-		assert.Nil(t, shortCircuit, "the request goes on: %s", location)
+	vertex, bedrock := storageFolderSurfaces{provider: schemas.Vertex}, storageFolderSurfaces{provider: schemas.Bedrock}
+	for name, req := range map[string]*schemas.BifrostRequest{
+		"batch, with slash":    vertex.batchInto("gs://bare-bucket/"),
+		"batch, without slash": vertex.batchInto("gs://bare-bucket"),
+		"bedrock batch":        bedrock.batchInto("s3://bare-bucket/"),
+		"video task":           vertex.videoInto("gs://bare-bucket/"),
+	} {
+		_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), req)
+		require.NoError(t, err, name)
+		require.NotNil(t, shortCircuit, name)
+		assert.Equal(t, 400, *shortCircuit.Error.StatusCode, name)
+		assert.Contains(t, shortCircuit.Error.Error.Message, "name a folder inside the bucket", name)
+		assert.Contains(t, shortCircuit.Error.Error.Message, "allowed_storage_prefixes", name)
 	}
-	assert.Empty(t, storageFolderOwner(t, store, "gs://bare-bucket/"), "the root is not claimed")
-	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), storageFolderSurfaces{provider: schemas.Vertex}.batchInto("gs://bare-bucket/out/"))
+	assert.Empty(t, storageFolderOwner(t, store, "gs://bare-bucket/"), "nothing is claimed")
+	assert.Empty(t, storageFolderOwner(t, store, "s3://bare-bucket/"))
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), vertex.chatFile("gs://bare-bucket/input.pdf"))
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "an object at the root is still an input")
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), vertex.batchInto("gs://bare-bucket/out/"))
 	require.NoError(t, err)
 	require.Nil(t, shortCircuit)
-	assert.Equal(t, "vk-mcp-stamp", storageFolderOwner(t, store, "gs://bare-bucket/out/"), "a folder inside the bucket still is")
+	assert.Equal(t, "vk-mcp-stamp", storageFolderOwner(t, store, "gs://bare-bucket/out/"), "a folder inside the bucket is claimed")
 
 	vk := buildVKForMCPStamping(nil)
 	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("vertex", []string{"*"}))

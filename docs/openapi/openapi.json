@@ -55159,7 +55159,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "List storage folder claims",
-        "description": "Lists the output folders in object storage that virtual keys have claimed, in byte order of\ntheir URI. A virtual key claims a folder the first time it names it as the place its output\nis written (a batch's output folder, a task's `output_storage_uri`); the folder and\neverything in it are then that key's. A key with no `allowed_storage_prefixes` does not\nclaim the root of a bucket. A claim stays when its key is deleted, until it is released.\n",
+        "description": "Lists the output folders in object storage that virtual keys have claimed, in byte order of\ntheir URI. A virtual key claims a folder the first time it names it as the place its output\nis written (a batch's output folder, a task's `output_storage_uri`); the folder and\neverything in it are then that key's. A key with no `allowed_storage_prefixes` cannot name\nthe root of a bucket as an output location (400). A claim stays when its key is deleted,\nuntil it is released.\n",
         "tags": [
           "Governance"
         ],

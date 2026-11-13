@@ -1198,8 +1198,9 @@ storage-folders:
       Lists the output folders in object storage that virtual keys have claimed, in byte order of
       their URI. A virtual key claims a folder the first time it names it as the place its output
       is written (a batch's output folder, a task's `output_storage_uri`); the folder and
-      everything in it are then that key's. A key with no `allowed_storage_prefixes` does not
-      claim the root of a bucket. A claim stays when its key is deleted, until it is released.
+      everything in it are then that key's. A key with no `allowed_storage_prefixes` cannot name
+      the root of a bucket as an output location (400). A claim stays when its key is deleted,
+      until it is released.
     tags:
       - Governance
     parameters:

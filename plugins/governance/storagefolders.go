@@ -50,9 +50,10 @@ import (
 // deleted key's claims stay until one is released: dropping them would hand the folder's
 // contents to every key with no storage list.
 //
-// A bucket root is claimed only by a key with allowed_storage_prefixes, whose list then covers
-// it (TXE-7259). A key with no list writes to a bare bucket unclaimed: one request would
-// otherwise take the whole bucket from every other key.
+// A bucket root is an output location only for a key with allowed_storage_prefixes, whose list
+// then covers it, and that key claims it (TXE-7259). A key with no list is refused with 400:
+// claiming the root would take the whole bucket from every other key, and writing there
+// unclaimed would leave its results readable by them.
 //
 // Two keys that claim nested folders in the same instant can both pass the exclusivity check.
 // Both claims then stand, and the closest one decides for every object, so neither key reaches
@@ -221,10 +222,10 @@ func (p *GovernancePlugin) refuseForeignStorageFolder(ctx *schemas.BifrostContex
 		return "", nil
 	}
 	if bucket, root := storageBucketRoot(folder); root && !storageRestricted(ctx) {
-		// TXE-7259 (A2): a key with no storage list does not take a whole bucket. The request
-		// goes on, and its output is shared as it was before folders were claimed.
-		p.logger.Info("virtual key %s writes output to the root of bucket %s: not claimed, since the key has no allowed_storage_prefixes", vkID, bucket)
-		return "", nil
+		// TXE-7259 (A1): a key with no storage list may not write to a bucket root. Claiming the
+		// root would take the whole bucket from every other key; leaving it unclaimed would leave
+		// the key's results readable by them.
+		return "", storageFolderRefusal(ctx, 400, fmt.Sprintf("output location '%s' is the root of bucket %s: name a folder inside the bucket, or give the virtual key an allowed_storage_prefixes entry that covers the bucket", ref.requestID, bucket))
 	}
 	return folder, nil
 }

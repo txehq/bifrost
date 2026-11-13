@@ -1,6 +1,6 @@
 {
-  "name": "498. An operator lists and releases output folder claims, and a key with no storage list does not claim a bucket root (storage folder claims) [SERIAL]",
-  "description": "TXE-7259. Local fixture regression, no live provider call: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. Since TXE-7121 (folder 497) a virtual key claims the output folder it first writes into, and no request releases a claim. Three things change here. A key with no allowed_storage_prefixes that writes to the root of a bucket does not claim the bucket (498.3 to 498.5): one request would otherwise take the whole bucket from every other key. An operator lists claims with GET /api/governance/storage-folders and releases one with DELETE /api/governance/storage-folders?folder=<uri> (498.6 to 498.12): after the release the next key to write there claims the folder. A batch whose create named no output folder (as one created before folders were claimed) has the output directory its retrieve names claimed for its creator (498.13 to 498.16): the fixture batch created with metadata.fixture_output_dir retrieves as completed with that directory as output_file_id, and another key then cannot read a result file in it. A deleted key keeps its claims until an operator releases them (498.17 to 498.19), since dropping them would hand the folder contents to every key with no storage list. 498.20 pins that only the five served batch creates reached the provider. The folder and bucket names carry a per-run suffix because a claim outlives the key that made it; 498.21 and 498.22 release the two claims the run leaves.",
+  "name": "498. An operator lists and releases output folder claims, and a key with no storage list may not write to a bucket root (storage folder claims) [SERIAL]",
+  "description": "TXE-7259. Local fixture regression, no live provider call: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. Since TXE-7121 (folder 497) a virtual key claims the output folder it first writes into, and no request releases a claim. Three things change here. A key with no allowed_storage_prefixes may not write a batch to the root of a bucket, with or without the trailing slash (498.3 to 498.5): 400 naming the fix, before any provider call, and nothing claimed. Claiming the root would take the whole bucket from every other key, and writing there unclaimed would leave the results readable by them. An operator lists claims with GET /api/governance/storage-folders and releases one with DELETE /api/governance/storage-folders?folder=<uri> (498.6 to 498.12): after the release the next key to write there claims the folder. A batch whose create named no output folder (as one created before folders were claimed) has the output directory its retrieve names claimed for its creator (498.13 to 498.16): the fixture batch created with metadata.fixture_output_dir retrieves as completed with that directory as output_file_id, and another key then cannot read a result file in it. A deleted key keeps its claims until an operator releases them (498.17 to 498.19), since dropping them would hand the folder contents to every key with no storage list. 498.20 pins that only the three served batch creates reached the provider. The folder and bucket names carry a per-run suffix because a claim outlives the key that made it; 498.21 and 498.22 release the two claims the run leaves.",
   "item": [
     {
       "name": "498.1 [setup] virtual key A",
@@ -125,7 +125,7 @@
       }
     },
     {
-      "name": "498.3 key A writes a batch to the root of a bucket",
+      "name": "498.3 [EXPECT-400] a key with no storage list cannot write a batch to the root of a bucket",
       "event": [
         {
           "listen": "prerequest",
@@ -146,7 +146,14 @@
           "script": {
             "type": "text/javascript",
             "exec": [
-              "pm.test('the batch into the bare bucket is created', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200); });"
+              "var txt = pm.response.text() || '';",
+              "pm.test('a bucket root output is 400', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400); });",
+              "pm.test('the refusal is the gateway and names the fix', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.type, 'unexpected body: ' + txt.slice(0, 400)).to.eql('access_blocked');",
+              "  pm.expect(body.error && body.error.message, txt.slice(0, 400)).to.include('name a folder inside the bucket');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include('allowed_storage_prefixes');",
+              "});"
             ]
           }
         }
@@ -185,7 +192,7 @@
       }
     },
     {
-      "name": "498.4 a key with no storage list does not claim the bucket root",
+      "name": "498.4 so nothing is claimed in that bucket",
       "event": [
         {
           "listen": "prerequest",
@@ -239,7 +246,7 @@
       }
     },
     {
-      "name": "498.5 so another key can still write to the same bucket root",
+      "name": "498.5 [EXPECT-400] nor without the trailing slash",
       "event": [
         {
           "listen": "prerequest",
@@ -260,7 +267,14 @@
           "script": {
             "type": "text/javascript",
             "exec": [
-              "pm.test('the other key batch into the bare bucket is created', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200); });"
+              "var txt = pm.response.text() || '';",
+              "pm.test('a bucket root output is 400', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400); });",
+              "pm.test('the refusal is the gateway and names the fix', function () {",
+              "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "  pm.expect(body.type, 'unexpected body: ' + txt.slice(0, 400)).to.eql('access_blocked');",
+              "  pm.expect(body.error && body.error.message, txt.slice(0, 400)).to.include('name a folder inside the bucket');",
+              "  pm.expect(body.error.message, txt.slice(0, 400)).to.include('allowed_storage_prefixes');",
+              "});"
             ]
           }
         }
@@ -279,7 +293,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\"model\":\"storage_uri_files/fixture-model\",\"input_file_id\":\"gs://bifrost-fixture-bucket/uploads/folder-ownership-input.jsonl\",\"endpoint\":\"/v1/chat/completions\",\"completion_window\":\"24h\",\"output_folder\":{\"url\":\"gs://bifrost-fixture-root-{{claimRun}}/\"}}",
+          "raw": "{\"model\":\"storage_uri_files/fixture-model\",\"input_file_id\":\"gs://bifrost-fixture-bucket/uploads/folder-ownership-input.jsonl\",\"endpoint\":\"/v1/chat/completions\",\"completion_window\":\"24h\",\"output_folder\":{\"url\":\"gs://bifrost-fixture-root-{{claimRun}}\"}}",
           "options": {
             "raw": {
               "language": "json"
@@ -1105,7 +1119,7 @@
       }
     },
     {
-      "name": "498.20 only the five batch creates that were served reached the provider",
+      "name": "498.20 only the three batch creates that were served reached the provider",
       "event": [
         {
           "listen": "prerequest",
@@ -1126,8 +1140,8 @@
             "type": "text/javascript",
             "exec": [
               "var calls = pm.response.json().data[0].calls.filter(function (c) { return String(c.path).indexOf('/pp/storage/') === 0; }).map(function (c) { return c.path; });",
-              "pm.test('five batch creates, nothing else', function () {",
-              "  pm.expect(calls, JSON.stringify(calls)).to.eql(['/pp/storage/v1/batches', '/pp/storage/v1/batches', '/pp/storage/v1/batches', '/pp/storage/v1/batches', '/pp/storage/v1/batches']);",
+              "pm.test('three batch creates, nothing else', function () {",
+              "  pm.expect(calls, JSON.stringify(calls)).to.eql(['/pp/storage/v1/batches', '/pp/storage/v1/batches', '/pp/storage/v1/batches']);",
               "});"
             ]
           }
