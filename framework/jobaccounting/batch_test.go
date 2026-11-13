@@ -1479,6 +1479,29 @@ func TestBatchSettlementKeepsPromptModalities(t *testing.T) {
 	assert.Equal(t, 400, usage.PromptTokensDetails.VideoTokens)
 	assert.Equal(t, 100, usage.PromptTokensDetails.TextTokens)
 	assert.Equal(t, 50, usage.PromptTokensDetails.CachedReadTokens)
+
+	// The per-model usage a reprice reads (ModelBreakdowns) is the merge of every line, so it
+	// must keep the cached video too: two lines, each with 1,000 cached video tokens.
+	var cached gemini.GenerateContentResponse
+	require.NoError(t, sonic.UnmarshalString(`{"candidates":[{"content":{"role":"model","parts":[{"text":"a cat"}]},"finishReason":"STOP"}],
+		"usageMetadata":{"promptTokenCount":1500,"candidatesTokenCount":20,"totalTokenCount":1520,"cachedContentTokenCount":1000,
+		"promptTokensDetails":[{"modality":"TEXT","tokenCount":500},{"modality":"VIDEO","tokenCount":1000}],
+		"cacheTokensDetails":[{"modality":"VIDEO","tokenCount":1000}]},
+		"modelVersion":"gemini-3.1-flash"}`, &cached))
+	lines := []schemas.BatchResultItem{
+		gemini.BatchResultItemFromGeminiResponse("line-1", schemas.BatchEndpointChatCompletions, &cached, nil, false),
+		gemini.BatchResultItemFromGeminiResponse("line-2", schemas.BatchEndpointChatCompletions, &cached, nil, false),
+	}
+	settlement, err := summarizeResults(textOnlyBatchPricing{}, batchInput{
+		Provider: schemas.Gemini, BatchID: "batches/video", FallbackModel: "gemini-3.1-flash",
+		BatchPayload: BatchPayload{Endpoint: schemas.BatchEndpointChatCompletions, Results: lines},
+	})
+	require.NoError(t, err)
+	merged := settlement.ModelBreakdowns["gemini-3.1-flash"].Usage.PromptTokensDetails
+	require.NotNil(t, merged)
+	assert.Equal(t, 2000, merged.VideoTokens)
+	assert.Equal(t, 2000, merged.CachedVideoTokens, "the reprice would take the cached video as fresh")
+	assert.Equal(t, 2000, merged.CachedReadTokens)
 }
 
 // When unpriced usage mixes a missing-model row with a known model, the row must

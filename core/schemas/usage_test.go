@@ -1241,3 +1241,72 @@ func TestImageLineOutputTokens(t *testing.T) {
 		}
 	}
 }
+
+// TestPromptDetailsSumAndConvertEveryCount fails when a count is added to the prompt details
+// without the shared sum and conversions carrying it (TXE-7357: hand-written sums and copies
+// each dropped video and then cached video tokens, so video was priced at the text rate or
+// fresh text at the video rate). The chat and Responses details must have the same fields; Add
+// must sum every int count; each conversion must carry every field.
+func TestPromptDetailsSumAndConvertEveryCount(t *testing.T) {
+	chatType := reflect.TypeOf(ChatPromptTokensDetails{})
+	respType := reflect.TypeOf(ResponsesResponseInputTokens{})
+	if chatType.NumField() != respType.NumField() {
+		t.Fatalf("ChatPromptTokensDetails has %d fields, ResponsesResponseInputTokens %d: add the field to both", chatType.NumField(), respType.NumField())
+	}
+	for i := 0; i < chatType.NumField(); i++ {
+		f := chatType.Field(i)
+		if rf, ok := respType.FieldByName(f.Name); !ok || rf.Type != f.Type {
+			t.Errorf("ResponsesResponseInputTokens has no %s of type %s", f.Name, f.Type)
+		}
+	}
+
+	// fill sets every int field of v to a distinct value and the cache-write split to one tier.
+	fill := func(v reflect.Value) {
+		for i := 0; i < v.NumField(); i++ {
+			switch v.Field(i).Kind() {
+			case reflect.Int:
+				v.Field(i).SetInt(int64(10 + i))
+			case reflect.Ptr:
+				v.Field(i).Set(reflect.ValueOf(&ChatCachedWriteTokenDetails{CachedWriteTokens1h: 7}))
+			}
+		}
+	}
+	check := func(label string, got, want reflect.Value, scale int64) {
+		for i := 0; i < want.NumField(); i++ {
+			name := want.Type().Field(i).Name
+			g := got.FieldByName(name)
+			switch want.Field(i).Kind() {
+			case reflect.Int:
+				if g.Int() != scale*want.Field(i).Int() {
+					t.Errorf("%s drops %s: got %d, want %d", label, name, g.Int(), scale*want.Field(i).Int())
+				}
+			case reflect.Ptr:
+				if g.IsNil() || g.Elem().FieldByName("CachedWriteTokens1h").Int() != scale*7 {
+					t.Errorf("%s drops %s", label, name)
+				}
+			}
+		}
+	}
+
+	chat := &ChatPromptTokensDetails{}
+	fill(reflect.ValueOf(chat).Elem())
+	resp := &ResponsesResponseInputTokens{}
+	fill(reflect.ValueOf(resp).Elem())
+
+	sum := &ChatPromptTokensDetails{}
+	sum.Add(chat)
+	sum.Add(chat)
+	check("ChatPromptTokensDetails.Add", reflect.ValueOf(sum).Elem(), reflect.ValueOf(chat).Elem(), 2)
+	rsum := &ResponsesResponseInputTokens{}
+	rsum.Add(resp)
+	rsum.Add(resp)
+	check("ResponsesResponseInputTokens.Add", reflect.ValueOf(rsum).Elem(), reflect.ValueOf(resp).Elem(), 2)
+
+	check("ToResponsesInputTokens", reflect.ValueOf(chat.ToResponsesInputTokens()).Elem(), reflect.ValueOf(chat).Elem(), 1)
+	check("ToChatPromptTokensDetails", reflect.ValueOf(resp.ToChatPromptTokensDetails()).Elem(), reflect.ValueOf(resp).Elem(), 1)
+	check("MergeBifrostLLMUsage", reflect.ValueOf(MergeBifrostLLMUsage(&BifrostLLMUsage{PromptTokensDetails: chat}, &BifrostLLMUsage{PromptTokensDetails: chat}).PromptTokensDetails).Elem(), reflect.ValueOf(chat).Elem(), 2)
+	usage := (&ResponsesResponseUsage{InputTokensDetails: resp}).ToBifrostLLMUsage()
+	check("ResponsesResponseUsage.ToBifrostLLMUsage", reflect.ValueOf(usage.PromptTokensDetails).Elem(), reflect.ValueOf(resp).Elem(), 1)
+	back := usage.ToResponsesResponseUsage()
+	check("BifrostLLMUsage.ToResponsesResponseUsage", reflect.ValueOf(back.InputTokensDetails).Elem(), reflect.ValueOf(resp).Elem(), 1)
+}

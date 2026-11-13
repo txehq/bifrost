@@ -2210,6 +2210,47 @@ func (d *ChatCachedWriteTokenDetails) Tokens(tier string) int {
 	return 0
 }
 
+// Add sums every count of o into d; either may be nil, and a nil d is left nil. Every merge
+// of prompt details (turns, batch lines, live sessions, research steps) sums through here, and
+// TestPromptDetailsSumAndConvertEveryCount fails when a count is added to the type without
+// being summed: hand-written sums each dropped video and cached video tokens (TXE-7357).
+func (d *ChatPromptTokensDetails) Add(o *ChatPromptTokensDetails) {
+	if d == nil || o == nil {
+		return
+	}
+	d.TextTokens += o.TextTokens
+	d.AudioTokens += o.AudioTokens
+	d.ImageTokens += o.ImageTokens
+	d.VideoTokens += o.VideoTokens
+	d.DocumentTokens += o.DocumentTokens
+	d.CachedReadTokens += o.CachedReadTokens
+	d.CachedVideoTokens += o.CachedVideoTokens
+	d.CachedWriteTokens += o.CachedWriteTokens
+	if d.CachedWriteTokenDetails != nil || o.CachedWriteTokenDetails != nil {
+		sum := d.CachedWriteTokenDetails.Plus(o.CachedWriteTokenDetails)
+		d.CachedWriteTokenDetails = &sum
+	}
+}
+
+// ToResponsesInputTokens converts chat prompt details to the Responses input details, every
+// field, or nil for nil. The cache-write split is shared, not copied.
+func (d *ChatPromptTokensDetails) ToResponsesInputTokens() *ResponsesResponseInputTokens {
+	if d == nil {
+		return nil
+	}
+	return &ResponsesResponseInputTokens{
+		TextTokens:              d.TextTokens,
+		AudioTokens:             d.AudioTokens,
+		ImageTokens:             d.ImageTokens,
+		VideoTokens:             d.VideoTokens,
+		DocumentTokens:          d.DocumentTokens,
+		CachedReadTokens:        d.CachedReadTokens,
+		CachedVideoTokens:       d.CachedVideoTokens,
+		CachedWriteTokens:       d.CachedWriteTokens,
+		CachedWriteTokenDetails: d.CachedWriteTokenDetails,
+	}
+}
+
 // Plus returns the tier-by-tier sum of d and o; either may be nil.
 func (d *ChatCachedWriteTokenDetails) Plus(o *ChatCachedWriteTokenDetails) ChatCachedWriteTokenDetails {
 	var sum ChatCachedWriteTokenDetails
@@ -2412,19 +2453,10 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 		if addDetails == nil {
 			addDetails = &ChatPromptTokensDetails{}
 		}
-		merged.PromptTokensDetails = &ChatPromptTokensDetails{
-			TextTokens:        baseDetails.TextTokens + addDetails.TextTokens,
-			AudioTokens:       baseDetails.AudioTokens + addDetails.AudioTokens,
-			ImageTokens:       baseDetails.ImageTokens + addDetails.ImageTokens,
-			VideoTokens:       baseDetails.VideoTokens + addDetails.VideoTokens,
-			DocumentTokens:    baseDetails.DocumentTokens + addDetails.DocumentTokens,
-			CachedReadTokens:  baseDetails.CachedReadTokens + addDetails.CachedReadTokens,
-			CachedWriteTokens: baseDetails.CachedWriteTokens + addDetails.CachedWriteTokens,
-		}
-		if baseDetails.CachedWriteTokenDetails != nil || addDetails.CachedWriteTokenDetails != nil {
-			sum := baseDetails.CachedWriteTokenDetails.Plus(addDetails.CachedWriteTokenDetails)
-			merged.PromptTokensDetails.CachedWriteTokenDetails = &sum
-		}
+		sum := ChatPromptTokensDetails{}
+		sum.Add(baseDetails)
+		sum.Add(addDetails)
+		merged.PromptTokensDetails = &sum
 	}
 
 	if base.CompletionTokensDetails != nil || add.CompletionTokensDetails != nil {

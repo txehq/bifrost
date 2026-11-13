@@ -978,19 +978,8 @@ func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.Bi
 		Cost:             u.Cost,
 	}
 	// Map token details for cache and search query pricing
-	if u.InputTokensDetails != nil {
-		usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-			TextTokens:              u.InputTokensDetails.TextTokens,
-			AudioTokens:             u.InputTokensDetails.AudioTokens,
-			ImageTokens:             u.InputTokensDetails.ImageTokens,
-			VideoTokens:             u.InputTokensDetails.VideoTokens, // priced at input_cost_per_video_token (TXE-7357)
-			DocumentTokens:          u.InputTokensDetails.DocumentTokens,
-			CachedReadTokens:        u.InputTokensDetails.CachedReadTokens,
-			CachedVideoTokens:       u.InputTokensDetails.CachedVideoTokens,
-			CachedWriteTokens:       u.InputTokensDetails.CachedWriteTokens,
-			CachedWriteTokenDetails: u.InputTokensDetails.CachedWriteTokenDetails,
-		}
-	}
+	// Every input detail, video and cached video included (TXE-7357).
+	usage.PromptTokensDetails = u.InputTokensDetails.ToChatPromptTokensDetails()
 	if u.OutputTokensDetails != nil {
 		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 			ReasoningTokens: u.OutputTokensDetails.ReasoningTokens,
