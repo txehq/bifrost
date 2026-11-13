@@ -1,6 +1,6 @@
 {
   "name": "533. A price field a converter writes under the vendor's top-level name is checked like the unified field (written-price-name)",
-  "description": "Fork contract C4, TXE-7295. Folder 434 pins the vendor names a converter reads from the extra params. A converter that only writes a C4 field at the top level of its body, under the vendor's own name, was not covered: extra params are merged into the converted body, so an extra param of that name added the field whenever the request left the unified one out, and the vendor billed for a value no unified field showed (PR #196 found it on BFL's duration and generate_audio). core's TestNestedPriceFieldsAreDeclaredAndRefused now sends every C4 field through every provider's converter and fails on a top-level key the field adds that core does not refuse; schemas.VendorPriceFieldNames maps each one it found to its unified field. These rows pin the refusal on the native routes, where an unknown top-level field is an extra param: 400 caller_unsupported_parameter naming the vendor's field, before any upstream call, so none creates a task or a charge. Nebius's width, height and response_extension are mapped too and are covered in Go only: no harness gateway configuration has a Nebius provider. The last row is the other half: the unified seconds and audio still reach BytePlus as duration and generate_audio. An accepted video create is a billed task at a real vendor, so it runs only on the provider error fixture (providerErrorFixture=1), which answers BytePlus's task shape and returns what it was sent from /__wire; elsewhere it is skipped.",
+  "description": "Fork contract C4, TXE-7295. Folder 434 pins the vendor names a converter reads from the extra params. A converter that only writes a C4 field at the top level of its body, under the vendor's own name, was not covered: extra params are merged into the converted body, so an extra param of that name added the field whenever the request left the unified one out, and the vendor billed for a value no unified field showed (PR #196 found it on BFL's duration and generate_audio). core's TestNestedPriceFieldsAreDeclaredAndRefused now sends every C4 field through every provider's converter and fails on a top-level key the field adds that core does not refuse; schemas.VendorPriceFieldNames maps each one it found to its unified field. These rows pin the refusal on the native routes, where an unknown top-level field or form field is an extra param (Runway's outputCount on /v1/images/edits in both body shapes, JSON and multipart): 400 caller_unsupported_parameter naming the vendor's field, before any upstream call, so none creates a task or a charge. Nebius's width, height and response_extension are mapped too and are covered in Go only: no harness gateway configuration has a Nebius provider. The last row is the other half: the unified seconds and audio still reach BytePlus as duration and generate_audio. An accepted video create is a billed task at a real vendor, so it runs only on the provider error fixture (providerErrorFixture=1), which answers BytePlus's task shape and returns what it was sent from /__wire; elsewhere it is skipped.",
   "item": [
     {
       "name": "[EXPECT-400] byteplus dreamina-seedance-2-5-260628 written-price-name: /v1/videos - duration without seconds is refused",
@@ -315,6 +315,114 @@
             "v1",
             "images",
             "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] runway gen4_image written-price-name: /v1/images/edits - JSON body - outputCount without n is refused",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('written-price-name runway outputCount: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('written-price-name runway outputCount: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('outputCount');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('n');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"runway/gen4_image\",\n  \"prompt\": \"make the background a deep blue\",\n  \"images\": [\n    \"https://images.example/day.png\"\n  ],\n  \"outputCount\": 4\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] runway gen4_image written-price-name: /v1/images/edits - multipart body - an outputCount form field without n is refused",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('written-price-name runway outputCount: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+              "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+              "var err = j.error || {};",
+              "pm.test('written-price-name runway outputCount: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+              "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+              "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('outputCount');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+              "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('n');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "runway/gen4_image",
+              "type": "text"
+            },
+            {
+              "key": "prompt",
+              "value": "make the background a deep blue",
+              "type": "text"
+            },
+            {
+              "key": "image",
+              "src": "tests/e2e/api/fixtures/sample.png",
+              "type": "file"
+            },
+            {
+              "key": "outputCount",
+              "value": "4",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
           ]
         }
       }

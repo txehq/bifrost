@@ -461,3 +461,49 @@ func TestXAIImageEditIngressToEgress(t *testing.T) {
 		require.Zero(t, egress.calls())
 	})
 }
+
+// TXE-7295 (contract C4): Runway's image converter writes the unified n as outputCount at the top
+// level of its body, on generations and edits, so an extra param named outputCount would add it to
+// a request that sent no n. Both /v1/images/edits body shapes deliver an unknown field as an extra
+// param (multipart as a string), and the request worker's price-field check refuses it under
+// Runway's name. A request that sends n is let through.
+func TestImageEditIngressRefusesRunwayOutputCount(t *testing.T) {
+	check := func(t *testing.T, req *schemas.BifrostImageEditRequest) *schemas.BifrostError {
+		t.Helper()
+		require.Equal(t, schemas.Runway, req.Provider)
+		return schemas.CheckExtraParamPriceFieldsFor(schemas.Runway, &schemas.BifrostRequest{RequestType: schemas.ImageEditRequest, ImageEditRequest: req})
+	}
+	refused := func(t *testing.T, bifrostErr *schemas.BifrostError) {
+		t.Helper()
+		require.NotNil(t, bifrostErr, "outputCount without n must be refused")
+		require.NotNil(t, bifrostErr.StatusCode)
+		require.Equal(t, 400, *bifrostErr.StatusCode)
+		require.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+		require.Equal(t, "outputCount", bifrostErr.Error.Param)
+		require.Contains(t, bifrostErr.Error.Message, "n field")
+	}
+
+	t.Run("multipart body: an outputCount form field without n is refused", func(t *testing.T) {
+		_, req, err := prepareImageEditRequest(multipartImageEditCtx(t,
+			map[string]string{"model": "runway/gen4_image", "prompt": "make it blue", "outputCount": "4"},
+			map[string][]byte{"image": xaiEgressPNG}), nil)
+		require.NoError(t, err)
+		require.Equal(t, "4", req.Params.ExtraParams["outputCount"])
+		refused(t, check(t, req))
+	})
+
+	t.Run("JSON body: outputCount without n is refused", func(t *testing.T) {
+		_, req, err := prepareImageEditRequest(jsonImageEditCtx(
+			`{"model":"runway/gen4_image","prompt":"make it blue","images":[{"url":"https://example.com/day.png"}],"outputCount":4}`), nil)
+		require.NoError(t, err)
+		refused(t, check(t, req))
+	})
+
+	t.Run("the unified n is let through", func(t *testing.T) {
+		_, req, err := prepareImageEditRequest(multipartImageEditCtx(t,
+			map[string]string{"model": "runway/gen4_image", "prompt": "make it blue", "n": "4"},
+			map[string][]byte{"image": xaiEgressPNG}), nil)
+		require.NoError(t, err)
+		require.Nil(t, check(t, req))
+	})
+}
