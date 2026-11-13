@@ -3,11 +3,13 @@
 // The sweep forks one newman per partition. A partition is a registered provider
 // (schemas.StandardProviders in core/schemas/bifrost.go), a reseller custom provider of the
 // harness profile, or a route family (passthrough). The roster is never kept by hand: it is the
-// registry plus the two lists below, and a row that no partition claims runs in the unclaimed
-// partition rather than in none. Before TXE-7308 the Makefile kept HARNESS_PROVIDERS by hand,
-// so rows for bfl, replicate, runware, voyage and typesafe matched no fork and never ran in a
-// parallel sweep. tests/e2e/api/runners/lib/harness-partitions.test.mjs fails when a harness
-// folder's row is claimed by no named partition.
+// registry plus the two lists below. A top-level folder holding a row no partition claims (a
+// setup, reset or read-back step) runs whole, in order, in the serial pass instead
+// (filter-collection.mjs serialFolderKey), so every row runs somewhere. Before TXE-7308 the
+// Makefile kept HARNESS_PROVIDERS by hand, so rows for bfl, replicate, runware, voyage and
+// typesafe matched no fork and never ran in a parallel sweep.
+// tests/e2e/api/runners/lib/harness-partitions.test.mjs fails when a harness row is claimed by
+// no named partition outside a serial-pass folder.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildHaystack } from "./haystack.mjs";
@@ -115,9 +117,6 @@ export const itemMatchesProvider = (item, ancestorNames, provider) => {
 // Partitions that are a route family rather than a provider.
 export const ROUTE_PARTITIONS = ["passthrough"];
 
-// The partition of the rows no named partition claims.
-export const UNCLAIMED_PARTITION = "unclaimed";
-
 // harnessPartitions is the sweep's roster of named partitions, in a stable order: every
 // registered provider, then the reseller custom providers, then the route families.
 export function harnessPartitions(repoRoot) {
@@ -131,58 +130,49 @@ export const isUnclaimed = (item, ancestorNames, partitions) =>
 
 const topFolderOf = (ancestors) => (ancestors && ancestors[0]) || "";
 
-// Partitioner decides which partition runs each row of one collection.
+// A fixture's shared state: its counters, recorded requests and probes (/__reset, /__hits,
+// /__sent, /__wire, /__probe, ...). Every fixture endpoint that is not a vendor route starts "/__".
+const FIXTURE_STATE_PATH = /\/__[a-z]/i;
+const urlOf = (item) => (typeof item.request?.url === "string" ? item.request.url : item.request?.url?.raw) || "";
+
+// Partitioner answers, for one collection, which partition runs a row and which top-level folders
+// must run whole in the serial pass: one newman, in collection order, alone after the sweep
+// (filter-collection.mjs serialFolderKey). A folder goes there, besides a [SERIAL] tag, when
 //
-// A row a named partition claims runs in that partition. A row none claims (a setup, reset or
-// read-back step, a management API call) runs with its folder: in every partition that claims
-// another row of the same top-level folder, in collection order, so it stays next to the steps
-// it belongs with. Only a row whose whole folder is unclaimed runs in the unclaimed partition.
+//   - it holds a row no partition claims (a setup, reset or read-back step, a management call),
+//     which no provider fork would run, or
+//   - it reads or resets a fixture's shared state. Folder 154 resets the counters, calls openai,
+//     then asserts the counts; folder 472 creates a BFL task, then reads what the fixture
+//     received. The class and sub-shard axes split those steps into concurrent newman processes
+//     (the create is image-gen, the read-back other), and two such folders in different forks
+//     reset or read each other's counters.
 export class Partitioner {
   constructor(entries, partitions) {
     this.entries = entries;
     this.partitions = partitions;
-    this.unclaimed = new WeakMap();
-    this.foldersOf = new Map(); // partition -> top-level folders it claims a row in
+    this.serialFolders = null;
   }
 
-  isUnclaimed(item, ancestors) {
-    let unclaimed = this.unclaimed.get(item);
-    if (unclaimed === undefined) {
-      unclaimed = isUnclaimed(item, ancestors, this.partitions);
-      this.unclaimed.set(item, unclaimed);
-    }
-    return unclaimed;
-  }
-
-  // claimedFolders is the set of top-level folders in which the partition claims a row; for the
-  // unclaimed partition, the folders in which any named partition does.
-  claimedFolders(partition) {
-    let folders = this.foldersOf.get(partition);
-    if (!folders) {
-      folders = new Set();
-      for (const { item, ancestors } of this.entries) {
-        const claimed = partition === UNCLAIMED_PARTITION ? !this.isUnclaimed(item, ancestors) : itemMatchesProvider(item, ancestors, partition);
-        if (claimed) folders.add(topFolderOf(ancestors));
-      }
-      this.foldersOf.set(partition, folders);
-    }
-    return folders;
-  }
-
-  // runs reports whether the partition runs the row.
+  // runs reports whether the partition's fork runs the row.
   runs(item, ancestors, partition) {
-    if (!partition) return true;
-    if (partition === UNCLAIMED_PARTITION) {
-      return this.isUnclaimed(item, ancestors) && !this.claimedFolders(UNCLAIMED_PARTITION).has(topFolderOf(ancestors));
-    }
-    if (itemMatchesProvider(item, ancestors, partition)) return true;
-    return this.claimedFolders(partition).has(topFolderOf(ancestors)) && this.isUnclaimed(item, ancestors);
+    return itemMatchesProvider(item, ancestors, partition);
   }
 
-  // roster is the partitions that run at least one of the given rows, in roster order, the
-  // unclaimed partition last. Forking one newman per entry runs every row at least once.
+  // serialPassFolders is the set of top-level folders that run whole in the serial pass.
+  serialPassFolders() {
+    if (!this.serialFolders) {
+      this.serialFolders = new Set();
+      for (const { item, ancestors } of this.entries) {
+        const folder = topFolderOf(ancestors);
+        if (this.serialFolders.has(folder)) continue;
+        if (FIXTURE_STATE_PATH.test(urlOf(item)) || isUnclaimed(item, ancestors, this.partitions)) this.serialFolders.add(folder);
+      }
+    }
+    return this.serialFolders;
+  }
+
+  // roster is the partitions that claim at least one of the given rows, in roster order.
   roster(selected) {
-    const all = [...this.partitions, UNCLAIMED_PARTITION];
-    return all.filter((p) => selected.some(({ item, ancestors }) => this.runs(item, ancestors, p)));
+    return this.partitions.filter((p) => selected.some(({ item, ancestors }) => this.runs(item, ancestors, p)));
   }
 }

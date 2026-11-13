@@ -104,14 +104,14 @@ const PLAN = args.plan === "true";
 const PLAN_PROVIDERS = (args.providers || "").trim().split(/[\s,]+/).filter(Boolean);
 const PLAN_CLASSES = (args.classes || "").trim().split(/[\s,]+/).filter(Boolean);
 // --partitions is the sweep's roster of named partitions (harness-partitions.mjs, TXE-7308); by
-// default the derived one, so --provider bfl and the Makefile's forks agree on which rows a
-// partition runs, including the unclaimed rows that ride with their folder.
+// default the derived one. It decides which folders hold a row no partition claims, and so run
+// whole in the serial pass (serialFolderKey).
 const PARTITIONS = (args.partitions || "").trim().split(/[\s,]+/).filter(Boolean).length
   ? args.partitions.trim().split(/[\s,]+/).filter(Boolean)
   : harnessPartitions(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", ".."));
-// --roster prints the partitions that claim at least one selected row, unclaimed included when a
-// row is claimed by none, as one space-separated line, then stops. The sweep forks one newman per
-// entry, so every selected row runs.
+// --roster prints the partitions that claim at least one selected row, as one space-separated
+// line, then stops. The sweep forks one newman per entry; the rows no partition claims run with
+// their folders in the serial pass, so every selected row runs.
 const ROSTER = args.roster === "true";
 const PLAN_TARGET = Number(args.target) > 0 ? Number(args.target) : DEFAULT_TARGET_SECONDS;
 let SHARD_INDEX = 0;
@@ -258,11 +258,17 @@ if (CLASS && !ALL_CLASSES.includes(CLASS)) {
 //
 // This only orders the forks of one run. Two runs against the same gateway still overlap, which is
 // why every run gets its own BASE_URL.
+//
+// A top-level folder is serial without the tag (TXE-7308) when it holds a row no provider
+// partition claims, or when it reads or resets a fixture's shared state; see Partitioner in
+// lib/harness-partitions.mjs. Its steps are ordered, and the class and sub-shard axes would run
+// them in concurrent processes. Before TXE-7308 the unclaimed rows ran in no fork at all.
 const SERIAL_TAG = "[serial]";
 const serialFolderKey = (ancestorNames) => {
   const names = ancestorNames || [];
   const i = names.findIndex((name) => (name || "").toLowerCase().includes(SERIAL_TAG));
-  return i === -1 ? "" : names.slice(0, i + 1).join(" > ");
+  if (i !== -1) return names.slice(0, i + 1).join(" > ");
+  return PARTITIONER.serialPassFolders().has(names[0] || "") ? names[0] : "";
 };
 
 // Resolved against the same haystack every other predicate uses, so folder names count. Returns
@@ -295,9 +301,8 @@ const matchesKeyword = (item, ancestorNames, haystack, keyword) => {
 // The `provider` override exists for --plan, which sizes every (provider, class) cell in one pass
 // and so must evaluate this predicate once per provider in the roster. Defaulting to the global
 // keeps every normal call site unchanged. The partition rules live in lib/harness-partitions.mjs
-// (TXE-7308), shared with the roster and its test. The unclaimed partition is every row no named
-// partition claims, so a sweep runs a row whatever provider it calls.
-// PARTITIONER is set once the collection is read, before any predicate runs.
+// (TXE-7308), shared with the roster and its test. PARTITIONER is set once the collection is read,
+// before any predicate (or serialFolderKey) runs.
 let PARTITIONER = null;
 const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   if (!provider) return true;
@@ -538,7 +543,7 @@ if (ROSTER) {
   const selectable = entries.filter(({ item, ancestors }) => item.request && passes(item, ancestors, { provider: "" }));
   const roster = PARTITIONER.roster(selectable);
   process.stdout.write(`${roster.join(" ")}\n`);
-  console.error(`[filter-collection] roster: ${roster.length} partition(s) claim the ${selectable.length} selected request(s)${roster.includes("unclaimed") ? ", unclaimed included" : ""}`);
+  console.error(`[filter-collection] roster: ${roster.length} partition(s) claim the ${selectable.length} selected request(s)`);
   process.exit(0);
 }
 

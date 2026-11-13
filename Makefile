@@ -2114,9 +2114,10 @@ NEWMAN_HTMLEXTRA_VERSION ?= $(shell node -p "require('$(CURDIR)/.github/workflow
 # then the reseller custom providers and the passthrough route family. Derived, never kept by hand
 # (TXE-7308): the hand-kept list left out bfl, replicate, runware, voyage and typesafe, so their rows
 # matched no fork and a parallel sweep ran them nowhere. The sweep forks only the partitions that
-# run a selected row (filter-collection.mjs --roster), plus "unclaimed" for a folder no partition
-# claims. tests/e2e/api/runners/lib/harness-partitions.test.mjs fails when a harness row would run
-# in no partition. Recursive (=), so only targets that read it pay for the node call.
+# claim a selected row (filter-collection.mjs --roster). A folder holding a row no partition claims
+# (a reset, a read-back, a management call) runs whole in the serial pass, in order.
+# tests/e2e/api/runners/lib/harness-partitions.test.mjs fails when a harness row would run nowhere.
+# Recursive (=), so only targets that read it pay for the node call.
 HARNESS_PROVIDERS = $(shell node tests/e2e/api/runners/harness-partitions.mjs)
 
 # Second parallelism axis. Each provider fork is sharded again by modality class so the run is not
@@ -2862,9 +2863,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		rm -f tmp/newman-report-*.json tmp/newman-cli-*.log tmp/parallel-pids tmp/parallel-status tmp/parallel-exit-* tmp/harness-filtered-*.json; \
 		: > tmp/parallel-pids; \
 		: > tmp/parallel-status; \
-		: "One fork per partition that runs a selected row (TXE-7308): the derived roster narrowed to"; \
-		: "the partitions this selection reaches, with unclaimed last when a folder no partition"; \
-		: "claims is selected. A failed roster is a failed run, never a sweep over nothing."; \
+		: "One fork per partition that claims a selected row (TXE-7308): the derived roster narrowed"; \
+		: "to the partitions this selection reaches. Folders with a row no partition claims are not"; \
+		: "here; they run whole in the serial pass. A failed roster is a failed run, never a sweep"; \
+		: "over nothing."; \
 		if ! PROVIDERS="$$(node tests/e2e/api/runners/filter-collection.mjs --source "$$COLLECTION_FILE" --roster \
 			$(if $(FEATURE),--feature "$(FEATURE)",) $(if $(FOLDER),--folder "$(FOLDER)",) 2>> "$$QUIET_LOG")"; then \
 			say "$(RED)The partition roster could not be computed (filter-collection.mjs --roster, see $$QUIET_LOG)$(NC)"; \
