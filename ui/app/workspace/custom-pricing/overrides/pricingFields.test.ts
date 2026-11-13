@@ -51,6 +51,7 @@ describe("pricingFieldUnit", () => {
 			"input_cost_per_token_above_200k_tokens_flex",
 			"cache_read_input_token_cost_above_272k_tokens_decisions",
 			"input_cost_per_audio_token_priority",
+			"output_cost_per_image_token_priority",
 		]) {
 			expect(pricingFieldUnit(key), key).toBe("token");
 		}

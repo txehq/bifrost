@@ -90,6 +90,13 @@ type BifrostImageGenerationResponse struct {
 	// carries no link, or the vendor documents no lifetime.
 	ExpiresAt *int64 `json:"expires_at,omitempty"`
 
+	// Fork (TXE-7372): the processing tier the vendor reports it served (Gemini
+	// usageMetadata.serviceTier, Vertex trafficType). Priority image output tokens are priced
+	// at their own rate, so cost reads it. Carried internally like BifrostLLMUsage.ServiceTier:
+	// json:"-" keeps the image response shape unchanged, and the logging plugin persists it in
+	// the log row's service_tier column so a recalculation reprices at the served tier.
+	ServiceTier *BifrostServiceTier `json:"-"`
+
 	Usage       *ImageUsage                `json:"usage,omitempty"`
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }

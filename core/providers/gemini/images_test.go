@@ -1028,3 +1028,56 @@ func TestDownloadImageFromURLRefusesNonPublicAddresses(t *testing.T) {
 		t.Fatalf("public image through the provider's proxy: %q, %v", encoded, err)
 	}
 }
+
+// TXE-7372: an image response carries the tier the vendor served, the way the chat and
+// responses converters do, so a priority-served image is priced at the priority image token
+// rate. Vertex reports it as trafficType and the Gemini API as serviceTier; trafficType wins.
+func TestGenerateContentImageResponseCarriesTheServedTier(t *testing.T) {
+	tests := []struct {
+		name  string
+		usage string
+		want  *schemas.BifrostServiceTier
+	}{
+		{"gemini priority", `{"serviceTier":"priority","candidatesTokenCount":1290}`, schemas.Ptr(schemas.BifrostServiceTierPriority)},
+		{"gemini standard", `{"serviceTier":"standard","candidatesTokenCount":1290}`, schemas.Ptr(schemas.BifrostServiceTierDefault)},
+		{"vertex priority traffic", `{"trafficType":"ON_DEMAND_PRIORITY","candidatesTokenCount":1290}`, schemas.Ptr(schemas.BifrostServiceTierPriority)},
+		{"vertex traffic wins over serviceTier", `{"trafficType":"ON_DEMAND","serviceTier":"priority"}`, schemas.Ptr(schemas.BifrostServiceTierDefault)},
+		{"no tier reported", `{"candidatesTokenCount":1290}`, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/png","data":"aW1n"}}]}}],"usageMetadata":` + tt.usage + `}`
+			var response GenerateContentResponse
+			require.NoError(t, json.Unmarshal([]byte(body), &response))
+			got, bifrostErr := response.ToBifrostImageGenerationResponse()
+			require.Nil(t, bifrostErr)
+			assert.Equal(t, tt.want, got.ServiceTier)
+			// The tier stays off the OpenAI-shaped image response.
+			out, err := json.Marshal(got)
+			require.NoError(t, err)
+			assert.NotContains(t, string(out), "service_tier")
+		})
+	}
+}
+
+// TXE-7372: a Gemini-native client sees the served tier on the image response it gets back:
+// trafficType for a Vertex-served image, serviceTier otherwise.
+func TestToGeminiImageGenerationResponseGivesTheServedTierBack(t *testing.T) {
+	resp := func(provider schemas.ModelProvider) *schemas.BifrostImageGenerationResponse {
+		r := &schemas.BifrostImageGenerationResponse{
+			Data:        []schemas.ImageData{{B64JSON: "aW1n"}},
+			ServiceTier: schemas.Ptr(schemas.BifrostServiceTierPriority),
+		}
+		r.ExtraFields.RoutingInfo.Provider = provider
+		return r
+	}
+	gemini, err := ToGeminiImageGenerationResponse(context.Background(), resp(schemas.Gemini))
+	require.NoError(t, err)
+	require.NotNil(t, gemini.UsageMetadata)
+	assert.Equal(t, ServiceTierPriority, gemini.UsageMetadata.ServiceTier)
+
+	vertex, err := ToGeminiImageGenerationResponse(context.Background(), resp(schemas.Vertex))
+	require.NoError(t, err)
+	require.NotNil(t, vertex.UsageMetadata)
+	assert.Equal(t, TrafficTypeOnDemandPriority, vertex.UsageMetadata.TrafficType)
+}

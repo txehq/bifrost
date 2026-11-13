@@ -4424,6 +4424,30 @@ func TestBuildResponseForRequestTypeKeepsDecisionTier(t *testing.T) {
 	}
 }
 
+// TXE-7372: a priority-served image prices its output tokens at the priority image rate, so
+// its served tier is written to the log row and put back on the rebuilt image response.
+func TestImageServedTierIsLoggedAndRestored(t *testing.T) {
+	priority := schemas.BifrostServiceTierPriority
+	entry := &logstore.Log{}
+	applyServedTierToEntry(entry, &schemas.BifrostResponse{
+		ImageGenerationResponse: &schemas.BifrostImageGenerationResponse{ServiceTier: &priority},
+	}, nil)
+	if entry.ServiceTier == nil || *entry.ServiceTier != "priority" {
+		t.Fatalf("expected service_tier priority on the log row, got %v", entry.ServiceTier)
+	}
+
+	for _, rt := range []schemas.RequestType{schemas.ImageGenerationRequest, schemas.ImageEditRequest} {
+		resp := buildResponseForRequestType(rt, &schemas.BifrostLLMUsage{CompletionTokens: 1290}, schemas.BifrostResponseExtraFields{},
+			servedTierFromLog(entry))
+		if resp == nil || resp.ImageGenerationResponse == nil {
+			t.Fatalf("%s: no image response rebuilt", rt)
+		}
+		if got := resp.ImageGenerationResponse.ServiceTier; got == nil || *got != priority {
+			t.Fatalf("%s: image tier not restored: %v", rt, got)
+		}
+	}
+}
+
 // The settlement span carries the parsed breakdown when the row has one, not just
 // the flat total. Only the entry.Cost fallback was covered, so this branch could
 // lose the per-category split while the shared CostAttributes tests stayed green.

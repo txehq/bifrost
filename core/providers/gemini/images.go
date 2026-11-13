@@ -398,6 +398,9 @@ func (response *GenerateContentResponse) ToBifrostImageGenerationResponse() (*sc
 
 	// Set usage information with modality details
 	bifrostResp.Usage = convertGeminiUsageMetadataToImageUsage(response.UsageMetadata)
+	// Fork (TXE-7372): the served tier, read the way the chat converter reads it, so a
+	// priority-served image is priced at the priority image token rate.
+	bifrostResp.ServiceTier = geminiServedTier(response.UsageMetadata)
 
 	if len(bifrostResp.Data) > 0 {
 		bifrostResp.ImageGenerationResponseParameters = &schemas.ImageGenerationResponseParameters{
@@ -1058,6 +1061,17 @@ func ToGeminiImageGenerationResponse(ctx context.Context, bifrostResp *schemas.B
 
 	// Convert usage metadata with modality details
 	geminiResp.UsageMetadata = convertBifrostImageUsageToGeminiUsageMetadata(bifrostResp.Usage)
+	// Fork (TXE-7372): give the served tier back the way the generateContent converters do.
+	if bifrostResp.ServiceTier != nil {
+		if geminiResp.UsageMetadata == nil {
+			geminiResp.UsageMetadata = &GenerateContentResponseUsageMetadata{}
+		}
+		if bifrostResp.ExtraFields.RoutingInfo.Provider == schemas.Vertex {
+			geminiResp.UsageMetadata.TrafficType = mapBifrostServiceTierToVertexTrafficType(*bifrostResp.ServiceTier)
+		} else {
+			geminiResp.UsageMetadata.ServiceTier = mapBifrostServiceTierToGemini(*bifrostResp.ServiceTier)
+		}
+	}
 
 	return geminiResp, nil
 }

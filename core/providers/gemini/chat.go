@@ -372,14 +372,7 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 	bifrostResp.Usage = ConvertGeminiUsageMetadataToChatUsage(response.UsageMetadata)
 	applyGeminiSearchQueryChatUsage(bifrostResp.Usage, candidate.GroundingMetadata, response.ModelVersion)
 
-	if response.UsageMetadata != nil {
-		if t := mapGeminiTrafficTypeToBifrost(response.UsageMetadata.TrafficType); t != nil {
-			bifrostResp.ServiceTier = t
-		} else if response.UsageMetadata.ServiceTier != "" {
-			tier := mapGeminiServiceTierToBifrost(response.UsageMetadata.ServiceTier)
-			bifrostResp.ServiceTier = &tier
-		}
-	}
+	bifrostResp.ServiceTier = geminiServedTier(response.UsageMetadata)
 
 	return bifrostResp
 }
@@ -748,12 +741,7 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 	if isLastChunk && response.UsageMetadata != nil {
 		streamResponse.Usage = ConvertGeminiUsageMetadataToChatUsage(response.UsageMetadata)
 		applyGeminiSearchQueryChatUsage(streamResponse.Usage, candidate.GroundingMetadata, response.ModelVersion)
-		if t := mapGeminiTrafficTypeToBifrost(response.UsageMetadata.TrafficType); t != nil {
-			streamResponse.ServiceTier = t
-		} else if response.UsageMetadata.ServiceTier != "" {
-			tier := mapGeminiServiceTierToBifrost(response.UsageMetadata.ServiceTier)
-			streamResponse.ServiceTier = &tier
-		}
+		streamResponse.ServiceTier = geminiServedTier(response.UsageMetadata)
 	}
 
 	return streamResponse, nil, isLastChunk

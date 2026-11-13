@@ -587,6 +587,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_guardrail_unit_rate_columns"}, run: migrationAddGuardrailUnitRateColumns},
 	{IDs: []string{"add_explicit_batch_pricing_columns"}, run: migrationAddExplicitBatchPricingColumns},
 	{IDs: []string{"add_video_token_clip_mode_pricing_columns"}, run: migrationAddVideoTokenClipModePricingColumns},
+	{IDs: []string{"add_priority_image_token_pricing_column"}, run: migrationAddPriorityImageTokenPricingColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17051,6 +17052,37 @@ func migrationAddInputCostPerTextMessageColumn(ctx context.Context, db *gorm.DB,
 		},
 		Rollback: func(tx *gorm.DB) error {
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableModelPricing{}, "input_cost_per_text_message")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddPriorityImageTokenPricingColumn adds output_cost_per_image_token_priority
+// (fork, TXE-7372): the image output token rate for a request the vendor served on its
+// priority tier, which Gemini and Vertex image models publish. Expand-only.
+func migrationAddPriorityImageTokenPricingColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_priority_image_token_pricing_column"
+	const column = "output_cost_per_image_token_priority"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, column); err != nil {
+				return fmt.Errorf("failed to add column %s: %w", column, err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, column); err != nil {
+				return fmt.Errorf("failed to drop column %s: %w", column, err)
+			}
+			return nil
 		},
 	}})
 	if err := m.Migrate(); err != nil {

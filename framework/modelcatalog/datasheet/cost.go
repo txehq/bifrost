@@ -888,6 +888,8 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 			input.imageUsage = &schemas.ImageUsage{}
 		}
 		populateOutputImageCount(input.imageUsage, len(result.ImageGenerationResponse.Data))
+		// Fork (TXE-7372): the served tier prices priority image output tokens.
+		input.tier = tierFromResponse(result.ImageGenerationResponse.ServiceTier, nil, nil)
 		if result.ImageGenerationResponse.ContentFilter != nil && len(result.ImageGenerationResponse.Data) == 0 {
 			markNoOutputImages(input.imageUsage)
 		}
@@ -2905,6 +2907,9 @@ func tieredImageInputRate(pricing *configstoreTables.TableModelPricing, totalTok
 // tieredImageOutputRate returns the effective rate for image tokens on the output side.
 // Falls back to the general tieredOutputRate when no image-specific rate is configured.
 func tieredImageOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
+	if tier.isPriority && pricing.OutputCostPerImageTokenPriority != nil {
+		return *pricing.OutputCostPerImageTokenPriority
+	}
 	if pricing.OutputCostPerImageToken != nil {
 		return *pricing.OutputCostPerImageToken
 	}
