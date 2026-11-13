@@ -6938,8 +6938,8 @@ func TestCalculateCost_ImageGeneration_TXE7356Variants(t *testing.T) {
 		{"grok-imagine-image-quality 1.5k rounds up to 2K", "xai", "grok-imagine-image-quality", "", "", "1.5k", nil, 0.06},
 		// Above every priced tier: the largest priced tier, never unpriced.
 		{"grok-imagine-image-quality 4k above every tier takes 2K", "xai", "grok-imagine-image-quality", "", "", "4k", nil, 0.06},
-		// A pixel tier on a row that prices only K tiers: no rate of its family, so unpriced.
-		{"grok-imagine-image-quality numeric tier is another family", "xai", "grok-imagine-image-quality", "", "", "1024", nil, 0},
+		// A pixel tier on a row priced only by K tiers: no rate of its family, so the 1K default, never $0.
+		{"grok-imagine-image-quality numeric tier is another family", "xai", "grok-imagine-image-quality", "", "", "1024", nil, 0.04},
 		// Not a tier at all ("hd", "1e9K"): treated as naming none, so the default 1K rate.
 		{"grok-imagine-image-quality not a tier", "xai", "grok-imagine-image-quality", "", "", "hd", nil, 0.04},
 		{"grok-imagine-image-quality non-finite tier", "xai", "grok-imagine-image-quality", "", "", "1e9K", nil, 0.04},

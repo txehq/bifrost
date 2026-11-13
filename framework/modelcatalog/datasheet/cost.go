@@ -1759,19 +1759,20 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 	if perImageRate == nil {
 		perImageRate = baseImageSizeRates(pricing).rateForSize(width, height, pixels)
 	}
-	// A request that named a size and no tier, on a row priced by tier and not by size: the
-	// tier that size falls in, which is the tier Gemini and Replicate send for it.
-	if perImageRate == nil && !namedImageResolutionTier(shape.resolution) {
+	// A size on a row priced by tier and not by size: the tier that size falls in, which is the
+	// tier Gemini and Replicate send for it. Reached only when no named tier priced the image.
+	if perImageRate == nil {
 		perImageRate = imageResolutionRate(pricing, schemas.ImageResolutionTierForSize(shape.size))
 	}
 	if perImageRate == nil {
 		perImageRate = pricing.OutputCostPerImage
 	}
-	// A request that names no resolution gets the vendor's default tier, 1K, on a row priced
-	// only by tier (xAI's grok-imagine-image-quality publishes 1K and 2K and nothing else; xAI,
-	// Gemini and Replicate's nano-banana all default to 1K). A named tier was resolved above; a
-	// value that is not a tier is treated as naming none.
-	if perImageRate == nil && !namedImageResolutionTier(shape.resolution) {
+	// The vendor's default tier, 1K, on a row priced only by tier (xAI's
+	// grok-imagine-image-quality publishes 1K and 2K and nothing else; xAI, Gemini and
+	// Replicate's nano-banana all default to 1K): for a request that named no tier, a value
+	// that is not one, or a tier of the other family than the row prices. An image the row has
+	// any per-image rate for is never left unpriced.
+	if perImageRate == nil {
 		perImageRate = pricing.OutputCostPerImage1K
 	}
 	if perImageRate != nil {
@@ -1811,12 +1812,6 @@ func imageResolutionRate(pricing *configstoreTables.TableModelPricing, resolutio
 		largest = rate
 	}
 	return largest
-}
-
-// namedImageResolutionTier reports whether the request named a known resolution tier.
-func namedImageResolutionTier(resolution string) bool {
-	family, _ := schemas.ImageResolutionTier(resolution)
-	return family != ""
 }
 
 // imageStepsRate returns the per-image rate for a model priced by inference steps (fork,
