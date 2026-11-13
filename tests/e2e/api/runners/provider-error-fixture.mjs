@@ -385,6 +385,15 @@ const fixturePricing = {
 	// TXE-7297: a per-second Kling video rate, so folder 519 can read the price a settled job got from the 5.1 second
 	// clip the Kling query reports. Nothing settles a video unless a row turns provider job accounting on.
 	"kling-3.0": { provider: "kling", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
+	// TXE-7306: a 720p rate with and without generated audio, so folder 549 can read which one a
+	// settled job got. The figures are Model Studio's for wan2.6-i2v-flash 720P (0.025 silent, 0.05
+	// with audio); the unbanded 0.1 shows a job that matched no band.
+	"wan2.5-t2v-preview": {
+		provider: "dashscope", mode: "video_generation",
+		output_cost_per_video_per_second: 0.1,
+		output_cost_per_video_per_second_720p: 0.025,
+		output_cost_per_video_per_second_720p_audio: 0.05,
+	},
 };
 
 // Provider wire capture, TXE-5539. The config points each provider these rows use at /pp/<provider>, so one fixture
@@ -719,6 +728,17 @@ const dashScopeTasks = {
 	"ds-filtered": { output: { task_status: "FAILED", ...dashScopeEnded, code: "DataInspectionFailed", message: "Output data may contain inappropriate content." } },
 	"ds-infringing": { output: { task_status: "FAILED", ...dashScopeEnded, code: "IPInfringementSuspect", message: "Input data is suspected of being involved in IP infringement." } },
 	"ds-canceled": { output: { task_status: "CANCELED", ...dashScopeEnded } },
+	// Folder 549 (TXE-7306): two finished 5-second 720P clips of wan2.5-t2v-preview, one created with
+	// generated audio and one with audio false. The create answers with one or the other by the
+	// request's parameters.audio, so their settlements can be told apart.
+	"ds-audio-on": {
+		output: { task_status: "SUCCEEDED", ...dashScopeEnded, video_url: "https://dashscope-result.example.test/fixture/ds-audio-on.mp4?Expires=1762842232&Signature=fixture" },
+		usage: { duration: 5, input_video_duration: 0, output_video_duration: 5, video_count: 1, ratio: "16:9", SR: 720 },
+	},
+	"ds-audio-off": {
+		output: { task_status: "SUCCEEDED", ...dashScopeEnded, video_url: "https://dashscope-result.example.test/fixture/ds-audio-off.mp4?Expires=1762842232&Signature=fixture" },
+		usage: { duration: 5, input_video_duration: 0, output_video_duration: 5, video_count: 1, ratio: "16:9", SR: 720 },
+	},
 	"ds-expired": { output: { task_status: "UNKNOWN" } },
 	// The download rows of folder 423. ds-media-gapped names its file at a public-looking address, which the
 	// gateway reaches through the media tunnel (dashscope's proxy_config); ds-media-loopback names a file on
@@ -744,9 +764,14 @@ const dashScopeListAnswer = (query) => {
 	return { request_id: "fixture-dashscope-list", data: last ? dashScopeListed.slice(2) : dashScopeListed.slice(0, 2), total: 3, total_page: 2, page_no: last ? 2 : 1, page_size: 2 };
 };
 
-const dashScopeAnswer = (method, path, query) => {
+const dashScopeAnswer = (method, path, query, body) => {
 	if (method === "GET" && path === "/api/v1/tasks") return { status: 200, body: dashScopeListAnswer(query) };
 	if (method === "POST" && path === "/api/v1/services/aigc/video-generation/video-synthesis") {
+		// Folder 549: a wan2.5-t2v-preview create gets the finished task matching its audio flag.
+		if (body?.model === "wan2.5-t2v-preview") {
+			const taskID = body?.parameters?.audio === false ? "ds-audio-off" : "ds-audio-on";
+			return { status: 200, body: { output: { task_status: "PENDING", task_id: taskID }, request_id: "fixture-dashscope-create" } };
+		}
 		return { status: 200, body: { output: { task_status: "PENDING", task_id: "ds-pending" }, request_id: "fixture-dashscope-create" } };
 	}
 	const task = /^\/api\/v1\/tasks\/([^/]+)(\/cancel)?$/.exec(path);
@@ -1927,7 +1952,9 @@ const handleRequest = (req, res) => {
 				const image = dashScopeImageAnswer(parsed);
 				return send(image.status, {}, image.body);
 			}
-			const answer = dashScopeAnswer(req.method, path.slice("/pp/dashscope".length), url.search);
+			let parsedBody;
+			try { parsedBody = JSON.parse(bytes); } catch {}
+			const answer = dashScopeAnswer(req.method, path.slice("/pp/dashscope".length), url.search, parsedBody);
 			send(answer.status, {}, JSON.stringify(answer.body));
 		});
 		return undefined;
