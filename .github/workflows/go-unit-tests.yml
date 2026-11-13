@@ -191,11 +191,23 @@ jobs:
           egress-policy: block
           # setup-go, setup-node, the Go module proxy and npm for the pinned newman. The fixtures,
           # the gateway and newman dial only loopback, and scripts/test-offline.sh refuses the rest.
+          # Folder 276's Weaviate (TXE-7322): its digest-pinned image from cr.weaviate.io, which
+          # serves through Docker Hub's registry and CDN, and the container's fixed address on its
+          # own network (start-fixture-weaviate.sh), which the published loopback port DNATs to
+          # and Weaviate gossips to itself on.
           allowed-endpoints: >
+            172.39.0.12:7946
+            172.39.0.12:7947
+            172.39.0.12:8080
             api.github.com:443
+            auth.docker.io:443
+            cr.weaviate.io:443
             github.com:443
             nodejs.org:443
+            production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
+            registry-1.docker.io:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
@@ -236,6 +248,11 @@ jobs:
       - name: Build the gateway
         working-directory: transports
         run: go build -o "$RUNNER_TEMP/bifrost-http" ./bifrost-http
+
+      # Folder 276 needs a Weaviate (TXE-7322): digest-pinned, published on loopback only. It
+      # writes FIXTURE_WEAVIATE_URL for the warp-wire group.
+      - name: Start Weaviate for the warp-wire group
+        run: bash .github/workflows/scripts/start-fixture-weaviate.sh
 
       - name: Run the fixture folders
         run: scripts/test-offline.sh node tests/e2e/api/runners/fixture-folders.mjs run --gateway "$RUNNER_TEMP/bifrost-http" --work-dir "$RUNNER_TEMP/fixture-folders"
