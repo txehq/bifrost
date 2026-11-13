@@ -1913,6 +1913,100 @@ const vidvendorAnswer = (method, path) => {
 	return notFound;
 };
 
+// Resource path overrides on every base (folder 485, TXE-7085). tkp_ovr_<base> in the fixture config is a custom
+// provider on the anthropic, gemini, modelark, volcengine or replicate base whose request_path_overrides move each
+// call that names a batch or a file by id to /moved/<request type>/{batch_id} or /moved/<request type>/{file_id}.
+// Every call under /pp/ovr/<base> is kept for GET /__wire with its method, path and the name of the key it carried
+// (never the key). Only /pp/ovr/<base>/moved/<request type>/<id> answers, with the shape that base decodes, so a
+// call built on the vendor's own path, or one that still carries the literal placeholder, is a 404 that shows in
+// the wire.
+const OVR_ROOT = "/pp/ovr";
+const OVR_BATCH_ID = "ob_485";
+const OVR_FILE_ID = "of_485";
+const OVR_BASES = ["anthropic", "gemini", "modelark", "volcengine", "replicate"];
+const ovrKeyName = (headers) => {
+	const sent = [headers.authorization, headers["x-api-key"], headers["x-goog-api-key"]].filter(Boolean).join(" ");
+	const base = OVR_BASES.find((b) => sent.includes(`ovr-fixture-key-${b}`));
+	return base ? `tk-key-ovr-${base}` : "unknown";
+};
+const ovrAnthropicBatch = (status) => ({
+	id: OVR_BATCH_ID, type: "message_batch", processing_status: status, created_at: "2026-11-11T00:00:00Z", expires_at: "2026-11-12T00:00:00Z",
+	ended_at: "2026-11-11T00:01:00Z", request_counts: { processing: 0, succeeded: 1, errored: 0, canceled: 0, expired: 0 },
+});
+const ovrAnthropicMessage = { id: "msg_485", type: "message", role: "assistant", model: "claude-sonnet-4-5", content: [{ type: "text", text: "ok" }], stop_reason: "end_turn", usage: { input_tokens: 9, output_tokens: 1 } };
+const ovrGeminiBatch = {
+	name: `batches/${OVR_BATCH_ID}`, done: true,
+	metadata: { "@type": "type.googleapis.com/google.ai.generativelanguage.v1main.GenerateContentBatch", model: "models/gemini-2.5-flash", displayName: "bifrost-batch", createTime: "2026-11-11T00:00:00Z", endTime: "2026-11-11T00:01:00Z", updateTime: "2026-11-11T00:01:00Z", batchStats: { requestCount: "1", successfulRequestCount: "1" }, state: "BATCH_STATE_SUCCEEDED", name: `batches/${OVR_BATCH_ID}` },
+	response: { inlinedResponses: { inlinedResponses: [{ metadata: { key: "line-1" }, response: { candidates: [{ content: { role: "model", parts: [{ text: "ok" }] }, finishReason: "STOP" }], usageMetadata: { promptTokenCount: 9, candidatesTokenCount: 1, totalTokenCount: 10 } } }] } },
+};
+const ovrOpenAIFile = { id: OVR_FILE_ID, object: "file", bytes: 64, filename: "input.jsonl", purpose: "user_data", created_at: 1762819200, status: "processed" };
+const OVR_FILE_BYTES = '{"custom_id":"line-1"}\n';
+// ovrAnswers[base]["METHOD request_type"] is what the vendor of that base answers on the moved path.
+const ovrAnswers = {
+	anthropic: {
+		"GET batch_retrieve": { body: ovrAnthropicBatch("ended") },
+		"POST batch_cancel": { body: ovrAnthropicBatch("canceling") },
+		"GET batch_results": { contentType: "application/x-jsonl", raw: JSON.stringify({ custom_id: "line-1", result: { type: "succeeded", message: ovrAnthropicMessage } }) + "\n" },
+		"GET file_retrieve": { body: { id: OVR_FILE_ID, type: "file", filename: "input.jsonl", mime_type: "application/jsonl", size_bytes: 64, created_at: "2026-11-11T00:00:00Z", downloadable: true } },
+		"DELETE file_delete": { body: { id: OVR_FILE_ID, type: "file_deleted" } },
+		"GET file_content": { contentType: "application/octet-stream", raw: OVR_FILE_BYTES },
+	},
+	gemini: {
+		"GET batch_retrieve": { body: ovrGeminiBatch },
+		"POST batch_cancel": { body: {} },
+		"GET batch_results": { body: ovrGeminiBatch },
+		"GET file_retrieve": { body: { name: `files/${OVR_FILE_ID}`, displayName: "input.jsonl", mimeType: "application/jsonl", sizeBytes: "64", createTime: "2026-11-11T00:00:00Z", updateTime: "2026-11-11T00:00:00Z", expirationTime: "2026-11-13T00:00:00Z", uri: `https://generativelanguage.googleapis.com/v1beta/files/${OVR_FILE_ID}`, state: "ACTIVE" } },
+		"DELETE file_delete": { body: {} },
+	},
+	modelark: {
+		"GET file_retrieve": { body: ovrOpenAIFile },
+		"DELETE file_delete": { body: { id: OVR_FILE_ID, object: "file", deleted: true } },
+		"GET file_content": { contentType: "application/octet-stream", raw: OVR_FILE_BYTES },
+	},
+	replicate: {
+		"GET file_retrieve": { body: { id: OVR_FILE_ID, name: "input.jsonl", content_type: "application/jsonl", size: 64, created_at: "2026-11-11T00:00:00Z", expires_at: "2026-11-12T00:00:00Z", urls: { get: `https://api.replicate.com/v1/files/${OVR_FILE_ID}` } } },
+		"DELETE file_delete": { status: 204, raw: "" },
+	},
+};
+ovrAnswers.volcengine = ovrAnswers.modelark;
+// Video on the same custom providers (folder 485 rows 21-28, TXE-7085). A custom provider on these bases names
+// itself in the video ids it returns, so a retrieve, download or delete with that id is routed back to it, with its
+// own key; before, it returned the base's suffix and those calls went to the built-in provider. The calls take the
+// bases' default video paths under each provider's base_url: Replicate's model predictions and prediction by id,
+// and Ark's content-generation tasks for volcengine and modelark. Only the one prediction or task named here
+// answers, so an id that lost or kept its suffix is a 404 that shows in GET /__wire.
+const OVR_VIDEO_PREDICTION = "pred_ovr_video";
+const OVR_VIDEO_TASK = "cgt-ovr-video";
+const ovrVideoAnswer = (base, method, rest) => {
+	const json = (body, status = 200) => ({ status, body: JSON.stringify(body) });
+	if (base === "replicate") {
+		if (method === "POST" && rest === "/v1/models/fixture/ovr-video/predictions") return json({ id: OVR_VIDEO_PREDICTION, model: "fixture/ovr-video", status: "starting", created_at: "2026-11-14T00:00:00Z" }, 201);
+		if (method === "GET" && rest === `/v1/predictions/${OVR_VIDEO_PREDICTION}`) {
+			return json({ id: OVR_VIDEO_PREDICTION, model: "fixture/ovr-video", status: "succeeded", output: "https://fixture.invalid/ovr/video.mp4", created_at: "2026-11-14T00:00:00Z", completed_at: "2026-11-14T00:00:30Z", metrics: { predict_time: 30 } });
+		}
+		return undefined;
+	}
+	if (base !== "volcengine" && base !== "modelark") return undefined;
+	const tasks = "/contents/generations/tasks";
+	if (method === "POST" && rest === tasks) return json({ id: OVR_VIDEO_TASK });
+	if (method === "GET" && rest === `${tasks}/${OVR_VIDEO_TASK}`) {
+		return json({ id: OVR_VIDEO_TASK, model: "doubao-seedance-1-0-pro-250528", status: "succeeded", content: { video_url: "https://fixture.invalid/ovr/video.mp4" }, usage: { completion_tokens: 108900, total_tokens: 108900 }, resolution: "720p", ratio: "16:9", duration: 5, created_at: 1762700000, updated_at: 1762700090 });
+	}
+	if (method === "GET" && rest === `${tasks}/${OVR_VIDEO_TASK}/content`) return { status: 200, contentType: "video/mp4", body: "ovr video bytes" };
+	if (method === "DELETE" && rest === `${tasks}/${OVR_VIDEO_TASK}`) return { status: 200, body: "" };
+	return undefined;
+};
+const ovrAnswer = (method, path) => {
+	const notFound = { status: 404, body: errorBody(`the vendor behind the path overrides serves nothing at ${method} ${path}`, "invalid_request_error", "not_found") };
+	const [videoBase, ...restParts] = path.slice(OVR_ROOT.length + 1).split("/");
+	const video = ovrVideoAnswer(videoBase, method, "/" + restParts.join("/"));
+	if (video) return video;
+	const [base, moved, requestType, id, ...more] = path.slice(OVR_ROOT.length + 1).split("/");
+	const answer = moved === "moved" && more.length === 0 && ovrAnswers[base] ? ovrAnswers[base][`${method} ${requestType}`] : undefined;
+	if (!answer || id !== (requestType.startsWith("batch_") ? OVR_BATCH_ID : OVR_FILE_ID)) return notFound;
+	return { status: answer.status || 200, contentType: answer.contentType, body: answer.raw !== undefined ? answer.raw : JSON.stringify(answer.body) };
+};
+
 // xAI-compatible batch and files (folder 479, TXE-7084). tkp_xaicompat in the fixture config is an xai-based custom
 // provider for a vendor that serves xAI's batch and file API under /api/v2 instead of /v1, its request_path_overrides
 // naming those paths ({batch_id} and {file_id} where the id goes). Every call under /pp/xaicompat is kept for
@@ -2163,6 +2257,15 @@ const handleRequest = (req, res) => {
 		drain(req, () => {
 			wireCalls.push({ method: req.method, path, query: new URL(req.url, "http://localhost").search, body: "", key: VIDVENDOR_KEY_NAMES[req.headers.authorization] || "unknown" });
 			const answer = vidvendorAnswer(req.method, path);
+			send(answer.status, answer.contentType ? { "Content-Type": answer.contentType } : {}, answer.body);
+		});
+		return undefined;
+	}
+	if (path.startsWith(OVR_ROOT + "/")) {
+		req.resume();
+		req.on("end", () => {
+			wireCalls.push({ method: req.method, path, query: new URL(req.url, "http://localhost").search, body: "", key: ovrKeyName(req.headers) });
+			const answer = ovrAnswer(req.method, path);
 			send(answer.status, answer.contentType ? { "Content-Type": answer.contentType } : {}, answer.body);
 		});
 		return undefined;

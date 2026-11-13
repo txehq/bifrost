@@ -329,6 +329,33 @@ PROVIDER_ERROR_FIXTURE_PORT=$FX PROVIDER_ERROR_FIXTURE_STALL_PORT=$ST PROVIDER_E
 scripts/test-offline.sh make dev PORT=$GW APP_DIR="$APP_DIR"     # config.json from provider-error-fixture.config.json
 scripts/test-offline.sh make run-provider-harness-test FEATURE="offline egress" BASE_URL=http://127.0.0.1:$GW \
   APP_DIR="$APP_DIR" ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 PARALLEL=0
+```
+
+## Calls that name a batch or a file by id, on every custom-provider base
+
+Folder 485 pins TXE-7085: `tkp_ovr_anthropic`, `tkp_ovr_gemini`, `tkp_ovr_modelark`, `tkp_ovr_volcengine` and
+`tkp_ovr_replicate` in the fixture config are custom providers on those bases whose `request_path_overrides` move
+every call that names a batch or a file by id to `/moved/<request type>/{batch_id}` or
+`/moved/<request type>/{file_id}`. The fixture answers only on the moved path with the id in place and records
+every call for `GET /__wire`, so a call on the vendor's own path, or one that kept the literal placeholder, is a
+404 and fails its row. Rows 1-19 assert each such call the base serves (anthropic six, gemini five, modelark and
+volcengine three file calls each, replicate two): the gateway's 200, and the one vendor call with its method, path
+and key name. Row 20 asserts that a `bedrock`-based provider with such an override is refused when it is written.
+Before TXE-7085 rows 1-19 fail and row 20 stores the provider. The rows are structural for the vendors themselves:
+no real vendor serves a moved path.
+
+Start the fixture and the isolated gateway as for content-length truncation above, then:
+
+```bash
+make run-provider-harness-test FEATURE="resource path overrides" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
+```
+
+Folder 551 uses the same `tkp_ovr_replicate`, `tkp_ovr_volcengine` and `tkp_ovr_modelark` providers for video. A
+custom provider on these bases names itself in the video ids it returns (TXE-7085), so a retrieve or download with
+that id is routed back to it, and the rows assert the upstream path and key in `/__wire`. The fixture answers their
+default video paths (Replicate's `/v1/models/fixture/ovr-video/predictions` and `/v1/predictions/pred_ovr_video`;
+Ark's `/contents/generations/tasks` and `.../cgt-ovr-video`, with `/content`) under `/pp/ovr/<base>`. Run it with
+`FEATURE="custom provider video ids"`.
 
 ## xAI batch and files on an xai-based custom provider
 

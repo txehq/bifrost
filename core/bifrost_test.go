@@ -14310,45 +14310,26 @@ var resourceOverrideCalls = map[schemas.RequestType]resourceOverrideCall{
 }
 
 // resourceOverrideGaps are the calls a base serves without honouring their override: it
-// sends xAI's or the vendor's own path, or the override with the placeholder still in it.
-// Each entry names the ticket that fixes it. An entry is removed when its base honours the
-// override (the test fails on a stale entry), and nothing else may be added here: a pair
-// that templates its call belongs in providerUtils.ResourcePathOverrideBases instead.
-// TXE-7085: batch and file calls. TXE-7346: model, video and container calls, which the
-// openai base templates since TXE-7020.
+// sends the vendor's own path, or the override with the placeholder still in it. Each entry
+// names the ticket that fixes it, and the test fails on a stale entry. The batch and file
+// calls have none since TXE-7085: a base that templates them is in
+// providerUtils.ResourcePathOverrideBases, and one that cannot (bedrock: ids are job ARNs and
+// S3 URIs, calls go to signed AWS endpoints) is in providerUtils.ResourcePathOverrideRefusedBases,
+// which refuses the override when the provider is written. What is left are the model and
+// video calls the openai base templates since TXE-7020, which TXE-7096 brings to the other
+// bases; nothing else may be added here.
 var resourceOverrideGaps = map[schemas.ModelProvider]map[schemas.RequestType]string{
-	schemas.Anthropic: {
-		schemas.BatchRetrieveRequest: "TXE-7085", schemas.BatchCancelRequest: "TXE-7085", schemas.BatchResultsRequest: "TXE-7085",
-		schemas.FileRetrieveRequest: "TXE-7085", schemas.FileDeleteRequest: "TXE-7085", schemas.FileContentRequest: "TXE-7085",
-		schemas.ModelRetrieveRequest: "TXE-7346",
-	},
-	schemas.Gemini: {
-		schemas.BatchRetrieveRequest: "TXE-7085", schemas.BatchCancelRequest: "TXE-7085", schemas.BatchResultsRequest: "TXE-7085",
-		schemas.FileRetrieveRequest: "TXE-7085", schemas.FileDeleteRequest: "TXE-7085",
-		schemas.ModelRetrieveRequest: "TXE-7346", schemas.VideoRetrieveRequest: "TXE-7346", schemas.VideoDownloadRequest: "TXE-7346",
-	},
-	schemas.XAI:    {schemas.ModelRetrieveRequest: "TXE-7346", schemas.VideoRetrieveRequest: "TXE-7346", schemas.VideoDownloadRequest: "TXE-7346"},
-	schemas.Cohere: {schemas.ModelRetrieveRequest: "TXE-7346"},
-	schemas.ModelArk: {
-		schemas.FileRetrieveRequest: "TXE-7085", schemas.FileDeleteRequest: "TXE-7085", schemas.FileContentRequest: "TXE-7085",
-		schemas.VideoRetrieveRequest: "TXE-7346", schemas.VideoDownloadRequest: "TXE-7346", schemas.VideoDeleteRequest: "TXE-7346",
-	},
+	schemas.Anthropic: {schemas.ModelRetrieveRequest: "TXE-7096"},
+	schemas.Gemini:    {schemas.ModelRetrieveRequest: "TXE-7096", schemas.VideoRetrieveRequest: "TXE-7096", schemas.VideoDownloadRequest: "TXE-7096"},
+	schemas.XAI:       {schemas.ModelRetrieveRequest: "TXE-7096", schemas.VideoRetrieveRequest: "TXE-7096", schemas.VideoDownloadRequest: "TXE-7096"},
+	schemas.Cohere:    {schemas.ModelRetrieveRequest: "TXE-7096"},
+	schemas.ModelArk:  {schemas.VideoRetrieveRequest: "TXE-7096", schemas.VideoDownloadRequest: "TXE-7096", schemas.VideoDeleteRequest: "TXE-7096"},
 	schemas.Volcengine: {
-		schemas.FileRetrieveRequest: "TXE-7085", schemas.FileDeleteRequest: "TXE-7085", schemas.FileContentRequest: "TXE-7085",
-		schemas.VideoRetrieveRequest: "TXE-7346", schemas.VideoDownloadRequest: "TXE-7346", schemas.VideoDeleteRequest: "TXE-7346",
+		schemas.VideoRetrieveRequest: "TXE-7096", schemas.VideoDownloadRequest: "TXE-7096", schemas.VideoDeleteRequest: "TXE-7096",
 	},
-	schemas.Replicate: {
-		schemas.FileRetrieveRequest: "TXE-7085", schemas.FileDeleteRequest: "TXE-7085",
-		schemas.VideoRetrieveRequest: "TXE-7346", schemas.VideoDownloadRequest: "TXE-7346",
-	},
-	schemas.Minimax: {schemas.VideoRetrieveRequest: "TXE-7346", schemas.VideoDownloadRequest: "TXE-7346", schemas.VideoDeleteRequest: "TXE-7346"},
-	schemas.Kling:   {schemas.VideoRetrieveRequest: "TXE-7346", schemas.VideoDownloadRequest: "TXE-7346"},
-	// Bedrock's ids are job ARNs and S3 URIs and its calls go to AWS endpoints; the probe's
-	// id is refused before any call, so these never reach the wire here.
-	schemas.Bedrock: {
-		schemas.BatchRetrieveRequest: "TXE-7085", schemas.BatchCancelRequest: "TXE-7085", schemas.BatchResultsRequest: "TXE-7085",
-		schemas.FileRetrieveRequest: "TXE-7085", schemas.FileDeleteRequest: "TXE-7085", schemas.FileContentRequest: "TXE-7085",
-	},
+	schemas.Replicate: {schemas.VideoRetrieveRequest: "TXE-7096", schemas.VideoDownloadRequest: "TXE-7096"},
+	schemas.Minimax:   {schemas.VideoRetrieveRequest: "TXE-7096", schemas.VideoDownloadRequest: "TXE-7096", schemas.VideoDeleteRequest: "TXE-7096"},
+	schemas.Kling:     {schemas.VideoRetrieveRequest: "TXE-7096", schemas.VideoDownloadRequest: "TXE-7096"},
 }
 
 // resourceOverridePath is the override every probe configures for requestType (given its
@@ -14364,8 +14345,11 @@ func resourceOverridePath(requestType schemas.RequestType, segments []string) st
 // A call a base serves must reach the override's path with the id in place, unless it is a
 // recorded gap (resourceOverrideGaps). A base that honours any such override must be in
 // providerUtils.ResourcePathOverrideBases, so its overrides are checked when the provider is
-// written, and a base listed there may have no gap. A new base, or a new request type in
-// the table, that ignores an override or loses the id fails here.
+// written, and a base listed there may have no gap. A base that cannot template them is in
+// providerUtils.ResourcePathOverrideRefusedBases with its reason: a provider on it is never
+// written with such an override, and here it must send nothing to an override's path and
+// carry no gap. A new base, or a new request type in the table, that ignores an override or
+// loses the id fails here.
 func TestCustomProviderResourcePathOverrides(t *testing.T) {
 	upstream := newGuardUpstream(t)
 	client := &Bifrost{logger: NewNoOpLogger()}
@@ -14398,6 +14382,22 @@ func TestCustomProviderResourcePathOverrides(t *testing.T) {
 				t.Fatalf("construct: %v", err)
 			}
 			keys := []schemas.Key{guardKey(base)}
+			templatesAny := len(providerUtils.ResourcePathOverrideBases[base]) > 0
+			refusal, refused := providerUtils.ResourcePathOverrideRefusedBases[base]
+			// Core picks the keys of a batch or file call by the provider's own key. A custom
+			// provider that reported its base's name there would be served with the base
+			// provider's keys, or with none, and never reach its override (replicate,
+			// modelark and volcengine did before TXE-7085).
+			if got := provider.GetProviderKey(); (templatesAny || refused) && got != name {
+				t.Errorf("a custom provider on the %s base reports the provider key %q, want its own name %q", base, got, name)
+			}
+			if refused {
+				for _, requestType := range providerUtils.BatchAndFileResourceRequestTypes {
+					if ticket, gap := resourceOverrideGaps[base][requestType]; gap || providerUtils.TemplatesResourcePath(base, requestType) {
+						t.Errorf("%s refuses %s overrides when written (%s), so the pair may be neither in ResourcePathOverrideBases nor carry a gap (%s)", base, requestType, refusal, ticket)
+					}
+				}
+			}
 			for _, requestType := range requestTypes {
 				listed := providerUtils.TemplatesResourcePath(base, requestType)
 				ids := resourceOverrideIDs[:len(providerUtils.ResourcePathPlaceholders[requestType])]
@@ -14427,6 +14427,12 @@ func TestCustomProviderResourcePathOverrides(t *testing.T) {
 				}
 				ticket, gap := resourceOverrideGaps[base][requestType]
 				switch {
+				case refused && slices.Contains(providerUtils.BatchAndFileResourceRequestTypes, requestType):
+					// The override is refused on write; a provider built past that check
+					// still must not follow it.
+					if honoured {
+						t.Errorf("%s %s reached the override's path, but the base refuses such overrides when written (%s)", base, requestType, refusal)
+					}
 				case gap && listed:
 					t.Errorf("%s %s is in ResourcePathOverrideBases but carries a gap (%s)", base, requestType, ticket)
 				case gap && (honoured || !served):
@@ -14552,5 +14558,103 @@ func TestEveryVideoDeleteAcceptsAnEmptySuccessBody(t *testing.T) {
 		if deleting[p] != want[p] {
 			t.Errorf("%s sends a video delete to the vendor: %v; videoDeleteProviders says %v: update the table", p, deleting[p], want[p])
 		}
+	}
+}
+
+// allowedRequestsGateCalls are the calls TestCustomProviderAllowedRequestsGateEveryCall sends
+// besides resourceOverrideCalls: one of each kind a custom provider is commonly enabled for.
+var allowedRequestsGateCalls = map[schemas.RequestType]resourceOverrideCall{
+	schemas.ChatCompletionRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, _ []string) *schemas.BifrostError {
+		text := "hi"
+		_, err := p.ChatCompletion(ctx, keys[0], &schemas.BifrostChatRequest{Provider: base, Model: "m", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &text}}}})
+		return err
+	},
+	schemas.EmbeddingRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, _ []string) *schemas.BifrostError {
+		text := "hi"
+		_, err := p.Embedding(ctx, keys[0], &schemas.BifrostEmbeddingRequest{Provider: base, Model: "m", Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}}})
+		return err
+	},
+	schemas.VideoGenerationRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, _ []string) *schemas.BifrostError {
+		_, err := p.VideoGeneration(ctx, keys[0], &schemas.BifrostVideoGenerationRequest{Provider: base, Model: "owner/m", Input: &schemas.VideoGenerationInput{Prompt: "p"}, Params: &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("4")}})
+		return err
+	},
+	schemas.FileUploadRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, _ []string) *schemas.BifrostError {
+		_, err := p.FileUpload(ctx, keys[0], &schemas.BifrostFileUploadRequest{Provider: base, File: []byte(`{"a":1}`), Filename: "a.jsonl", Purpose: "batch"})
+		return err
+	},
+	schemas.FileListRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, _ []string) *schemas.BifrostError {
+		_, err := p.FileList(ctx, keys, &schemas.BifrostFileListRequest{Provider: base})
+		return err
+	},
+}
+
+// allowedRequestsGateGaps are the (base, request type) pairs that still reach the upstream with
+// the request type disabled, each with the ticket that closes it. The test fails on a stale
+// entry. TXE-7370 moves the check into core for every base.
+var allowedRequestsGateGaps = map[schemas.ModelProvider]map[schemas.RequestType]string{
+	schemas.DeepSeek: {schemas.ChatCompletionRequest: "TXE-7370"},
+	schemas.GLM:      {schemas.ChatCompletionRequest: "TXE-7370"},
+	schemas.Moonshot: {schemas.ChatCompletionRequest: "TXE-7370"},
+	schemas.Qwen:     {schemas.ChatCompletionRequest: "TXE-7370"},
+	schemas.XAI:      {schemas.ChatCompletionRequest: "TXE-7370", schemas.ModelRetrieveRequest: "TXE-7370"},
+}
+
+// TestCustomProviderAllowedRequestsGateEveryCall builds a custom provider of every base with
+// nothing in allowed_requests and sends every listed call. None may reach the upstream: a custom
+// provider is served with its own keys, so its allowed_requests is the operator's
+// least-privilege control (TXE-7085; the volcengine and modelark bases, and replicate's file
+// calls, did not check it). A pair that still leaks is a recorded gap (allowedRequestsGateGaps).
+func TestCustomProviderAllowedRequestsGateEveryCall(t *testing.T) {
+	upstream := newGuardUpstream(t)
+	client := &Bifrost{logger: NewNoOpLogger()}
+	calls := make(map[schemas.RequestType]resourceOverrideCall, len(resourceOverrideCalls)+len(allowedRequestsGateCalls))
+	for requestType, call := range resourceOverrideCalls {
+		calls[requestType] = call
+	}
+	for requestType, call := range allowedRequestsGateCalls {
+		calls[requestType] = call
+	}
+	requestTypes := make([]schemas.RequestType, 0, len(calls))
+	for requestType := range calls {
+		requestTypes = append(requestTypes, requestType)
+	}
+	slices.Sort(requestTypes)
+
+	for _, base := range schemas.SupportedBaseProviders {
+		t.Run(string(base), func(t *testing.T) {
+			name := schemas.ModelProvider("gated-" + string(base))
+			config := &schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{BaseURL: "http://" + guardUpstreamHost, DefaultRequestTimeoutInSeconds: 10},
+				ProxyConfig: &schemas.ProxyConfig{
+					Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(upstream.proxyURL), CACertPEM: schemas.NewSecretVar(upstream.caPEM),
+				},
+				CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: string(name), BaseProviderType: base, AllowedRequests: &schemas.AllowedRequests{}},
+			}
+			provider, err := client.createBaseProvider(name, config)
+			if err != nil {
+				t.Fatalf("construct: %v", err)
+			}
+			keys := []schemas.Key{guardKey(base)}
+			for _, requestType := range requestTypes {
+				ids := resourceOverrideIDs
+				if placeholders, ok := providerUtils.ResourcePathPlaceholders[requestType]; ok {
+					ids = resourceOverrideIDs[:len(placeholders)]
+				}
+				upstream.take()
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				func() {
+					defer func() { _ = recover() }()
+					_ = calls[requestType](ctx, provider, keys, base, ids)
+				}()
+				leaked := len(upstream.take()) > 0
+				ticket, gap := allowedRequestsGateGaps[base][requestType]
+				switch {
+				case leaked && !gap:
+					t.Errorf("%s %s reached the upstream with %s disabled in allowed_requests", base, requestType, requestType)
+				case gap && !leaked:
+					t.Errorf("%s %s: the gap entry (%s) is stale: the call is gated now; remove it", base, requestType, ticket)
+				}
+			}
+		})
 	}
 }

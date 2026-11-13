@@ -2163,6 +2163,10 @@ func (provider *AnthropicProvider) BatchRetrieve(ctx *schemas.BifrostContext, ke
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := providerUtils.ResourceRequestURL(provider.networkConfig.BaseURL, "/v1/messages/batches/"+escapedBatchID, provider.customProviderConfig, escapedBatchID, schemas.BatchRetrieveRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	providerName := provider.GetProviderKey()
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
@@ -2176,11 +2180,7 @@ func (provider *AnthropicProvider) BatchRetrieve(ctx *schemas.BifrostContext, ke
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.buildRequestURL(
-			ctx,
-			"/v1/messages/batches/"+escapedBatchID,
-			schemas.BatchRetrieveRequest,
-		))
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
@@ -2253,6 +2253,10 @@ func (provider *AnthropicProvider) BatchCancel(ctx *schemas.BifrostContext, keys
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := providerUtils.ResourceRequestURL(provider.networkConfig.BaseURL, "/v1/messages/batches/"+escapedBatchID+"/cancel", provider.customProviderConfig, escapedBatchID, schemas.BatchCancelRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	providerName := provider.GetProviderKey()
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
@@ -2266,7 +2270,7 @@ func (provider *AnthropicProvider) BatchCancel(ctx *schemas.BifrostContext, keys
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/messages/batches/" + escapedBatchID + "/cancel")
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodPost)
 		req.Header.SetContentType("application/json")
 
@@ -2372,6 +2376,10 @@ func (provider *AnthropicProvider) BatchResults(ctx *schemas.BifrostContext, key
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := providerUtils.ResourceRequestURL(provider.networkConfig.BaseURL, "/v1/messages/batches/"+escapedBatchID+"/results", provider.customProviderConfig, escapedBatchID, schemas.BatchResultsRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	providerName := provider.GetProviderKey()
 
@@ -2383,7 +2391,7 @@ func (provider *AnthropicProvider) BatchResults(ctx *schemas.BifrostContext, key
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/messages/batches/" + escapedBatchID + "/results")
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodGet)
 
 		if key.Value.GetValue() != "" {
@@ -2781,6 +2789,10 @@ func (provider *AnthropicProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := providerUtils.ResourceRequestURL(provider.networkConfig.BaseURL, "/v1/files/"+escapedFileID, provider.customProviderConfig, escapedFileID, schemas.FileRetrieveRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
@@ -2793,11 +2805,7 @@ func (provider *AnthropicProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.buildRequestURL(
-			ctx,
-			"/v1/files/"+escapedFileID,
-			schemas.FileRetrieveRequest,
-		))
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
@@ -2871,6 +2879,10 @@ func (provider *AnthropicProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := providerUtils.ResourceRequestURL(provider.networkConfig.BaseURL, "/v1/files/"+escapedFileID, provider.customProviderConfig, escapedFileID, schemas.FileDeleteRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
@@ -2883,7 +2895,7 @@ func (provider *AnthropicProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedFileID)
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
 
@@ -2990,6 +3002,10 @@ func (provider *AnthropicProvider) FileContent(ctx *schemas.BifrostContext, keys
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := providerUtils.ResourceRequestURL(provider.networkConfig.BaseURL, "/v1/files/"+escapedFileID+"/content", provider.customProviderConfig, escapedFileID, schemas.FileContentRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
@@ -2999,7 +3015,7 @@ func (provider *AnthropicProvider) FileContent(ctx *schemas.BifrostContext, keys
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedFileID + "/content")
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodGet)
 
 		if key.Value.GetValue() != "" {

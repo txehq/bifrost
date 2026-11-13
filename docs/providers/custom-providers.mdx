@@ -430,7 +430,7 @@ The `request_path_overrides` field allows you to override the default API endpoi
 - Using provider forks with modified API paths
 
 <Warning>
-**Not Supported:** `request_path_overrides` is not supported for `gemini` and `bedrock` base provider types due to their specialized API implementations.
+**Not Supported:** `request_path_overrides` is not supported for `gemini` and `bedrock` base provider types due to their specialized API implementations. The one exception is the batch and file calls that name a resource by id, described below: the `gemini` base follows their templates, and the `bedrock` base refuses them when the provider is created or updated.
 </Warning>
 
 The field accepts a mapping of request types to either custom **paths** or **full URLs**:
@@ -461,7 +461,7 @@ The field accepts a mapping of request types to either custom **paths** or **ful
 When a full URL (with scheme and host) is provided in `request_path_overrides`, Bifrost will use that URL directly and ignore the `base_url` from `network_config` for that specific request type. This allows you to route different request types to completely different endpoints.
 </Info>
 
-**Calls that name a resource (`openai` base; batch and file calls on the `xai` base)**
+**Calls that name a resource (`openai` base; batch and file calls on the bases listed below)**
 
 An override replaces the whole default path. A call that names its target (a batch, a file, a model, a video, a container, a stored response) carries an id in that path, so for these request types the override is a template: write each placeholder where its id goes, and Bifrost replaces it with the escaped id.
 
@@ -541,7 +541,20 @@ On the `xai` base the six batch and file request types (`batch_retrieve`, `batch
 }
 ```
 
-The other base types do not read these overrides on batch and file calls yet, and no base other than `openai` reads them on model, video and container calls yet; the built-in `xai` provider keeps xAI's own paths.
+The `anthropic`, `gemini`, `modelark`, `volcengine` and `replicate` bases follow the same templates for the calls they serve, each with its vendor's default path:
+
+| Base | Request types | Default paths |
+|---|---|---|
+| `anthropic` | all six | `/v1/messages/batches/{batch_id}`, `/v1/messages/batches/{batch_id}/cancel`, `/v1/messages/batches/{batch_id}/results`, `/v1/files/{file_id}`, `/v1/files/{file_id}/content` |
+| `gemini` | `batch_retrieve`, `batch_cancel`, `batch_results`, `file_retrieve`, `file_delete` | `/batches/{batch_id}`, `/batches/{batch_id}:cancel`, `/files/{file_id}` |
+| `modelark`, `volcengine` | `file_retrieve`, `file_delete`, `file_content` | `/files/{file_id}`, `/files/{file_id}/content` |
+| `replicate` | `file_retrieve`, `file_delete` | `/v1/files/{file_id}` |
+
+On the `gemini` base the id replaces the placeholder without its `batches/` or `files/` prefix, and reading a batch's results uses the `batch_results` override, or the `batch_retrieve` one when `batch_results` has none.
+
+The `bedrock` base cannot follow such a template: its batch and file ids are job ARNs and S3 URIs and its calls go to signed AWS endpoints, so there is no path on the provider's base URL to replace. A `bedrock`-based provider with an override for one of these six request types is refused when it is created or updated. The remaining base types serve none of these calls. The built-in providers keep their vendors' own paths.
+
+Only the `openai` base reads these overrides on model, video, container and stored-response calls yet.
 
 **Example: OpenAI-Compatible Endpoint with Custom Paths**
 

@@ -73,7 +73,7 @@ func NewReplicateProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 
 // GetProviderKey returns the provider identifier for Replicate.
 func (provider *ReplicateProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.Replicate
+	return providerUtils.GetProviderName(schemas.Replicate, provider.customProviderConfig)
 }
 
 // buildRequestURL builds the request URL with custom provider config support
@@ -2714,7 +2714,8 @@ func (provider *ReplicateProvider) VideoGeneration(ctx *schemas.BifrostContext, 
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
-	bifrostResponse.ID = providerUtils.AddVideoIDProviderSuffix(bifrostResponse.ID, schemas.Replicate)
+	// The suffix routes a later retrieve back to this provider: a custom provider's own name.
+	bifrostResponse.ID = providerUtils.AddVideoIDProviderSuffix(bifrostResponse.ID, provider.GetProviderKey())
 
 	// Set extra fields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
@@ -2740,7 +2741,8 @@ func (provider *ReplicateProvider) VideoRetrieve(ctx *schemas.BifrostContext, ke
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
 	}
 
-	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
+	// An id a custom provider returned before TXE-7085 carries ":replicate"; that is stripped too.
+	videoID := providerUtils.StripVideoIDProviderSuffixOrBase(request.ID, providerName, schemas.Replicate)
 	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
 	if idErr != nil {
 		return nil, idErr
@@ -2925,6 +2927,9 @@ func (provider *ReplicateProvider) BatchResults(_ *schemas.BifrostContext, _ []s
 
 // FileUpload uploads a file to Replicate's Files API.
 func (provider *ReplicateProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Replicate, provider.customProviderConfig, schemas.FileUploadRequest); err != nil {
+		return nil, err
+	}
 	providerName := provider.GetProviderKey()
 
 	if len(request.File) == 0 {
@@ -3063,6 +3068,9 @@ func (provider *ReplicateProvider) FileUpload(ctx *schemas.BifrostContext, key s
 // FileList lists files using serial pagination across keys.
 // Exhausts all pages from one key before moving to the next.
 func (provider *ReplicateProvider) FileList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Replicate, provider.customProviderConfig, schemas.FileListRequest); err != nil {
+		return nil, err
+	}
 	providerName := provider.GetProviderKey()
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
@@ -3198,6 +3206,9 @@ func (provider *ReplicateProvider) FileList(ctx *schemas.BifrostContext, keys []
 
 // FileRetrieve retrieves file metadata from Replicate's Files API by trying each key until found.
 func (provider *ReplicateProvider) FileRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Replicate, provider.customProviderConfig, schemas.FileRetrieveRequest); err != nil {
+		return nil, err
+	}
 	providerName := provider.GetProviderKey()
 
 	if request.FileID == "" {
@@ -3206,6 +3217,10 @@ func (provider *ReplicateProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 	escapedFileID, idErr := providerUtils.EscapeResourceID(request.FileID, "file_id")
 	if idErr != nil {
 		return nil, idErr
+	}
+	requestURL, urlErr := providerUtils.ResourceRequestURL(provider.networkConfig.BaseURL, "/v1/files/"+escapedFileID, provider.customProviderConfig, escapedFileID, schemas.FileRetrieveRequest)
+	if urlErr != nil {
+		return nil, urlErr
 	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
@@ -3219,7 +3234,7 @@ func (provider *ReplicateProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedFileID)
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
@@ -3279,6 +3294,9 @@ func (provider *ReplicateProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 
 // FileDelete deletes a file from Replicate's Files API by trying each key until successful.
 func (provider *ReplicateProvider) FileDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Replicate, provider.customProviderConfig, schemas.FileDeleteRequest); err != nil {
+		return nil, err
+	}
 	providerName := provider.GetProviderKey()
 
 	if request.FileID == "" {
@@ -3287,6 +3305,10 @@ func (provider *ReplicateProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 	escapedFileID, idErr := providerUtils.EscapeResourceID(request.FileID, "file_id")
 	if idErr != nil {
 		return nil, idErr
+	}
+	requestURL, urlErr := providerUtils.ResourceRequestURL(provider.networkConfig.BaseURL, "/v1/files/"+escapedFileID, provider.customProviderConfig, escapedFileID, schemas.FileDeleteRequest)
+	if urlErr != nil {
+		return nil, urlErr
 	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
@@ -3300,7 +3322,7 @@ func (provider *ReplicateProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedFileID)
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
 

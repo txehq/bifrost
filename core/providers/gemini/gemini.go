@@ -3202,6 +3202,20 @@ func geminiResourcePath(resourceID, collection, field string) (string, *schemas.
 	return collection + "/" + escapedID, nil
 }
 
+// resourceURL is the URL of a Gemini call that names one batch or file. resourceID is a bare
+// id or its "{collection}/{id}" resource name; the default URL is the base URL, the
+// collection, the escaped id and suffix. A custom provider's request_path_overrides entry for
+// the call is a template whose placeholder is replaced by the escaped bare id
+// (providerUtils.ResourceRequestURL).
+func (provider *GeminiProvider) resourceURL(resourceID, collection, field, suffix string, requestTypes ...schemas.RequestType) (string, *schemas.BifrostError) {
+	resourceID = strings.TrimPrefix(resourceID, collection+"/")
+	escapedID, bifrostErr := providerUtils.EscapeResourceID(resourceID, field)
+	if bifrostErr != nil {
+		return "", bifrostErr
+	}
+	return providerUtils.ResourceRequestURL(provider.networkConfig.BaseURL, "/"+collection+"/"+escapedID+suffix, provider.customProviderConfig, escapedID, requestTypes...)
+}
+
 // batchRetrieveByKey retrieves a specific batch job for Gemini for a single key.
 func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
 	// Create HTTP request
@@ -3210,11 +3224,10 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	batchPath, bifrostErr := geminiResourcePath(request.BatchID, "batches", "batch_id")
+	requestURL, bifrostErr := provider.resourceURL(request.BatchID, "batches", "batch_id", "", schemas.BatchRetrieveRequest)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, batchPath)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
@@ -3343,11 +3356,10 @@ func (provider *GeminiProvider) batchCancelByKey(ctx *schemas.BifrostContext, ke
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	batchPath, bifrostErr := geminiResourcePath(request.BatchID, "batches", "batch_id")
+	requestURL, bifrostErr := provider.resourceURL(request.BatchID, "batches", "batch_id", ":cancel", schemas.BatchCancelRequest)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	requestURL := fmt.Sprintf("%s/%s:cancel", provider.networkConfig.BaseURL, batchPath)
 
 	provider.logger.Debug("gemini batch cancel url: " + requestURL)
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -3635,11 +3647,10 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	batchPath, bifrostErr := geminiResourcePath(request.BatchID, "batches", "batch_id")
+	requestURL, bifrostErr := provider.resourceURL(request.BatchID, "batches", "batch_id", "", schemas.BatchResultsRequest, schemas.BatchRetrieveRequest)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, batchPath)
 
 	provider.logger.Debug("gemini batch results url: " + requestURL)
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -4110,11 +4121,10 @@ func (provider *GeminiProvider) fileRetrieveByKey(ctx *schemas.BifrostContext, k
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	filePath, bifrostErr := geminiResourcePath(request.FileID, "files", "file_id")
+	requestURL, bifrostErr := provider.resourceURL(request.FileID, "files", "file_id", "", schemas.FileRetrieveRequest)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, filePath)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
@@ -4221,11 +4231,10 @@ func (provider *GeminiProvider) fileDeleteByKey(ctx *schemas.BifrostContext, key
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	filePath, bifrostErr := geminiResourcePath(request.FileID, "files", "file_id")
+	requestURL, bifrostErr := provider.resourceURL(request.FileID, "files", "file_id", "", schemas.FileDeleteRequest)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, filePath)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)

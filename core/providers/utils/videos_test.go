@@ -7,6 +7,27 @@ import (
 	schemas "github.com/capsohq/bifrost/core/schemas"
 )
 
+// TXE-7085: a custom provider on a base names itself in new video ids, and still reaches a video
+// whose id it returned before then, under the base's suffix. A built-in provider is unchanged.
+func TestStripVideoIDProviderSuffixOrBase(t *testing.T) {
+	for _, c := range []struct {
+		id         string
+		key, base  schemas.ModelProvider
+		want, name string
+	}{
+		{"task123:my-ark", "my-ark", schemas.ModelArk, "task123", "custom provider, its own suffix"},
+		{"task123:modelark", "my-ark", schemas.ModelArk, "task123", "custom provider, an id from before TXE-7085"},
+		{"task123", "my-ark", schemas.ModelArk, "task123", "no suffix"},
+		{"task123:modelark", schemas.ModelArk, schemas.ModelArk, "task123", "built-in provider"},
+		{"task123:volcengine", "my-ark", schemas.ModelArk, "task123:volcengine", "another provider's suffix stays"},
+		{"a%2Fb:my-ark", "my-ark", schemas.ModelArk, "a/b", "the id is unescaped as before"},
+	} {
+		if got := StripVideoIDProviderSuffixOrBase(c.id, c.key, c.base); got != c.want {
+			t.Errorf("%s: StripVideoIDProviderSuffixOrBase(%q, %q, %q) = %q, want %q", c.name, c.id, c.key, c.base, got, c.want)
+		}
+	}
+}
+
 // TXE-6521 (contract C7 BF11): a provider's status table maps the vendor's cancelled and expired
 // states to their own statuses instead of "failed", and the vendor's raw string is kept verbatim
 // in provider_status.

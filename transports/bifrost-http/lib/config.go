@@ -9816,18 +9816,25 @@ func ValidateCustomProvider(config configstore.ProviderConfig, provider schemas.
 	// Where a base templates a call that names a resource by id (a batch, a file, a model, a
 	// video, a container, a stored response; providerUtils.ResourcePathOverrideBases), its
 	// override is a template. One without its placeholder would fail every such request, so
-	// it is refused here, when the provider is written. Overrides a base does not template
-	// are not checked: it does not read them as templates.
+	// it is refused here, when the provider is written. A base that serves batch and file
+	// calls but cannot move them (providerUtils.ResourcePathOverrideRefusedBases: bedrock)
+	// refuses such an override for the same reason: stored, it would be ignored on every
+	// request. Other overrides are not checked: the base does not read them as templates.
 	requestTypes := make([]string, 0, len(cpc.RequestPathOverrides))
 	for requestType := range cpc.RequestPathOverrides {
-		if providerUtils.TemplatesResourcePath(cpc.BaseProviderType, requestType) {
-			requestTypes = append(requestTypes, string(requestType))
-		}
+		requestTypes = append(requestTypes, string(requestType))
 	}
 	slices.Sort(requestTypes)
-	for _, requestType := range requestTypes {
-		if err := providerUtils.ValidateResourcePathOverride(schemas.RequestType(requestType), cpc.RequestPathOverrides[schemas.RequestType(requestType)]); err != nil {
+	for _, name := range requestTypes {
+		requestType := schemas.RequestType(name)
+		override := cpc.RequestPathOverrides[requestType]
+		if err := providerUtils.ResourcePathOverrideRefusal(cpc.BaseProviderType, requestType, override); err != nil {
 			return fmt.Errorf("custom provider validation failed: %w", err)
+		}
+		if providerUtils.TemplatesResourcePath(cpc.BaseProviderType, requestType) {
+			if err := providerUtils.ValidateResourcePathOverride(requestType, override); err != nil {
+				return fmt.Errorf("custom provider validation failed: %w", err)
+			}
 		}
 	}
 

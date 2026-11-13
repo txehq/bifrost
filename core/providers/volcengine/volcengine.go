@@ -40,6 +40,9 @@ type VolcengineProvider struct {
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 	providerKey         schemas.ModelProvider // Provider identifier for error/response metadata
+	// customProviderConfig is the custom provider's configuration, read for the path
+	// overrides of the file calls that name a file by id.
+	customProviderConfig *schemas.CustomProviderConfig
 }
 
 // NewVolcengineProvider creates a new Volcengine provider instance.
@@ -75,19 +78,28 @@ func newVolcengineCompatibleProvider(config *schemas.ProviderConfig, logger sche
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &VolcengineProvider{
-		logger:              logger,
-		client:              client,
-		streamingClient:     providerUtils.BuildStreamingClient(client),
-		networkConfig:       config.NetworkConfig,
-		sendBackRawRequest:  config.SendBackRawRequest,
-		sendBackRawResponse: config.SendBackRawResponse,
-		providerKey:         providerKey,
+		logger:               logger,
+		client:               client,
+		streamingClient:      providerUtils.BuildStreamingClient(client),
+		networkConfig:        config.NetworkConfig,
+		sendBackRawRequest:   config.SendBackRawRequest,
+		sendBackRawResponse:  config.SendBackRawResponse,
+		providerKey:          providerKey,
+		customProviderConfig: config.CustomProviderConfig,
 	}, nil
 }
 
 // GetProviderKey returns the provider identifier for Volcengine.
 func (provider *VolcengineProvider) GetProviderKey() schemas.ModelProvider {
-	return provider.providerKey
+	return providerUtils.GetProviderName(provider.providerKey, provider.customProviderConfig)
+}
+
+// allowed refuses a request type a custom provider's allowed_requests does not enable, before
+// any network work. A custom provider on this base reports its own name and is served with its
+// own keys since TXE-7085, so its allowed_requests must gate every call that reaches the vendor,
+// as the openai and anthropic bases do. A built-in provider has no gating.
+func (provider *VolcengineProvider) allowed(requestType schemas.RequestType) *schemas.BifrostError {
+	return providerUtils.CheckOperationAllowed(provider.providerKey, provider.customProviderConfig, requestType)
 }
 
 var volcengineVisionEmbeddingModelPrefixes = []string{
@@ -107,6 +119,9 @@ func isVolcengineVisionEmbeddingModel(model string) bool {
 
 // ListModels performs a list models request to Volcengine's API.
 func (provider *VolcengineProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	if err := provider.allowed(schemas.ListModelsRequest); err != nil {
+		return nil, err
+	}
 	return openai.HandleOpenAIListModelsRequest(
 		ctx,
 		provider.client,
@@ -122,6 +137,9 @@ func (provider *VolcengineProvider) ListModels(ctx *schemas.BifrostContext, keys
 
 // TextCompletion performs a text completion request to the Volcengine API.
 func (provider *VolcengineProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
+	if err := provider.allowed(schemas.TextCompletionRequest); err != nil {
+		return nil, err
+	}
 	return openai.HandleOpenAITextCompletionRequest(
 		ctx,
 		provider.client,
@@ -142,6 +160,9 @@ func (provider *VolcengineProvider) TextCompletion(ctx *schemas.BifrostContext, 
 // It formats the request, sends it to Volcengine, and processes the response.
 // Returns a channel of BifrostStreamChunk objects or an error if the request fails.
 func (provider *VolcengineProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if err := provider.allowed(schemas.TextCompletionStreamRequest); err != nil {
+		return nil, err
+	}
 	var authHeader map[string]string
 	if key.Value.GetValue() != "" {
 		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
@@ -168,6 +189,9 @@ func (provider *VolcengineProvider) TextCompletionStream(ctx *schemas.BifrostCon
 
 // ChatCompletion performs a chat completion request to the Volcengine API.
 func (provider *VolcengineProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	if err := provider.allowed(schemas.ChatCompletionRequest); err != nil {
+		return nil, err
+	}
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -190,6 +214,9 @@ func (provider *VolcengineProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 // Uses Volcengine's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostStreamChunk objects representing the stream or an error if the request fails.
 func (provider *VolcengineProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if err := provider.allowed(schemas.ChatCompletionStreamRequest); err != nil {
+		return nil, err
+	}
 	var authHeader map[string]string
 	if key.Value.GetValue() != "" {
 		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
@@ -220,6 +247,9 @@ func (provider *VolcengineProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 
 // Responses performs a responses request to the Volcengine API.
 func (provider *VolcengineProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	if err := provider.allowed(schemas.ResponsesRequest); err != nil {
+		return nil, err
+	}
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
@@ -239,6 +269,9 @@ func (provider *VolcengineProvider) Responses(ctx *schemas.BifrostContext, key s
 
 // ResponsesStream performs a streaming responses request to the Volcengine API.
 func (provider *VolcengineProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if err := provider.allowed(schemas.ResponsesStreamRequest); err != nil {
+		return nil, err
+	}
 	var authHeader map[string]string
 	if key.Value.GetValue() != "" {
 		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
@@ -266,6 +299,9 @@ func (provider *VolcengineProvider) ResponsesStream(ctx *schemas.BifrostContext,
 }
 
 func (provider *VolcengineProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	if err := provider.allowed(schemas.EmbeddingRequest); err != nil {
+		return nil, err
+	}
 	// Doubao vision embeddings use the multimodal endpoint even for text-only input.
 	if request != nil && (isVolcengineMultiModalInput(request.Input) || (isVolcengineVisionEmbeddingModel(request.Model) && isVolcengineSingleText(request.Input))) {
 		return provider.multiModalEmbedding(ctx, key, request)
@@ -851,6 +887,9 @@ func (provider *VolcengineProvider) OCR(ctx *schemas.BifrostContext, key schemas
 }
 
 func (provider *VolcengineProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	if err := provider.allowed(schemas.ImageGenerationRequest); err != nil {
+		return nil, err
+	}
 	return openai.HandleOpenAIImageGenerationRequest(
 		ctx,
 		provider.client,
@@ -887,6 +926,9 @@ func (provider *VolcengineProvider) ImageVariation(ctx *schemas.BifrostContext, 
 }
 
 func (provider *VolcengineProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	if err := provider.allowed(schemas.VideoGenerationRequest); err != nil {
+		return nil, err
+	}
 	return openai.HandleOpenAIVideoGenerationRequest(
 		ctx,
 		provider.client,
@@ -903,7 +945,10 @@ func (provider *VolcengineProvider) VideoGeneration(ctx *schemas.BifrostContext,
 }
 
 func (provider *VolcengineProvider) VideoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
-	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, provider.GetProviderKey())
+	if err := provider.allowed(schemas.VideoRetrieveRequest); err != nil {
+		return nil, err
+	}
+	videoID := providerUtils.StripVideoIDProviderSuffixOrBase(request.ID, provider.GetProviderKey(), provider.providerKey)
 	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
 	if idErr != nil {
 		return nil, idErr
@@ -925,7 +970,10 @@ func (provider *VolcengineProvider) VideoRetrieve(ctx *schemas.BifrostContext, k
 }
 
 func (provider *VolcengineProvider) VideoDownload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
-	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, provider.GetProviderKey())
+	if err := provider.allowed(schemas.VideoDownloadRequest); err != nil {
+		return nil, err
+	}
+	videoID := providerUtils.StripVideoIDProviderSuffixOrBase(request.ID, provider.GetProviderKey(), provider.providerKey)
 	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
 	if idErr != nil {
 		return nil, idErr
@@ -958,7 +1006,10 @@ func (provider *VolcengineProvider) VideoDownload(ctx *schemas.BifrostContext, k
 }
 
 func (provider *VolcengineProvider) VideoDelete(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDeleteRequest) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
-	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, provider.GetProviderKey())
+	if err := provider.allowed(schemas.VideoDeleteRequest); err != nil {
+		return nil, err
+	}
+	videoID := providerUtils.StripVideoIDProviderSuffixOrBase(request.ID, provider.GetProviderKey(), provider.providerKey)
 	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
 	if idErr != nil {
 		return nil, idErr
@@ -979,6 +1030,9 @@ func (provider *VolcengineProvider) VideoDelete(ctx *schemas.BifrostContext, key
 }
 
 func (provider *VolcengineProvider) VideoList(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
+	if err := provider.allowed(schemas.VideoListRequest); err != nil {
+		return nil, err
+	}
 	return openai.HandleOpenAIVideoListRequest(
 		ctx,
 		provider.client,
@@ -1004,6 +1058,9 @@ func (provider *VolcengineProvider) VideoRemix(_ *schemas.BifrostContext, _ sche
 }
 
 func (provider *VolcengineProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+	if err := provider.allowed(schemas.FileUploadRequest); err != nil {
+		return nil, err
+	}
 	if len(request.File) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("file content is required", nil)
 	}
@@ -1091,6 +1148,9 @@ func (provider *VolcengineProvider) FileUpload(ctx *schemas.BifrostContext, key 
 }
 
 func (provider *VolcengineProvider) FileList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
+	if err := provider.allowed(schemas.FileListRequest); err != nil {
+		return nil, err
+	}
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("no keys provided", nil)
 	}
@@ -1205,6 +1265,9 @@ func (provider *VolcengineProvider) FileList(ctx *schemas.BifrostContext, keys [
 }
 
 func (provider *VolcengineProvider) FileRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+	if err := provider.allowed(schemas.FileRetrieveRequest); err != nil {
+		return nil, err
+	}
 	if request.FileID == "" {
 		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil)
 	}
@@ -1214,6 +1277,10 @@ func (provider *VolcengineProvider) FileRetrieve(ctx *schemas.BifrostContext, ke
 	escapedFileID, idErr := providerUtils.EscapeResourceID(request.FileID, "file_id")
 	if idErr != nil {
 		return nil, idErr
+	}
+	requestURL, urlErr := providerUtils.ResourceRequestURL(provider.networkConfig.BaseURL, providerUtils.GetPathFromContext(ctx, fmt.Sprintf("%s/%s", volcenginePathFiles, escapedFileID)), provider.customProviderConfig, escapedFileID, schemas.FileRetrieveRequest)
+	if urlErr != nil {
+		return nil, urlErr
 	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
@@ -1225,7 +1292,7 @@ func (provider *VolcengineProvider) FileRetrieve(ctx *schemas.BifrostContext, ke
 		resp := fasthttp.AcquireResponse()
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, fmt.Sprintf("%s/%s", volcenginePathFiles, escapedFileID)))
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 		if key.Value.GetValue() != "" {
@@ -1274,6 +1341,9 @@ func (provider *VolcengineProvider) FileRetrieve(ctx *schemas.BifrostContext, ke
 }
 
 func (provider *VolcengineProvider) FileDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+	if err := provider.allowed(schemas.FileDeleteRequest); err != nil {
+		return nil, err
+	}
 	if request.FileID == "" {
 		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil)
 	}
@@ -1283,6 +1353,10 @@ func (provider *VolcengineProvider) FileDelete(ctx *schemas.BifrostContext, keys
 	escapedFileID, idErr := providerUtils.EscapeResourceID(request.FileID, "file_id")
 	if idErr != nil {
 		return nil, idErr
+	}
+	requestURL, urlErr := providerUtils.ResourceRequestURL(provider.networkConfig.BaseURL, providerUtils.GetPathFromContext(ctx, fmt.Sprintf("%s/%s", volcenginePathFiles, escapedFileID)), provider.customProviderConfig, escapedFileID, schemas.FileDeleteRequest)
+	if urlErr != nil {
+		return nil, urlErr
 	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
@@ -1294,7 +1368,7 @@ func (provider *VolcengineProvider) FileDelete(ctx *schemas.BifrostContext, keys
 		resp := fasthttp.AcquireResponse()
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, fmt.Sprintf("%s/%s", volcenginePathFiles, escapedFileID)))
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
 		if key.Value.GetValue() != "" {
@@ -1359,6 +1433,9 @@ func (provider *VolcengineProvider) FileDelete(ctx *schemas.BifrostContext, keys
 }
 
 func (provider *VolcengineProvider) FileContent(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
+	if err := provider.allowed(schemas.FileContentRequest); err != nil {
+		return nil, err
+	}
 	if request.FileID == "" {
 		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil)
 	}
@@ -1369,6 +1446,10 @@ func (provider *VolcengineProvider) FileContent(ctx *schemas.BifrostContext, key
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := providerUtils.ResourceRequestURL(provider.networkConfig.BaseURL, providerUtils.GetPathFromContext(ctx, fmt.Sprintf("%s/%s/content", volcenginePathFiles, escapedFileID)), provider.customProviderConfig, escapedFileID, schemas.FileContentRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
@@ -1376,7 +1457,7 @@ func (provider *VolcengineProvider) FileContent(ctx *schemas.BifrostContext, key
 		resp := fasthttp.AcquireResponse()
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, fmt.Sprintf("%s/%s/content", volcenginePathFiles, escapedFileID)))
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodGet)
 		if key.Value.GetValue() != "" {
 			req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
