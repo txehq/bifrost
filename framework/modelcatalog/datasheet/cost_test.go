@@ -9522,6 +9522,24 @@ func TestBatchCost_ImageLinesTakeTheImageBatchRates(t *testing.T) {
 	require.True(t, got.Priced)
 	assert.InDelta(t, 100*1.5e-07+10*1.25e-06+1290*1.5e-05, got.Cost, 1e-12)
 
+	// A result with no modality breakdown (usageMetadata without candidatesTokensDetails) prices
+	// its aggregate output tokens as image tokens, as the synchronous image path does; reasoning
+	// tokens alone are no breakdown. A breakdown with text and no image tokens prices them as text.
+	for _, tc := range []struct {
+		name    string
+		details *schemas.ChatCompletionTokensDetails
+		want    float64
+	}{
+		{"no details", nil, 100*1.5e-07 + 1300*1.5e-05},
+		{"reasoning only", &schemas.ChatCompletionTokensDetails{ReasoningTokens: 200}, 100*1.5e-07 + 1300*1.5e-05},
+		{"text only", &schemas.ChatCompletionTokensDetails{TextTokens: 1300}, 100*1.5e-07 + 1300*1.25e-06},
+	} {
+		aggregate := &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 1300, TotalTokens: 1400, CompletionTokensDetails: tc.details}
+		got := s.CalculateBatchCostDetailsForUsage(aggregate, schemas.Gemini, "gemini-2.5-flash-image", schemas.ImageGenerationRequest, nil)
+		require.True(t, got.Priced, tc.name)
+		assert.InDelta(t, tc.want, got.Cost, 1e-12, tc.name)
+	}
+
 	// A row priced per image has no token rate for the image tokens: still unpriced.
 	perImage := batchStore(t, "openai", "dall-e-3", "image_generation", `{"provider": "openai", "mode": "image_generation", "output_cost_per_image": 0.04}`)
 	assert.False(t, perImage.CalculateBatchCostDetailsForUsage(usage, schemas.OpenAI, "dall-e-3", schemas.ImageGenerationRequest, nil).Priced)
