@@ -6,26 +6,20 @@ type BytePlusError struct {
 	Message string `json:"message"`
 }
 
-// BytePlusSequentialImageOptions bounds a Seedream sequential (group) generation.
-type BytePlusSequentialImageOptions struct {
-	MaxImages int `json:"max_images"`
-}
-
 // BytePlusImageGenerationRequest is the body for POST /api/v3/images/generations.
 type BytePlusImageGenerationRequest struct {
-	Model                            string                          `json:"model"`
-	Prompt                           string                          `json:"prompt"`
-	Image                            []string                        `json:"image,omitempty"` // reference images as URLs or data URIs
-	Size                             *string                         `json:"size,omitempty"`  // "WIDTHxHEIGHT" or a tier such as "2K"
-	Seed                             *int                            `json:"seed,omitempty"`
-	ResponseFormat                   *string                         `json:"response_format,omitempty"` // "url" or "b64_json"
-	OutputFormat                     *string                         `json:"output_format,omitempty"`
-	Background                       *string                         `json:"background,omitempty"` // "transparent", "opaque", "auto"
-	Watermark                        *bool                           `json:"watermark,omitempty"`
-	SequentialImageGeneration        *string                         `json:"sequential_image_generation,omitempty"` // "auto" or "disabled"
-	SequentialImageGenerationOptions *BytePlusSequentialImageOptions `json:"sequential_image_generation_options,omitempty"`
-	Stream                           *bool                           `json:"stream,omitempty"`
-	ExtraParams                      map[string]interface{}          `json:"-"`
+	Model                     string                 `json:"model"`
+	Prompt                    string                 `json:"prompt"`
+	Image                     []string               `json:"image,omitempty"` // reference images as URLs or data URIs
+	Size                      *string                `json:"size,omitempty"`  // "WIDTHxHEIGHT" or a tier such as "2K"
+	Seed                      *int                   `json:"seed,omitempty"`
+	ResponseFormat            *string                `json:"response_format,omitempty"` // "url" or "b64_json"
+	OutputFormat              *string                `json:"output_format,omitempty"`
+	Background                *string                `json:"background,omitempty"` // "transparent", "opaque", "auto"
+	Watermark                 *bool                  `json:"watermark,omitempty"`
+	SequentialImageGeneration *string                `json:"sequential_image_generation,omitempty"` // "auto" or "disabled"
+	Stream                    *bool                  `json:"stream,omitempty"`
+	ExtraParams               map[string]interface{} `json:"-"`
 }
 
 func (r *BytePlusImageGenerationRequest) GetExtraParams() map[string]interface{} {

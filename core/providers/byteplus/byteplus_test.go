@@ -436,15 +436,15 @@ func TestToBytePlusImageGenerationRequest(t *testing.T) {
 			InputImages:    []string{"https://example.com/ref.png"},
 			ExtraParams: map[string]interface{}{
 				"watermark": false, "guidance_scale": 5.5,
-				"sequential_image_generation": "auto", "sequential_image_generation_options": map[string]interface{}{"max_images": 3},
+				"sequential_image_generation": "disabled",
 			},
 		},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if req.SequentialImageGeneration == nil || *req.SequentialImageGeneration != "auto" || req.SequentialImageGenerationOptions == nil || req.SequentialImageGenerationOptions.MaxImages != 3 {
-		t.Errorf("Seedream's own group-generation fields should be lifted: %+v %+v", req.SequentialImageGeneration, req.SequentialImageGenerationOptions)
+	if req.SequentialImageGeneration == nil || *req.SequentialImageGeneration != "disabled" {
+		t.Errorf("Seedream's group switch, set to disabled, should be lifted: %+v", req.SequentialImageGeneration)
 	}
 	if req.Size == nil || *req.Size != "2048x2048" || req.ResponseFormat == nil || *req.ResponseFormat != "b64_json" {
 		t.Errorf("size/response_format not mapped: %+v %+v", req.Size, req.ResponseFormat)
@@ -498,30 +498,6 @@ func TestBytePlusImageGenerationAndEdit(t *testing.T) {
 }
 
 // background is a typed OpenAI-shaped field, so the HTTP layer never puts it in ExtraParams.
-// A sequential_image_generation_options value that does not decode is left for Ark to judge.
-func TestToBytePlusImageGenerationRequestPassesUndecodableSequentialOptions(t *testing.T) {
-	for name, invalid := range map[string]interface{}{"string": "bogus", "zero max_images": map[string]interface{}{"max_images": 0}} {
-		t.Run(name, func(t *testing.T) {
-			req, err := byteplus.ToBytePlusImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
-				Model: "seedream-4-5-251128",
-				Input: &schemas.ImageGenerationInput{Prompt: "a cat"},
-				Params: &schemas.ImageGenerationParameters{
-					ExtraParams: map[string]interface{}{"sequential_image_generation_options": invalid},
-				},
-			})
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if req.SequentialImageGenerationOptions != nil {
-				t.Errorf("an undecodable value must not become typed options: %+v", req.SequentialImageGenerationOptions)
-			}
-			if _, ok := req.ExtraParams["sequential_image_generation_options"]; !ok {
-				t.Errorf("the caller's value should pass through to Ark: %v", req.ExtraParams)
-			}
-		})
-	}
-}
-
 func TestBytePlusImageTypedBackgroundReachesArk(t *testing.T) {
 	gen, err := byteplus.ToBytePlusImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
 		Model:  "dola-seedream-5-0-pro-260628",
@@ -913,9 +889,6 @@ func TestBytePlusImageGenerationStream(t *testing.T) {
 		Provider: schemas.BytePlus,
 		Model:    "seedream-4-5-251128",
 		Input:    &schemas.ImageGenerationInput{Prompt: "four seasons"},
-		Params: &schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{
-			"sequential_image_generation": "auto", "sequential_image_generation_options": map[string]interface{}{"max_images": 3},
-		}},
 	})
 	if bifrostErr != nil {
 		t.Fatalf("ImageGenerationStream error: %+v", bifrostErr.Error)
@@ -923,8 +896,8 @@ func TestBytePlusImageGenerationStream(t *testing.T) {
 	chunks := drainStream(t, stream)
 
 	body := captured()[0].body
-	if !gjson.GetBytes(body, "stream").Bool() || gjson.GetBytes(body, "sequential_image_generation").String() != "auto" {
-		t.Errorf("stream and sequential generation should be sent, got %s", body)
+	if !gjson.GetBytes(body, "stream").Bool() || gjson.GetBytes(body, "sequential_image_generation").Exists() {
+		t.Errorf("stream should be sent, and no group generation, got %s", body)
 	}
 	if len(chunks) != 3 {
 		t.Fatalf("want 2 image chunks and 1 completed chunk, got %d", len(chunks))
@@ -2059,9 +2032,6 @@ func TestBytePlusImageGenerationPartlyRefusedReportsContentFilter(t *testing.T) 
 		Provider: schemas.BytePlus,
 		Model:    "seedream-4-5-251128",
 		Input:    &schemas.ImageGenerationInput{Prompt: "four seasons"},
-		Params: &schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{
-			"sequential_image_generation": "auto", "sequential_image_generation_options": map[string]interface{}{"max_images": 3},
-		}},
 	})
 	if bifrostErr != nil {
 		t.Fatalf("partly refused should be a 200, got %+v", bifrostErr.Error)
@@ -2152,6 +2122,11 @@ func TestBytePlusImageUnsupportedFieldsAreRefusedBeforeArk(t *testing.T) {
 		{"resolution", &schemas.ImageGenerationParameters{Size: schemas.Ptr("2048x2048"), Resolution: "2K"}, &schemas.ImageEditParameters{Size: schemas.Ptr("2048x2048"), Resolution: "2K"}},
 		// A Go SDK caller may send the tier only as an extra param, which bytePlusImageSize also reads.
 		{"resolution", &schemas.ImageGenerationParameters{Size: schemas.Ptr("2048x2048"), ExtraParams: map[string]interface{}{"resolution": "2K"}}, &schemas.ImageEditParameters{Size: schemas.Ptr("2048x2048"), ExtraParams: map[string]interface{}{"resolution": "2K"}}},
+		// Seedream's group fields set how many images are made: the count is n alone, which must be 1 (TXE-6605 B3, TXE-7124).
+		{"sequential_image_generation", &schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{"sequential_image_generation": "auto"}}, &schemas.ImageEditParameters{ExtraParams: map[string]interface{}{"sequential_image_generation": "auto"}}},
+		{"sequential_image_generation", &schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{"sequential_image_generation": "auto", "sequential_image_generation_options": map[string]interface{}{"max_images": 3}}}, &schemas.ImageEditParameters{ExtraParams: map[string]interface{}{"sequential_image_generation": "auto", "sequential_image_generation_options": map[string]interface{}{"max_images": 3}}}},
+		{"sequential_image_generation_options.max_images", &schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{"sequential_image_generation_options": map[string]interface{}{"max_images": 4}}}, &schemas.ImageEditParameters{ExtraParams: map[string]interface{}{"sequential_image_generation_options": map[string]interface{}{"max_images": 4}}}},
+		{"sequential_image_generation_options", &schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{"sequential_image_generation_options": "bogus"}}, &schemas.ImageEditParameters{ExtraParams: map[string]interface{}{"sequential_image_generation_options": "bogus"}}},
 	}
 	provider, captured, _ := newMockBytePlus(t, nil)
 	ctx := testContext(t)
@@ -2185,6 +2160,10 @@ func TestBytePlusImageUnsupportedFieldsAreRefusedBeforeArk(t *testing.T) {
 	// The converter refuses the same requests for a caller that skips the entry points.
 	if _, err := byteplus.ToBytePlusImageGenerationRequest(&schemas.BifrostImageGenerationRequest{Model: "m", Input: &schemas.ImageGenerationInput{Prompt: "a"}, Params: &schemas.ImageGenerationParameters{N: schemas.Ptr(3)}}); err == nil {
 		t.Error("converter should refuse n=3 rather than send up to 3 images")
+	}
+	// Group generation switched off, or empty options, ask for no group and are taken.
+	if bifrostErr := byteplus.ValidateBytePlusImageParams(&schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{"sequential_image_generation": "disabled", "sequential_image_generation_options": map[string]interface{}{}}}, nil); bifrostErr != nil {
+		t.Errorf("sequential_image_generation disabled should pass, got %+v", bifrostErr.Error)
 	}
 	// n=1, seed and an "auto" size are taken.
 	if bifrostErr := byteplus.ValidateBytePlusImageParams(&schemas.ImageGenerationParameters{N: schemas.Ptr(1), Seed: schemas.Ptr(7), Size: schemas.Ptr("auto"), Resolution: "2K"}, nil); bifrostErr != nil {

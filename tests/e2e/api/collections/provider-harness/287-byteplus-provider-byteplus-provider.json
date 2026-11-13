@@ -625,18 +625,18 @@
       }
     },
     {
-      "name": "/v1/images/generations stream - each Seedream image arrives as its own event - byteplus/seedream-4-5-251128",
+      "name": "/v1/images/generations stream - the Seedream image arrives as its own event - byteplus/seedream-4-5-251128",
       "event": [
         {
           "listen": "test",
           "script": {
             "type": "text/javascript",
             "exec": [
-              "pm.test('stream relays every image and ends with completed', function () {",
+              "pm.test('stream relays the image and ends with completed', function () {",
               "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
               "  var text = pm.response.text();",
               "  var partials = text.match(/\"type\":\"image_generation\\.partial_image\"/g) || [];",
-              "  pm.expect(partials.length, 'Seedream returns up to max_images=2 images, at least one: ' + text.slice(0, 500)).to.be.within(1, 2);",
+              "  pm.expect(partials.length, 'one image asked for, one partial_image event: ' + text.slice(0, 500)).to.equal(1);",
               "  var completed = text.split('\\n').filter(function (l) { return l.indexOf('data:') === 0 && l.indexOf('\"type\":\"image_generation.completed\"') !== -1; }).map(function (l) { return JSON.parse(l.slice(5)); })[0];",
               "  pm.expect(completed && completed.usage, 'the completed event carries usage: ' + text.slice(-500)).to.be.an('object');",
               "  pm.expect(completed.usage.output_images, 'every delivered image was relayed: completed usage.output_images equals the partial_image events: ' + text.slice(-500)).to.equal(partials.length);",
@@ -659,7 +659,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"model\": \"byteplus/seedream-4-5-251128\",\n  \"prompt\": \"The same lighthouse in spring and in winter\",\n  \"size\": \"2048x2048\",\n  \"sequential_image_generation\": \"auto\",\n  \"sequential_image_generation_options\": {\n    \"max_images\": 2\n  },\n  \"stream\": true\n}"
+          "raw": "{\n  \"model\": \"byteplus/seedream-4-5-251128\",\n  \"prompt\": \"A lighthouse in winter\",\n  \"size\": \"2048x2048\",\n  \"stream\": true\n}"
         },
         "url": {
           "raw": "{{baseUrl}}/v1/images/generations",
