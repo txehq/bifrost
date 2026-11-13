@@ -961,7 +961,11 @@ test("seedream answers a 200 that mixes delivered images with per-image refusals
   assert.equal(all.usage.generated_images, 0);
   const empty = await (await post({ model: "seedream-empty", prompt: "p" }, path)).json();
   assert.deepEqual(empty.data, []);
-  assert.equal((await post({ model: "seedream-unknown", prompt: "p" }, path)).status, 404);
+  // A model with no named answer gets one delivered image with Ark's creation time (folder 436, TXE-7051).
+  const other = await (await post({ model: "seedream-4-0-250828", prompt: "p" }, path)).json();
+  assert.equal(other.created, 1762000000);
+  assert.equal(other.data.length, 1);
+  assert.ok(other.data[0].url);
   const internal = await post({ model: "seedream-internal-error", prompt: "p" }, path);
   assert.equal(internal.status, 200);
   assert.equal((await internal.json()).data[0].error.code, "InternalServiceError");

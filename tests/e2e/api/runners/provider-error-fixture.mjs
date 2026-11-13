@@ -1065,7 +1065,9 @@ const seedreamAnswer = (body) => {
 	const refused = seedreamHTTPErrors[body.model];
 	if (refused) return { status: 400, body: JSON.stringify({ error: { ...refused, param: "", type: "BadRequest" } }) };
 	const answer = seedreamAnswers[body.model];
-	if (!answer) return { status: 404, body: errorBody(`unknown fixture model ${body.model}`, "invalid_request_error", "model_not_found") };
+	// Any other model gets one delivered image with Ark's own creation time, which an image link's expiry is
+	// counted from (folder 436, TXE-7051).
+	if (!answer) return { status: 200, body: JSON.stringify({ model: body.model, created: 1762000000, data: [{ url: "https://delivery.example.test/seedream/1.jpeg?Expires=1", size: "2048x2048" }], usage: { generated_images: 1, output_tokens: 16384, total_tokens: 16384 } }) };
 	const result = answer();
 	if (body.stream === true) return { status: 200, stream: seedreamStream(body.model, result) };
 	return { status: 200, body: JSON.stringify({ model: body.model, created: 1, ...result }) };
@@ -1130,20 +1132,17 @@ const wireAnswer = (path, body, bytes) => {
 	if (path === "/pp/minimax/v1/chat/completions" && body.model === "sensitive-flags") return miniMaxSensitiveChatAnswer(body);
 	if (path === "/pp/minimax/v1/responses") return miniMaxResponsesAnswer(body);
 	if (path === "/anthropic/v1/messages") return { status: 200, body: JSON.stringify(anthropicMessage(body.model)) };
-	// A delivered Seedream image, TXE-7051: ModelArk serves generation and edit on one endpoint and reports its own
-	// creation time, which the expiry is counted from.
-	if (path === "/pp/byteplus/api/v3/images/generations") {
-		return { status: 200, body: JSON.stringify({ model: body.model, created: 1762000000, data: [{ url: "https://delivery.example.test/seedream/1.jpeg?Expires=1", size: "2048x2048" }], usage: { generated_images: 1, output_tokens: 16384, total_tokens: 16384 } }) };
-	}
 	// A delivered MiniMax image, TXE-7051: links by default, bytes when the body asks for base64. MiniMax's image
 	// body carries no creation time.
+	// Seedream generation and edit share Ark's one endpoint: the named fixture models of folder 312 (TXE-6605), and a
+	// delivered image for any other model (TXE-7051).
+	if (path === "/pp/byteplus/api/v3/images/generations") return seedreamAnswer(body);
 	if (path === "/pp/minimax/v1/image_generation") {
 		const data = body.response_format === "base64" ? { image_base64: ["iVBORw0KGgo="] } : { image_urls: ["https://delivery.example.test/minimax/1.png?Expires=1"] };
 		return { status: 200, body: JSON.stringify({ id: "fixture-minimax-image", data, metadata: { success_count: "1", failed_count: "0" }, base_resp: { status_code: 0, status_msg: "success" } }) };
 	}
 	if (path === "/pp/vercel/v1/images/generations") return { status: 200, body: JSON.stringify(vercelImageAnswer(body)) };
 	if (path === "/pp/google-cloud-tts/v1/text:synthesize") return cloudTTSAnswer(body);
-	if (path === "/pp/byteplus/api/v3/images/generations") return seedreamAnswer(body);
 	if (path === "/pp/cp/v1/responses") return cpResponsesAnswerFor(body);
 	if (path === "/pp/cloudflare/accounts/acct-1/ai/v1/chat/completions") return cpCloudflareChat(body);
 	// TXE-6967: xAI reports its charge as cost_in_usd_ticks; upstream-usage-extended answers with it on chat and
