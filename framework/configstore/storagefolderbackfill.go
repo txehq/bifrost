@@ -74,10 +74,12 @@ func foldersAbove(folder string) []string {
 }
 
 // exclusiveBatchOutputFolders returns, from the output folders of every recorded batch by key,
-// the ones the backfill may claim: named by one key only, with no other key's folder inside or
-// around them. Of one key's nested folders only the outermost claimable one is kept; it
-// covers the rest.
-func exclusiveBatchOutputFolders(byFolder map[string]map[string]struct{}) map[string]string {
+// the ones the backfill claims: named by one key only, with no other key's folder inside or
+// around them, and passing claimable (the checks against what is already recorded), which also
+// makes the claim. Folders go in byte order, so an ancestor is decided before what lies in it,
+// and of one key's nested folders only one that was actually claimed covers the rest: a folder
+// whose ancestor failed claimable is still tried on its own.
+func exclusiveBatchOutputFolders(byFolder map[string]map[string]struct{}, claimable func(folder, vk string) (bool, error)) (map[string]string, error) {
 	folders := make([]string, 0, len(byFolder))
 	for folder := range byFolder {
 		folders = append(folders, folder)
@@ -122,11 +124,18 @@ func exclusiveBatchOutputFolders(byFolder map[string]map[string]struct{}) map[st
 				covered = true
 			}
 		}
-		if !conflict && !covered {
+		if conflict || covered {
+			continue
+		}
+		ok, err := claimable(folder, vk)
+		if err != nil {
+			return keep, err
+		}
+		if ok {
 			keep[folder] = vk
 		}
 	}
-	return keep
+	return keep, nil
 }
 
 // migrationBackfillBatchOutputFolders runs the backfill once.
@@ -183,23 +192,17 @@ func backfillBatchOutputFolders(ctx context.Context, db *gorm.DB) (int, error) {
 	}
 	claimed := 0
 	kinds := []string{tables.ProviderObjectKindFile, tables.ProviderObjectKindStorageFolder}
-	for folder, vk := range exclusiveBatchOutputFolders(byFolder) {
+	_, err = exclusiveBatchOutputFolders(byFolder, func(folder, vk string) (bool, error) {
 		above, err := store.GetProviderObjectsByObjectIDs(ctx, tables.ProviderObjectKindStorageFolder, foldersAbove(folder))
-		if err != nil {
-			return claimed, err
-		}
-		if len(above) > 0 {
-			continue
+		if err != nil || len(above) > 0 {
+			return false, err
 		}
 		foreign, err := store.HasForeignProviderObjectUnderPrefix(ctx, kinds, folder, vk)
 		if err == nil && !foreign {
 			foreign, err = store.HasForeignProviderJobFileUnderPrefix(ctx, folder, vk)
 		}
-		if err != nil {
-			return claimed, err
-		}
-		if foreign {
-			continue
+		if err != nil || foreign {
+			return false, err
 		}
 		provider := tables.StorageFolderProvider(folder)
 		inserted, err := store.InsertProviderObject(ctx, &tables.TableProviderObject{
@@ -210,13 +213,17 @@ func backfillBatchOutputFolders(ctx context.Context, db *gorm.DB) (int, error) {
 			VirtualKeyID: vk,
 		})
 		if err != nil {
-			return claimed, err
+			return false, err
 		}
 		if inserted {
 			claimed++
+			return true, nil
 		}
-	}
-	return claimed, nil
+		// Another writer took the folder between the checks and the insert; it covers nothing
+		// for this key.
+		return false, nil
+	})
+	return claimed, err
 }
 
 func derefJobString(value *string) string {

@@ -48,15 +48,18 @@ func TestBackfillBatchOutputFolders(t *testing.T) {
 			job("gs://b/mine/p/", "vk-a")         // a folder of the key's is above it already
 			job("gs://b/theirs/p/", "vk-a")       // another key's folder is above it
 			job("gs://b/upload-under/", "vk-a")   // another key uploaded a file inside it
+			job("gs://b/up2/", "vk-a")            // another key uploaded inside it ...
+			job("gs://b/up2/mine/", "vk-a")       // ... so this inner folder of the key is claimed on its own
 			job("gs://b/nobody/", "")             // no key
 			job("file-openai-output", "vk-a")     // not object storage
 			object(tables.ProviderObjectKindStorageFolder, "gs://b/mine/", "vk-a")
 			object(tables.ProviderObjectKindStorageFolder, "gs://b/theirs/", "vk-b")
 			object(tables.ProviderObjectKindFile, "gs://b/upload-under/f.jsonl", "vk-b")
+			object(tables.ProviderObjectKindFile, "gs://b/up2/theirs.jsonl", "vk-b")
 
 			claimed, err := backfillBatchOutputFolders(ctx, store.DB())
 			require.NoError(t, err)
-			assert.Equal(t, 2, claimed)
+			assert.Equal(t, 3, claimed)
 			rows, _, err := store.ListProviderObjects(ctx, ProviderObjectQuery{Kind: tables.ProviderObjectKindStorageFolder})
 			require.NoError(t, err)
 			got := map[string]string{}
@@ -66,6 +69,7 @@ func TestBackfillBatchOutputFolders(t *testing.T) {
 			assert.Equal(t, map[string]string{
 				"gs://b/a/prediction-1/": "vk-a",
 				"gs://b/a2/":             "vk-a",
+				"gs://b/up2/mine/":       "vk-a",
 				"gs://b/mine/":           "vk-a",
 				"gs://b/theirs/":         "vk-b",
 			}, got)
@@ -106,16 +110,34 @@ func TestExclusiveBatchOutputFoldersKeepsAnInnerFolderUnderAnUnclaimableOne(t *t
 		}
 		return out
 	}
-	got := exclusiveBatchOutputFolders(map[string]map[string]struct{}{
+	all := func(string, string) (bool, error) { return true, nil }
+	got, err := exclusiveBatchOutputFolders(map[string]map[string]struct{}{
 		"gs://b/out/":      named("vk-a"),
 		"gs://b/out/a/":    named("vk-a"),
 		"gs://b/out/a/x/":  named("vk-a"),
 		"gs://b/out/b/":    named("vk-b"),
 		"gs://b/mine/":     named("vk-a"),
 		"gs://b/mine/sub/": named("vk-a"),
-	})
+	}, all)
+	require.NoError(t, err)
 	assert.Equal(t, map[string]string{
 		"gs://b/out/a/": "vk-a",
 		"gs://b/mine/":  "vk-a",
 	}, got, "out/b/ lies in a folder another key's batch wrote into, so it is left alone")
+}
+
+// A folder that fails the checks against what is recorded (another key's upload lies inside it)
+// covers nothing, so the same key's folder inside it is claimed on its own.
+func TestExclusiveBatchOutputFoldersTriesAnInnerFolderWhenItsAncestorFailsTheChecks(t *testing.T) {
+	var tried []string
+	got, err := exclusiveBatchOutputFolders(map[string]map[string]struct{}{
+		"gs://b/out/":   {"vk-a": {}},
+		"gs://b/out/a/": {"vk-a": {}},
+	}, func(folder, _ string) (bool, error) {
+		tried = append(tried, folder)
+		return folder != "gs://b/out/", nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"gs://b/out/", "gs://b/out/a/"}, tried, "the ancestor first")
+	assert.Equal(t, map[string]string{"gs://b/out/a/": "vk-a"}, got)
 }
