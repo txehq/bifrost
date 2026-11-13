@@ -224,7 +224,7 @@ func TestHydrateBillingChunkFetchesOnlyWhenRequired(t *testing.T) {
 		}
 		require.NoError(t, entry.SerializeFields())
 		require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-		waitForOffload(t, inner, "resident-1")
+		waitForOffload(t, hybrid, inner, "resident-1")
 
 		result, err := hybrid.SearchLogsForBilling(ctx, SearchFilters{}, PaginationOptions{Limit: 10})
 		require.NoError(t, err)
@@ -252,7 +252,7 @@ func TestHydrateBillingChunkFetchesOnlyWhenRequired(t *testing.T) {
 		}
 		require.NoError(t, entry.SerializeFields())
 		require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-		waitForOffload(t, inner, "hidden-1")
+		waitForOffload(t, hybrid, inner, "hidden-1")
 
 		result, err := hybrid.SearchLogsForBilling(ctx, SearchFilters{}, PaginationOptions{Limit: 10})
 		require.NoError(t, err)
@@ -280,7 +280,7 @@ func TestHydrateBillingChunkFetchesOnlyWhenRequired(t *testing.T) {
 		}
 		require.NoError(t, entry.SerializeFields())
 		require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-		waitForOffload(t, inner, "hidden-legacy-1")
+		waitForOffload(t, hybrid, inner, "hidden-legacy-1")
 		// Reproduce the old write path, which blanked pricing metadata along with the
 		// rest of the payload.
 		require.NoError(t, inner.Update(ctx, "hidden-legacy-1", map[string]interface{}{
@@ -311,7 +311,7 @@ func TestHydrateBillingChunkFetchesOnlyWhenRequired(t *testing.T) {
 		}
 		require.NoError(t, entry.SerializeFields())
 		require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-		waitForOffload(t, inner, "offloaded-1")
+		waitForOffload(t, hybrid, inner, "offloaded-1")
 		require.NoError(t, inner.Update(ctx, "offloaded-1", map[string]interface{}{
 			"token_usage": "",
 			"cache_debug": "",
@@ -342,7 +342,7 @@ func TestHydrateBillingChunkFetchesOnlyWhenRequired(t *testing.T) {
 		}
 		require.NoError(t, entry.SerializeFields())
 		require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-		waitForOffload(t, inner, "idem-1")
+		waitForOffload(t, hybrid, inner, "idem-1")
 		require.NoError(t, inner.Update(ctx, "idem-1", map[string]interface{}{
 			"token_usage": "",
 			"cache_debug": "",
@@ -382,7 +382,7 @@ func TestBackfillMakesLaterHydrationFetchFree(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForOffload(t, inner, "converge-1")
+	waitForOffload(t, hybrid, inner, "converge-1")
 	require.NoError(t, inner.Update(ctx, "converge-1", map[string]interface{}{
 		"token_usage": "",
 		"cache_debug": "",

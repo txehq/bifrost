@@ -70,7 +70,7 @@ func TestHybrid_ExcludeRequestTypes_Create(t *testing.T) {
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, newRequestTypeTestLog(t, "lm-2", string(schemas.ListModelsRequest))))
 	require.NoError(t, hybrid.Create(ctx, newRequestTypeTestLog(t, "chat-1", string(schemas.ChatCompletionRequest))))
 
-	waitForOffload(t, inner, "chat-1")
+	waitForOffload(t, hybrid, inner, "chat-1")
 	assert.Equal(t, 1, objStore.Len(), "only the non-excluded log should reach object storage")
 
 	assertKeptInDB(t, hybrid, inner, "lm-1")
@@ -101,8 +101,8 @@ func TestHybrid_ExcludeRequestTypes_BatchCreate(t *testing.T) {
 	assert.Equal(t, "hello chat-1", chat1.ContentSummary)
 	assert.Equal(t, "hello chat-2", chat2.ContentSummary)
 
-	waitForOffload(t, inner, "chat-1")
-	waitForOffload(t, inner, "chat-2")
+	waitForOffload(t, hybrid, inner, "chat-1")
+	waitForOffload(t, hybrid, inner, "chat-2")
 	assert.Equal(t, 2, objStore.Len())
 	for _, key := range objStore.Keys() {
 		var payload map[string]string
@@ -129,6 +129,7 @@ func TestHybrid_ExcludeRequestTypes_VisibleLogKeepsSearchSummary(t *testing.T) {
 
 	require.NoError(t, hybrid.Create(ctx, newRequestTypeTestLog(t, "lm-1", string(schemas.ListModelsRequest))))
 	require.NoError(t, hybrid.BatchCreateIfNotExists(ctx, []*Log{newRequestTypeTestLog(t, "lm-2", string(schemas.ListModelsRequest))}))
+	waitForUploadsSettled(t, hybrid)
 
 	for _, id := range []string{"lm-1", "lm-2"} {
 		row, err := inner.FindByID(ctx, id)
@@ -152,7 +153,7 @@ func TestHybrid_ExcludeRequestTypes_HiddenContentStillOffloaded(t *testing.T) {
 	require.NoError(t, hybrid.BatchCreateIfNotExists(ctx, []*Log{batched}))
 
 	for _, id := range []string{"hidden-1", "hidden-2"} {
-		waitForOffload(t, inner, id)
+		waitForOffload(t, hybrid, inner, id)
 		row, err := inner.FindByID(ctx, id)
 		require.NoError(t, err)
 		assert.True(t, row.ContentHidden)

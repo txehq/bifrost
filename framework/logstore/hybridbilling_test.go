@@ -56,7 +56,7 @@ func seedOffloadedBillingLog(t *testing.T, hybrid *HybridLogStore, inner LogStor
 	// Wait for has_object, not just the object: SearchLogsForBilling branches on
 	// that flag to decide whether a row needs hydrating, and processUpload commits
 	// it only after the Put.
-	waitForOffload(t, inner, id)
+	waitForOffload(t, hybrid, inner, id)
 	// Simulate a legacy row written before pricing metadata became unconditionally
 	// DB-resident. The retained object still has the original payload.
 	require.NoError(t, inner.Update(context.Background(), id, map[string]interface{}{
@@ -223,7 +223,7 @@ func TestHybrid_HydrateBillingChunkSkipsRowsThatNeedNothing(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForOffload(t, inner, "skip-1")
+	waitForOffload(t, hybrid, inner, "skip-1")
 
 	dbRow, err := inner.FindByID(ctx, "skip-1")
 	require.NoError(t, err)
@@ -279,7 +279,7 @@ func TestHybrid_HydrateBillingChunkKeepsModalityRowWithoutTokenUsage(t *testing.
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForOffload(t, inner, "speech-nousage-1")
+	waitForOffload(t, hybrid, inner, "speech-nousage-1")
 	require.Equal(t, 1, objStore.Len())
 
 	// Precondition: the payload really did leave the row, so the hydration below is doing

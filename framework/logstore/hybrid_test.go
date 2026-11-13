@@ -3,7 +3,13 @@ package logstore
 import (
 	"context"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -51,12 +57,29 @@ func newTestHybrid(t *testing.T) (*HybridLogStore, LogStore, *objectstore.InMemo
 	return hybrid, inner, objStore
 }
 
-// waitForUploads waits until done reports the upload state the test needs. A test that
-// needs every upload finished checks outstandingUploads, which counts the upload a
-// worker has taken off its queue; the queues' lengths alone do not (TXE-7315).
-func waitForUploads(t *testing.T, done func() bool) {
+// waitForUploads waits until done reports the upload state the test needs AND every
+// accepted upload has run to the end of processUpload (outstandingUploads is zero).
+//
+// processUpload Puts the object, deletes a replaced copy, and only then commits
+// has_object, so an object-store condition such as objStore.Len() == 1 holds while the
+// row still says has_object=false. A wait on that alone returned mid-upload and the read
+// after it saw an unhydrated row (TXE-7348, TestHybrid_CreateAndFindMCPToolLog; TXE-7315
+// was the same race on the Agent log path). Requiring outstandingUploads() == 0 here
+// makes every wait in the package wait for the whole upload, whatever done checks.
+// TestHybridReadsWaitForUploads fails a test that reads after an upload-enqueuing write
+// without one of these waits.
+func waitForUploads(t *testing.T, h *HybridLogStore, done func() bool) {
 	t.Helper()
-	testtime.Eventually(t, testtime.Scale(5*time.Second), "upload state", done)
+	testtime.Eventually(t, testtime.Scale(5*time.Second), "upload state", func() bool {
+		return done() && h.outstandingUploads() == 0
+	})
+}
+
+// waitForUploadsSettled waits until every accepted upload has finished. Use it before
+// asserting that a write uploaded nothing, or before a read that needs no other state.
+func waitForUploadsSettled(t *testing.T, h *HybridLogStore) {
+	t.Helper()
+	waitForUploads(t, h, func() bool { return true })
 }
 
 // waitForOffload waits until the offload is fully complete for id: the payload is in
@@ -66,9 +89,9 @@ func waitForUploads(t *testing.T, done func() bool) {
 // waiting on the object store alone returns while the DB flag is still false. Any test
 // that reads has_object — or exercises a code path that branches on it, such as billing
 // hydration — must wait for the flag, not just the object.
-func waitForOffload(t *testing.T, inner LogStore, id string) {
+func waitForOffload(t *testing.T, h *HybridLogStore, inner LogStore, id string) {
 	t.Helper()
-	waitForUploads(t, func() bool {
+	waitForUploads(t, h, func() bool {
 		row, err := inner.FindByID(context.Background(), id)
 		return err == nil && row.HasObject
 	})
@@ -76,9 +99,9 @@ func waitForOffload(t *testing.T, inner LogStore, id string) {
 
 // waitForMCPOffload is waitForOffload for MCP tool logs: it waits for the row's
 // has_object flag, which processUpload commits only after the object Put.
-func waitForMCPOffload(t *testing.T, inner LogStore, id string) {
+func waitForMCPOffload(t *testing.T, h *HybridLogStore, inner LogStore, id string) {
 	t.Helper()
-	waitForUploads(t, func() bool {
+	waitForUploads(t, h, func() bool {
 		row, err := inner.FindMCPToolLog(context.Background(), id)
 		return err == nil && row.HasObject
 	})
@@ -132,7 +155,7 @@ func TestHybrid_CreateAndFindByID(t *testing.T) {
 	err := hybrid.CreateIfNotExists(ctx, entry)
 	require.NoError(t, err)
 
-	waitForOffload(t, inner, "log-1")
+	waitForOffload(t, hybrid, inner, "log-1")
 
 	// Verify object was uploaded.
 	assert.Equal(t, 1, objStore.Len(), "expected 1 object in store")
@@ -172,7 +195,7 @@ func TestHybrid_ErrorDetailsStayQueryable(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForOffload(t, inner, "log-error")
+	waitForOffload(t, hybrid, inner, "log-error")
 
 	row, err := inner.FindByID(ctx, "log-error")
 	require.NoError(t, err)
@@ -222,7 +245,7 @@ func TestHybrid_ErrorDetailsRawBodiesGoToObjectStorage(t *testing.T) {
 
 		entry := newEntry("log-error-raw")
 		require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-		waitForOffload(t, inner, "log-error-raw")
+		waitForOffload(t, hybrid, inner, "log-error-raw")
 
 		row, err := inner.FindByID(ctx, "log-error-raw")
 		require.NoError(t, err)
@@ -249,7 +272,7 @@ func TestHybrid_ErrorDetailsRawBodiesGoToObjectStorage(t *testing.T) {
 		ctx := context.Background()
 
 		require.NoError(t, hybrid.CreateIfNotExists(ctx, newEntry("log-error-raw-kept")))
-		waitForOffload(t, inner, "log-error-raw-kept")
+		waitForOffload(t, hybrid, inner, "log-error-raw-kept")
 
 		row, err := inner.FindByID(ctx, "log-error-raw-kept")
 		require.NoError(t, err)
@@ -278,7 +301,7 @@ func TestHybrid_EmbeddingInputOffloaded(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForOffload(t, inner, "emb-1")
+	waitForOffload(t, hybrid, inner, "emb-1")
 
 	dbRow, err := inner.FindByID(ctx, "emb-1")
 	require.NoError(t, err)
@@ -307,7 +330,7 @@ func TestHybrid_EmptyPayloadSkipsUpload(t *testing.T) {
 	err := hybrid.CreateIfNotExists(ctx, entry)
 	require.NoError(t, err)
 
-	waitForUploads(t, func() bool { return hybrid.outstandingUploads() == 0 })
+	waitForUploads(t, hybrid, func() bool { return hybrid.outstandingUploads() == 0 })
 
 	// No upload when all payload fields are empty (e.g. initial "processing" entries).
 	assert.Equal(t, 0, objStore.Len(), "empty-payload entries should not be uploaded")
@@ -338,7 +361,7 @@ func TestHybrid_BatchCreateIfNotExists(t *testing.T) {
 	err := hybrid.BatchCreateIfNotExists(ctx, entries)
 	require.NoError(t, err)
 
-	waitForUploads(t, func() bool { return objStore.Len() == 3 })
+	waitForUploads(t, hybrid, func() bool { return objStore.Len() == 3 })
 	assert.Equal(t, 3, objStore.Len())
 }
 
@@ -386,7 +409,7 @@ func TestHybrid_FindByID_GracefulDegradation(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForOffload(t, inner, "degrade-1")
+	waitForOffload(t, hybrid, inner, "degrade-1")
 
 	// Simulate S3 failure.
 	objStore.GetErr = assert.AnError
@@ -427,7 +450,9 @@ func TestHybrid_CreateAndFindMCPToolLog(t *testing.T) {
 	}
 
 	require.NoError(t, hybrid.CreateMCPToolLog(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	// Not objStore.Len() == 1: that holds from the Put, before has_object is committed (TXE-7348).
+	waitForMCPOffload(t, hybrid, inner, "mcp-1")
+	assert.Equal(t, 1, objStore.Len())
 
 	dbOnly, err := inner.FindMCPToolLog(ctx, "mcp-1")
 	require.NoError(t, err)
@@ -491,8 +516,8 @@ func TestHybrid_BatchCreateMCPToolLogsIfNotExists(t *testing.T) {
 	}
 
 	require.NoError(t, hybrid.BatchCreateMCPToolLogsIfNotExists(ctx, entries))
-	waitForMCPOffload(t, inner, "mcp-batch-1")
-	waitForMCPOffload(t, inner, "mcp-batch-2")
+	waitForMCPOffload(t, hybrid, inner, "mcp-batch-1")
+	waitForMCPOffload(t, hybrid, inner, "mcp-batch-2")
 
 	dbOnly, err := inner.FindMCPToolLog(ctx, "mcp-batch-1")
 	require.NoError(t, err)
@@ -536,7 +561,7 @@ func TestHybrid_UpdateMCPToolLogOffloadsFullLog(t *testing.T) {
 		},
 	}
 	require.NoError(t, hybrid.CreateMCPToolLog(ctx, entry))
-	waitForMCPOffload(t, inner, entry.ID)
+	waitForMCPOffload(t, hybrid, inner, entry.ID)
 
 	require.NoError(t, hybrid.UpdateMCPToolLog(ctx, entry.ID, MCPToolLog{
 		Status:           "success",
@@ -546,7 +571,7 @@ func TestHybrid_UpdateMCPToolLogOffloadsFullLog(t *testing.T) {
 		},
 	}))
 
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		found, err := hybrid.FindMCPToolLog(ctx, entry.ID)
 		if err != nil || found.ResultParsed == nil {
 			return false
@@ -590,7 +615,7 @@ func TestHybrid_UpdateMCPToolLogRequiresObjectHydration(t *testing.T) {
 		},
 	}
 	require.NoError(t, hybrid.CreateMCPToolLog(ctx, entry))
-	waitForMCPOffload(t, inner, entry.ID)
+	waitForMCPOffload(t, hybrid, inner, entry.ID)
 
 	objStore.GetErr = assert.AnError
 	err := hybrid.UpdateMCPToolLog(ctx, entry.ID, MCPToolLog{
@@ -601,6 +626,7 @@ func TestHybrid_UpdateMCPToolLogRequiresObjectHydration(t *testing.T) {
 	})
 	require.Error(t, err)
 	objStore.GetErr = nil
+	waitForUploadsSettled(t, hybrid)
 
 	found, err := hybrid.FindMCPToolLog(ctx, entry.ID)
 	require.NoError(t, err)
@@ -645,7 +671,7 @@ func TestHybrid_UpdateMCPToolLogHydratesObjectBeforeHasObjectMarker(t *testing.T
 			"answer": "done",
 		},
 	}))
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		found, err := hybrid.FindMCPToolLog(ctx, entry.ID)
 		if err != nil || found.ResultParsed == nil {
 			return false
@@ -671,9 +697,11 @@ func TestHybrid_A2ACorrelationReconciliationUsesInnerStore(t *testing.T) {
 
 	_, err := hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{request})
 	require.NoError(t, err)
+	waitForUploadsSettled(t, hybrid)
 	require.NoError(t, hybrid.ReconcileAgentCorrelation(ctx, []*AgentLog{request}))
 	_, err = hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{event})
 	require.NoError(t, err)
+	waitForUploadsSettled(t, hybrid)
 	require.NoError(t, hybrid.ReconcileAgentCorrelation(ctx, []*AgentLog{event}))
 
 	found, err := inner.FindAgentLog(ctx, request.ID)
@@ -700,7 +728,7 @@ func TestHybrid_AgentLogPayloadRoundTrip(t *testing.T) {
 	}
 
 	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		row, err := inner.FindAgentLog(ctx, entry.ID)
 		return err == nil && row.HasObject
 	})
@@ -745,7 +773,7 @@ func TestHybrid_HiddenAgentLogRetainsObjectWithoutHydration(t *testing.T) {
 	}
 
 	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		row, err := inner.FindAgentLog(ctx, entry.ID)
 		return err == nil && row.HasObject
 	})
@@ -783,7 +811,7 @@ func TestHybrid_UpdateAgentLogOffloadsMergedPayload(t *testing.T) {
 	}
 
 	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		row, err := inner.FindAgentLog(ctx, entry.ID)
 		return err == nil && row.HasObject
 	})
@@ -791,7 +819,7 @@ func TestHybrid_UpdateAgentLogOffloadsMergedPayload(t *testing.T) {
 	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{
 		"response_body": updatedResponseBody,
 	}))
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		found, err := hybrid.FindAgentLog(ctx, entry.ID)
 		return err == nil && found.ResponseBody != nil && *found.ResponseBody == updatedResponseBody
 	})
@@ -829,7 +857,7 @@ func TestHybrid_UpdateAgentLogStatusTransitionUploadsPayload(t *testing.T) {
 	}
 
 	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		row, err := inner.FindAgentLog(ctx, entry.ID)
 		return err == nil && row.HasObject
 	})
@@ -838,7 +866,7 @@ func TestHybrid_UpdateAgentLogStatusTransitionUploadsPayload(t *testing.T) {
 		"status":        "success",
 		"response_body": updatedResponseBody,
 	}))
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		row, err := inner.FindAgentLog(ctx, entry.ID)
 		return err == nil && row.HasObject
 	})
@@ -868,7 +896,7 @@ func TestHybrid_UpdateAgentLogUploadFailureKeepsUpdatedDatabaseFallback(t *testi
 	}
 
 	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		row, err := inner.FindAgentLog(ctx, entry.ID)
 		return err == nil && row.HasObject
 	})
@@ -877,7 +905,7 @@ func TestHybrid_UpdateAgentLogUploadFailureKeepsUpdatedDatabaseFallback(t *testi
 	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{
 		"response_body": updatedResponseBody,
 	}))
-	waitForUploads(t, func() bool { return hybrid.DroppedUploads() == 1 })
+	waitForUploads(t, hybrid, func() bool { return hybrid.DroppedUploads() == 1 })
 
 	dbOnly, err := inner.FindAgentLog(ctx, entry.ID)
 	require.NoError(t, err)
@@ -893,7 +921,7 @@ func TestHybrid_UpdateAgentLogUploadFailureKeepsUpdatedDatabaseFallback(t *testi
 	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{
 		"response_body": secondUpdatedResponseBody,
 	}))
-	waitForUploads(t, func() bool { return hybrid.DroppedUploads() == 2 })
+	waitForUploads(t, hybrid, func() bool { return hybrid.DroppedUploads() == 2 })
 
 	dbOnly, err = inner.FindAgentLog(ctx, entry.ID)
 	require.NoError(t, err)
@@ -916,7 +944,7 @@ func TestHybrid_AgentLogDuplicateDoesNotOverwritePayload(t *testing.T) {
 	}
 
 	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{original})))
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		row, err := inner.FindAgentLog(ctx, original.ID)
 		return err == nil && row.HasObject
 	})
@@ -924,6 +952,7 @@ func TestHybrid_AgentLogDuplicateDoesNotOverwritePayload(t *testing.T) {
 	duplicate := *original
 	duplicate.RequestBody = &duplicateBody
 	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{&duplicate})))
+	waitForUploadsSettled(t, hybrid)
 
 	found, err := hybrid.FindAgentLog(ctx, original.ID)
 	require.NoError(t, err)
@@ -947,7 +976,7 @@ func TestHybrid_AgentLogDuplicateInSameBatchDoesNotOverwritePayload(t *testing.T
 	duplicate.RequestBody = &duplicateBody
 
 	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{original, &duplicate})))
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		row, err := inner.FindAgentLog(ctx, original.ID)
 		return err == nil && row.HasObject
 	})
@@ -974,7 +1003,7 @@ func TestHybrid_DeleteAgentLogsRemovesCorrelatedObjects(t *testing.T) {
 	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, entries)))
 	for _, entry := range entries {
 		entry := entry
-		waitForUploads(t, func() bool {
+		waitForUploads(t, hybrid, func() bool {
 			row, err := inner.FindAgentLog(ctx, entry.ID)
 			return err == nil && row.HasObject
 		})
@@ -1008,7 +1037,7 @@ func TestHybrid_A2AEventBodyRoundTripKeepsBoundedDatabasePreview(t *testing.T) {
 	}
 
 	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		row, err := inner.FindAgentLog(ctx, entry.ID)
 		return err == nil && row.HasObject
 	})
@@ -1038,7 +1067,7 @@ func TestHybrid_AgentLogUploadFailureRetainsBoundedDatabaseFallback(t *testing.T
 	}
 
 	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(context.Background(), []*AgentLog{entry})))
-	waitForUploads(t, func() bool { return hybrid.DroppedUploads() == 1 })
+	waitForUploads(t, hybrid, func() bool { return hybrid.DroppedUploads() == 1 })
 	row, err := inner.FindAgentLog(context.Background(), entry.ID)
 	require.NoError(t, err)
 	assert.False(t, row.HasObject)
@@ -1061,6 +1090,7 @@ func TestHybrid_AgentLogQueueRejectionRetainsBoundedDatabaseFallback(t *testing.
 	}
 
 	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(context.Background(), []*AgentLog{entry})))
+	waitForUploadsSettled(t, hybrid)
 	row, err := inner.FindAgentLog(context.Background(), entry.ID)
 	require.NoError(t, err)
 	assert.False(t, row.HasObject)
@@ -1081,6 +1111,7 @@ func TestHybrid_AgentLogWithoutPayloadStaysInDatabaseOnly(t *testing.T) {
 	}
 
 	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	waitForUploadsSettled(t, hybrid)
 	row, err := inner.FindAgentLog(ctx, entry.ID)
 	require.NoError(t, err)
 	assert.False(t, row.HasObject)
@@ -1121,7 +1152,7 @@ func TestHybrid_DeleteMCPToolLogsDeletesObjects(t *testing.T) {
 		},
 	}
 	require.NoError(t, hybrid.CreateMCPToolLog(ctx, entry))
-	waitForMCPOffload(t, inner, entry.ID)
+	waitForMCPOffload(t, hybrid, inner, entry.ID)
 
 	require.NoError(t, hybrid.DeleteMCPToolLogs(ctx, []string{entry.ID}))
 	assert.Equal(t, 0, objStore.Len())
@@ -1149,7 +1180,7 @@ func TestHybrid_PutFailureDropsUpload(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(t, func() bool { return hybrid.DroppedUploads() == 1 })
+	waitForUploads(t, hybrid, func() bool { return hybrid.DroppedUploads() == 1 })
 
 	// Upload should have been dropped.
 	assert.Equal(t, 0, objStore.Len(), "no object should be stored when Put fails")
@@ -1177,7 +1208,7 @@ func TestHybrid_DeleteLog(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForOffload(t, inner, entry.ID)
+	waitForOffload(t, hybrid, inner, entry.ID)
 	assert.Equal(t, 1, objStore.Len())
 
 	err := hybrid.DeleteLog(ctx, "del-1")
@@ -1211,7 +1242,7 @@ func TestHybrid_Tags(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForUploads(t, hybrid, func() bool { return objStore.Len() == 1 })
 
 	key := ObjectKey("test", ts, "tag-1")
 	tags := objStore.GetTags(key)
@@ -1247,7 +1278,7 @@ func TestHybrid_MetadataIsRetainedInDBAndWrittenToObjectPayload(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForUploads(t, hybrid, func() bool { return objStore.Len() == 1 })
 
 	dbLog, err := inner.FindByID(ctx, "metadata-1")
 	require.NoError(t, err)
@@ -1295,6 +1326,7 @@ func TestHybrid_ContentSummaryIsInputOnly(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForOffload(t, hybrid, inner, "summary-1")
 
 	// Read from inner DB to check content_summary.
 	dbLog, err := inner.FindByID(ctx, "summary-1")
@@ -1329,7 +1361,7 @@ func TestHybrid_ResponsesInputHistoryPreservesLastUserMessage(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForOffload(t, inner, "resp-1")
+	waitForOffload(t, hybrid, inner, "resp-1")
 
 	// DB row keeps only the last user message as a preview — not the system message.
 	dbLog, err := inner.FindByID(ctx, "resp-1")
@@ -1378,7 +1410,7 @@ func TestHybrid_AttachmentsStrippedFromChatPreview(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForOffload(t, inner, "chat-attach-1")
+	waitForOffload(t, hybrid, inner, "chat-attach-1")
 
 	// DB preview keeps the text and block structure but not the payloads.
 	dbLog, err := inner.FindByID(ctx, "chat-attach-1")
@@ -1435,7 +1467,7 @@ func TestHybrid_AttachmentsStrippedFromResponsesPreview(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForOffload(t, inner, "resp-attach-1")
+	waitForOffload(t, hybrid, inner, "resp-attach-1")
 
 	dbLog, err := inner.FindByID(ctx, "resp-attach-1")
 	require.NoError(t, err)
@@ -1487,7 +1519,7 @@ func TestHybrid_TokenUsageSummaryForListPreview(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForUploads(t, hybrid, func() bool { return objStore.Len() == 1 })
 
 	dbLog, err := inner.FindByID(ctx, "chat-tokens-1")
 	require.NoError(t, err)
@@ -1534,7 +1566,7 @@ func TestHybrid_SpeechInputSummaryForListPreview(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForOffload(t, inner, "speech-1")
+	waitForOffload(t, hybrid, inner, "speech-1")
 
 	// speech_input is offloaded to S3 and cleared from the DB row, but the
 	// content_summary fallback retains the text for the list preview.
@@ -1582,7 +1614,7 @@ func TestHybrid_ExcludeFields_RawRequestStaysInDB(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForUploads(t, hybrid, func() bool { return objStore.Len() == 1 })
 
 	// The DB row should still carry raw_request and raw_response (they were excluded from S3).
 	dbLog, err := inner.FindByID(ctx, "exc-1")
@@ -1630,7 +1662,7 @@ func TestHybrid_ExcludeFields_InputHistoryStaysFullInDB(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForUploads(t, hybrid, func() bool { return objStore.Len() == 1 })
 
 	// DB should contain the FULL input_history (all 4 messages), not just the last user message.
 	dbLog, err := inner.FindByID(ctx, "exc-ih-1")
@@ -1667,7 +1699,7 @@ func TestHybrid_ExcludeFields_UnknownFieldIgnored(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForUploads(t, hybrid, func() bool { return objStore.Len() == 1 })
 
 	// Standard behaviour: one object uploaded, input_history offloaded.
 	assert.Equal(t, 1, objStore.Len(), "upload should succeed with unknown exclude field")
@@ -1724,8 +1756,8 @@ func TestHybrid_BatchUpdateKeepsDBRowContentFree(t *testing.T) {
 		{ID: "hidden", Status: "success", TotalTokens: 9, OutputMessageParsed: msg(), ContentHidden: true},
 		{ID: "absent", Status: "success"}, // skipped, never inserted
 	}))
-	waitForOffload(t, inner, "visible")
-	waitForOffload(t, inner, "hidden")
+	waitForOffload(t, hybrid, inner, "visible")
+	waitForOffload(t, hybrid, inner, "hidden")
 
 	visibleRow, err := inner.FindByID(ctx, "visible")
 	require.NoError(t, err)
@@ -1760,11 +1792,13 @@ func TestHybrid_BatchUpdateHidingALogClearsDBContent(t *testing.T) {
 	ctx := context.Background()
 	h.excludedRequestTypes = map[string]struct{}{"chat.completion": {}}
 	require.NoError(t, h.CreateIfNotExists(ctx, hiddenUpdateTestLog("hybrid-hide", time.Now().UTC())))
+	waitForUploadsSettled(t, h)
 	before, err := inner.FindByID(ctx, "hybrid-hide")
 	require.NoError(t, err)
 	require.NotEmpty(t, before.InputHistory, "the excluded type keeps its content in the row")
 
 	require.NoError(t, h.BatchUpdate(ctx, []*Log{{ID: "hybrid-hide", Status: "success", ContentHidden: true}}))
+	waitForUploadsSettled(t, h)
 
 	row, err := inner.FindByID(ctx, "hybrid-hide")
 	require.NoError(t, err)
@@ -1791,16 +1825,17 @@ func TestHybrid_BatchUpdateSkipsARowThePartialOwnerDoesNotHold(t *testing.T) {
 
 	owner := "vk-other"
 	require.NoError(t, h.BatchUpdate(ctx, []*Log{{ID: "hybrid-visible", Status: "success", ContentHidden: true, PartialOwner: &owner}}))
+	// An upload is counted when it is enqueued, so once none is outstanding none can follow.
+	waitForUploadsSettled(t, h)
 
 	kept, err := inner.FindByID(ctx, "hybrid-visible")
 	require.NoError(t, err)
 	assert.False(t, kept.ContentHidden)
 	assert.Equal(t, "processing", kept.Status)
 	assert.NotEmpty(t, kept.InputHistory)
-	assert.Never(t, func() bool {
-		keys, err := objects.ListByPrefix(ctx, "")
-		return err == nil && len(keys) > 0
-	}, testtime.Scale(300*time.Millisecond), testtime.Scale(20*time.Millisecond), "the skipped update uploaded an object")
+	keys, err := objects.ListByPrefix(ctx, "")
+	require.NoError(t, err)
+	assert.Empty(t, keys, "the skipped update uploaded an object")
 }
 
 // completesAfterReadStore is an inner store whose row completes right after the
@@ -1840,7 +1875,7 @@ func TestHybrid_OvertakenFinishCannotEraseTheObject(t *testing.T) {
 		ID: "hybrid-overtaken", Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "processing",
 		InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &question}}},
 	}))
-	waitForOffload(t, inner, "hybrid-overtaken")
+	waitForOffload(t, h, inner, "hybrid-overtaken")
 
 	rdb := inner.(*RDBLogStore)
 	h.inner = &completesAfterWriteStore{RDBLogStore: rdb, afterWrite: func() {
@@ -1855,7 +1890,7 @@ func TestHybrid_OvertakenFinishCannotEraseTheObject(t *testing.T) {
 	assert.False(t, finish.PartialRefused, "the store accepted it; the overtaking write came later")
 
 	key := ObjectKey("test", ts, "hybrid-overtaken")
-	waitForUploads(t, func() bool {
+	waitForUploads(t, h, func() bool {
 		data, err := objects.Get(ctx, key)
 		return err == nil && strings.Contains(string(data), answer)
 	})
@@ -1894,16 +1929,17 @@ func TestHybrid_BatchUpdateDropsTheUploadOfARefusedFinish(t *testing.T) {
 	}
 	require.NoError(t, h.BatchUpdate(ctx, []*Log{finish}))
 	assert.True(t, finish.PartialRefused, "the caller's entry learns the store refused the copy")
+	// An upload is counted when it is enqueued, so once none is outstanding none can follow.
+	waitForUploadsSettled(t, h)
 
 	row, err := rdb.FindByID(ctx, "hybrid-race")
 	require.NoError(t, err)
 	assert.False(t, row.ContentHidden)
 	assert.Equal(t, "success", row.Status)
 	assert.NotEmpty(t, row.InputHistory)
-	assert.Never(t, func() bool {
-		keys, err := objects.ListByPrefix(ctx, "")
-		return err == nil && len(keys) > 0
-	}, testtime.Scale(300*time.Millisecond), testtime.Scale(20*time.Millisecond), "the refused finish uploaded an object")
+	keys, err := objects.ListByPrefix(ctx, "")
+	require.NoError(t, err)
+	assert.Empty(t, keys, "the refused finish uploaded an object")
 }
 
 func TestHybrid_BatchUpdateMergesOutputIntoStoredObject(t *testing.T) {
@@ -1920,7 +1956,7 @@ func TestHybrid_BatchUpdateMergesOutputIntoStoredObject(t *testing.T) {
 			InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}}},
 		}
 		require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-		waitForOffload(t, inner, id)
+		waitForOffload(t, hybrid, inner, id)
 	}
 
 	output := "the answer"
@@ -1933,7 +1969,7 @@ func TestHybrid_BatchUpdateMergesOutputIntoStoredObject(t *testing.T) {
 	}))
 
 	for _, id := range []string{"merge-visible", "merge-hidden"} {
-		waitForUploads(t, func() bool {
+		waitForUploads(t, hybrid, func() bool {
 			data, err := objStore.Get(ctx, ObjectKey("test", ts, id))
 			return err == nil && strings.Contains(string(data), output)
 		})
@@ -2000,7 +2036,7 @@ func TestHybrid_BatchUpdateUploadOrderedAfterInsertUpload(t *testing.T) {
 		InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}}},
 	}))
 	// The insert upload is still in flight: has_object is not set yet.
-	row, err := inner.FindByID(ctx, "ordered")
+	row, err := inner.FindByID(ctx, "ordered") // upload-wait-ok: pins the row while the delayed insert upload runs
 	require.NoError(t, err)
 	require.False(t, row.HasObject)
 
@@ -2008,8 +2044,8 @@ func TestHybrid_BatchUpdateUploadOrderedAfterInsertUpload(t *testing.T) {
 	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{{ID: "ordered", Status: "success", ContentHidden: true, OutputMessageParsed: &schemas.ChatMessage{
 		Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}}}))
 
-	waitForOffload(t, inner, "ordered")
-	waitForUploads(t, func() bool {
+	waitForOffload(t, hybrid, inner, "ordered")
+	waitForUploads(t, hybrid, func() bool {
 		data, err := mem.Get(ctx, ObjectKey("test", ts, "ordered"))
 		return err == nil && strings.Contains(string(data), output)
 	})
@@ -2032,7 +2068,7 @@ func TestHybrid_BatchUpdateMergesRepeatedEntriesForOneID(t *testing.T) {
 		ID: "repeated", Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "processing",
 		InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}}},
 	}))
-	waitForOffload(t, inner, "repeated")
+	waitForOffload(t, hybrid, inner, "repeated")
 
 	output := "answer"
 	toolCall := "lookup_weather"
@@ -2040,7 +2076,7 @@ func TestHybrid_BatchUpdateMergesRepeatedEntriesForOneID(t *testing.T) {
 		{ID: "repeated", OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}},
 		{ID: "repeated", Status: "success", ToolCallsParsed: []schemas.ChatAssistantMessageToolCall{{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolCall}}}},
 	}))
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		data, err := objStore.Get(ctx, ObjectKey("test", ts, "repeated"))
 		return err == nil && strings.Contains(string(data), toolCall)
 	})
@@ -2068,7 +2104,7 @@ func TestHybrid_BatchUpdateLeavesObjectUntouchedWhenReadFails(t *testing.T) {
 		ID: "readfail", Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "processing", ContentHidden: true,
 		InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}}},
 	}))
-	waitForOffload(t, inner, "readfail")
+	waitForOffload(t, hybrid, inner, "readfail")
 	before, err := objStore.Get(ctx, ObjectKey("test", ts, "readfail"))
 	require.NoError(t, err)
 	require.Contains(t, string(before), input)
@@ -2077,7 +2113,7 @@ func TestHybrid_BatchUpdateLeavesObjectUntouchedWhenReadFails(t *testing.T) {
 	output := "late answer"
 	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{{ID: "readfail", Status: "success", TotalTokens: 5, ContentHidden: true,
 		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}}}))
-	waitForUploads(t, func() bool { return hybrid.droppedUploads.Load() == 1 })
+	waitForUploads(t, hybrid, func() bool { return hybrid.droppedUploads.Load() == 1 })
 	objStore.GetErr = nil
 
 	after, err := objStore.Get(ctx, ObjectKey("test", ts, "readfail"))
@@ -2111,7 +2147,7 @@ func TestHybrid_BatchUpdateMergesOrphanedObjectWhenFlagUnset(t *testing.T) {
 	output := "the answer"
 	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{{ID: "orphan", Status: "success", ContentHidden: true,
 		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}}}))
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		data, err := objStore.Get(ctx, ObjectKey("test", ts, "orphan"))
 		return err == nil && strings.Contains(string(data), output)
 	})
@@ -2137,7 +2173,7 @@ func TestHybrid_BatchUpdateDropsMergeWhenObjectReadIsAmbiguous(t *testing.T) {
 	output := "the answer"
 	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{{ID: "ambiguous", Status: "success",
 		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}}}))
-	waitForUploads(t, func() bool { return hybrid.droppedUploads.Load() == 1 })
+	waitForUploads(t, hybrid, func() bool { return hybrid.droppedUploads.Load() == 1 })
 	assert.Equal(t, 0, objStore.Len(), "nothing may be written while the object's existence is unknown")
 	row, err := inner.FindByID(ctx, "ambiguous")
 	require.NoError(t, err)
@@ -2158,12 +2194,12 @@ func TestHybrid_BatchUpdateKeepsStoredTimestamp(t *testing.T) {
 		ID: "keep-ts", Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "processing",
 		InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}}},
 	}))
-	waitForOffload(t, inner, "keep-ts")
+	waitForOffload(t, hybrid, inner, "keep-ts")
 
 	output := "answer"
 	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{{ID: "keep-ts", Status: "success",
 		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}}}))
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		data, err := objStore.Get(ctx, ObjectKey("test", ts, "keep-ts"))
 		return err == nil && strings.Contains(string(data), output)
 	})
@@ -2192,7 +2228,7 @@ func TestHybrid_BatchUpdateRefreshesObjectTags(t *testing.T) {
 		ID: "tags", Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "processing",
 		InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}}},
 	}))
-	waitForOffload(t, inner, "tags")
+	waitForOffload(t, hybrid, inner, "tags")
 	key := ObjectKey("test", ts, "tags")
 	require.Equal(t, "false", objStore.GetTags(key)["stream"])
 
@@ -2202,7 +2238,7 @@ func TestHybrid_BatchUpdateRefreshesObjectTags(t *testing.T) {
 		{ID: "tags", Status: "success", RoutingRuleID: &rule,
 			OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}},
 	}))
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		data, err := objStore.Get(ctx, key)
 		return err == nil && strings.Contains(string(data), output)
 	})
@@ -2231,11 +2267,11 @@ func TestHybrid_BatchUpdateAppliesFinalVisibility(t *testing.T) {
 	output := "allowed answer"
 	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{{ID: "unhide", Status: "success", ContentHidden: false,
 		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}}}))
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		data, err := objStore.Get(ctx, ObjectKey("test", ts, "unhide"))
 		return err == nil && strings.Contains(string(data), output)
 	})
-	waitForOffload(t, inner, "unhide")
+	waitForOffload(t, hybrid, inner, "unhide")
 
 	row, err := inner.FindByID(ctx, "unhide")
 	require.NoError(t, err)
@@ -2284,7 +2320,7 @@ func TestHybrid_ParquetFormat_LogRoundTrip(t *testing.T) {
 	require.NoError(t, entry.SerializeFields())
 	wantInput, wantOutput := entry.InputHistory, entry.OutputMessage
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForOffload(t, inner, entry.ID)
+	waitForOffload(t, hybrid, inner, entry.ID)
 
 	key := objectKey("test", "logs", ts, entry.ID, parquetObjectExt)
 	assert.Equal(t, []string{key}, objStore.Keys(), "only the parquet key is written")
@@ -2313,14 +2349,14 @@ func TestHybrid_ParquetFormat_BatchUpdateMergesIntoStoredObject(t *testing.T) {
 		InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}}},
 	}
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForOffload(t, inner, entry.ID)
+	waitForOffload(t, hybrid, inner, entry.ID)
 
 	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{{ID: entry.ID, Status: "success", OutputMessageParsed: &schemas.ChatMessage{
 		Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output},
 	}}}))
 
 	key := objectKey("test", "logs", ts, entry.ID, parquetObjectExt)
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		raw, err := objStore.Get(ctx, key)
 		if err != nil || !objectstore.IsParquet(raw) {
 			return false
@@ -2348,7 +2384,7 @@ func TestHybrid_ParquetFormat_MCPToolLogRoundTrip(t *testing.T) {
 		ResultParsed:    map[string]any{"ok": true, "count": 3},
 	}
 	require.NoError(t, hybrid.CreateMCPToolLog(ctx, entry))
-	waitForMCPOffload(t, inner, entry.ID)
+	waitForMCPOffload(t, hybrid, inner, entry.ID)
 
 	key := objectKey("test", "mcp-logs", entry.Timestamp, entry.ID, parquetObjectExt)
 	requireParquetObject(t, objStore, key)
@@ -2375,7 +2411,7 @@ func TestHybrid_ParquetFormat_AgentLogRoundTrip(t *testing.T) {
 		AgentName: "fixture", RequestID: "req-pq-a2a", RequestBody: &requestBody, ResponseBody: &responseBody,
 	}
 	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		row, err := inner.FindAgentLog(ctx, entry.ID)
 		return err == nil && row.HasObject
 	})
@@ -2412,7 +2448,7 @@ func TestHybrid_ParquetFormat_ReadsLegacyJSONObjects(t *testing.T) {
 		InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}}},
 	}
 	require.NoError(t, jsonHybrid.CreateIfNotExists(ctx, entry))
-	waitForOffload(t, inner, entry.ID)
+	waitForOffload(t, jsonHybrid, inner, entry.ID)
 	legacy := ObjectKey("test", ts, entry.ID)
 	require.Equal(t, []string{legacy}, objStore.Keys())
 	assert.Equal(t, objectstore.ContentTypeJSON, objStore.ContentType(legacy))
@@ -2430,7 +2466,7 @@ func TestHybrid_ParquetFormat_ReadsLegacyJSONObjects(t *testing.T) {
 		Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output},
 	}}}))
 	key := objectKey("test", "logs", ts, entry.ID, parquetObjectExt)
-	waitForUploads(t, func() bool { _, err := objStore.Get(ctx, key); return err == nil })
+	waitForUploads(t, hybrid, func() bool { _, err := objStore.Get(ctx, key); return err == nil })
 	stored := requireParquetObject(t, objStore, key)
 	assert.Contains(t, stored, input, "merge reads the legacy object's input")
 	assert.Contains(t, stored, output)
@@ -2438,7 +2474,7 @@ func TestHybrid_ParquetFormat_ReadsLegacyJSONObjects(t *testing.T) {
 	found, err = hybrid.FindByID(ctx, entry.ID)
 	require.NoError(t, err)
 	assert.Contains(t, found.OutputMessage, output, "the parquet object wins once written")
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForUploads(t, hybrid, func() bool { return objStore.Len() == 1 })
 	assert.Equal(t, []string{key}, objStore.Keys(), "the rewrite removes the legacy json object it replaced")
 
 	require.NoError(t, hybrid.DeleteLogs(ctx, []string{entry.ID}))
@@ -2460,7 +2496,7 @@ func TestHybrid_JSONFormat_ReadsParquetObjectsAfterSwitchBack(t *testing.T) {
 		InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}}},
 	}
 	require.NoError(t, parquetHybrid.CreateIfNotExists(ctx, entry))
-	waitForOffload(t, inner, entry.ID)
+	waitForOffload(t, parquetHybrid, inner, entry.ID)
 	parquetKey := objectKey("test", "logs", ts, entry.ID, parquetObjectExt)
 	require.Equal(t, []string{parquetKey}, objStore.Keys())
 
@@ -2469,7 +2505,7 @@ func TestHybrid_JSONFormat_ReadsParquetObjectsAfterSwitchBack(t *testing.T) {
 		ArgumentsParsed: map[string]any{"query": "from parquet"},
 	}
 	require.NoError(t, parquetHybrid.CreateMCPToolLog(ctx, mcp))
-	waitForMCPOffload(t, inner, mcp.ID)
+	waitForMCPOffload(t, parquetHybrid, inner, mcp.ID)
 
 	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, nil, nil)
 	hybrid.setObjectFormat(objectstore.FormatJSON, objectstore.CompressionGzip)
@@ -2488,19 +2524,19 @@ func TestHybrid_JSONFormat_ReadsParquetObjectsAfterSwitchBack(t *testing.T) {
 		Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output},
 	}}}))
 	jsonKey := ObjectKey("test", ts, entry.ID)
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		data, err := objStore.Get(ctx, jsonKey)
 		return err == nil && strings.Contains(string(data), output)
 	})
 	data, err := objStore.Get(ctx, jsonKey)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), input, "merge keeps the input stored in the parquet object")
-	waitForUploads(t, func() bool { _, err := objStore.Get(ctx, parquetKey); return err != nil })
+	waitForUploads(t, hybrid, func() bool { _, err := objStore.Get(ctx, parquetKey); return err != nil })
 
 	require.NoError(t, hybrid.UpdateMCPToolLog(ctx, mcp.ID, MCPToolLog{Status: "success", ResultParsed: map[string]any{"answer": "done"}}))
 	mcpJSONKey := MCPToolObjectKey("test", ts, mcp.ID)
-	waitForUploads(t, func() bool { _, err := objStore.Get(ctx, mcpJSONKey); return err == nil })
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool { _, err := objStore.Get(ctx, mcpJSONKey); return err == nil })
+	waitForUploads(t, hybrid, func() bool {
 		_, err := objStore.Get(ctx, objectKey("test", "mcp-logs", ts, mcp.ID, parquetObjectExt))
 		return err != nil
 	})
@@ -2527,7 +2563,7 @@ func TestHybrid_JSONFormat_DeleteRemovesParquetObject(t *testing.T) {
 		Status: "success", InputHistory: `[{"role":"user","content":"delete me"}]`,
 	}
 	require.NoError(t, parquetHybrid.CreateIfNotExists(ctx, entry))
-	waitForOffload(t, inner, entry.ID)
+	waitForOffload(t, parquetHybrid, inner, entry.ID)
 
 	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, nil, nil)
 	hybrid.setObjectFormat(objectstore.FormatJSON, objectstore.CompressionNone)
@@ -2590,7 +2626,7 @@ func TestHybrid_UpdateAgentLogBeforeInitialUploadKeepsFullPayload(t *testing.T) 
 		"response_body": `{"response":"done"}`,
 	}))
 	close(gate.release)
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		row, err := inner.FindAgentLog(ctx, entry.ID)
 		return err == nil && row.HasObject && hybrid.outstandingUploads() == 0
 	})
@@ -2630,7 +2666,7 @@ func TestHybrid_UpdateAgentLogBodyBeforeInitialUploadKeepsFullPayload(t *testing
 		"response_body": `{"response":"partial"}`,
 	}))
 	close(gate.release)
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		row, err := inner.FindAgentLog(ctx, entry.ID)
 		return err == nil && row.HasObject && hybrid.outstandingUploads() == 0
 	})
@@ -2695,10 +2731,12 @@ func TestHybrid_OutstandingUploadsCountsTheUploadInProgress(t *testing.T) {
 	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
 	objects.waitEntered(t)
 	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{"response_body": `{"response":"partial"}`}))
+	// upload-wait-ok: this test pins the in-flight state the wait helpers exclude
 	assert.Equal(t, int64(2), hybrid.outstandingUploads(), "the initial upload and its queued replacement")
 
 	objects.release <- struct{}{} // the initial upload lands and sets has_object
 	objects.waitEntered(t)        // the worker has taken the replacement off its queue
+	// upload-wait-ok: reads the row while the replacement is still uploading, on purpose
 	row, err := inner.FindAgentLog(ctx, entry.ID)
 	require.NoError(t, err)
 	queued := 0
@@ -2707,10 +2745,11 @@ func TestHybrid_OutstandingUploadsCountsTheUploadInProgress(t *testing.T) {
 	}
 	require.True(t, row.HasObject, "the initial upload set has_object")
 	require.Zero(t, queued, "nothing is left on a queue")
+	// upload-wait-ok: the replacement is held at the store, on purpose
 	assert.Equal(t, int64(1), hybrid.outstandingUploads(), "the replacement is still uploading")
 
 	objects.release <- struct{}{}
-	waitForUploads(t, func() bool { return hybrid.outstandingUploads() == 0 })
+	waitForUploads(t, hybrid, func() bool { return hybrid.outstandingUploads() == 0 })
 	found, err := hybrid.FindAgentLog(ctx, entry.ID)
 	require.NoError(t, err)
 	require.NotNil(t, found.ResponseBody, "the replacement's response body")
@@ -2742,4 +2781,407 @@ func BenchmarkPendingAgentUploadTracking(b *testing.B) {
 			h.settlePendingAgentUpload(logWork)
 		}
 	})
+}
+
+// The class check for TXE-7348 (and TXE-7315 before it). A HybridLogStore write that
+// offloads a payload returns before its upload runs: a worker Puts the object, deletes a
+// replaced copy and only then commits has_object. A test that reads after such a write
+// without waiting for the upload passes on a fast machine and fails on a loaded CI
+// runner. TestHybrid_CreateAndFindMCPToolLog waited on objStore.Len() == 1, which holds
+// from the Put, and read has_object=false in shard 9.
+//
+// The rule, for every function in this package's _test.go files:
+//   - a call to an upload-enqueuing method (uploadWriters, derived from the non-test
+//     source, so a new write path is covered without editing a list) on a hybrid leaves
+//     that hybrid pending;
+//   - waitFor*(t, <that hybrid>, ...) or a non-deferred <hybrid>.Close clears it;
+//   - any other call on a hybrid, on a store passed to or returned with one (the inner
+//     LogStore, the object store), or a call that takes one of them as an argument,
+//     while a hybrid is pending, is reported.
+// Every waitFor* helper that takes a *HybridLogStore must call waitForUploads, which
+// waits for outstandingUploads() == 0 whatever else it checks, so no wait can return
+// mid-upload. A read that is meant to run before the upload settles (the test pins the
+// in-flight state itself) carries `// upload-wait-ok: <reason>` on its line or the line
+// above.
+
+const uploadWaitOKMarker = "upload-wait-ok:"
+
+var uploadWaitOK = regexp.MustCompile(regexp.QuoteMeta(uploadWaitOKMarker) + `\s*\S`)
+
+// uploadSink is the method every upload goes through.
+const uploadSink = "enqueueReplacingUpload"
+
+// hybridConstructor matches the functions that build a hybrid store in tests.
+var hybridConstructor = regexp.MustCompile(`^new(Test|Parquet)?\w*Hybrid\w*$`)
+
+// notAStore names the constructor arguments that are not a store the hybrid reads.
+var notAStore = map[string]bool{"t": true, "tb": true, "b": true, "ctx": true, "nil": true}
+
+// uploadWriters returns the *HybridLogStore methods that reach uploadSink, from the
+// package's non-test .go files in dir (or from src when it is not nil).
+func uploadWriters(dir string, src map[string]string) (map[string]bool, error) {
+	fset := token.NewFileSet()
+	var files []*ast.File
+	if src != nil {
+		for name, s := range src {
+			f, err := parser.ParseFile(fset, name, s, 0)
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, f)
+		}
+	} else {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+				continue
+			}
+			f, err := parser.ParseFile(fset, dir+"/"+e.Name(), nil, 0)
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, f)
+		}
+	}
+	calls := map[string]map[string]bool{} // method -> methods it calls on its receiver
+	for _, f := range files {
+		for _, decl := range f.Decls {
+			fd, ok := decl.(*ast.FuncDecl)
+			if !ok || fd.Recv == nil || fd.Body == nil || len(fd.Recv.List) != 1 || len(fd.Recv.List[0].Names) != 1 {
+				continue
+			}
+			star, ok := fd.Recv.List[0].Type.(*ast.StarExpr)
+			if !ok {
+				continue
+			}
+			if id, ok := star.X.(*ast.Ident); !ok || id.Name != "HybridLogStore" {
+				continue
+			}
+			recv := fd.Recv.List[0].Names[0].Name
+			callees := map[string]bool{}
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				if sel, ok := n.(*ast.SelectorExpr); ok {
+					if id, ok := sel.X.(*ast.Ident); ok && id.Name == recv {
+						callees[sel.Sel.Name] = true
+					}
+				}
+				return true
+			})
+			calls[fd.Name.Name] = callees
+		}
+	}
+	writers := map[string]bool{uploadSink: true}
+	for changed := true; changed; {
+		changed = false
+		for m, callees := range calls {
+			if writers[m] {
+				continue
+			}
+			for c := range callees {
+				if writers[c] {
+					writers[m] = true
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	if _, ok := calls[uploadSink]; !ok {
+		return nil, fmt.Errorf("no (*HybridLogStore).%s in %s: update uploadSink", uploadSink, dir)
+	}
+	return writers, nil
+}
+
+// unwaitedHybridReads parses one test file (src, or the file at path when src is empty)
+// and returns "path:line: what" for each read that follows an upload-enqueuing write with
+// no wait between them, and for each waitFor* helper that takes a hybrid but does not go
+// through waitForUploads.
+func unwaitedHybridReads(path, src string, writers map[string]bool) ([]string, error) {
+	fset := token.NewFileSet()
+	var source any
+	if src != "" {
+		source = src
+	}
+	file, err := parser.ParseFile(fset, path, source, parser.ParseComments)
+	if err != nil {
+		return nil, err
+	}
+	waived := map[int]bool{}
+	for _, group := range file.Comments {
+		for _, c := range group.List {
+			if uploadWaitOK.MatchString(c.Text) {
+				line := fset.Position(c.Slash).Line
+				waived[line] = true
+				waived[line+1] = true
+			}
+		}
+	}
+	var found []string
+	report := func(pos token.Pos, what string) {
+		p := fset.Position(pos)
+		if !waived[p.Line] {
+			found = append(found, fmt.Sprintf("%s:%d: %s", path, p.Line, what))
+		}
+	}
+	for _, decl := range file.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || fd.Body == nil {
+			continue
+		}
+		if strings.HasPrefix(fd.Name.Name, "waitFor") && fd.Name.Name != "waitForUploads" && takesHybrid(fd) {
+			calls := false
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				if c, ok := n.(*ast.CallExpr); ok {
+					if id, ok := c.Fun.(*ast.Ident); ok && strings.HasPrefix(id.Name, "waitFor") {
+						calls = true
+					}
+				}
+				return true
+			})
+			if !calls {
+				report(fd.Pos(), fd.Name.Name+" takes a hybrid but does not wait through waitForUploads")
+			}
+		}
+		lintHybridFunc(fd.Body, writers, report)
+	}
+	return found, nil
+}
+
+func takesHybrid(fd *ast.FuncDecl) bool {
+	for _, field := range fd.Type.Params.List {
+		if star, ok := field.Type.(*ast.StarExpr); ok {
+			if id, ok := star.X.(*ast.Ident); ok && id.Name == "HybridLogStore" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+type hybridEvent struct {
+	pos    token.Pos
+	kind   int // eventWrite, eventWait, eventRead
+	hybrid string
+	what   string
+}
+
+const (
+	eventWrite = iota
+	eventWait
+	eventRead
+)
+
+func lintHybridFunc(body *ast.BlockStmt, writers map[string]bool, report func(token.Pos, string)) {
+	hybrids := map[string]bool{} // first result of a hybrid constructor
+	stores := map[string]bool{}  // every other value given to or returned by one
+	ast.Inspect(body, func(n ast.Node) bool {
+		as, ok := n.(*ast.AssignStmt)
+		if !ok || len(as.Rhs) != 1 {
+			return true
+		}
+		call, ok := as.Rhs[0].(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		id, ok := call.Fun.(*ast.Ident)
+		if !ok || !hybridConstructor.MatchString(id.Name) {
+			return true
+		}
+		for i, lhs := range as.Lhs {
+			if v, ok := lhs.(*ast.Ident); ok && v.Name != "_" {
+				if i == 0 {
+					hybrids[v.Name] = true
+				} else {
+					stores[v.Name] = true
+				}
+			}
+		}
+		for _, arg := range call.Args {
+			if v, ok := arg.(*ast.Ident); ok && !notAStore[v.Name] {
+				stores[v.Name] = true
+			}
+		}
+		return true
+	})
+	if len(hybrids) == 0 {
+		return
+	}
+	tracked := func(e ast.Expr) (string, bool) {
+		v, ok := e.(*ast.Ident)
+		if !ok {
+			return "", false
+		}
+		return v.Name, hybrids[v.Name] || stores[v.Name]
+	}
+	var events []hybridEvent
+	var skip func(n ast.Node) bool
+	skip = func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.DeferStmt:
+			return false // runs at return, after every read
+		case *ast.CallExpr:
+			if id, ok := x.Fun.(*ast.Ident); ok && strings.HasPrefix(id.Name, "waitFor") {
+				for _, arg := range x.Args {
+					if name, ok := arg.(*ast.Ident); ok && hybrids[name.Name] {
+						events = append(events, hybridEvent{pos: x.Pos(), kind: eventWait, hybrid: name.Name})
+					}
+				}
+				return false // the reads inside the wait's condition are the wait
+			}
+			if id, ok := x.Fun.(*ast.Ident); ok && hybridConstructor.MatchString(id.Name) {
+				return true
+			}
+			if sel, ok := x.Fun.(*ast.SelectorExpr); ok {
+				if name, ok := tracked(sel.X); ok {
+					method := sel.Sel.Name
+					switch {
+					case hybrids[name] && writers[method]:
+						events = append(events, hybridEvent{pos: x.Pos(), kind: eventWrite, hybrid: name})
+					case hybrids[name] && method == "Close":
+						events = append(events, hybridEvent{pos: x.Pos(), kind: eventWait, hybrid: name})
+					case strings.HasPrefix(method, "wait"):
+						// A fake store's own synchronization (gate.waitEntered), not a read.
+					default:
+						events = append(events, hybridEvent{pos: x.Pos(), kind: eventRead, what: name + "." + method})
+					}
+					return true
+				}
+			}
+			if id, ok := x.Fun.(*ast.Ident); ok {
+				for _, arg := range x.Args {
+					if name, ok := tracked(arg); ok {
+						events = append(events, hybridEvent{pos: x.Pos(), kind: eventRead, what: id.Name + "(" + name + ")"})
+						break
+					}
+				}
+			}
+		}
+		return true
+	}
+	ast.Inspect(body, skip)
+	sort.SliceStable(events, func(i, j int) bool { return events[i].pos < events[j].pos })
+	pending := map[string]bool{}
+	for _, ev := range events {
+		switch ev.kind {
+		case eventWrite:
+			pending[ev.hybrid] = true
+		case eventWait:
+			delete(pending, ev.hybrid)
+		case eventRead:
+			if len(pending) > 0 {
+				names := make([]string, 0, len(pending))
+				for h := range pending {
+					names = append(names, h)
+				}
+				sort.Strings(names)
+				report(ev.pos, fmt.Sprintf("%s reads before %s's upload is waited for", ev.what, strings.Join(names, ", ")))
+			}
+		}
+	}
+}
+
+// TestHybridReadsWaitForUploads is the class check (TXE-7348): no test in this package
+// reads a hybrid store, its inner store or its object store after an upload-enqueuing
+// write without waitFor*(t, hybrid, ...) or Close in between.
+func TestHybridReadsWaitForUploads(t *testing.T) {
+	writers, err := uploadWriters(".", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []string{"CreateIfNotExists", "BatchCreateIfNotExists", "CreateMCPToolLog", "BatchUpdate"} {
+		if !writers[m] {
+			t.Fatalf("uploadWriters missed %s; the derivation from %s is broken", m, uploadSink)
+		}
+	}
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var all []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		found, err := unwaitedHybridReads(e.Name(), "", writers)
+		if err != nil {
+			t.Fatal(err)
+		}
+		all = append(all, found...)
+	}
+	if len(all) > 0 {
+		t.Errorf("%d read(s) after a HybridLogStore write with no wait for its upload (TXE-7348). Call "+
+			"waitForOffload / waitForMCPOffload / waitForUploads(t, hybrid, cond) / waitForUploadsSettled(t, hybrid) "+
+			"first; they all wait for outstandingUploads() == 0. A read that pins the in-flight state needs "+
+			"`// %s <reason>` on its line or the line above:\n  %s", len(all), uploadWaitOKMarker, strings.Join(all, "\n  "))
+	}
+}
+
+// TestHybridUploadWaitLintFixture checks the lint on a fixture.
+func TestHybridUploadWaitLintFixture(t *testing.T) {
+	store := `package fixture
+
+type HybridLogStore struct{}
+
+func (h *HybridLogStore) enqueueReplacingUpload() {}
+func (h *HybridLogStore) enqueueRawUpload()       { h.enqueueReplacingUpload() }
+func (h *HybridLogStore) CreateMCPToolLog()       { h.enqueueRawUpload() }
+func (h *HybridLogStore) FindMCPToolLog()         {}
+`
+	writers, err := uploadWriters("", map[string]string{"store.go": store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !writers["CreateMCPToolLog"] || writers["FindMCPToolLog"] {
+		t.Fatalf("uploadWriters() = %v, want CreateMCPToolLog and not FindMCPToolLog", writers)
+	}
+	src := `package fixture
+
+func TestBad(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(ctx)
+	hybrid.CreateMCPToolLog(ctx, entry)
+	testtime.Eventually(t, d, "put", func() bool { return objStore.Len() == 1 })
+	inner.FindMCPToolLog(ctx, "id")
+	assertRow(t, inner)
+	hybrid.FindMCPToolLog(ctx, "id") // upload-wait-ok: pins the in-flight read
+}
+
+func TestGood(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	other := newHybridLogStore(inner, objStore)
+	inner.FindMCPToolLog(ctx, "before any write")
+	hybrid.CreateMCPToolLog(ctx, entry)
+	waitForMCPOffload(t, hybrid, inner, "id")
+	inner.FindMCPToolLog(ctx, "id")
+	other.CreateMCPToolLog(ctx, entry)
+	waitForUploads(t, hybrid, func() bool { return objStore.Len() == 1 })
+	objStore.Len()
+	other.Close(ctx)
+	objStore.Len()
+}
+
+func waitForSomething(t *testing.T, h *HybridLogStore) {
+	testtime.Eventually(t, d, "x", func() bool { return true })
+}
+`
+	got, err := unwaitedHybridReads("fixture_test.go", src, writers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		// A raw Eventually on an object-store condition is the TXE-7348 bug: not a wait.
+		"fixture_test.go:7: objStore.Len reads before hybrid's upload is waited for",
+		"fixture_test.go:8: inner.FindMCPToolLog reads before hybrid's upload is waited for",
+		"fixture_test.go:9: assertRow(inner) reads before hybrid's upload is waited for",
+		"fixture_test.go:22: objStore.Len reads before other's upload is waited for",
+		"fixture_test.go:27: waitForSomething takes a hybrid but does not wait through waitForUploads",
+	}
+	sort.Strings(got)
+	sort.Strings(want)
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unwaitedHybridReads() =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
 }
