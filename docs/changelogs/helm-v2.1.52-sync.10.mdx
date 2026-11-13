@@ -1,0 +1,15 @@
+---
+title: "v2.1.52-sync.10"
+description: "Helm v2.1.52-sync.10 prerelease changelog - 2026-11-14"
+---
+
+<Update label="Bifrost Helm" description="v2.1.52-sync.10 (prerelease)">
+
+## Changelog
+
+Prerelease of the txehq fork for transport v2.4.0-sync.10; the stable chart stays 2.1.51 until a stable version supersedes it. Install this one with `helm install --devel` or `--version 2.1.52-sync.10`.
+
+- Three new values, each rendered only when set: `bifrost.client.enforceVkObjectOwnership` (`client.enforce_vk_object_ownership`) and `bifrost.client.a2aStoreRawRequestResponse` (`client.a2a_store_raw_request_response`) from TXE-7060, and `bifrost.client.maxResponseBodySizeMb` (`client.max_response_body_size_mb`) from TXE-7148. Unset, the gateway defaults apply: ownership enforced, no A2A raw capture, 512 MB. A chart that sets none of them renders as before.
+- `appVersion` is now `2.4.0-sync.10`, so an empty `image.tag` selects `v2.4.0-sync.10`. That transport fixes live billing errors (unpriced or mispriced datasheet keys, $0 lines, half-price cache writes, video resolution and audio rates), adds new providers and video, speech and image routes, and has breaking changes listed in the transport changelog. Read them before upgrading: a BFL key's `webhook_secret` signs only callbacks under its `webhook_url_prefixes` (TXE-7310), a virtual key with no storage list cannot name a bucket root as an output (TXE-7259), a Replicate video create must name `seconds` (TXE-7297), and a task with no owner on record is not found for a virtual key (TXE-7119).
+
+</Update>

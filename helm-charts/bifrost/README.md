@@ -4,9 +4,16 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/txehq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.51 (prereleases 2.1.52-sync.9, 2.1.52-sync.8, 2.1.52-sync.7, 2.1.52-sync.6, 2.1.52-sync.5, 2.1.52-sync.4, 2.1.52-sync.3, 2.1.52-sync.2 and 2.1.52-sync.1 carry the changes below; install them with `--devel`)
+**Latest Version:** 2.1.51 (prereleases 2.1.52-sync.10, 2.1.52-sync.9, 2.1.52-sync.8, 2.1.52-sync.7, 2.1.52-sync.6, 2.1.52-sync.5, 2.1.52-sync.4, 2.1.52-sync.3, 2.1.52-sync.2 and 2.1.52-sync.1 carry the changes below; install them with `--devel`)
 
 ## Changelog
+
+### 2.1.52-sync.10 (prerelease)
+
+The prerelease chart for transport v2.4.0-sync.10. It adds three values and changes no default:
+
+- `bifrost.client.enforceVkObjectOwnership` and `bifrost.client.a2aStoreRawRequestResponse` render `client.enforce_vk_object_ownership` and `client.a2a_store_raw_request_response` into `config.json` when set (TXE-7060), and `bifrost.client.maxResponseBodySizeMb` renders `client.max_response_body_size_mb` (TXE-7148). Unset, the key is left out and the gateway default applies (ownership enforced, no A2A raw capture, 512 MB), so a chart that sets none of them renders as before.
+- `appVersion` is now `2.4.0-sync.10`, so an empty `image.tag` selects `v2.4.0-sync.10`. That transport fixes live billing errors (unpriced or mispriced datasheet keys, $0 lines, half-price cache writes, video resolution and audio rates), adds new providers and video, speech and image routes, and has breaking changes listed in the transport changelog: read them before upgrading.
 
 ### 2.1.52-sync.9 (prerelease)
 
