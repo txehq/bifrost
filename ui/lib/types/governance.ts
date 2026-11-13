@@ -800,6 +800,7 @@ export interface PricingOverridePatch {
 	free_input_images?: number;
 	// Other
 	web_search_cost_per_request?: number;
+	google_maps_grounding_cost_per_query?: number;
 	input_cost_per_query?: number;
 	code_interpreter_cost_per_session?: number;
 	guardrail_cost_per_content_policy_unit?: number;

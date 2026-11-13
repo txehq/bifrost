@@ -2153,29 +2153,67 @@ func countGeminiSearchQueries(metadata *GroundingMetadata, model string) *int {
 // applyGeminiSearchQueryChatUsage records billable Google Search units on chat usage so
 // CalculateCost can charge the per-query search fee.
 func applyGeminiSearchQueryChatUsage(usage *schemas.BifrostLLMUsage, metadata *GroundingMetadata, model string) {
-	count := countGeminiSearchQueries(metadata, model)
-	if usage == nil || count == nil {
+	if usage == nil {
 		return
 	}
-	if usage.CompletionTokensDetails == nil {
-		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+	if count := countGeminiSearchQueries(metadata, model); count != nil {
+		if usage.CompletionTokensDetails == nil {
+			usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+		}
+		usage.CompletionTokensDetails.NumSearchQueries = count
+		usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: *count}}
 	}
-	usage.CompletionTokensDetails.NumSearchQueries = count
-	usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: *count}}
+	applyGeminiMapsGroundedPrompts(&usage.ToolUsage, metadata)
 }
 
 // applyGeminiSearchQueryResponsesUsage is the Responses-shaped counterpart of
 // applyGeminiSearchQueryChatUsage.
 func applyGeminiSearchQueryResponsesUsage(usage *schemas.ResponsesResponseUsage, metadata *GroundingMetadata, model string) {
-	count := countGeminiSearchQueries(metadata, model)
-	if usage == nil || count == nil {
+	if usage == nil {
 		return
 	}
-	if usage.OutputTokensDetails == nil {
-		usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+	if count := countGeminiSearchQueries(metadata, model); count != nil {
+		if usage.OutputTokensDetails == nil {
+			usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+		}
+		usage.OutputTokensDetails.NumSearchQueries = count
+		usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: *count}}
 	}
-	usage.OutputTokensDetails.NumSearchQueries = count
-	usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: *count}}
+	applyGeminiMapsGroundedPrompts(&usage.ToolUsage, metadata)
+}
+
+// countGeminiMapsGroundedPrompts returns 1 for a response grounded with Google Maps, which
+// Google bills per grounded prompt however many places it cites, or nil when the response has
+// no Maps grounding.
+func countGeminiMapsGroundedPrompts(metadata *GroundingMetadata) *int {
+	if metadata == nil {
+		return nil
+	}
+	if metadata.GoogleMapsWidgetContextToken != "" {
+		return new(1)
+	}
+	for _, chunk := range metadata.GroundingChunks {
+		if chunk != nil && chunk.Maps != nil {
+			return new(1)
+		}
+	}
+	return nil
+}
+
+// applyGeminiMapsGroundedPrompts records a Maps-grounded response on the tool usage, keeping any
+// other tool counts already there.
+func applyGeminiMapsGroundedPrompts(toolUsage **schemas.ToolUsage, metadata *GroundingMetadata) {
+	count := countGeminiMapsGroundedPrompts(metadata)
+	if count == nil {
+		return
+	}
+	if *toolUsage == nil {
+		*toolUsage = &schemas.ToolUsage{}
+	}
+	if (*toolUsage).PerTool == nil {
+		(*toolUsage).PerTool = make(map[string]schemas.ToolRequestUsage, 1)
+	}
+	(*toolUsage).PerTool[schemas.ToolUsagePerToolGoogleMaps] = schemas.ToolRequestUsage{NumRequests: *count}
 }
 
 // applyServerSideToolInvocations opts the request into Gemini's tool combination mode,
