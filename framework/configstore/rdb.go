@@ -3172,6 +3172,7 @@ var pricingSyncUpdateColumns = []string{
 	"input_cost_per_audio_token",
 	"input_cost_per_audio_per_second",
 	"input_cost_per_second",
+	"input_cost_per_text_message",
 	"input_cost_per_video_per_second",
 	"output_cost_per_audio_token",
 	"output_cost_per_video_per_second",

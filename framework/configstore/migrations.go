@@ -581,6 +581,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_bfl_webhook_url_prefixes_column"}, run: migrationAddBFLWebhookURLPrefixesColumn},
 	{IDs: []string{"add_video_audio_rate_columns"}, run: migrationAddVideoAudioRateColumns},
 	{IDs: []string{"add_service_tier_and_12h_cache_pricing_columns"}, run: migrationAddServiceTierAnd12hCachePricingColumns},
+	{IDs: []string{"add_input_cost_per_text_message_column"}, run: migrationAddInputCostPerTextMessageColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16784,6 +16785,28 @@ func migrationAddServiceTierAnd12hCachePricingColumns(ctx context.Context, db *g
 				}
 			}
 			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddInputCostPerTextMessageColumn adds input_cost_per_text_message, the per-message rate
+// the upstream datasheet publishes for text sent into an xAI realtime voice session (fork,
+// TXE-7363). Expand-only: one nullable column, nothing rewritten.
+func migrationAddInputCostPerTextMessageColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_input_cost_per_text_message_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableModelPricing{}, "input_cost_per_text_message")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableModelPricing{}, "input_cost_per_text_message")
 		},
 	}})
 	if err := m.Migrate(); err != nil {

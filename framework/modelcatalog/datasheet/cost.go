@@ -736,6 +736,9 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 	default:
 		return nil
 	}
+	if requestType == schemas.RealtimeRequest {
+		cost = addRealtimeTextMessageCost(cost, pricing, input.usage)
+	}
 
 	// Time-of-day pricing: providers that discount outside declared peak windows
 	// (e.g. DeepSeek's 50% off-peak rate) scale every usage-based charge by a
@@ -937,6 +940,7 @@ func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.Bi
 		CompletionTokens: u.OutputTokens,
 		TotalTokens:      u.TotalTokens,
 		AudioSeconds:     u.AudioSeconds,
+		TextMessages:     u.TextMessages,
 		Cost:             u.Cost,
 	}
 	// Map token details for cache and search query pricing
@@ -1013,6 +1017,28 @@ func extractTranscriptionUsage(u *schemas.TranscriptionUsage) (*schemas.BifrostL
 // It returns a per-category cost breakdown; TotalCost equals the sum of every
 // component so callers that only need the total can read that field. Returns
 // nil when usage is nil.
+// addRealtimeTextMessageCost adds the per-message charge for the text messages a client sent into
+// a realtime voice turn: usage.text_messages at input_cost_per_text_message (fork, TXE-7363; xAI
+// voice, "$0.004 / text input", docs.x.ai/developers/pricing). It applies to a realtime turn
+// whichever way the turn itself is priced (tokens or audio seconds), and lands on the input side
+// as text cost. A turn priced at nothing else still owes its messages.
+func addRealtimeTextMessageCost(cost *schemas.BifrostCost, pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage) *schemas.BifrostCost {
+	if pricing.InputCostPerTextMessage == nil || usage == nil || usage.TextMessages == nil || *usage.TextMessages <= 0 {
+		return cost
+	}
+	charge := float64(*usage.TextMessages) * *pricing.InputCostPerTextMessage
+	if cost == nil {
+		cost = &schemas.BifrostCost{}
+	}
+	cost.InputCost += charge
+	cost.TotalCost += charge
+	if cost.InputCostDetails == nil {
+		cost.InputCostDetails = &schemas.InputCostDetails{}
+	}
+	cost.InputCostDetails.TextCost += charge
+	return cost
+}
+
 func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) *schemas.BifrostCost {
 	if usage == nil {
 		return nil

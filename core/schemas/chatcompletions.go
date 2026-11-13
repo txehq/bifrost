@@ -1985,10 +1985,14 @@ type BifrostLLMUsage struct {
 	// ProcessedTokens carries the token counts the vendor processed when it reports them
 	// apart from the billed counts in PromptTokens/CompletionTokens (Cohere's usage.tokens
 	// next to usage.billed_units). Absent when the vendor reports only one set (contract C5).
-	ProcessedTokens   *ProcessedTokenUsage `json:"processed_tokens,omitempty"`
-	BilledCharacters  *int                 `json:"billed_characters,omitempty"` // Vendor-billed character count; nil when unreported
-	ToolUsage         *ToolUsage           `json:"tool_usage,omitempty"`
-	SearchContextSize *string              `json:"search_context_size,omitempty"` // Search context tier the vendor billed ("low" | "medium" | "high")
+	ProcessedTokens  *ProcessedTokenUsage `json:"processed_tokens,omitempty"`
+	BilledCharacters *int                 `json:"billed_characters,omitempty"` // Vendor-billed character count; nil when unreported
+	// TextMessages counts the text messages a client sent into a realtime voice session during
+	// this turn: conversation.item.create events carrying a user input_text item (fork, TXE-7363).
+	// xAI bills them per message on top of audio; nil when the turn received none.
+	TextMessages      *int       `json:"text_messages,omitempty"`
+	ToolUsage         *ToolUsage `json:"tool_usage,omitempty"`
+	SearchContextSize *string    `json:"search_context_size,omitempty"` // Search context tier the vendor billed ("low" | "medium" | "high")
 	// ToolUsePromptTokens is the number of tokens in tool-use prompts, the results of
 	// vendor-run tools fed back to the model (Gemini's toolUsePromptTokenCount). The vendor
 	// reports it next to prompt_tokens, not inside it; total_tokens includes it.
@@ -2398,6 +2402,7 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 	merged.InputImages = sumOptionalInts(base.InputImages, add.InputImages)
 	merged.ProcessedTokens = base.ProcessedTokens.Add(add.ProcessedTokens)
 	merged.BilledCharacters = sumOptionalInts(base.BilledCharacters, add.BilledCharacters)
+	merged.TextMessages = sumOptionalInts(base.TextMessages, add.TextMessages)
 	merged.ToolUsage = base.ToolUsage.Add(add.ToolUsage)
 	merged.ToolUsePromptTokens = base.ToolUsePromptTokens + add.ToolUsePromptTokens
 	merged.ToolUsePromptTokensDetails = base.ToolUsePromptTokensDetails.Add(add.ToolUsePromptTokensDetails)
@@ -2901,6 +2906,7 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 	c.InputImages = copyIntPtr(u.InputImages)
 	c.ProcessedTokens = u.ProcessedTokens.Add(nil)
 	c.BilledCharacters = copyIntPtr(u.BilledCharacters)
+	c.TextMessages = copyIntPtr(u.TextMessages)
 	c.ToolUsage = u.ToolUsage.DeepCopy()
 	if u.SearchContextSize != nil {
 		scs := *u.SearchContextSize

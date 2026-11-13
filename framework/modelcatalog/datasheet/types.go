@@ -304,10 +304,13 @@ type Options struct {
 	InputCostPerAudioTokenPriority *float64 `json:"input_cost_per_audio_token_priority,omitempty"`
 	InputCostPerAudioPerSecond     *float64 `json:"input_cost_per_audio_per_second,omitempty"`
 	InputCostPerSecond             *float64 `json:"input_cost_per_second,omitempty"`
-	InputCostPerVideoPerSecond     *float64 `json:"input_cost_per_video_per_second,omitempty"`
-	OutputCostPerAudioToken        *float64 `json:"output_cost_per_audio_token,omitempty"`
-	OutputCostPerVideoPerSecond    *float64 `json:"output_cost_per_video_per_second,omitempty"`
-	OutputCostPerSecond            *float64 `json:"output_cost_per_second,omitempty"`
+	// InputCostPerTextMessage prices each text message a client sends into a realtime voice
+	// session (usage.text_messages; fork, TXE-7363): xAI voice, $0.004 per text input.
+	InputCostPerTextMessage     *float64 `json:"input_cost_per_text_message,omitempty"`
+	InputCostPerVideoPerSecond  *float64 `json:"input_cost_per_video_per_second,omitempty"`
+	OutputCostPerAudioToken     *float64 `json:"output_cost_per_audio_token,omitempty"`
+	OutputCostPerVideoPerSecond *float64 `json:"output_cost_per_video_per_second,omitempty"`
+	OutputCostPerSecond         *float64 `json:"output_cost_per_second,omitempty"`
 
 	// Resolution-banded video output rates, matched on the short edge of the response's
 	// size. Absent band falls back to OutputCostPerVideoPerSecond, then OutputCostPerSecond.
@@ -962,6 +965,7 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		InputCostPerAudioToken:      entry.InputCostPerAudioToken,
 		InputCostPerAudioPerSecond:  entry.InputCostPerAudioPerSecond,
 		InputCostPerSecond:          entry.InputCostPerSecond,
+		InputCostPerTextMessage:     entry.InputCostPerTextMessage,
 		InputCostPerVideoPerSecond:  entry.InputCostPerVideoPerSecond,
 		OutputCostPerAudioToken:     entry.OutputCostPerAudioToken,
 		OutputCostPerVideoPerSecond: entry.OutputCostPerVideoPerSecond,
@@ -1126,6 +1130,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		InputCostPerAudioToken:      pricing.InputCostPerAudioToken,
 		InputCostPerAudioPerSecond:  pricing.InputCostPerAudioPerSecond,
 		InputCostPerSecond:          pricing.InputCostPerSecond,
+		InputCostPerTextMessage:     pricing.InputCostPerTextMessage,
 		InputCostPerVideoPerSecond:  pricing.InputCostPerVideoPerSecond,
 		OutputCostPerAudioToken:     pricing.OutputCostPerAudioToken,
 		OutputCostPerVideoPerSecond: pricing.OutputCostPerVideoPerSecond,

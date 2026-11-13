@@ -446,7 +446,6 @@ var ignoredUpstreamCostKeys = map[string]string{
 	"google_maps_grounding_cost_per_query": "TXE-7350: other",
 	"guardrail_cost_per_unit":              "TXE-7350: other",
 	"input_cost_per_request":               "TXE-7350: other",
-	"input_cost_per_text_message":          "TXE-7350: other",
 	"input_cost_per_token_cache_hit":       "TXE-7350: other",
 	"ocr_cost_per_credit":                  "TXE-7350: other",
 	"output_cost_per_billable_unit":        "TXE-7350: other",

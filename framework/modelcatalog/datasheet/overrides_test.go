@@ -491,6 +491,20 @@ func TestPatchPricing_VideoAudioAndSmallBandRates(t *testing.T) {
 	assert.Equal(t, override.OutputCostPerVideoPerSecond360p, back.OutputCostPerVideoPerSecond360p)
 }
 
+// TestPatchPricing_InputCostPerTextMessage (TXE-7363): an override sets the realtime text message
+// rate, and the entry and table conversions keep it.
+func TestPatchPricing_InputCostPerTextMessage(t *testing.T) {
+	patched := patchPricing(configstoreTables.TableModelPricing{Model: "grok-voice-3.0", Provider: "xai", Mode: "realtime"},
+		Options{InputCostPerTextMessage: bifrost.Ptr(0.004)})
+	require.NotNil(t, patched.InputCostPerTextMessage)
+	assert.Equal(t, 0.004, *patched.InputCostPerTextMessage)
+	entry := convertTablePricingToEntry(&patched)
+	require.NotNil(t, entry.InputCostPerTextMessage)
+	back := convertEntryToTablePricing("grok-voice-3.0", *entry)
+	require.NotNil(t, back.InputCostPerTextMessage)
+	assert.Equal(t, 0.004, *back.InputCostPerTextMessage)
+}
+
 func TestPatchPricing_CostPerRequestZero(t *testing.T) {
 	base := configstoreTables.TableModelPricing{
 		CostPerRequest: bifrost.Ptr(0.02),

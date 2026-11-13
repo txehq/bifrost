@@ -5,7 +5,9 @@ import (
 	"testing"
 	"time"
 
+	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/providers/openai"
+	"github.com/capsohq/bifrost/core/providers/xai"
 	"github.com/capsohq/bifrost/core/schemas"
 	bfws "github.com/capsohq/bifrost/transports/v2/bifrost-http/websocket"
 )
@@ -587,6 +589,77 @@ func TestFinalizeRealtimeTurnHooksWithErrorCompletesActiveHooks(t *testing.T) {
 	}
 	if !cleanedUp {
 		t.Fatal("expected realtime hook cleanup to run")
+	}
+}
+
+// TestIsRealtimeClientTextMessage (TXE-7363): a client conversation.item.create carrying a user
+// input_text item is a text message xAI bills per message; tool results, audio-only items,
+// assistant items and other events are not.
+func TestIsRealtimeClientTextMessage(t *testing.T) {
+	t.Parallel()
+	item := func(typ, role, content string) *schemas.BifrostRealtimeEvent {
+		return &schemas.BifrostRealtimeEvent{Type: schemas.RTEventConversationItemCreate, Item: &schemas.RealtimeItem{Type: typ, Role: role, Content: json.RawMessage(content)}}
+	}
+	cases := []struct {
+		name  string
+		event *schemas.BifrostRealtimeEvent
+		want  bool
+	}{
+		{"user input_text message", item("message", "user", `[{"type":"input_text","text":"What's the weather?"}]`), true},
+		{"user input_text with no item type", item("", "user", `[{"type":"input_text","text":"hi"}]`), true},
+		{"user audio-only item", item("message", "user", `[{"type":"input_audio","audio":"AAA="}]`), false},
+		{"tool result", &schemas.BifrostRealtimeEvent{Type: schemas.RTEventConversationItemCreate, Item: &schemas.RealtimeItem{Type: "function_call_output", CallID: "c1", Output: "{}"}}, false},
+		{"assistant text item", item("message", "assistant", `[{"type":"text","text":"ok"}]`), false},
+		{"server echo of a user text item", &schemas.BifrostRealtimeEvent{Type: schemas.RTEventConversationItemCreated, Item: &schemas.RealtimeItem{Type: "message", Role: "user", Content: json.RawMessage(`[{"type":"input_text","text":"hi"}]`)}}, false},
+		{"response.create", &schemas.BifrostRealtimeEvent{Type: schemas.RTEventResponseCreate}, false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		if got := isRealtimeClientTextMessage(tc.event); got != tc.want {
+			t.Errorf("%s: isRealtimeClientTextMessage = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestFinalizeRealtimeTurnCarriesTheTextMessagesSent (TXE-7363): the text messages counted on the
+// session since the last turn land on the completed turn's usage, where pricing charges xAI's
+// per-message rate, and are consumed so the next turn is not charged for them again.
+func TestFinalizeRealtimeTurnCarriesTheTextMessagesSent(t *testing.T) {
+	t.Parallel()
+
+	session := bfws.NewSession(nil)
+	var captured *schemas.BifrostResponse
+	setHooks := func() {
+		session.SetRealtimeTurnHooks(&bfws.RealtimeTurnPluginState{
+			RequestID: "req_realtime_text", StartedAt: time.Now().Add(-time.Second),
+			PostHookRunner: func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				captured = result
+				return result, nil
+			},
+		})
+	}
+	rawResponse := []byte(`{"type":"response.done","response":{"id":"resp_1","status":"completed","output":[]}}`)
+
+	session.CountRealtimeTextMessage()
+	session.CountRealtimeTextMessage()
+	setHooks()
+	if err := finalizeRealtimeTurnHooks(&bifrost.Bifrost{}, nil, session, &xai.XAIProvider{}, schemas.XAI, "grok-voice-3.0", nil, rawResponse, "", schemas.RTEventResponseDone, false); err != nil {
+		t.Fatalf("finalizeRealtimeTurnHooks() error = %v", err)
+	}
+	if captured == nil || captured.ResponsesResponse == nil || captured.ResponsesResponse.Usage == nil || captured.ResponsesResponse.Usage.TextMessages == nil {
+		t.Fatalf("turn usage carries no text messages: %#v", captured)
+	}
+	if got := *captured.ResponsesResponse.Usage.TextMessages; got != 2 {
+		t.Fatalf("text messages = %d, want 2", got)
+	}
+
+	captured = nil
+	setHooks()
+	if err := finalizeRealtimeTurnHooks(&bifrost.Bifrost{}, nil, session, &xai.XAIProvider{}, schemas.XAI, "grok-voice-3.0", nil, rawResponse, "", schemas.RTEventResponseDone, false); err != nil {
+		t.Fatalf("finalizeRealtimeTurnHooks() error = %v", err)
+	}
+	if captured != nil && captured.ResponsesResponse != nil && captured.ResponsesResponse.Usage != nil && captured.ResponsesResponse.Usage.TextMessages != nil {
+		t.Fatalf("the next turn was charged the same messages again: %d", *captured.ResponsesResponse.Usage.TextMessages)
 	}
 }
 

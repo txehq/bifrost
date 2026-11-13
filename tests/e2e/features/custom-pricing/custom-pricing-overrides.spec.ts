@@ -110,3 +110,49 @@ test.describe("Custom pricing overrides - 12h cache write and service tier rates
 		await expect(page.getByTestId("pricing-override-field-input-input_cost_per_token_above_200k_tokens_flex")).toHaveValue("0.000002");
 	});
 });
+
+// TXE-7363: the realtime text message rate is a pricing override field in the audio group. An
+// override that sets it is saved with it in its patch and reopens with the value.
+test.describe("Custom pricing overrides - realtime text message rate", () => {
+	const name = `e2e-text-message-rate-${Date.now()}`;
+
+	test.afterEach(async ({ request }) => {
+		const res = await request.get("/api/governance/pricing-overrides");
+		if (!res.ok()) return;
+		const body = await res.json();
+		for (const override of body.pricing_overrides ?? []) {
+			if (override.name === name) await request.delete(`/api/governance/pricing-overrides/${override.id}`);
+		}
+	});
+
+	test("saves a realtime text message rate and reopens with it", async ({ page, request }) => {
+		const key = "input_cost_per_text_message";
+		await page.goto("/workspace/custom-pricing/overrides");
+		await page.getByTestId("pricing-override-create-btn").first().click();
+
+		await page.getByTestId("pricing-override-name-input").fill(name);
+		await page.getByTestId("pricing-override-pattern-input").fill("grok-voice-3.0");
+		await page.getByTestId("pricing-override-request-types-btn").click();
+		await page.getByTestId("pricing-override-request-type-checkbox-live").click();
+		await page.keyboard.press("Escape");
+
+		await page.getByTestId("pricing-field-search").fill("text message");
+		await page.getByTestId(`pricing-field-activate-${key}`).click();
+		await page.getByTestId(`pricing-override-field-input-${key}`).fill("0.004");
+
+		await page.getByTestId("pricing-override-save-btn").click();
+		await expect(page.getByTestId("pricing-override-save-btn")).toBeHidden();
+
+		const res = await request.get("/api/governance/pricing-overrides");
+		expect(res.ok()).toBeTruthy();
+		const saved = ((await res.json()).pricing_overrides ?? []).find((o: { name: string }) => o.name === name);
+		expect(saved, "the override was saved").toBeTruthy();
+		expect(JSON.parse(saved.pricing_patch)[key]).toBe(0.004);
+
+		await page.reload();
+		await page.getByTestId(`pricing-override-actions-btn-${saved.id}`).click();
+		await page.getByTestId(`pricing-override-edit-btn-${saved.id}`).click();
+		await page.getByTestId("pricing-field-search").fill("text message");
+		await expect(page.getByTestId(`pricing-override-field-input-${key}`)).toHaveValue("0.004");
+	});
+});

@@ -743,6 +743,11 @@ func (h *WSRealtimeHandler) processRealtimeClientMessage(
 	// session.update events must not affect later turn logs.
 	updateRealtimeSessionFromEvent(session, event)
 
+	// A text message the vendor bills per message (TXE-7363), counted once it passed translation.
+	if isRealtimeClientTextMessage(event) {
+		session.CountRealtimeTextMessage()
+	}
+
 	// Record tool output / input only after the event passed validation.
 	if !startsTurn {
 		if toolSummary != "" {
