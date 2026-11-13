@@ -1994,9 +1994,15 @@ func BenchmarkPredictionPollURL(b *testing.B) {
 
 // TestReplicateVideoCreateMustNameSeconds pins TXE-7297: a hosted model picks its own length
 // when the create names none, and Replicate reports neither that length nor a cost, so the job
-// could not be priced. The create is refused, naming seconds; with seconds it converts.
+// could not be priced. The create is refused, naming seconds; with seconds it converts. A value
+// the pricer cannot read as a duration ("0", "-3") would reach Replicate and settle unpriced, so
+// seconds must be a whole number greater than zero.
 func TestReplicateVideoCreateMustNameSeconds(t *testing.T) {
-	for _, params := range []*schemas.VideoGenerationParameters{nil, {}, {Seconds: schemas.Ptr(" ")}} {
+	refused := []*schemas.VideoGenerationParameters{nil, {}}
+	for _, seconds := range []string{" ", "0", "-3", "2.5", "abc", "NaN"} {
+		refused = append(refused, &schemas.VideoGenerationParameters{Seconds: schemas.Ptr(seconds)})
+	}
+	for _, params := range refused {
 		_, err := replicate.ToReplicateVideoGenerationInput(&schemas.BifrostVideoGenerationRequest{Model: "google/veo-3", Input: &schemas.VideoGenerationInput{Prompt: "p"}, Params: params})
 		bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
 		if !ok || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error == nil || bifrostErr.Error.Param != "seconds" {
