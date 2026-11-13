@@ -491,6 +491,39 @@ func TestPatchPricing_VideoAudioAndSmallBandRates(t *testing.T) {
 	assert.Equal(t, override.OutputCostPerVideoPerSecond360p, back.OutputCostPerVideoPerSecond360p)
 }
 
+// TestOverride_InputCostPerTextMessageReachesARealtimeTurn (TXE-7363): a realtime turn is priced in the
+// responses mode, so an override that selects the Responses request type changes the per-message
+// charge of an xAI realtime turn. An override on another request type does not.
+func TestOverride_InputCostPerTextMessageReachesARealtimeTurn(t *testing.T) {
+	turn := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		Usage: &schemas.ResponsesResponseUsage{TextMessages: bifrost.Ptr(2)},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.RealtimeRequest, RoutingInfo: schemas.RoutingInfo{Provider: schemas.XAI, Model: "grok-voice-3.0"},
+		},
+	}}
+	providerID := "xai"
+	for name, tc := range map[string]struct {
+		requestTypes []schemas.RequestType
+		want         float64
+	}{
+		"responses override applies to the realtime turn": {[]schemas.RequestType{schemas.ResponsesRequest}, 2 * 0.006},
+		"a live override does not":                        {[]schemas.RequestType{schemas.LiveRequest}, 2 * 0.004},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newTestStore()
+			s.pricingData[makeKey("grok-voice-3.0", "xai", "realtime")] = configstoreTables.TableModelPricing{
+				Model: "grok-voice-3.0", Provider: "xai", Mode: "realtime", InputCostPerTextMessage: bifrost.Ptr(0.004),
+			}
+			require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{{
+				ID: "voice-text", ScopeKind: string(ScopeKindProvider), ProviderID: &providerID,
+				MatchType: string(MatchTypeExact), Pattern: "grok-voice-3.0", RequestTypes: tc.requestTypes,
+				PricingPatchJSON: `{"input_cost_per_text_message":0.006}`,
+			}}))
+			assert.InDelta(t, tc.want, s.CalculateCost(turn, nil), 1e-12)
+		})
+	}
+}
+
 // TestPatchPricing_InputCostPerTextMessage (TXE-7363): an override sets the realtime text message
 // rate, and the entry and table conversions keep it.
 func TestPatchPricing_InputCostPerTextMessage(t *testing.T) {

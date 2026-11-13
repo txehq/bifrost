@@ -162,3 +162,28 @@ func TestSessionRecordRealtimeInputUpdatesPendingItemAndIgnoresConsumedLateUpdat
 func newTestConn() *ws.Conn {
 	return &ws.Conn{}
 }
+
+// BenchmarkSessionRealtimeTextMessages is the per-message and per-turn cost TXE-7363 adds: one locked
+// increment per text message and one locked read-and-reset per completed turn.
+func BenchmarkSessionRealtimeTextMessages(b *testing.B) {
+	session := NewSession(nil)
+	b.ReportAllocs()
+	for b.Loop() {
+		session.CountRealtimeTextMessage()
+		_ = session.ConsumeRealtimeTurnTextMessages()
+	}
+}
+
+// TestSessionRealtimeTextMessagesCountAndConsume (TXE-7363): text messages are counted until the
+// next completed turn consumes them, and a closed session counts none.
+func TestSessionRealtimeTextMessagesCountAndConsume(t *testing.T) {
+	session := NewSession(nil)
+	session.CountRealtimeTextMessage()
+	session.CountRealtimeTextMessage()
+	if got := session.ConsumeRealtimeTurnTextMessages(); got != 2 {
+		t.Fatalf("consumed %d text messages, want 2", got)
+	}
+	if got := session.ConsumeRealtimeTurnTextMessages(); got != 0 {
+		t.Fatalf("a second consume returned %d, want 0", got)
+	}
+}

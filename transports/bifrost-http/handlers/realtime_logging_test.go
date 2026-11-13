@@ -621,6 +621,25 @@ func TestIsRealtimeClientTextMessage(t *testing.T) {
 	}
 }
 
+// BenchmarkIsRealtimeClientTextMessage is the per-client-event cost TXE-7363 adds to a realtime
+// session: a user text item (the one shape that decodes content parts), a response.create and an
+// audio item (the common events that return before decoding).
+func BenchmarkIsRealtimeClientTextMessage(b *testing.B) {
+	textItem := &schemas.BifrostRealtimeEvent{Type: schemas.RTEventConversationItemCreate, Item: &schemas.RealtimeItem{
+		Type: "message", Role: "user", Content: json.RawMessage(`[{"type":"input_text","text":"What's the weather in Lisbon tomorrow?"}]`),
+	}}
+	responseCreate := &schemas.BifrostRealtimeEvent{Type: schemas.RTEventResponseCreate}
+	audioAppend := &schemas.BifrostRealtimeEvent{Type: schemas.RTEventInputAudioAppend}
+	for name, event := range map[string]*schemas.BifrostRealtimeEvent{"user_text_item": textItem, "response_create": responseCreate, "audio_append": audioAppend} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = isRealtimeClientTextMessage(event)
+			}
+		})
+	}
+}
+
 // TestFinalizeRealtimeTurnCarriesTheTextMessagesSent (TXE-7363): the text messages counted on the
 // session since the last turn land on the completed turn's usage, where pricing charges xAI's
 // per-message rate, and are consumed so the next turn is not charged for them again.

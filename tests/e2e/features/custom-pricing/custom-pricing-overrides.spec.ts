@@ -111,8 +111,9 @@ test.describe("Custom pricing overrides - 12h cache write and service tier rates
 	});
 });
 
-// TXE-7363: the realtime text message rate is a pricing override field in the audio group. An
-// override that sets it is saved with it in its patch and reopens with the value.
+// TXE-7363: the realtime text message rate is a pricing override field. A realtime turn is priced in
+// the responses mode, so the override selects the Responses request type. An override that sets the
+// rate is saved with it in its patch and reopens with the value.
 test.describe("Custom pricing overrides - realtime text message rate", () => {
 	const name = `e2e-text-message-rate-${Date.now()}`;
 
@@ -133,7 +134,7 @@ test.describe("Custom pricing overrides - realtime text message rate", () => {
 		await page.getByTestId("pricing-override-name-input").fill(name);
 		await page.getByTestId("pricing-override-pattern-input").fill("grok-voice-3.0");
 		await page.getByTestId("pricing-override-request-types-btn").click();
-		await page.getByTestId("pricing-override-request-type-checkbox-live").click();
+		await page.getByTestId("pricing-override-request-type-checkbox-responses").click();
 		await page.keyboard.press("Escape");
 
 		await page.getByTestId("pricing-field-search").fill("text message");

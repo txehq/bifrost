@@ -1,0 +1,301 @@
+{
+  "name": "580. A realtime text message rate is created, read back, set to zero and removed through the pricing override API (realtime text message rate)",
+  "item": [
+    {
+      "name": "580.1 [EXPECT-201] POST /api/governance/pricing-overrides accepts input_cost_per_text_message 0.006 on grok-voice-3.0 for the Responses request type, the mode a realtime turn is priced in (realtime text message rate)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.unset('textMessageOverrideId');",
+              "pm.request.body.raw = JSON.stringify({",
+              "  name: 'e2e-text-message-rate-' + Date.now(),",
+              "  scope_kind: 'global',",
+              "  match_type: 'exact',",
+              "  pattern: 'grok-voice-3.0',",
+              "  request_types: ['responses'],",
+              "  patch: { input_cost_per_text_message: 0.006 }",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the override is created', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 400)).to.eql(201);",
+              "});",
+              "var body = null; try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var ov = body && body.pricing_override;",
+              "if (ov && ov.id) { pm.collectionVariables.set('textMessageOverrideId', ov.id); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "580.2 GET /api/governance/pricing-overrides lists the override with input_cost_per_text_message 0.006 (realtime text message rate)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "if (!pm.collectionVariables.get('textMessageOverrideId')) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "});",
+              "var id = pm.collectionVariables.get('textMessageOverrideId');",
+              "var ov = (pm.response.json().pricing_overrides || []).find(function (o) { return o.id === id; });",
+              "pm.test('the stored patch carries input_cost_per_text_message 0.006', function () {",
+              "  pm.expect(ov, 'override not listed: ' + pm.response.text().slice(0, 600)).to.be.an('object');",
+              "  var patch = typeof ov.pricing_patch === 'string' ? JSON.parse(ov.pricing_patch) : ov.pricing_patch;",
+              "  pm.expect(patch.input_cost_per_text_message, JSON.stringify(patch)).to.eql(0.006);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "580.3 [EXPECT-200] PUT /api/governance/pricing-overrides/{id} sets input_cost_per_text_message to an explicit 0 (realtime text message rate)",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{textMessageOverrideId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides",
+            "{{textMessageOverrideId}}"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"patch\": {\"input_cost_per_text_message\": 0}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "if (!pm.collectionVariables.get('textMessageOverrideId')) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the override is updated', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "580.4 GET /api/governance/pricing-overrides lists the override with input_cost_per_text_message 0, kept as a zero rather than dropped (realtime text message rate)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "if (!pm.collectionVariables.get('textMessageOverrideId')) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "});",
+              "var id = pm.collectionVariables.get('textMessageOverrideId');",
+              "var ov = (pm.response.json().pricing_overrides || []).find(function (o) { return o.id === id; });",
+              "pm.test('the stored patch carries input_cost_per_text_message 0, kept as a zero rather than dropped', function () {",
+              "  pm.expect(ov, 'override not listed: ' + pm.response.text().slice(0, 600)).to.be.an('object');",
+              "  var patch = typeof ov.pricing_patch === 'string' ? JSON.parse(ov.pricing_patch) : ov.pricing_patch;",
+              "  pm.expect(patch.input_cost_per_text_message, JSON.stringify(patch)).to.eql(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "580.5 [EXPECT-200] teardown: DELETE /api/governance/pricing-overrides/{id} removes the override (realtime text message rate)",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{textMessageOverrideId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides",
+            "{{textMessageOverrideId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "if (!pm.collectionVariables.get('textMessageOverrideId')) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the override is removed', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "});",
+              "pm.collectionVariables.unset('textMessageOverrideId');"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

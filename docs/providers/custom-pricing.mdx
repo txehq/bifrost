@@ -451,7 +451,7 @@ least 1536) is billed at the 1536×1024 rate, which is checked first.
 | `input_cost_per_audio_token_priority` | Cost per audio input token for priority requests |
 | `input_cost_per_audio_per_second` | Cost per second of audio input |
 | `input_cost_per_second` | Cost per second of input (generic) |
-| `input_cost_per_text_message` | Cost per text message a client sends into a realtime voice session (`usage.text_messages`; xAI voice) |
+| `input_cost_per_text_message` | Cost per text message a client sends into a realtime voice session (`usage.text_messages`; xAI voice). A realtime turn is priced in the `responses` mode, so an override selects the Responses request type |
 | `input_cost_per_video_per_second` | Cost per second of video input |
 | `output_cost_per_audio_token` | Cost per audio output token |
 | `output_cost_per_second` | Cost per second of audio output |
