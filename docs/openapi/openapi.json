@@ -115030,7 +115030,6 @@
           "databricks",
           "cloudflare",
           "typesafe",
-          "voyage",
           "minimax",
           "byteplus",
           "tencent",
@@ -133480,7 +133479,7 @@
           },
           "bfl_key_config": {
             "type": "object",
-            "description": "BFL-specific key configuration. `webhook_secret` is the secret BFL signs its webhook calls\nwith. It is sent as BFL's `webhook_secret` on an image task create that carries\n`callback_url` and no `webhook_secret` of its own; the request's own value wins. Redacted in\nevery response.\n",
+            "description": "BFL-specific key configuration. `webhook_secret` is the secret BFL signs its webhook calls\nwith. It is sent as BFL's `webhook_secret` on an image task create that carries\n`callback_url` and no `webhook_secret` of its own; the request's own value wins. Redacted in\nevery response. The key's secret is sent only when `callback_url` is under one of\n`webhook_url_prefixes`; any other `callback_url` gets no key secret, and a key without\nprefixes sends its secret to no destination.\n",
             "properties": {
               "webhook_secret": {
                 "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
@@ -133512,6 +133511,16 @@
                       }
                     }
                   }
+                ]
+              },
+              "webhook_url_prefixes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The destinations the operator trusts with deliveries signed by `webhook_secret`, such as\n`https://hooks.example.com/bfl/`. A `callback_url` matches a prefix when its scheme, host\nand port are the same and its path is the prefix's path or below it at a `/` boundary. A\n`callback_url` with user info, a `.` or `..` segment, or an escaped `/`, `\\` or `.` never\nmatches. Not a credential: returned as stored.\n",
+                "example": [
+                  "https://hooks.example.com/bfl/"
                 ]
               }
             }

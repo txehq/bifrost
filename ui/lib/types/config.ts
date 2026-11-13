@@ -282,6 +282,7 @@ export const DefaultCloudflareKeyConfig: CloudflareKeyConfig = {
 // BFLKeyConfig matching Go's schemas.BFLKeyConfig (fork, TXE-7062)
 export interface BFLKeyConfig {
 	webhook_secret?: SecretVar;
+	webhook_url_prefixes?: string[]; // TXE-7310: destinations the secret may sign for
 }
 
 // DatabricksKeyConfig matching Go's schemas.DatabricksKeyConfig

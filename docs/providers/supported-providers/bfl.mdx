@@ -82,6 +82,8 @@ curl -X POST http://localhost:8080/api/providers \
 
 A key can carry `bfl_key_config.webhook_secret`, the secret BFL signs its webhook calls with. It is sent as BFL's `webhook_secret` on an image task create that carries `callback_url` and no `webhook_secret` of its own; a `webhook_secret` on the request wins. The value supports the `env.` prefix, is encrypted at rest, and is redacted in every management API response.
 
+The caller picks `callback_url`, so the key's secret signs only deliveries to destinations the operator lists in `bfl_key_config.webhook_url_prefixes`. A `callback_url` matches a prefix when its scheme, host and port are the same and its path is the prefix's path or below it at a `/` boundary; a `callback_url` with user info, a `.` or `..` segment, or an escaped `/`, `\` or `.` never matches. Any other `callback_url` is still sent to BFL as `webhook_url`, without the key's secret. A key with no prefixes sends its secret to no destination. Without this rule a caller could collect deliveries signed with the operator's secret and replay them to the operator's own receiver.
+
 ```json
 {
   "name": "bfl-key-1",
@@ -89,7 +91,8 @@ A key can carry `bfl_key_config.webhook_secret`, the secret BFL signs its webhoo
   "models": ["flux-pro-1.1", "flux-kontext-pro"],
   "weight": 1.0,
   "bfl_key_config": {
-    "webhook_secret": "env.BFL_WEBHOOK_SECRET"
+    "webhook_secret": "env.BFL_WEBHOOK_SECRET",
+    "webhook_url_prefixes": ["https://hooks.example.com/bfl/"]
   }
 }
 ```
@@ -145,7 +148,7 @@ The unified fields are converted per model, from BFL's OpenAPI. A field the mode
 | `num_inference_steps` | `steps` | `flux-dev`, `flux-2-flex`, fill, FLUX 3 Image Klein |
 | `input_images`, edit `images` | `images` (FLUX 3), `input_image`, `input_image_2`, ... (FLUX.2, Kontext), `image` (fill) | Bytes are sent as base64, URLs unchanged, a data URL as its base64 payload |
 | edit `mask` | `mask` | `flux-pro-1.0-fill` only |
-| `callback_url` | `webhook_url` | Refused on `flux-3-image` and `flux-3-image-klein`, which have no webhook. The key's `bfl_key_config.webhook_secret` goes with it unless the request sends its own |
+| `callback_url` | `webhook_url` | Refused on `flux-3-image` and `flux-3-image-klein`, which have no webhook. The key's `bfl_key_config.webhook_secret` goes with it when `callback_url` is under one of the key's `webhook_url_prefixes`, unless the request sends its own |
 | `n` | | One image per task: any value other than 1 is refused |
 | `response_format` | | Only `url` |
 | `client_reference_id`, `expires_after_seconds`, `output_storage_uri` | | BFL has no external task id, deadline or storage target: always refused |

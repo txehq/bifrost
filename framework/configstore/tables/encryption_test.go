@@ -2530,3 +2530,39 @@ func TestTableKey_BFLWebhookSecretEncryptDecrypt(t *testing.T) {
 	require.NotNil(t, foundEnv.BFLKeyConfig)
 	assert.Equal(t, "env.FAKE_BFL_WEBHOOK_SECRET_FOR_TEST", foundEnv.BFLKeyConfig.WebhookSecret.GetRawRef())
 }
+
+// TXE-7310: the destinations a BFL key's webhook secret may sign for survive a save and a load,
+// with or without the secret, and clearing the config clears them.
+func TestTableKey_BFLWebhookURLPrefixesRoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+	prefixes := []string{"https://hooks.example.com/bfl/", "https://hooks2.example.com/"}
+	key := &TableKey{
+		Name: "bfl-prefixes", ProviderID: 1, Provider: "bfl", KeyID: "bfl-uuid-3",
+		Value:        *schemas.NewSecretVar("bfl-api-key"),
+		BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar("bfl-webhook-secret-123"), WebhookURLPrefixes: prefixes},
+	}
+	require.NoError(t, db.Create(key).Error)
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.NotNil(t, found.BFLKeyConfig)
+	assert.Equal(t, prefixes, found.BFLKeyConfig.WebhookURLPrefixes)
+	assert.Equal(t, "bfl-webhook-secret-123", secretVarPtrValue(found.BFLKeyConfig.WebhookSecret))
+
+	onlyPrefixes := &TableKey{
+		Name: "bfl-only-prefixes", ProviderID: 1, Provider: "bfl", KeyID: "bfl-uuid-4",
+		Value:        *schemas.NewSecretVar("bfl-api-key"),
+		BFLKeyConfig: &schemas.BFLKeyConfig{WebhookURLPrefixes: prefixes},
+	}
+	require.NoError(t, db.Create(onlyPrefixes).Error)
+	var foundOnly TableKey
+	require.NoError(t, db.First(&foundOnly, onlyPrefixes.ID).Error)
+	require.NotNil(t, foundOnly.BFLKeyConfig, "a config with only prefixes must come back")
+	assert.Equal(t, prefixes, foundOnly.BFLKeyConfig.WebhookURLPrefixes)
+	assert.Nil(t, foundOnly.BFLKeyConfig.WebhookSecret)
+
+	found.BFLKeyConfig = nil
+	require.NoError(t, db.Save(&found).Error)
+	var cleared TableKey
+	require.NoError(t, db.First(&cleared, key.ID).Error)
+	assert.Nil(t, cleared.BFLKeyConfig, "a cleared config must not come back")
+}

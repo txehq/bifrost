@@ -7652,7 +7652,14 @@
               "properties": {
                 "webhook_secret": {
                   "type": "string",
-                  "description": "Secret BFL signs its webhook calls with (can use env. prefix). Sent as webhook_secret on an image task that carries callback_url and no webhook_secret of its own"
+                  "description": "Secret BFL signs its webhook calls with (can use env. prefix). Sent as webhook_secret on an image task that carries callback_url and no webhook_secret of its own, only when callback_url is under one of webhook_url_prefixes"
+                },
+                "webhook_url_prefixes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Destinations trusted with deliveries signed by webhook_secret, such as https://hooks.example.com/bfl/. A callback_url matches when its scheme, host and port are the same and its path is at or below the prefix's path. Any other callback_url gets no key secret; without prefixes the key's secret is never sent"
                 }
               },
               "additionalProperties": false

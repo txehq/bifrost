@@ -574,6 +574,8 @@ export const sglKeyConfigSchema = z
 // Fork (TXE-7062): the BFL webhook secret is optional; a request may send its own instead.
 export const bflKeyConfigSchema = z.object({
 	webhook_secret: secretVarSchema.optional(),
+	// TXE-7310: destinations the webhook secret may sign for.
+	webhook_url_prefixes: z.array(z.string()).optional(),
 });
 
 export const cloudflareKeyConfigSchema = z

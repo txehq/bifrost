@@ -994,7 +994,11 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 
 		// Redact BFL key config if present (fork, TXE-7062): the webhook secret is a credential.
 		if key.BFLKeyConfig != nil {
-			redactedConfig.Keys[i].BFLKeyConfig = &schemas.BFLKeyConfig{WebhookSecret: key.BFLKeyConfig.WebhookSecret.Redacted()}
+			// The trusted destinations (TXE-7310) are not a credential and are returned as stored.
+			redactedConfig.Keys[i].BFLKeyConfig = &schemas.BFLKeyConfig{
+				WebhookSecret:      key.BFLKeyConfig.WebhookSecret.Redacted(),
+				WebhookURLPrefixes: append([]string(nil), key.BFLKeyConfig.WebhookURLPrefixes...),
+			}
 		}
 
 		if key.GithubCopilotKeyConfig != nil {

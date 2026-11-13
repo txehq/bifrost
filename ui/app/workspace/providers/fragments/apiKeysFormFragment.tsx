@@ -1274,10 +1274,31 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 							<FormItem>
 								<FormLabel>Webhook Secret (Optional)</FormLabel>
 								<FormDescription>
-									Sent to BFL as webhook_secret on image tasks that carry a callback_url, unless the request sends its own.
+									Sent to BFL as webhook_secret on image tasks whose callback_url is under a trusted webhook URL prefix, unless the request sends its own.
 								</FormDescription>
 								<FormControl>
 									<SecretVarInput data-testid="key-input-bfl-webhook-secret" placeholder="env.BFL_WEBHOOK_SECRET" {...field} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name="key.bfl_key_config.webhook_url_prefixes"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Trusted Webhook URL Prefixes</FormLabel>
+								<FormDescription>
+									The webhook secret signs only deliveries to a callback_url under one of these prefixes (same scheme, host and port, path at or below). Any other callback_url gets no secret; with none listed the secret is never sent.
+								</FormDescription>
+								<FormControl>
+									<TagInput
+										data-testid="key-input-bfl-webhook-url-prefixes"
+										placeholder="https://hooks.example.com/bfl/ (Enter or comma)"
+										value={field.value ?? []}
+										onValueChange={field.onChange}
+									/>
 								</FormControl>
 								<FormMessage />
 							</FormItem>

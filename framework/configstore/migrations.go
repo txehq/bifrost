@@ -578,6 +578,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"backfill_batch_output_folders"}, run: migrationBackfillBatchOutputFolders},
 	{IDs: []string{"add_client_config_max_response_body_size_mb_column"}, run: migrationAddClientConfigMaxResponseBodySizeMBColumn},
 	{IDs: []string{"add_bfl_key_config_columns"}, run: migrationAddBFLKeyConfigColumns},
+	{IDs: []string{"add_bfl_webhook_url_prefixes_column"}, run: migrationAddBFLWebhookURLPrefixesColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16657,6 +16658,28 @@ func migrationAddBFLKeyConfigColumns(ctx context.Context, db *gorm.DB, logger sc
 		},
 		Rollback: func(tx *gorm.DB) error {
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableKey{}, "bfl_webhook_secret")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddBFLWebhookURLPrefixesColumn adds the destinations a BFL key's webhook secret may
+// sign for (fork, TXE-7310): a JSON list of trusted URL prefixes. A column add, no backfill: a key
+// without it sends its secret to no callback_url until the operator lists one.
+func migrationAddBFLWebhookURLPrefixesColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_bfl_webhook_url_prefixes_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableKey{}, "bfl_webhook_url_prefixes")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableKey{}, "bfl_webhook_url_prefixes")
 		},
 	}})
 	if err := m.Migrate(); err != nil {
