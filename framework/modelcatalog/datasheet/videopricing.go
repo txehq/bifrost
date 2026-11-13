@@ -43,8 +43,7 @@ type VideoPricingDimensions struct {
 	TargetMegapixels *int `json:"target_megapixels,omitempty"`
 
 	// Audio is the create's audio flag. It selects a band's with-audio rate where the model
-	// publishes one (TXE-7306); nil, the vendor's default, is priced with audio
-	// (VideoPricedWithAudio).
+	// publishes one (TXE-7306); nil takes the provider's audio default (VideoAudioDefaults).
 	Audio *bool `json:"audio,omitempty"`
 
 	// OutputCount is how many clips the job actually returned. It is 0 until the
@@ -159,8 +158,8 @@ func (s *Store) CalculateVideoCostDetails(dims VideoPricingDimensions, provider 
 	// the catalog yet — so they resolve to unpriced rather than being silently
 	// billed as if they were a per-second generation of the same length.
 	// The audio flag the create captured selects a band's with-audio rate where the model has
-	// one (TXE-7306); an unstated flag is priced with audio, as the vendors default.
-	breakdown := computeVideoCost(pricing, nil, dims.Seconds, dims.Size, dims.OutputCount, VideoPricedWithAudio(dims.Audio), serviceTier{})
+	// one (TXE-7306); an unstated flag takes the provider's audio default.
+	breakdown := computeVideoCost(pricing, nil, dims.Seconds, dims.Size, dims.OutputCount, VideoPricedWithAudio(provider, dims.Audio), serviceTier{})
 	if breakdown == nil || breakdown.TotalCost <= 0 {
 		return VideoCostDetails{}
 	}

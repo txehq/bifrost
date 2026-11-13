@@ -8462,7 +8462,7 @@ func pixverseV6Pricing() configstoreTables.TableModelPricing {
 
 // TestCalculateVideoCostDetails_PricesAudioAtTheBandsAudioRate (TXE-7306): a job with generated
 // audio settles at its band's with-audio rate, an explicit audio false at the silent rate, and
-// an unstated flag with audio, as the vendors default. A band with no audio rate, or a size
+// an unstated flag at Replicate's default, with audio. A band with no audio rate, or a size
 // with no band, falls back to the silent rates. Before the audio keys were parsed, every one of
 // these settled at a silent rate, and 360p and 540p at the unbanded 0.05.
 func TestCalculateVideoCostDetails_PricesAudioAtTheBandsAudioRate(t *testing.T) {
@@ -8501,9 +8501,37 @@ func TestCalculateVideoCostDetails_PricesAudioAtTheBandsAudioRate(t *testing.T) 
 	}
 }
 
+// TestVideoPricedWithAudio_FollowsTheProvidersDefault (TXE-7306): a stated flag wins; an unstated
+// one takes the provider's audio default, and a provider with no entry is priced with audio. A
+// provider whose vendor renders silence by default settles an unstated job at the silent rate.
+func TestVideoPricedWithAudio_FollowsTheProvidersDefault(t *testing.T) {
+	const silentDefault schemas.ModelProvider = "test-silent-default"
+	VideoAudioDefaults[silentDefault] = VideoAudioDefault{On: false, Source: "test"}
+	t.Cleanup(func() { delete(VideoAudioDefaults, silentDefault) })
+	on, off := true, false
+
+	assert.True(t, VideoPricedWithAudio(schemas.Runway, nil), "Runway renders audio by default")
+	assert.False(t, VideoPricedWithAudio(schemas.Runway, &off))
+	assert.False(t, VideoPricedWithAudio(silentDefault, nil))
+	assert.True(t, VideoPricedWithAudio(silentDefault, &on))
+	assert.True(t, VideoPricedWithAudio("no-entry-provider", nil), "a provider with no entry is priced with audio")
+
+	pricing := pixverseV6Pricing()
+	pricing.Provider = string(silentDefault)
+	store := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("pixverse/pixverse-v6", string(silentDefault), "video_generation"): pricing,
+	})
+	seconds := 5
+	details := store.CalculateVideoCostDetails(VideoPricingDimensions{
+		Model: "pixverse/pixverse-v6", RequestType: schemas.VideoGenerationRequest, Seconds: &seconds, Size: "1280x720", OutputCount: 1,
+	}, silentDefault, nil)
+	require.True(t, details.Priced)
+	assert.InDelta(t, 5*0.09, details.Cost, 1e-12, "an unstated flag on a silent-default provider takes the silent rate")
+}
+
 // TestCalculateCost_VideoResponsePricesUnstatedAudioWithAudio: the per-request price of a
-// finished video reads no audio flag (a response does not carry one), so it takes the
-// with-audio rate of its band, as settlement does for an unstated flag.
+// finished video reads no audio flag (a response does not carry one), so it takes its provider's
+// audio default: with audio for Replicate, as settlement does for an unstated flag.
 func TestCalculateCost_VideoResponsePricesUnstatedAudioWithAudio(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("pixverse/pixverse-v6", "replicate", "video_generation"): pixverseV6Pricing(),

@@ -724,9 +724,9 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		cost = computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality, input.tier)
 	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest, schemas.VideoEditRequest:
 		// A video response does not carry the request's audio flag, so the per-request price
-		// takes the unstated default: with audio where the model has an audio rate. Settlement
-		// prices from the captured request dimensions instead (CalculateVideoCostDetails).
-		cost = computeVideoCost(pricing, input.usage, input.videoSeconds, input.videoSize, input.videoCount, VideoPricedWithAudio(nil), input.tier)
+		// takes the provider's audio default. Settlement prices from the captured request
+		// dimensions instead (CalculateVideoCostDetails).
+		cost = computeVideoCost(pricing, input.usage, input.videoSeconds, input.videoSize, input.videoCount, VideoPricedWithAudio(routingInfo.Provider, nil), input.tier)
 	case schemas.OCRRequest:
 		cost = computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
 	case schemas.ContainerCreateRequest:
@@ -1920,13 +1920,45 @@ func videoAudioBandRate(pricing *configstoreTables.TableModelPricing, band int) 
 	return nil
 }
 
-// VideoPricedWithAudio reports whether a video job is priced at a with-audio rate. A job that
-// says nothing about audio is, because vendors render audio by default where they bill it
-// (Runway: "audio defaults to true", docs.dev.runwayml.com/guides/pricing; Replicate's
-// google/veo-3.1: generate_audio defaults to true), and pricing it at the silent rate would
-// charge less than the vendor bills. Only an explicit audio false takes the silent rate.
-func VideoPricedWithAudio(audio *bool) bool {
-	return audio == nil || *audio
+// VideoAudioDefault is what a video provider does when a create does not say whether to
+// generate audio, and the vendor page that says so.
+type VideoAudioDefault struct {
+	On     bool
+	Source string
+}
+
+// VideoAudioDefaults is each video provider's audio default (fork, TXE-7306). A job whose create
+// does not say is priced at the with-audio rate when its vendor renders audio by default, since
+// that is what the vendor bills. Where a vendor documents no default, the entry is on: pricing a
+// default-audio job at the silent rate would charge the key less than the vendor bills.
+// TestEveryVideoProviderHasAnAudioDefault (framework/jobaccounting) fails when a provider in
+// videoProviders has no entry. Sources were read on 14 Nov 2026.
+var VideoAudioDefaults = map[schemas.ModelProvider]VideoAudioDefault{
+	schemas.Runway:    {On: true, Source: "docs.dev.runwayml.com/guides/pricing: \"audio defaults to true\"; veo3.1 is $0.20/s silent and $0.40/s with audio"},
+	schemas.Replicate: {On: true, Source: "the converter sends no audio flag, so the model's default applies; replicate.com/google/veo-3.1 generate_audio defaults to true"},
+	schemas.OpenAI:    {On: true, Source: "developers.openai.com/api/docs/models/sora-2: every Sora video has synced audio, and there is no silent price"},
+	schemas.Gemini:    {On: true, Source: "aistudio.google.com/docs/pricing: Gemini Omni video has native audio at one price; Veo on the Gemini API is shut down (aistudio.google.com/docs/deprecations)"},
+	schemas.Vertex:    {On: true, Source: "no default documented on the Vertex Veo pages; Veo 3 renders sound, so an unstated flag is priced with audio"},
+	schemas.Kling:     {On: true, Source: "no default documented (kling.ai/llms.txt prices kling-v3 std at $0.084/s silent and $0.126/s with audio); priced with audio so an unstated job is not under-charged"},
+	schemas.DashScope: {On: true, Source: "no default documented (alibabacloud.com/help/en/model-studio/model-pricing: wan2.6-i2v-flash 720P $0.025/s silent, $0.05/s with audio); priced with audio"},
+	schemas.MiniMax:   {On: true, Source: "platform.minimax.io/docs/guides/pricing: one price whatever the audio setting"},
+	schemas.BytePlus:  {On: true, Source: "ai.byteplus.com/ark/region:ap-southeast-1/docs/model-pricing: Seedance 2.x is priced per video token with no audio split"},
+	schemas.XAI:       {On: true, Source: "the retrieve reports the bill itself (usage.cost_in_usd_ticks), which covers audio"},
+	schemas.BFL:       {On: true, Source: "the query reports BFL's settled cost (usage.cost, TXE-7297), which covers generate_audio"},
+	schemas.Runware:   {On: true, Source: "the task reports its own cost, which covers audio"},
+}
+
+// VideoPricedWithAudio reports whether a video job is priced at a with-audio rate: the create's
+// audio flag when it gave one, otherwise its provider's default (VideoAudioDefaults). A provider
+// with no entry is priced with audio, never below what a default-audio vendor bills.
+func VideoPricedWithAudio(provider schemas.ModelProvider, audio *bool) bool {
+	if audio != nil {
+		return *audio
+	}
+	if def, ok := VideoAudioDefaults[provider]; ok {
+		return def.On
+	}
+	return true
 }
 
 // videoResolutionBand returns the short edge of a "WxH" size, which is the number
