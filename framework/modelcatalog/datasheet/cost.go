@@ -897,7 +897,7 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 		// Dimensions are kept even when a provider cost is present, so catalog pricing still
 		// works when that provider's reported cost is ignored.
 		if video.Seconds != nil {
-			if seconds, err := strconv.Atoi(*video.Seconds); err == nil {
+			if seconds, ok := VideoSeconds(*video.Seconds); ok {
 				input.videoSeconds = &seconds
 			}
 		}

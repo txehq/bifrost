@@ -933,7 +933,7 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 		dims.UpscaleFactor = params.UpscaleFactor
 		dims.TargetMegapixels = params.TargetMegapixels
 		if params.Seconds != nil {
-			if seconds, err := strconv.Atoi(*params.Seconds); err == nil {
+			if seconds, ok := modelcatalog.VideoSeconds(*params.Seconds); ok {
 				dims.Seconds = &seconds
 			}
 		}

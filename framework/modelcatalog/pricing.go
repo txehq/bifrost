@@ -180,6 +180,11 @@ func (mc *ModelCatalog) CalculateVideoCostDetails(dims VideoPricingDimensions, p
 	return mc.datasheet.CalculateVideoCostDetails(dims, provider, (*datasheet.LookupScopes)(scopes))
 }
 
+// VideoSeconds reads a video duration as whole seconds; see datasheet.VideoSeconds.
+func VideoSeconds(value string) (int, bool) {
+	return datasheet.VideoSeconds(value)
+}
+
 // VideoDimensionsFromResponse reads the pricing dimensions a terminal video
 // response reports; what it omits is filled from the dimensions captured at
 // submission.

@@ -807,7 +807,7 @@ Each Replicate model has unique parameters. To find available parameters:
 | `model` | string | ✅ | Replicate model (owner/model or version ID) |
 | `prompt` | string | ✅ | Text description of the video |
 | `input_reference` | string | ❌ | Reference image (base64 data URL or URL) → mapped to `image` field; OpenAI-hosted models use `input_reference` |
-| `seconds` | string | ❌ | Duration → `duration` |
+| `seconds` | string | ✅ | Duration → `duration`. Required: without it the hosted model picks its own length, and Replicate reports neither that length nor a cost, so the job could not be priced; a create without it is refused with 400 `caller_unsupported_parameter` naming `seconds` |
 | `seed` | int | ❌ | Seed for reproducibility |
 | `negative_prompt` | string | ❌ | What to avoid |
 

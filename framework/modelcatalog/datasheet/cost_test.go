@@ -8416,3 +8416,28 @@ func BenchmarkComputeEmbeddingCost(b *testing.B) {
 		}
 	})
 }
+
+// TestVideoSeconds pins the one reading of a video duration (TXE-7297): whole seconds as given,
+// a vendor's fractional length rounded to the nearest second and never below one, and anything
+// that is not a positive number (auto, empty, zero) read as no duration. A fraction dropped by
+// strconv.Atoi left a Kling job ("5.1") with no duration, and it settled unpriced.
+func TestVideoSeconds(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+		ok   bool
+	}{
+		{"8", 8, true}, {" 4 ", 4, true}, {"5.1", 5, true}, {"6.5", 7, true}, {"5.0", 5, true},
+		{"0.3", 1, true}, {"auto", 0, false}, {"", 0, false}, {"0", 0, false}, {"-2", 0, false}, {"NaN", 0, false},
+	}
+	for _, tc := range cases {
+		got, ok := VideoSeconds(tc.in)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("VideoSeconds(%q) = %d, %v; want %d, %v", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+	dims := VideoDimensionsFromResponse(&schemas.BifrostVideoGenerationResponse{Seconds: schemas.Ptr("5.1")})
+	if dims.Seconds == nil || *dims.Seconds != 5 {
+		t.Errorf("a response reporting 5.1 seconds gives %v, want 5", dims.Seconds)
+	}
+}

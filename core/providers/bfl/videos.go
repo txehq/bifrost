@@ -210,6 +210,14 @@ func toVideoTask(result *BFLResultResponse) *schemas.BifrostVideoGenerationRespo
 	statusTable.Apply(task, result.Status)
 	if result.Cost != nil {
 		task.Usage = &schemas.VideoUsage{VendorCost: creditCost(*result.Cost)}
+		// get_result's cost is BFL's settled cost in credits. Bifrost settles a video at the
+		// vendor's own figure when it reports one in USD (usage.cost), so the credits are
+		// converted at BFL's documented rate. FLUX 3 Video's get_result reports no duration, so
+		// without this a task created with seconds auto or omitted would settle unpriced
+		// (TXE-7297). The settled cost also covers generated audio.
+		if usd := creditsToUSD(*result.Cost); usd > 0 {
+			task.Usage.Cost = &schemas.BifrostCost{TotalCost: usd}
+		}
 	}
 	sample := readResult(result.Result)
 	if sample.endTime != nil {
@@ -233,6 +241,15 @@ func toVideoTask(result *BFLResultResponse) *schemas.BifrostVideoGenerationRespo
 	// Empty unless completed, and without BFL's end time: never the query time.
 	providerUtils.SetVideoExpiresAt(task, nil, videoLinkLifetime)
 	return task
+}
+
+// bflCreditUSD is the dollar value of one BFL credit: "1 credit = $0.01 USD"
+// (https://docs.bfl.ai/quick_start/pricing, read 2026-11-13).
+const bflCreditUSD = 0.01
+
+// creditsToUSD converts a BFL cost in credits to US dollars.
+func creditsToUSD(credits float64) float64 {
+	return credits * bflCreditUSD
 }
 
 // videoContentType is the content type a result link's extension names; FLUX 3 Video returns MP4.
