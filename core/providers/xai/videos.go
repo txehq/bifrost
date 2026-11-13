@@ -329,17 +329,15 @@ func parseXAIVideoError(resp *fasthttp.Response) *schemas.BifrostError {
 	return bifrostErr
 }
 
-// refuseLargePayload refuses a request in large-payload mode. That mode streams the caller's
-// body upstream unparsed, but none of xAI's media endpoints takes the unified body: each needs
-// its own field names (and /v1/stt its own field order), which means converting a body the
-// mode does not hold. The request is refused with a 400 before any upstream call instead of
-// reaching xAI empty.
-func refuseLargePayload(ctx *schemas.BifrostContext, operation string) *schemas.BifrostError {
-	if !providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
-		return nil
-	}
-	return providerUtils.NewBifrostBadRequestError("large payload passthrough is not supported for xai " + operation +
-		": the request is converted to xAI's own fields and cannot be streamed through unparsed; send a smaller body")
+// refuseLargePayload refuses a request whose body is staged in large-payload mode. That mode
+// streams the caller's body upstream unparsed, but none of xAI's media endpoints takes the
+// unified body: each needs its own field names (and /v1/stt its own field order), which means
+// converting a body the mode does not hold. The refusal is the large-payload eligibility rule's
+// (TXE-7082): xAI converts every request, so a staged body is a 413 before any upstream call
+// instead of reaching xAI empty. It checks the staged body, not IsLargePayloadPassthroughEnabled,
+// which is false for every attempt the rule does not let through raw.
+func refuseLargePayload(ctx *schemas.BifrostContext, requestType schemas.RequestType) *schemas.BifrostError {
+	return providerUtils.LargePayloadRequestRefusal(ctx, schemas.XAI, requestType)
 }
 
 // rejectModelExtraParam refuses an extra field that names the model: "model" in any spelling
@@ -436,7 +434,7 @@ func (provider *XAIProvider) VideoGeneration(ctx *schemas.BifrostContext, key sc
 	if bifrostErr := providerUtils.CheckOperationAllowed(schemas.XAI, provider.customProviderConfig, schemas.VideoGenerationRequest); bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	if bifrostErr := refuseLargePayload(ctx, "video generation"); bifrostErr != nil {
+	if bifrostErr := refuseLargePayload(ctx, schemas.VideoGenerationRequest); bifrostErr != nil {
 		return nil, bifrostErr
 	}
 	if bifrostErr := rejectModelExtraParam(request.GetExtraParams()); bifrostErr != nil {

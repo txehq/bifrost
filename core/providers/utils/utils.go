@@ -2135,7 +2135,10 @@ type RequestBodyWithExtraParams interface {
 type RequestBodyConverter func() (RequestBodyWithExtraParams, error)
 
 // IsLargePayloadPassthroughEnabled returns true when large payload mode has already
-// prepared an upstream body reader in context.
+// prepared an upstream body reader in context and this attempt may forward it unparsed.
+// It is false for every attempt the eligibility rule converts, so it cannot detect a staged
+// body that must be refused: a provider that refuses large payloads calls
+// LargePayloadRequestRefusal instead (TXE-7082).
 func IsLargePayloadPassthroughEnabled(ctx context.Context) bool {
 	if ctx == nil {
 		return false

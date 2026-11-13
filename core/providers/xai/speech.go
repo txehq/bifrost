@@ -247,7 +247,7 @@ func (provider *XAIProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key
 	if bifrostErr := providerUtils.CheckOperationAllowed(schemas.XAI, provider.customProviderConfig, schemas.SpeechRequest); bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	if bifrostErr := refuseLargePayload(ctx, "speech"); bifrostErr != nil {
+	if bifrostErr := refuseLargePayload(ctx, schemas.SpeechRequest); bifrostErr != nil {
 		return nil, bifrostErr
 	}
 	if request != nil && request.Params != nil {

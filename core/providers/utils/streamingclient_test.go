@@ -26,7 +26,6 @@ import (
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
-	"strings"
 )
 
 // TestBuildStreamingClient_KeepsHeaderTimeouts verifies the streaming client

@@ -505,7 +505,7 @@ func (provider *DashScopeProvider) ImageGeneration(ctx *schemas.BifrostContext, 
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	rawBody, bifrostErr := dashScopeRawImageBody(ctx, request)
+	rawBody, bifrostErr := dashScopeRawImageBody(ctx, request, schemas.ImageGenerationRequest)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -546,7 +546,7 @@ func (provider *DashScopeProvider) ImageEdit(ctx *schemas.BifrostContext, key sc
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	rawBody, bifrostErr := dashScopeRawImageBody(ctx, request)
+	rawBody, bifrostErr := dashScopeRawImageBody(ctx, request, schemas.ImageEditRequest)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -571,11 +571,12 @@ func (provider *DashScopeProvider) ImageEdit(ctx *schemas.BifrostContext, key sc
 // dashScopeRawImageBody returns the caller's own body when raw-request-body mode is on. That
 // body reaches DashScope as written, so the typed fields are neither checked nor converted:
 // they are not what is sent, and a value they carry must not refuse a body that does not
-// contain it. A large-payload passthrough is refused: DashScope takes a JSON body with the
-// images inlined, and there is no converted body to send in its place.
-func dashScopeRawImageBody(ctx *schemas.BifrostContext, request providerUtils.RequestBodyGetter) ([]byte, *schemas.BifrostError) {
-	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
-		return nil, providerUtils.NewBifrostBadRequestError("large payload passthrough is not supported for dashscope images: DashScope takes a JSON body with the images inlined, not a streamed upload; send a smaller upload or the image as a URL")
+// contain it. A staged large-payload body is refused with the large-payload eligibility rule's
+// 413 (TXE-7082): DashScope takes a JSON body with the images inlined, and there is no
+// converted body to send in its place.
+func dashScopeRawImageBody(ctx *schemas.BifrostContext, request providerUtils.RequestBodyGetter, requestType schemas.RequestType) ([]byte, *schemas.BifrostError) {
+	if refusal := providerUtils.LargePayloadRequestRefusal(ctx, schemas.DashScope, requestType); refusal != nil {
+		return nil, refusal
 	}
 	rawBody, ok := providerUtils.CheckAndGetRawRequestBody(ctx, request)
 	if !ok {

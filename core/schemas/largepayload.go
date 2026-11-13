@@ -124,6 +124,7 @@ var largePayloadDeclarations = map[ModelProvider]largePayloadDeclaration{
 	Runway:         convertsBecause(largePayloadOwnAPI),
 	Sarvam:         convertsBecause(largePayloadOwnAPI),
 	Tencent:        convertsBecause(largePayloadOwnAPI),
+	Voyage:         convertsBecause(largePayloadOwnAPI),
 }
 
 // LargePayloadDeclared reports whether provider has an entry in the declarations.
