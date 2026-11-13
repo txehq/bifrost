@@ -3,6 +3,7 @@ package governance
 import (
 	"bytes"
 	"fmt"
+	neturl "net/url"
 	"path"
 	"slices"
 	"sort"
@@ -954,14 +955,16 @@ var objectCreationRequestTypes = map[string][]schemas.RequestType{
 // read this, and each errs on its own safe side when a provider's creating calls go to more than
 // one upstream:
 //   - checking access (every = false): a provider's rows count when any of its creating calls
-//     reaches this call's upstream, so a key cannot reach another key's object by naming a
-//     provider whose override goes there;
+//     reaches this call's origin (sameOrigin: a full-URL override is compared by scheme, host and
+//     port, since two calls of one store have different paths), so a key cannot reach another
+//     key's object by naming a provider whose override goes there. The calling provider's own
+//     rows always count: an extra row can only refuse an id, never admit one;
 //   - forgetting a delete (every = true): a provider's rows are forgotten only when every one of
-//     its creating calls went where the delete went, so a binding whose object may survive on
-//     another upstream is kept. A stale binding of a deleted object only refuses an id nobody has.
+//     its creating calls went where the delete went (sameAs), so a binding whose object may
+//     survive on another upstream is kept. The calling provider's own rows follow the same rule.
+//     A stale binding of a deleted object only refuses an id nobody has.
 //
-// The calling provider's own rows follow the same rule. A kind with no creating calls listed
-// compares base URLs alone.
+// A kind with no creating calls listed compares base URLs alone.
 func (p *GovernancePlugin) objectHolders(kind string, requestType schemas.RequestType, provider string, every bool) []string {
 	if p.inMemoryStore == nil {
 		return []string{provider}
@@ -977,19 +980,24 @@ func (p *GovernancePlugin) objectHolders(kind string, requestType schemas.Reques
 	if len(creating) > 0 {
 		call = callTarget(requestType, self, configured)
 	}
+	// Access widens the match and forgetting narrows it, each toward refusing (see above).
+	reaches := call.sameAs
+	if !every {
+		reaches = call.sameOrigin
+	}
 	holds := func(name schemas.ModelProvider) bool {
 		if len(creating) == 0 {
 			return call.endpoint == providerEndpoint(name, configured)
 		}
 		for _, createType := range creating {
-			if call.sameAs(callTarget(createType, name, configured)) != every {
+			if reaches(callTarget(createType, name, configured)) != every {
 				return !every
 			}
 		}
 		return every
 	}
 	var holders []string
-	if _, listed := configured[self]; !listed || holds(self) {
+	if _, listed := configured[self]; !listed || !every || holds(self) {
 		holders = append(holders, provider)
 	}
 	var others []string
@@ -1033,6 +1041,36 @@ func (a callUpstream) sameAs(b callUpstream) bool {
 	default:
 		return under(b.override, a.endpoint)
 	}
+}
+
+// sameOrigin is the wider form of sameAs that access checks use: two calls with no full-URL
+// override still compare base URLs, but once either has one, their targets match when they share
+// a scheme, host and port. Calls of one store have different paths (an upload override on
+// .../files and a content override on .../files/{file_id}/content), so comparing override strings
+// would miss a provider's own store and let an id through unchecked.
+func (a callUpstream) sameOrigin(b callUpstream) bool {
+	if a.override == "" && b.override == "" {
+		return a.endpoint == b.endpoint
+	}
+	origin := urlOrigin(a.target())
+	return origin != "" && origin == urlOrigin(b.target())
+}
+
+// target is the URL a call goes to: its full-URL override, or else its base URL.
+func (a callUpstream) target() string {
+	if a.override != "" {
+		return a.override
+	}
+	return a.endpoint
+}
+
+// urlOrigin is the scheme, host and port of an absolute URL, lowercased, or "" when it has none.
+func urlOrigin(raw string) string {
+	parsed, err := neturl.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	return strings.ToLower(parsed.Scheme + "://" + parsed.Host)
 }
 
 // baseProviderDefaultEndpoints are the endpoints the base providers a custom provider can be built

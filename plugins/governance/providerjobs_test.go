@@ -2613,6 +2613,50 @@ func TestPostLLMHookKeepsTheBindingOfAProviderThatCreatesElsewhere(t *testing.T)
 	assert.Len(t, kept, 1, "delete-moved's own upload was not where its delete went")
 }
 
+// A provider whose file upload and file content both go to one file store through full-URL
+// overrides, on paths that differ by call, reaches its own uploads: another key's upload is refused
+// to it, as are calls through another provider whose override reaches that store, while its batch
+// create stays on an unrelated base URL (TXE-7368).
+func TestPreLLMHookRefusesAnUploadReadThroughAnotherPathOfTheSameStore(t *testing.T) {
+	store := newProviderObjectConfigStore(t)
+	vk := buildVKForMCPStamping(nil)
+	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("split-store", []string{"*"}), buildProviderConfig("store-reader", []string{"*"}))
+	plugin := newAccessTestPlugin(t, vk, nil)
+	plugin.configStore = store
+	plugin.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {},
+		"split-store": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.FileUploadRequest:  "https://files.example/v1/files",
+				schemas.FileContentRequest: "https://files.example/v1/files/{file_id}/content",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://gateway.split-store.example/v1"},
+		},
+		"store-reader": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.FileRetrieveRequest: "https://FILES.example/v1/files/{file_id}",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://gateway.store-reader.example/v1"},
+		},
+	}}
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "split-store", "file-in-store", "vk-someone-else")
+
+	for _, req := range []*schemas.BifrostRequest{
+		{RequestType: schemas.FileContentRequest, FileContentRequest: &schemas.BifrostFileContentRequest{Provider: "split-store", FileID: "file-in-store"}},
+		{RequestType: schemas.FileRetrieveRequest, FileRetrieveRequest: &schemas.BifrostFileRetrieveRequest{Provider: "split-store", FileID: "file-in-store"}},
+		{RequestType: schemas.FileRetrieveRequest, FileRetrieveRequest: &schemas.BifrostFileRetrieveRequest{Provider: "store-reader", FileID: "file-in-store"}},
+	} {
+		_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), req)
+		require.NoError(t, err)
+		require.NotNil(t, shortCircuit, "another key's upload in the store is refused to %s", req.RequestType)
+		assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+	}
+	// OpenAI's own file calls do not reach that store, so the store's binding does not apply there.
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), providerObjectRequests("file-in-store")[schemas.FileContentRequest])
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "an id on OpenAI is not the store's file")
+}
+
 // A provider that moved only its batch retrieve to OpenAI finds OpenAI's batches, and the output
 // file a retrieve names is recorded under that provider although it lives at OpenAI. Its file
 // rows count wherever its batch retrieve goes, so another key is refused the output through
