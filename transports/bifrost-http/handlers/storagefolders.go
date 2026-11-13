@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 
@@ -25,7 +26,8 @@ type StorageFolderClaim struct {
 }
 
 // getStorageFolders lists claimed folders in byte order of their URI, optionally those of one
-// virtual key (virtual_key_id) or under one URI prefix (prefix, matched literally).
+// virtual key (virtual_key_id) or under one URI prefix (prefix, matched literally). A caller
+// with a row scope (Enterprise DAC) sees the claims of the virtual keys its scope shows it.
 func (h *GovernanceHandler) getStorageFolders(ctx *fasthttp.RequestCtx) {
 	query := configstore.ProviderObjectQuery{
 		Kind:         configstoreTables.ProviderObjectKindStorageFolder,
@@ -73,29 +75,22 @@ func (h *GovernanceHandler) deleteStorageFolder(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "folder is required")
 		return
 	}
-	rows, err := h.configStore.GetProviderObjectsByObjectID(ctx, configstoreTables.ProviderObjectKindStorageFolder, folder)
-	if err != nil {
-		logger.Error("failed to look up the storage folder claim: %v", err)
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to release the storage folder claim")
-		return
-	}
-	if len(rows) == 0 {
+	// A caller with a row scope (Enterprise DAC) releases only a claim of a virtual key its scope
+	// shows it; any other reads as not found.
+	released, err := h.configStore.ReleaseProviderObject(ctx, configstoreTables.ProviderObjectKindStorageFolder, folder)
+	if errors.Is(err, configstore.ErrNotFound) {
 		SendError(ctx, fasthttp.StatusNotFound, "Storage folder claim not found")
 		return
 	}
-	released := make([]string, 0, len(rows))
-	for _, row := range rows {
-		if err := h.configStore.DeleteProviderObject(ctx, row.ID); err != nil {
-			logger.Error("failed to release the storage folder claim: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to release the storage folder claim")
-			return
-		}
-		released = append(released, row.VirtualKeyID)
+	if err != nil {
+		logger.Error("failed to release the storage folder claim: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to release the storage folder claim")
+		return
 	}
-	logger.Info("released the storage folder claim of virtual key %s", strings.Join(released, ","))
+	logger.Info("released the storage folder claim of virtual key %s", released)
 	SendJSON(ctx, map[string]interface{}{
 		"message":        "Storage folder claim released",
 		"folder":         folder,
-		"virtual_key_id": released[0],
+		"virtual_key_id": released,
 	})
 }

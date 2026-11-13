@@ -256,6 +256,18 @@ func (s *RDBConfigStore) ListProviderObjects(ctx context.Context, query Provider
 		query.Offset = 0
 	}
 	db := s.DB().WithContext(ctx).Model(&tables.TableProviderObject{}).Where("kind = ?", query.Kind)
+	if queryscope.FromContext(ctx) != nil {
+		// A caller with a row scope (Enterprise DAC) sees the objects of the virtual keys its scope
+		// shows it, and nothing of a key it cannot see, a deleted key included.
+		visible, err := s.visibleVirtualKeyIDs(ctx)
+		if err != nil {
+			return nil, 0, err
+		}
+		if len(visible) == 0 {
+			return nil, 0, nil
+		}
+		db = db.Where(queryscope.InStrings(db, "virtual_key_id", visible))
+	}
 	if query.VirtualKeyID != "" {
 		db = db.Where("virtual_key_id = ?", query.VirtualKeyID)
 	}
@@ -274,6 +286,77 @@ func (s *RDBConfigStore) ListProviderObjects(ctx context.Context, query Provider
 	var objects []*tables.TableProviderObject
 	err := db.Order(s.bytewise("object_id")).Order("id").Limit(query.Limit).Offset(query.Offset).Find(&objects).Error
 	return objects, total, err
+}
+
+// visibleVirtualKeyIDs returns the ids of the virtual keys the caller's row scope shows it.
+func (s *RDBConfigStore) visibleVirtualKeyIDs(ctx context.Context) ([]string, error) {
+	var ids []string
+	err := s.ScopedDB(ctx).Model(&tables.TableVirtualKey{}).Pluck("governance_virtual_keys.id", &ids).Error
+	return ids, err
+}
+
+// ReleaseProviderObject deletes the provider object of kind recorded for objectID and returns
+// the virtual key it was recorded for. A caller with a row scope (Enterprise DAC) can release
+// only an object of a virtual key its scope shows it; any other is ErrNotFound, as is an object
+// with no row. The row is deleted only while it is still the one that was authorized.
+func (s *RDBConfigStore) ReleaseProviderObject(ctx context.Context, kind, objectID string) (string, error) {
+	if kind == "" || objectID == "" {
+		return "", fmt.Errorf("provider object kind and object id are required")
+	}
+	var rows []*tables.TableProviderObject
+	if err := s.DB().WithContext(ctx).Where("kind = ? AND object_id = ?", kind, objectID).Order("id").Find(&rows).Error; err != nil {
+		return "", err
+	}
+	if len(rows) == 0 {
+		return "", ErrNotFound
+	}
+	row := rows[0]
+	if queryscope.FromContext(ctx) != nil {
+		var visible int64
+		if err := s.ScopedDB(ctx).Model(&tables.TableVirtualKey{}).Where("governance_virtual_keys.id = ?", row.VirtualKeyID).Count(&visible).Error; err != nil {
+			return "", err
+		}
+		if visible == 0 {
+			return "", ErrNotFound
+		}
+	}
+	result := s.DB().WithContext(ctx).Where("id = ? AND virtual_key_id = ?", row.ID, row.VirtualKeyID).Delete(&tables.TableProviderObject{})
+	if result.Error != nil {
+		return "", result.Error
+	}
+	if result.RowsAffected == 0 {
+		return "", ErrNotFound
+	}
+	return row.VirtualKeyID, nil
+}
+
+// HasForeignRecordAt reports whether another virtual key than virtualKeyID has a record at
+// exactly one of names: a file or storage_folder row, or a batch job whose output or error file
+// is that name. It answers "does another key's output lie at a folder above this one", which a
+// prefix lookup beneath the folder cannot.
+func (s *RDBConfigStore) HasForeignRecordAt(ctx context.Context, names []string, virtualKeyID string) (bool, error) {
+	if len(names) == 0 {
+		return false, nil
+	}
+	if virtualKeyID == "" {
+		return false, fmt.Errorf("a virtual key id is required")
+	}
+	var ids []string
+	err := s.DB().WithContext(ctx).Model(&tables.TableProviderObject{}).
+		Where("kind IN ? AND object_id IN ? AND virtual_key_id <> ?", []string{tables.ProviderObjectKindFile, tables.ProviderObjectKindStorageFolder}, names, virtualKeyID).
+		Limit(1).Pluck("id", &ids).Error
+	if err != nil || len(ids) > 0 {
+		return len(ids) > 0, err
+	}
+	for _, column := range []string{"output_file_id", "error_file_id"} {
+		err = s.DB().WithContext(ctx).Model(&tables.TableProviderJob{}).
+			Where(column+" IN ? AND virtual_key_id IS NOT NULL AND virtual_key_id <> ?", names, virtualKeyID).
+			Limit(1).Pluck("id", &ids).Error
+		if err != nil || len(ids) > 0 {
+			return len(ids) > 0, err
+		}
+	}
+	return false, nil
 }
 
 // DeleteProviderObject forgets a provider object's creator once the object itself
