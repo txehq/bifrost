@@ -12907,10 +12907,9 @@ type nestedField struct {
 // when a C4 price field is sent, and that core does not refuse as an extra param, with the
 // reason each is safe or left out. Keyed by provider, request type and key. A key here is one
 // TestNestedPriceFieldsAreDeclaredAndRefused found; one it no longer finds fails the test.
-var topLevelPriceNamesNotRefused = map[string]string{
-	"byteplus/image_generation/sequential_image_generation": "Seedream's group mode, written as auto when n asks for more than one image; the converter also reads it, and unmappedVendorPriceNames gives the reason it is not mapped",
-	"byteplus/image_edit/sequential_image_generation":       "Seedream's group mode on an edit; see byteplus/image_generation/sequential_image_generation",
-}
+// None today: Seedream's group mode, the one entry until TXE-6605, is refused by the provider
+// (ValidateBytePlusImageParams), so no converter writes it.
+var topLevelPriceNamesNotRefused = map[string]string{}
 
 // topLevelPriceNamesFound collects, across the providers of one run, the keys of
 // topLevelPriceNamesNotRefused that the probe found, so an entry no converter writes any more

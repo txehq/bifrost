@@ -1035,6 +1035,58 @@ const xaiResponsesAnswer = (body) => {
 	return { status: 200, body: JSON.stringify(response) };
 };
 
+// BytePlus Seedream image results, TXE-6605 (contract C6), served on /pp/byteplus/api/v3/images/generations. Ark
+// answers a sequential generation with a 200 whose data[] mixes delivered images with per-image error objects; the
+// codes and shape are the ones core/providers/byteplus/byteplus_test.go pins. The model selects the answer:
+// seedream-partly-filtered delivers two images and refuses one, seedream-all-filtered refuses its only image, and
+// seedream-empty delivers nothing and refuses nothing. seedream-internal-error, seedream-top-refusal and
+// seedream-top-invalid-param are 200s carrying error objects: InternalServiceError as the only image, and a top-level error
+// object (a moderation code, a parameter code) in place of data. seedream-moderated and seedream-invalid-param are refused over
+// HTTP instead: a 400 carrying Ark's error object, a moderation code and a parameter code, on every request including a
+// stream, since Ark refuses before it sends a frame. A streamed request for the other models gets the result as Ark's
+// image_generation events (seedreamStream).
+const seedreamRefusal = { error: { code: "OutputImageSensitiveContentDetected", message: "The request failed because the output image may contain sensitive information." } };
+const seedreamImage = (i) => ({ url: `https://fixture.invalid/seedream/${i}.png`, size: "2048x2048" });
+const seedreamUsage = (n) => ({ generated_images: n, output_tokens: 16384 * n, total_tokens: 16384 * n });
+const seedreamAnswers = {
+	"seedream-partly-filtered": () => ({ data: [seedreamImage(0), seedreamRefusal, seedreamImage(2)], usage: seedreamUsage(2) }),
+	"seedream-all-filtered": () => ({ data: [seedreamRefusal], usage: seedreamUsage(0) }),
+	"seedream-empty": () => ({ data: [], usage: seedreamUsage(0) }),
+	// Error objects inside a 200: Ark's own failure on the only image, and a whole-request error object in place of data.
+	"seedream-internal-error": () => ({ data: [{ error: { code: "InternalServiceError", message: "The service encountered an unexpected internal error." } }], usage: seedreamUsage(0) }),
+	"seedream-top-refusal": () => ({ error: { code: "InputTextSensitiveContentDetected", message: "The request failed because the input text may contain sensitive information." } }),
+	"seedream-top-invalid-param": () => ({ error: { code: "InvalidParameter", message: "The parameter `size` specified in the request is not valid." } }),
+};
+const seedreamHTTPErrors = {
+	"seedream-moderated": { code: "InputTextSensitiveContentDetected", message: "The request failed because the input text may contain sensitive information." },
+	"seedream-invalid-param": { code: "InvalidParameter", message: "The parameter `size` specified in the request is not valid." },
+};
+const seedreamAnswer = (body) => {
+	const refused = seedreamHTTPErrors[body.model];
+	if (refused) return { status: 400, body: JSON.stringify({ error: { ...refused, param: "", type: "BadRequest" } }) };
+	const answer = seedreamAnswers[body.model];
+	// Any other model gets one delivered image with Ark's own creation time, which an image link's expiry is
+	// counted from (folder 436, TXE-7051).
+	if (!answer) return { status: 200, body: JSON.stringify({ model: body.model, created: 1762000000, data: [{ url: "https://delivery.example.test/seedream/1.jpeg?Expires=1", size: "2048x2048" }], usage: { generated_images: 1, output_tokens: 16384, total_tokens: 16384 } }) };
+	const result = answer();
+	if (body.stream === true) return { status: 200, stream: seedreamStream(body.model, result) };
+	return { status: 200, body: JSON.stringify({ model: body.model, created: 1, ...result }) };
+};
+// A streamed Seedream request gets the same result as Ark streams it: one event per image, image_generation.partial_succeeded
+// for a delivered image and image_generation.partial_failed carrying the refusal's error object, then
+// image_generation.completed with the usage, then [DONE].
+const seedreamStream = (model, result) => {
+	// A whole-request error object is Ark's only event on a stream.
+	if (result.error) return `data: ${JSON.stringify({ error: result.error })}\n\n`;
+	const events = (result.data || []).map((item, i) =>
+		item.error
+			? { type: "image_generation.partial_failed", model, created: 1, image_index: i, error: item.error }
+			: { type: "image_generation.partial_succeeded", model, created: 1, image_index: i, ...item },
+	);
+	events.push({ type: "image_generation.completed", model, created: 1, usage: result.usage });
+	return events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
+};
+
 const wireAnswer = (path, body, bytes) => {
 	if (isBedrockConversePath(path)) return bedrockConverseAnswer(path);
 	if (path.startsWith("/pp/storage/")) return storageAnswer(path, body);
@@ -1080,13 +1132,11 @@ const wireAnswer = (path, body, bytes) => {
 	if (path === "/pp/minimax/v1/chat/completions" && body.model === "sensitive-flags") return miniMaxSensitiveChatAnswer(body);
 	if (path === "/pp/minimax/v1/responses") return miniMaxResponsesAnswer(body);
 	if (path === "/anthropic/v1/messages") return { status: 200, body: JSON.stringify(anthropicMessage(body.model)) };
-	// A delivered Seedream image, TXE-7051: ModelArk serves generation and edit on one endpoint and reports its own
-	// creation time, which the expiry is counted from.
-	if (path === "/pp/byteplus/api/v3/images/generations") {
-		return { status: 200, body: JSON.stringify({ model: body.model, created: 1762000000, data: [{ url: "https://delivery.example.test/seedream/1.jpeg?Expires=1", size: "2048x2048" }], usage: { generated_images: 1, output_tokens: 16384, total_tokens: 16384 } }) };
-	}
 	// A delivered MiniMax image, TXE-7051: links by default, bytes when the body asks for base64. MiniMax's image
 	// body carries no creation time.
+	// Seedream generation and edit share Ark's one endpoint: the named fixture models of folder 312 (TXE-6605), and a
+	// delivered image for any other model (TXE-7051).
+	if (path === "/pp/byteplus/api/v3/images/generations") return seedreamAnswer(body);
 	if (path === "/pp/minimax/v1/image_generation") {
 		const data = body.response_format === "base64" ? { image_base64: ["iVBORw0KGgo="] } : { image_urls: ["https://delivery.example.test/minimax/1.png?Expires=1"] };
 		return { status: 200, body: JSON.stringify({ id: "fixture-minimax-image", data, metadata: { success_count: "1", failed_count: "0" }, base_resp: { status_code: 0, status_msg: "success" } }) };

@@ -277,7 +277,6 @@ var nestedPriceFields = func() []NestedPriceField {
 		{Bedrock, "embeddingConfig.outputEmbeddingLength", "dimensions", embedding},
 		{Bedrock, "singleEmbeddingParams.embeddingDimension", "dimensions", embedding},
 		{Bedrock, "singleEmbeddingParams.embeddingPurpose", "task_type", embedding},
-		{BytePlus, "sequential_image_generation_options.max_images", "n", image},
 		{DashScope, "parameters.n", "n", imageSync},
 		{DashScope, "parameters.size", "size", append(append([]RequestType(nil), video...), imageSync...)},
 		{DashScope, "parameters.resolution", "resolution", video},

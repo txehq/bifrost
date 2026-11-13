@@ -189,8 +189,7 @@ curl -X POST http://localhost:8080/v1/images/generations \
   -d '{
     "model": "byteplus/dola-seedream-5-0-pro-260628",
     "prompt": "A lighthouse at dusk, oil painting",
-    "size": "2048x2048",
-    "n": 2
+    "size": "2048x2048"
   }'
 ```
 
@@ -198,14 +197,14 @@ curl -X POST http://localhost:8080/v1/images/generations \
 |-------------------|-----------|-------|
 | `prompt` | `prompt` | Required |
 | `size` | `size` | `WIDTHxHEIGHT`, or a tier such as `2K` |
-| `n` | `sequential_image_generation: auto` and `sequential_image_generation_options.max_images` | Seedream returns several images through group generation. Capped at 15. |
+| `n` | (none) | Must be 1. Seedream cannot generate an exact number of images, so any other `n` is a 400 `caller_unsupported_parameter` naming `n`. |
 | `input_images` (generation), `image[]` (edit) | `image` | URLs or base64 data URIs. Masks aren't supported. |
 | `response_format` | `response_format` | `url` (default) or `b64_json`. Image URLs expire after 24 hours; a response with a URL carries `expires_at` (`created` + 24 hours). |
 | `seed`, `output_format` | `seed`, `output_format` | |
 | `extra_params.watermark` | `watermark` | |
-| `extra_params.sequential_image_generation`, `extra_params.sequential_image_generation_options` | same fields | Override the values derived from `n` |
+| `extra_params.sequential_image_generation`, `extra_params.sequential_image_generation_options` | (refused) | Seedream's group generation decides how many images are made, so the price. It is not offered: `sequential_image_generation` other than `disabled`, or non-empty options, is a 400 `caller_unsupported_parameter` naming the field, with no call to Ark. |
 
-Any other extra params, such as `background`, `layer_decomposition` or `optimize_prompt_options`, are sent to Ark unchanged. When content safety blocks some images in a group, Bifrost returns the rest. When it blocks all of them, the request fails with a 400 carrying Ark's error code.
+Any other extra params, such as `background`, `layer_decomposition` or `optimize_prompt_options`, are sent to Ark unchanged. An image that content safety blocks takes no slot in `data`; it is counted in `content_filter` (`filtered_count` and Ark's codes in `reasons`), and `usage.output_images` counts the images delivered. A response whose every image was blocked is still a 200, with an empty `data` and `content_filter`. Ark refusing the request itself (for example `InputTextSensitiveContentDetected`) keeps Ark's status and code, with `extra_fields.error_type` `caller_content_filtered`.
 
 ## Streaming
 
@@ -216,13 +215,12 @@ curl -N -X POST http://localhost:8080/v1/images/generations \
   -H "Content-Type: application/json" \
   -d '{
     "model": "byteplus/seedream-4-5-251128",
-    "prompt": "The same lighthouse in spring, summer, autumn and winter",
-    "n": 4,
+    "prompt": "A lighthouse in winter",
     "stream": true
   }'
 ```
 
-Each image arrives whole, so every image is one `image_generation.partial_image` event (`image_edit.partial_image` for edits) carrying its `url` or `b64_json`. The stream ends with one `image_generation.completed` event that carries the usage and repeats the last image. An image blocked by content safety is skipped and the rest keep coming. The stream ends with an error if Ark reports an internal error, or if every image is blocked.
+The image arrives whole, as one `image_generation.partial_image` event (`image_edit.partial_image` for edits) carrying its `url` or `b64_json`. The stream ends with one `image_generation.completed` event that carries the usage and repeats the image. If content safety blocks the image before any frame has been sent, the answer is a JSON 400 with Ark's code and `extra_fields.error_type` `caller_content_filtered`. An internal error from Ark is `provider_server_error`, and a stream that completes with nothing delivered or blocked is 502 `provider_empty_result`.
 
 ---
 

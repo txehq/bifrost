@@ -625,18 +625,21 @@
       }
     },
     {
-      "name": "/v1/images/generations stream - each Seedream image arrives as its own event - byteplus/seedream-4-5-251128",
+      "name": "/v1/images/generations stream - the Seedream image arrives as its own event - byteplus/seedream-4-5-251128",
       "event": [
         {
           "listen": "test",
           "script": {
             "type": "text/javascript",
             "exec": [
-              "pm.test('stream relays every image and ends with completed', function () {",
+              "pm.test('stream relays the image and ends with completed', function () {",
               "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
               "  var text = pm.response.text();",
               "  var partials = text.match(/\"type\":\"image_generation\\.partial_image\"/g) || [];",
-              "  pm.expect(partials.length, 'expected one partial_image per requested image (n=2): ' + text.slice(0, 500)).to.be.at.least(2);",
+              "  pm.expect(partials.length, 'one image asked for, one partial_image event: ' + text.slice(0, 500)).to.equal(1);",
+              "  var completed = text.split('\\n').filter(function (l) { return l.indexOf('data:') === 0 && l.indexOf('\"type\":\"image_generation.completed\"') !== -1; }).map(function (l) { return JSON.parse(l.slice(5)); })[0];",
+              "  pm.expect(completed && completed.usage, 'the completed event carries usage: ' + text.slice(-500)).to.be.an('object');",
+              "  pm.expect(completed.usage.output_images, 'every delivered image was relayed: completed usage.output_images equals the partial_image events: ' + text.slice(-500)).to.equal(partials.length);",
               "  var completedAt = text.lastIndexOf('\"type\":\"image_generation.completed\"');",
               "  pm.expect(completedAt, 'no completed event: ' + text.slice(-500)).to.be.above(-1);",
               "  pm.expect(completedAt, 'completed must follow every partial_image: ' + text.slice(-500)).to.be.above(text.lastIndexOf('\"type\":\"image_generation.partial_image\"'));",
@@ -656,7 +659,376 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"model\": \"byteplus/seedream-4-5-251128\",\n  \"prompt\": \"The same lighthouse in spring and in winter\",\n  \"size\": \"2048x2048\",\n  \"n\": 2,\n  \"stream\": true\n}"
+          "raw": "{\n  \"model\": \"byteplus/seedream-4-5-251128\",\n  \"prompt\": \"A lighthouse in winter\",\n  \"size\": \"2048x2048\",\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] /v1/images/generations - quality is refused as caller_unsupported_parameter before reaching Ark - byteplus/seedream-4-5-251128",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('quality is a 400 caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('quality');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/seedream-4-5-251128\",\n  \"prompt\": \"A red apple icon\",\n  \"quality\": \"high\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] /v1/images/generations - aspect_ratio is refused as caller_unsupported_parameter before reaching Ark - byteplus/seedream-4-5-251128",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('aspect_ratio is a 400 caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('aspect_ratio');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/seedream-4-5-251128\",\n  \"prompt\": \"A red apple icon\",\n  \"aspect_ratio\": \"16:9\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] /v1/images/generations - negative_prompt is refused as caller_unsupported_parameter before reaching Ark - byteplus/seedream-4-5-251128",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('negative_prompt is a 400 caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('negative_prompt');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/seedream-4-5-251128\",\n  \"prompt\": \"A red apple icon\",\n  \"negative_prompt\": \"blurry\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] /v1/images/generations - num_inference_steps is refused as caller_unsupported_parameter before reaching Ark - byteplus/seedream-4-5-251128",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('num_inference_steps is a 400 caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('num_inference_steps');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/seedream-4-5-251128\",\n  \"prompt\": \"A red apple icon\",\n  \"num_inference_steps\": 30\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] /v1/images/generations - n above 15 is refused as caller_unsupported_parameter before reaching Ark - byteplus/seedream-4-5-251128",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('n is a 400 caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('n');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/seedream-4-5-251128\",\n  \"prompt\": \"A red apple icon\",\n  \"n\": 16\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] /v1/images/generations - n above 1, which Seedream can only send as up to n, is refused as caller_unsupported_parameter before reaching Ark - byteplus/seedream-4-5-251128",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('n is a 400 caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('n');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/seedream-4-5-251128\",\n  \"prompt\": \"A red apple icon\",\n  \"n\": 2\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] /v1/images/edits - mask is refused as caller_unsupported_parameter before reaching Ark - byteplus/seedream-4-5-251128",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('mask is a 400 caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('mask');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "byteplus/seedream-4-5-251128",
+              "type": "text"
+            },
+            {
+              "key": "prompt",
+              "value": "make the background a deep blue",
+              "type": "text"
+            },
+            {
+              "key": "image",
+              "src": "tests/e2e/api/fixtures/sample.png",
+              "type": "file"
+            },
+            {
+              "key": "mask",
+              "src": "tests/e2e/api/fixtures/sample.png",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
+          ]
+        }
+      }
+    },
+    {
+      "name": "/v1/images/generations - unified resolution reaches Ark as size - byteplus/seedream-4-5-251128",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('resolution is sent to Ark as size and the image reports output_images', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  var rr = j.extra_fields && j.extra_fields.raw_request;",
+              "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+              "  pm.expect(rr.size, 'size sent to Ark: ' + JSON.stringify(rr)).to.eql('2K');",
+              "  pm.expect(rr, 'resolution must not reach Ark as an unknown field').to.not.have.property('resolution');",
+              "  pm.expect((j.data || []).length, 'no images: ' + pm.response.text().slice(0, 500)).to.be.above(0);",
+              "  pm.expect(j.usage && j.usage.output_images, 'usage.output_images: ' + JSON.stringify(j.usage)).to.eql(j.data.length);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/seedream-4-5-251128\",\n  \"prompt\": \"A red apple icon\",\n  \"resolution\": \"2K\"\n}"
         },
         "url": {
           "raw": "{{baseUrl}}/v1/images/generations",

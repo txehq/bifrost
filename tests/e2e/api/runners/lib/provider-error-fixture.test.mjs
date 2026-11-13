@@ -947,3 +947,46 @@ test("xAI chat reports server-side tool usage and Responses records its request 
   calls = calls.slice(0, -1);
   assert.equal(JSON.parse(calls.at(-1).body).max_turns, 3);
 });
+
+// Seedream image results for provider-harness folder 312 (TXE-6605): Ark's 200 with per-image error objects.
+test("seedream answers a 200 that mixes delivered images with per-image refusals", async (t) => {
+  const post = await startFixture(t);
+  const path = "/pp/byteplus/api/v3/images/generations";
+  const partly = await (await post({ model: "seedream-partly-filtered", prompt: "p" }, path)).json();
+  assert.equal(partly.data.length, 3);
+  assert.equal(partly.data[1].error.code, "OutputImageSensitiveContentDetected");
+  assert.equal(partly.usage.generated_images, 2);
+  const all = await (await post({ model: "seedream-all-filtered", prompt: "p" }, path)).json();
+  assert.deepEqual(all.data.map((d) => d.error.code), ["OutputImageSensitiveContentDetected"]);
+  assert.equal(all.usage.generated_images, 0);
+  const empty = await (await post({ model: "seedream-empty", prompt: "p" }, path)).json();
+  assert.deepEqual(empty.data, []);
+  // A model with no named answer gets one delivered image with Ark's creation time (folder 436, TXE-7051).
+  const other = await (await post({ model: "seedream-4-0-250828", prompt: "p" }, path)).json();
+  assert.equal(other.created, 1762000000);
+  assert.equal(other.data.length, 1);
+  assert.ok(other.data[0].url);
+  const internal = await post({ model: "seedream-internal-error", prompt: "p" }, path);
+  assert.equal(internal.status, 200);
+  assert.equal((await internal.json()).data[0].error.code, "InternalServiceError");
+  for (const [model, code] of [["seedream-top-refusal", "InputTextSensitiveContentDetected"], ["seedream-top-invalid-param", "InvalidParameter"]]) {
+    const res = await post({ model, prompt: "p" }, path);
+    assert.equal(res.status, 200);
+    const got = await res.json();
+    assert.equal(got.error.code, code);
+    assert.equal(got.data, undefined);
+  }
+  const streamed = await (await post({ model: "seedream-all-filtered", prompt: "p", stream: true }, path)).text();
+  const events = streamed.split("\n\n").filter((f) => f.startsWith("data: {")).map((f) => JSON.parse(f.slice(6)));
+  assert.deepEqual(events.map((e) => e.type), ["image_generation.partial_failed", "image_generation.completed"]);
+  assert.equal(events[0].error.code, "OutputImageSensitiveContentDetected");
+  assert.equal(events[0].image_index, 0);
+  assert.ok(streamed.endsWith("data: [DONE]\n\n"));
+  for (const [model, code] of [["seedream-moderated", "InputTextSensitiveContentDetected"], ["seedream-invalid-param", "InvalidParameter"]]) {
+    for (const stream of [false, true]) {
+      const res = await post({ model, prompt: "p", stream }, path);
+      assert.equal(res.status, 400);
+      assert.equal((await res.json()).error.code, code);
+    }
+  }
+});
