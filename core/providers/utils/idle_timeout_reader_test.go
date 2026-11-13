@@ -856,3 +856,288 @@ func TestSetupStreamCancellation_DisarmedDeadlineStillHonoursCtx(t *testing.T) {
 		t.Fatal("ctx cancellation no longer closes the body after disarm")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TXE-7264: once the idle timer fires, no read ends cleanly
+// ---------------------------------------------------------------------------
+
+// manualIdleClock is an idleAfterFunc whose timer fires only when the test calls
+// expire, so a test of what happens after the idle timeout never races one.
+type manualIdleClock struct {
+	mu     sync.Mutex
+	f      func()
+	armed  bool
+	resets int
+}
+
+func (c *manualIdleClock) afterFunc(_ time.Duration, f func()) idleClockTimer {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.f = f
+	c.armed = true
+	return c
+}
+
+func (c *manualIdleClock) Reset(time.Duration) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	was := c.armed
+	c.armed = true
+	c.resets++
+	return was
+}
+
+func (c *manualIdleClock) Stop() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	was := c.armed
+	c.armed = false
+	return was
+}
+
+func (c *manualIdleClock) isArmed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.armed
+}
+
+// expire runs the timer's callback as an elapsed timeout would, on the calling
+// goroutine. It reports false, and runs nothing, when the timer is not armed.
+func (c *manualIdleClock) expire() bool {
+	c.mu.Lock()
+	if !c.armed {
+		c.mu.Unlock()
+		return false
+	}
+	c.armed = false
+	f := c.f
+	c.mu.Unlock()
+	f()
+	return true
+}
+
+// closeEndsBody is a stream whose Read blocks until Close, then returns tail and
+// tailErr: what a transport hands back to a read that the idle timer's close
+// unblocked. net/http on Linux runners returned io.EOF there (TXE-7264).
+type closeEndsBody struct {
+	tail      string
+	tailErr   error
+	entered   chan struct{} // receives once per Read, as the read starts waiting
+	closed    chan struct{}
+	closeOnce sync.Once
+	closes    atomic.Int32
+}
+
+func newCloseEndsBody(tail string, tailErr error) *closeEndsBody {
+	return &closeEndsBody{tail: tail, tailErr: tailErr, entered: make(chan struct{}, 8), closed: make(chan struct{})}
+}
+
+func (b *closeEndsBody) Read(p []byte) (int, error) {
+	b.entered <- struct{}{}
+	<-b.closed
+	return copy(p, b.tail), b.tailErr
+}
+
+func (b *closeEndsBody) Close() error {
+	b.closes.Add(1)
+	b.closeOnce.Do(func() { close(b.closed) })
+	return nil
+}
+
+type readResult struct {
+	n   int
+	err error
+}
+
+// readAfterIdleFire starts one read on r, waits until the read is blocked on body,
+// fires the idle timer, and returns what the read reported. The read is already
+// past every pre-read check when the timer fires, so the result comes from the
+// wrapped read's own return values.
+func readAfterIdleFire(t *testing.T, r io.Reader, body *closeEndsBody, clock *manualIdleClock) readResult {
+	t.Helper()
+	got := make(chan readResult, 1)
+	go func() {
+		n, err := r.Read(make([]byte, 64))
+		got <- readResult{n, err}
+	}()
+	select {
+	case <-body.entered:
+	case <-time.After(testtime.Scale(5 * time.Second)):
+		t.Fatal("the read never reached the body")
+	}
+	if !clock.expire() {
+		t.Fatal("the idle timer was not armed while the read waited")
+	}
+	select {
+	case res := <-got:
+		return res
+	case <-time.After(testtime.Scale(5 * time.Second)):
+		t.Fatal("the read did not return after the idle timer closed the body")
+		return readResult{}
+	}
+}
+
+// The idle timer closes the body and the blocked read comes back io.EOF, a short
+// read, or a short read with io.EOF. Every one must report ErrStreamIdleTimeout:
+// io.EOF there turned a stalled upstream into a clean, complete response, and a
+// passthrough stream ended without its error chunk (TXE-7264).
+func TestIdleTimeoutReader_FiredReadNeverEndsCleanly(t *testing.T) {
+	cases := []struct {
+		name    string
+		tail    string
+		tailErr error
+		ctx     bool
+	}{
+		{name: "EOF", tailErr: io.EOF},
+		{name: "EOF with a request context", tailErr: io.EOF, ctx: true},
+		{name: "short read", tail: "late"},
+		{name: "short read with EOF", tail: "late", tailErr: io.EOF},
+		{name: "unexpected EOF", tailErr: io.ErrUnexpectedEOF},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var ctx *schemas.BifrostContext
+			if tc.ctx {
+				ctx = schemas.NewBifrostContext(context.Background(), time.Time{})
+			}
+			clock := &manualIdleClock{}
+			body := newCloseEndsBody(tc.tail, tc.tailErr)
+			r, cleanup := newIdleTimeoutReader(body, body, time.Minute, ctx, clock.afterFunc)
+			defer cleanup()
+
+			res := readAfterIdleFire(t, r, body, clock)
+			if !errors.Is(res.err, ErrStreamIdleTimeout) {
+				t.Fatalf("read after the idle timer fired returned (%d, %v); want ErrStreamIdleTimeout", res.n, res.err)
+			}
+			if res.n != len(tc.tail) {
+				t.Fatalf("read returned %d bytes; want the %d bytes the body produced", res.n, len(tc.tail))
+			}
+			if body.closes.Load() != 1 {
+				t.Fatalf("the idle timer closed the body %d times; want 1", body.closes.Load())
+			}
+			// Every later read reports the timeout too, without touching the body.
+			if n, err := r.Read(make([]byte, 8)); n != 0 || !errors.Is(err, ErrStreamIdleTimeout) {
+				t.Fatalf("next read returned (%d, %v); want (0, ErrStreamIdleTimeout)", n, err)
+			}
+		})
+	}
+}
+
+// A read that delivers data restarts the timer; a read that delivers data after
+// the fire must not re-arm it, and a stop waits for nothing and closes nothing.
+func TestIdleTimeoutReader_ArmAfterFireAndStop(t *testing.T) {
+	t.Run("data restarts the timer", func(t *testing.T) {
+		clock := &manualIdleClock{}
+		r, cleanup := newIdleTimeoutReader(strings.NewReader("data"), io.NopCloser(nil), time.Minute, nil, clock.afterFunc)
+		defer cleanup()
+		if n, err := r.Read(make([]byte, 8)); n != 4 || err != nil {
+			t.Fatalf("read returned (%d, %v)", n, err)
+		}
+		if clock.resets != 1 {
+			t.Fatalf("timer reset %d times; want 1", clock.resets)
+		}
+		if n, err := r.Read(make([]byte, 8)); n != 0 || err != io.EOF {
+			t.Fatalf("a clean end before any fire must stay io.EOF; got (%d, %v)", n, err)
+		}
+	})
+	t.Run("a late chunk does not re-arm a fired timer", func(t *testing.T) {
+		clock := &manualIdleClock{}
+		body := newCloseEndsBody("late", nil)
+		r, cleanup := newIdleTimeoutReader(body, body, time.Minute, nil, clock.afterFunc)
+		defer cleanup()
+		readAfterIdleFire(t, r, body, clock)
+		if clock.isArmed() {
+			t.Fatal("a chunk that raced the fire re-armed the idle timer")
+		}
+	})
+	t.Run("cleanup before the fire closes nothing", func(t *testing.T) {
+		clock := &manualIdleClock{}
+		body := newCloseEndsBody("", io.EOF)
+		r, cleanup := newIdleTimeoutReader(body, body, time.Minute, nil, clock.afterFunc)
+		cleanup()
+		cleanup()
+		// A timer callback already dispatched when cleanup ran finds it stopped.
+		r.idle.fire()
+		if body.closes.Load() != 0 || r.idle.Fired() {
+			t.Fatalf("a fire after cleanup closed the body %d times (fired=%v)", body.closes.Load(), r.idle.Fired())
+		}
+	})
+}
+
+// When a cancellation or release owner closed the stream first, the timer's fire
+// claims nothing: it closes nothing and reads report ErrStreamClosed, not a timeout.
+func TestIdleTimeoutReader_FireLosesToAnEarlierClose(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	clock := &manualIdleClock{}
+	body := newCloseEndsBody("", io.EOF)
+	r, cleanup := newIdleTimeoutReader(body, body, time.Minute, ctx, clock.afterFunc)
+	defer cleanup()
+	ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
+	if !clock.expire() {
+		t.Fatal("timer not armed")
+	}
+	if body.closes.Load() != 0 {
+		t.Fatalf("the timer closed a stream another owner had claimed (%d closes)", body.closes.Load())
+	}
+	if _, err := r.Read(make([]byte, 8)); !errors.Is(err, ErrStreamClosed) {
+		t.Fatalf("read returned %v; want ErrStreamClosed", err)
+	}
+}
+
+// The media fetch body shares the rule: a fired idle timer is never a clean end.
+func TestMediaStreamBody_FiredReadNeverEndsCleanly(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		tail    string
+		tailErr error
+	}{
+		{name: "EOF", tailErr: io.EOF},
+		{name: "short read", tail: "late"},
+		{name: "short read with EOF", tail: "late", tailErr: io.EOF},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := &manualIdleClock{}
+			body := newCloseEndsBody(tc.tail, tc.tailErr)
+			b := newMediaStreamBodyWithTimer(context.Background(), body, time.Minute, "http://example.invalid/x", clock.afterFunc)
+			defer b.Close()
+			if clock.isArmed() {
+				t.Fatal("the media idle timer runs only while a read waits")
+			}
+			res := readAfterIdleFire(t, b, body, clock)
+			if !errors.Is(res.err, ErrStreamIdleTimeout) || res.n != len(tc.tail) {
+				t.Fatalf("read returned (%d, %v); want (%d, ErrStreamIdleTimeout)", res.n, res.err, len(tc.tail))
+			}
+			if n, err := b.Read(make([]byte, 8)); n != 0 || !errors.Is(err, ErrStreamIdleTimeout) {
+				t.Fatalf("next read returned (%d, %v); want (0, ErrStreamIdleTimeout)", n, err)
+			}
+		})
+	}
+}
+
+// The batch result download shares the rule: an io.EOF from the connection the
+// idle timer closed would end a truncated result file as complete.
+func TestResultBodyReader_FiredReadNeverEndsCleanly(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		tail    string
+		tailErr error
+	}{
+		{name: "EOF", tailErr: io.EOF},
+		{name: "short read with EOF", tail: "{\"id\":", tailErr: io.EOF},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := &manualIdleClock{}
+			body := newCloseEndsBody(tc.tail, tc.tailErr)
+			idle := newIdleTimer(time.Minute, errResultStreamIdle, clock.afterFunc, true, nil, func() { _ = body.Close() })
+			defer idle.Stop()
+			r := &resultBodyReader{ctx: schemas.NewBifrostContext(context.Background(), time.Time{}), reader: body, idle: idle}
+			res := readAfterIdleFire(t, r, body, clock)
+			if !errors.Is(res.err, errResultStreamIdle) || res.n != len(tc.tail) {
+				t.Fatalf("read returned (%d, %v); want (%d, errResultStreamIdle)", res.n, res.err, len(tc.tail))
+			}
+			if _, _, err := ReadJSONLPage(r, 10, func([]byte) {}); !errors.Is(err, errResultStreamIdle) {
+				t.Fatalf("a page read after the stall returned %v; want errResultStreamIdle", err)
+			}
+		})
+	}
+}
