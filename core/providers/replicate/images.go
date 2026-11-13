@@ -75,6 +75,14 @@ func ToReplicateImageGenerationInput(bifrostReq *schemas.BifrostImageGenerationR
 				input.Resolution = &imageSize
 			}
 		}
+		// The unified resolution tier wins over the one derived from size (TXE-7356): pricing bills
+		// the tier the request named, so it is the one sent. An HTTP request also carries it in the
+		// extra params, which Replicate merges in with the same value; a Go SDK request does not.
+		if resolution := strings.TrimSpace(string(params.Resolution)); resolution != "" {
+			if _, hasExplicitResolution := params.ExtraParams["resolution"]; !hasExplicitResolution {
+				input.Resolution = &resolution
+			}
+		}
 
 		// Map OutputFormat
 		if params.OutputFormat != nil {
@@ -451,6 +459,12 @@ func ToReplicateImageEditInput(bifrostReq *schemas.BifrostImageEditRequest) *Rep
 			}
 			if imageSize != "" && !hasExplicitResolution {
 				input.Resolution = &imageSize
+			}
+		}
+		// The unified resolution tier wins over the one derived from size, as on generation (TXE-7356).
+		if resolution := strings.TrimSpace(string(params.Resolution)); resolution != "" {
+			if _, hasExplicitResolution := params.ExtraParams["resolution"]; !hasExplicitResolution {
+				input.Resolution = &resolution
 			}
 		}
 

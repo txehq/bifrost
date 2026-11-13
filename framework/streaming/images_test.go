@@ -42,6 +42,33 @@ func TestBuildCompleteImage_SingleImageKeepsOnlyTheCompletedImage(t *testing.T) 
 	assert.Equal(t, []schemas.ImageData{{B64JSON: "final", Index: 0}}, got.Data)
 }
 
+// TXE-7356: the accumulated response carries the dimensions the stream reported, which price the
+// image, so a recalculation from the stored response prices what was billed. The completed event
+// wins; a dimension only an earlier event reported is kept too.
+func TestBuildCompleteImage_KeepsThePricedDimensions(t *testing.T) {
+	a := &Accumulator{}
+	first := previewChunk(0, 0, "preview-0")
+	first.Delta.Background = "opaque"
+	final := imageChunk(schemas.ImageGenerationEventTypeCompleted, 0, "", "final", true)
+	final.Delta.Size, final.Delta.Quality, final.Delta.Resolution = "4096x4096", "high", "4K"
+	final.Delta.NumInferenceSteps = bifrost.Ptr(60)
+	got := a.buildCompleteImageFromImageStreamChunks([]*ImageStreamChunk{first, final})
+	require.NotNil(t, got)
+	require.NotNil(t, got.ImageGenerationResponseParameters)
+	p := got.ImageGenerationResponseParameters
+	assert.Equal(t, "4096x4096", p.Size)
+	assert.Equal(t, "high", p.Quality)
+	assert.Equal(t, "4K", p.Resolution)
+	assert.Equal(t, "opaque", p.Background)
+	require.NotNil(t, p.NumInferenceSteps)
+	assert.Equal(t, 60, *p.NumInferenceSteps)
+
+	// A stream that reported none leaves the parameters out, as before.
+	plain := a.buildCompleteImageFromImageStreamChunks([]*ImageStreamChunk{imageChunk(schemas.ImageGenerationEventTypeCompleted, 0, "", "final", true)})
+	require.NotNil(t, plain)
+	assert.Nil(t, plain.ImageGenerationResponseParameters)
+}
+
 // BytePlus Seedream sends every finished image as its own event and ends on a completed event
 // that repeats only the last one. The accumulated response must keep every image, once each.
 func TestBuildCompleteImage_KeepsEveryImageOfAMultiImageStream(t *testing.T) {
