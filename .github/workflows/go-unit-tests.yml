@@ -194,11 +194,13 @@ jobs:
           # Folder 276's Weaviate (TXE-7322): its digest-pinned image from cr.weaviate.io, which
           # serves through Docker Hub's registry and CDN, and the container's fixed address on its
           # own network (start-fixture-weaviate.sh), which the published loopback port DNATs to
-          # and Weaviate gossips to itself on.
+          # and Weaviate gossips to itself on (7946/7947 as the script binds them, and 8301, which
+          # release-pipeline.yml allows for the same image).
           allowed-endpoints: >
             172.39.0.12:7946
             172.39.0.12:7947
             172.39.0.12:8080
+            172.39.0.12:8301
             api.github.com:443
             auth.docker.io:443
             cr.weaviate.io:443
