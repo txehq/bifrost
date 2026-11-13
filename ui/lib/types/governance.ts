@@ -676,6 +676,7 @@ export interface PricingOverridePatch {
 	input_cost_per_audio_token?: number;
 	input_cost_per_audio_per_second?: number;
 	input_cost_per_second?: number;
+	input_cost_per_text_message?: number;
 	input_cost_per_video_per_second?: number;
 	output_cost_per_audio_token?: number;
 	output_cost_per_video_per_second?: number;

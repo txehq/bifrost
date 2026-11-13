@@ -5,7 +5,9 @@ import (
 	"testing"
 	"time"
 
+	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/providers/openai"
+	"github.com/capsohq/bifrost/core/providers/xai"
 	"github.com/capsohq/bifrost/core/schemas"
 	bfws "github.com/capsohq/bifrost/transports/v2/bifrost-http/websocket"
 )
@@ -587,6 +589,177 @@ func TestFinalizeRealtimeTurnHooksWithErrorCompletesActiveHooks(t *testing.T) {
 	}
 	if !cleanedUp {
 		t.Fatal("expected realtime hook cleanup to run")
+	}
+}
+
+// TestIsRealtimeClientTextMessage (TXE-7363): a client conversation.item.create carrying a user
+// input_text item is a text message xAI bills per message; tool results, audio-only items,
+// assistant items and other events are not.
+func TestIsRealtimeClientTextMessage(t *testing.T) {
+	t.Parallel()
+	item := func(typ, role, content string) *schemas.BifrostRealtimeEvent {
+		return &schemas.BifrostRealtimeEvent{Type: schemas.RTEventConversationItemCreate, Item: &schemas.RealtimeItem{Type: typ, Role: role, Content: json.RawMessage(content)}}
+	}
+	// parse reads a raw client frame through the same parser the handlers use.
+	parse := func(raw string) *schemas.BifrostRealtimeEvent {
+		event, err := schemas.ParseRealtimeEvent([]byte(raw))
+		if err != nil {
+			t.Fatalf("ParseRealtimeEvent(%s): %v", raw, err)
+		}
+		return event
+	}
+	cases := []struct {
+		name  string
+		event *schemas.BifrostRealtimeEvent
+		want  bool
+	}{
+		{"user input_text message", item("message", "user", `[{"type":"input_text","text":"What's the weather?"}]`), true},
+		{"user input_text with no item type", item("", "user", `[{"type":"input_text","text":"hi"}]`), true},
+		{"user audio-only item", item("message", "user", `[{"type":"input_audio","audio":"AAA="}]`), false},
+		{"tool result", &schemas.BifrostRealtimeEvent{Type: schemas.RTEventConversationItemCreate, Item: &schemas.RealtimeItem{Type: "function_call_output", CallID: "c1", Output: "{}"}}, false},
+		{"assistant text item", item("message", "assistant", `[{"type":"text","text":"ok"}]`), false},
+		// Fail closed: only the content parts decide, so a role or item type this parse reads
+		// differently from the vendor (a duplicated key, an odd casing) cannot hide a text input.
+		{"input_text under an odd role", item("message", "User", `[{"type":"input_text","text":"hi"}]`), true},
+		{"input_text under another item type", item("function_call_output", "user", `[{"type":"input_text","text":"hi"}]`), true},
+		{"duplicated role key", parse(`{"type":"conversation.item.create","item":{"type":"message","role":"user","role":"assistant","content":[{"type":"input_text","text":"hi"}]}}`), true},
+		{"server echo of a user text item", &schemas.BifrostRealtimeEvent{Type: schemas.RTEventConversationItemCreated, Item: &schemas.RealtimeItem{Type: "message", Role: "user", Content: json.RawMessage(`[{"type":"input_text","text":"hi"}]`)}}, false},
+		{"response.create", &schemas.BifrostRealtimeEvent{Type: schemas.RTEventResponseCreate}, false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		if got := isRealtimeClientTextMessage(tc.event); got != tc.want {
+			t.Errorf("%s: isRealtimeClientTextMessage = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestOnlyAPerMessageBillerCountsTextMessages (TXE-7363): xAI bills each text message and its
+// sessions count them; OpenAI does not, and its sessions never reach the classifier.
+func TestOnlyAPerMessageBillerCountsTextMessages(t *testing.T) {
+	t.Parallel()
+	if !schemas.RealtimeProviderBillsTextMessages(&xai.XAIProvider{}) {
+		t.Fatal("xAI bills realtime text messages per message, but its sessions do not count them")
+	}
+	if schemas.RealtimeProviderBillsTextMessages(&openai.OpenAIProvider{}) {
+		t.Fatal("OpenAI does not bill realtime text messages per message, but its sessions count them")
+	}
+	if schemas.RealtimeProviderBillsTextMessages(nil) {
+		t.Fatal("a nil provider counts text messages")
+	}
+}
+
+// BenchmarkIsRealtimeClientTextMessage is the per-client-event cost TXE-7363 adds to a realtime
+// session, gate included: on an xAI session, a user text item (the one shape that decodes content
+// parts), a response.create and an audio item (the common events that return before decoding);
+// on an OpenAI session, the same user text item, which the gate stops before the classifier.
+func BenchmarkIsRealtimeClientTextMessage(b *testing.B) {
+	textItem := &schemas.BifrostRealtimeEvent{Type: schemas.RTEventConversationItemCreate, Item: &schemas.RealtimeItem{
+		Type: "message", Role: "user", Content: json.RawMessage(`[{"type":"input_text","text":"What's the weather in Lisbon tomorrow?"}]`),
+	}}
+	responseCreate := &schemas.BifrostRealtimeEvent{Type: schemas.RTEventResponseCreate}
+	audioAppend := &schemas.BifrostRealtimeEvent{Type: schemas.RTEventInputAudioAppend}
+	xaiProvider, openaiProvider := schemas.RealtimeProvider(&xai.XAIProvider{}), schemas.RealtimeProvider(&openai.OpenAIProvider{})
+	cases := []struct {
+		name     string
+		provider schemas.RealtimeProvider
+		event    *schemas.BifrostRealtimeEvent
+	}{
+		{"xai/user_text_item", xaiProvider, textItem},
+		{"xai/response_create", xaiProvider, responseCreate},
+		{"xai/audio_append", xaiProvider, audioAppend},
+		{"openai/user_text_item", openaiProvider, textItem},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = schemas.RealtimeProviderBillsTextMessages(tc.provider) && isRealtimeClientTextMessage(tc.event)
+			}
+		})
+	}
+}
+
+// TestFinalizeRealtimeTurnCarriesTheTextMessagesSent (TXE-7363): the text messages counted on the
+// session since the last turn land on the completed turn's usage, where pricing charges xAI's
+// per-message rate, and are consumed so the next turn is not charged for them again.
+func TestFinalizeRealtimeTurnCarriesTheTextMessagesSent(t *testing.T) {
+	t.Parallel()
+
+	session := bfws.NewSession(nil)
+	var captured *schemas.BifrostResponse
+	setHooks := func() {
+		session.SetRealtimeTurnHooks(&bfws.RealtimeTurnPluginState{
+			RequestID: "req_realtime_text", StartedAt: time.Now().Add(-time.Second),
+			PostHookRunner: func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				captured = result
+				return result, nil
+			},
+		})
+	}
+	rawResponse := []byte(`{"type":"response.done","response":{"id":"resp_1","status":"completed","output":[]}}`)
+
+	session.CountRealtimeTextMessage()
+	session.CountRealtimeTextMessage()
+	setHooks()
+	if err := finalizeRealtimeTurnHooks(&bifrost.Bifrost{}, nil, session, &xai.XAIProvider{}, schemas.XAI, "grok-voice-3.0", nil, rawResponse, "", schemas.RTEventResponseDone, false); err != nil {
+		t.Fatalf("finalizeRealtimeTurnHooks() error = %v", err)
+	}
+	if captured == nil || captured.ResponsesResponse == nil || captured.ResponsesResponse.Usage == nil || captured.ResponsesResponse.Usage.TextMessages == nil {
+		t.Fatalf("turn usage carries no text messages: %#v", captured)
+	}
+	if got := *captured.ResponsesResponse.Usage.TextMessages; got != 2 {
+		t.Fatalf("text messages = %d, want 2", got)
+	}
+
+	captured = nil
+	setHooks()
+	if err := finalizeRealtimeTurnHooks(&bifrost.Bifrost{}, nil, session, &xai.XAIProvider{}, schemas.XAI, "grok-voice-3.0", nil, rawResponse, "", schemas.RTEventResponseDone, false); err != nil {
+		t.Fatalf("finalizeRealtimeTurnHooks() error = %v", err)
+	}
+	if captured != nil && captured.ResponsesResponse != nil && captured.ResponsesResponse.Usage != nil && captured.ResponsesResponse.Usage.TextMessages != nil {
+		t.Fatalf("the next turn was charged the same messages again: %d", *captured.ResponsesResponse.Usage.TextMessages)
+	}
+}
+
+// TestFinalizeRealtimeTurnWithErrorBillsTheTextMessagesSent (TXE-7363): text messages sent before
+// a turn that fails, or a session that closes, were billed by the vendor when sent. They land on
+// the error's BilledUsage, which governance and logging charge, and are consumed so no later turn
+// is charged them again. A BilledUsage the provider already set is kept and not written through.
+func TestFinalizeRealtimeTurnWithErrorBillsTheTextMessagesSent(t *testing.T) {
+	t.Parallel()
+
+	session := bfws.NewSession(nil)
+	var captured *schemas.BifrostError
+	session.SetRealtimeTurnHooks(&bfws.RealtimeTurnPluginState{
+		RequestID: "req_realtime_text_err", StartedAt: time.Now().Add(-time.Second),
+		PostHookRunner: func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			captured = err
+			return result, err
+		},
+	})
+	session.CountRealtimeTextMessage()
+	session.CountRealtimeTextMessage()
+
+	providerUsage := &schemas.BifrostLLMUsage{PromptTokens: 7}
+	upstreamErr := newRealtimeWireBifrostError(499, "client_closed_request", "client realtime websocket disconnected before turn completed")
+	upstreamErr.ExtraFields.BilledUsage = providerUsage
+	_ = finalizeRealtimeTurnHooksWithError(&bifrost.Bifrost{}, nil, session, schemas.XAI, "grok-voice-3.0", nil, schemas.RTEventError, nil, upstreamErr)
+
+	if captured == nil || captured.ExtraFields.BilledUsage == nil || captured.ExtraFields.BilledUsage.TextMessages == nil {
+		t.Fatalf("the failed turn's billed usage carries no text messages: %#v", captured)
+	}
+	if got := *captured.ExtraFields.BilledUsage.TextMessages; got != 2 {
+		t.Fatalf("billed text messages = %d, want 2", got)
+	}
+	if got := captured.ExtraFields.BilledUsage.PromptTokens; got != 7 {
+		t.Fatalf("billed prompt tokens = %d, want the provider's 7 kept", got)
+	}
+	if providerUsage.TextMessages != nil {
+		t.Fatal("the caller's BilledUsage was written through")
+	}
+	if got := session.ConsumeRealtimeTurnTextMessages(); got != 0 {
+		t.Fatalf("text messages left on the session = %d, want 0", got)
 	}
 }
 

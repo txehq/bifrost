@@ -75,6 +75,10 @@ func (provider *XAIProvider) RealtimeWebRTCDataChannelLabel() string { return ""
 // RealtimeWebSocketSubprotocol requests no invented upstream protocol; provider authentication uses the selected bearer key.
 func (provider *XAIProvider) RealtimeWebSocketSubprotocol() string { return "" }
 
+// BillsRealtimeTextMessages is true: xAI prices voice-agent text input per message
+// ("$0.004 / text input"), apart from tokens (fork, TXE-7363).
+func (provider *XAIProvider) BillsRealtimeTextMessages() bool { return true }
+
 // ShouldStartRealtimeTurn uses explicit generation or committed input to enter the existing governance turn pipeline.
 func (provider *XAIProvider) ShouldStartRealtimeTurn(event *schemas.BifrostRealtimeEvent) bool {
 	return event != nil && (event.Type == schemas.RTEventResponseCreate || event.Type == schemas.RTEventInputAudioBufferCommitted)

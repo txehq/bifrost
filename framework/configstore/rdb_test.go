@@ -3967,6 +3967,26 @@ func TestUpsertModelPricesBatch_VideoAudioRateColumns_SurviveResync(t *testing.T
 	}
 }
 
+// TestUpsertModelPricesBatch_InputCostPerTextMessage_SurvivesResync (TXE-7363): the second sync of an
+// existing row updates input_cost_per_text_message.
+func TestUpsertModelPricesBatch_InputCostPerTextMessage_SurvivesResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	pricing := []tables.TableModelPricing{{Model: "grok-voice-3.0", Provider: "xai", Mode: "realtime", InputCostPerTextMessage: cost(0.004)}}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+	pricing[0].InputCostPerTextMessage = cost(0.005)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].InputCostPerTextMessage)
+	assert.InDelta(t, 0.005, *got[0].InputCostPerTextMessage, 1e-12)
+}
+
 func TestUpsertModelPricesBatch_WebSearchCostPerRequest_SurvivesResync(t *testing.T) {
 	s := setupRDBTestStore(t)
 	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))

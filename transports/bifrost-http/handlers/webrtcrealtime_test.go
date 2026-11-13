@@ -13,6 +13,7 @@ import (
 	"github.com/capsohq/bifrost/core/providers/azure"
 
 	openaiProvider "github.com/capsohq/bifrost/core/providers/openai"
+	"github.com/capsohq/bifrost/core/providers/xai"
 
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/grant"
@@ -640,6 +641,41 @@ func TestWebRTCTranscriptionUpdatesKeepTheAdmittedModel(t *testing.T) {
 		}
 		if len(relay.pendingToDownstream) != 1 {
 			t.Fatalf("%s: sent %d events to the browser, want 1 refusal", bad, len(relay.pendingToDownstream))
+		}
+	}
+}
+
+// TestWebRTCPerMessageBillerRefusesAFrameItCannotRead (TXE-7363): a session whose vendor bills
+// each text message cannot count a frame it cannot parse, so the frame is refused, not forwarded
+// raw. A session of a provider that does not bill per message still forwards it.
+func TestWebRTCPerMessageBillerRefusesAFrameItCannotRead(t *testing.T) {
+	t.Parallel()
+	bad := []byte(`{"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"`)
+	for _, tc := range []struct {
+		name     string
+		provider schemas.RealtimeProvider
+		refused  bool
+	}{
+		{"xai", &xai.XAIProvider{}, true},
+		{"openai", &openaiProvider.OpenAIProvider{}, false},
+	} {
+		messages := &realtimeWebRTCMessages{
+			session:    bfws.NewSession(nil),
+			bifrostCtx: schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+			provider:   tc.provider,
+			model:      "m",
+		}
+		relay := &webrtcRelay{handler: messages}
+		messages.fromBrowser(relay, webrtc.DataChannelMessage{IsString: true, Data: bad})
+		if tc.refused {
+			if len(relay.pendingToUpstream) != 0 || len(relay.pendingToDownstream) != 1 {
+				t.Fatalf("%s: upstream %d, downstream %d; want the frame refused", tc.name, len(relay.pendingToUpstream), len(relay.pendingToDownstream))
+			}
+		} else if len(relay.pendingToUpstream) != 1 {
+			t.Fatalf("%s: forwarded %d frames upstream, want 1", tc.name, len(relay.pendingToUpstream))
+		}
+		if got := messages.session.ConsumeRealtimeTurnTextMessages(); got != 0 {
+			t.Fatalf("%s: counted %d text messages from an unreadable frame", tc.name, got)
 		}
 	}
 }

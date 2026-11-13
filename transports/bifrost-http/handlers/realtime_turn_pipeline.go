@@ -318,6 +318,38 @@ func buildRealtimeTurnPostResponse(
 	return &schemas.BifrostResponse{ResponsesResponse: resp}
 }
 
+// applyRealtimeTurnTextMessages puts the text messages the client sent during the turn on its
+// usage (fork, TXE-7363), so pricing can charge the vendor's per-message rate. A turn whose
+// vendor reported no usage still carries them: the messages were sent and billed.
+func applyRealtimeTurnTextMessages(resp *schemas.BifrostResponse, textMessages int) {
+	if textMessages <= 0 || resp == nil || resp.ResponsesResponse == nil {
+		return
+	}
+	if resp.ResponsesResponse.Usage == nil {
+		resp.ResponsesResponse.Usage = &schemas.ResponsesResponseUsage{}
+	}
+	resp.ResponsesResponse.Usage.TextMessages = &textMessages
+}
+
+// applyRealtimeTurnErrorTextMessages puts the text messages sent before a turn that failed, or
+// a session that closed, on the error's BilledUsage (fork, TXE-7363). The vendor billed them when
+// they were sent, and governance and logging charge an error's BilledUsage, so they are charged
+// at the same per-message rate as on a completed turn.
+func applyRealtimeTurnErrorTextMessages(bifrostErr *schemas.BifrostError, textMessages int) {
+	if textMessages <= 0 || bifrostErr == nil {
+		return
+	}
+	if bifrostErr.ExtraFields.BilledUsage == nil {
+		bifrostErr.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{}
+	} else {
+		// buildRealtimeTurnPostError copies the error shallowly; do not write into a usage
+		// the caller's error still points at.
+		copied := *bifrostErr.ExtraFields.BilledUsage
+		bifrostErr.ExtraFields.BilledUsage = &copied
+	}
+	bifrostErr.ExtraFields.BilledUsage.TextMessages = &textMessages
+}
+
 func buildRealtimeTurnOutputMessages(rtProvider schemas.RealtimeProvider, rawResponse []byte, contentOverride string) []schemas.ResponsesMessage {
 	outputs := make([]schemas.ResponsesMessage, 0)
 	seenFunctionCalls := make(map[string]struct{})
@@ -729,6 +761,7 @@ func finalizeRealtimeTurnHooks(
 
 	turnInputs := session.ConsumeRealtimeTurnInputs()
 	rawRequest := combineRealtimeInputRaw(turnInputs)
+	textMessages := session.ConsumeRealtimeTurnTextMessages()
 
 	if activeHooks := session.ConsumeRealtimeTurnHooks(); activeHooks != nil {
 		defer func() {
@@ -746,6 +779,7 @@ func finalizeRealtimeTurnHooks(
 			time.Since(activeHooks.StartedAt).Milliseconds(),
 			transcriptionSession,
 		)
+		applyRealtimeTurnTextMessages(postResponse, textMessages)
 		postCtx := newRealtimeTurnContext(baseCtx, activeHooks.RequestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, terminalEventType, key)
 		applyRealtimeTurnContextValues(postCtx, activeHooks.PreHookValues)
 		restoreRealtimeTurnTraceContext(postCtx, activeHooks.TraceID, activeHooks.PreHookValues)
@@ -783,6 +817,7 @@ func finalizeRealtimeTurnHooks(
 		time.Since(startedAt).Milliseconds(),
 		transcriptionSession,
 	)
+	applyRealtimeTurnTextMessages(postResponse, textMessages)
 	postCtx := newRealtimeTurnContext(baseCtx, requestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, terminalEventType, key)
 	applyRealtimeTurnContextValues(postCtx, preHookValues)
 	restoreRealtimeTurnTraceContext(postCtx, traceID, preHookValues)
@@ -811,6 +846,7 @@ func finalizeRealtimeTurnHooksWithError(
 	turnInputs := session.ConsumeRealtimeTurnInputs()
 	rawRequest := combineRealtimeInputRaw(turnInputs)
 	session.ConsumeRealtimeOutputText()
+	textMessages := session.ConsumeRealtimeTurnTextMessages()
 
 	if activeHooks := session.ConsumeRealtimeTurnHooks(); activeHooks != nil {
 		defer func() {
@@ -825,6 +861,7 @@ func finalizeRealtimeTurnHooksWithError(
 			rawResponse,
 			bifrostErr,
 		)
+		applyRealtimeTurnErrorTextMessages(postErr, textMessages)
 		postCtx := newRealtimeTurnContext(baseCtx, activeHooks.RequestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, eventType, key)
 		applyRealtimeTurnContextValues(postCtx, activeHooks.PreHookValues)
 		restoreRealtimeTurnTraceContext(postCtx, activeHooks.TraceID, activeHooks.PreHookValues)
@@ -835,7 +872,7 @@ func finalizeRealtimeTurnHooksWithError(
 		return hookErr
 	}
 
-	if len(turnInputs) == 0 {
+	if len(turnInputs) == 0 && textMessages == 0 {
 		return nil
 	}
 
@@ -867,6 +904,7 @@ func finalizeRealtimeTurnHooksWithError(
 		rawResponse,
 		bifrostErr,
 	)
+	applyRealtimeTurnErrorTextMessages(postErr, textMessages)
 	postCtx := newRealtimeTurnContext(baseCtx, requestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, eventType, key)
 	applyRealtimeTurnContextValues(postCtx, preHookValues)
 	restoreRealtimeTurnTraceContext(postCtx, traceID, preHookValues)

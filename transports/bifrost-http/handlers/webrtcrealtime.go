@@ -569,8 +569,9 @@ func (m *realtimeWebRTCMessages) fromBrowser(r *webrtcRelay, msg webrtc.DataChan
 	event, err := schemas.ParseRealtimeEvent(msg.Data)
 	if err != nil {
 		// A transcription session is held to the model it was admitted for, which
-		// an event nothing could inspect might change.
-		if m.transcriptionSession {
+		// an event nothing could inspect might change. A session whose vendor bills each
+		// text message (TXE-7363) cannot count one it cannot read, so it refuses it too.
+		if m.transcriptionSession || schemas.RealtimeProviderBillsTextMessages(m.provider) {
 			r.sendDownstream(newRealtimeTurnErrorEventPayload(newRealtimeWireBifrostError(400, "invalid_request_error", "failed to parse realtime event JSON")), true)
 			return
 		}
@@ -585,6 +586,11 @@ func (m *realtimeWebRTCMessages) fromBrowser(r *webrtcRelay, msg webrtc.DataChan
 	inputItemID, inputSummary := pendingRealtimeInputUpdate(event)
 	if inputSummary != "" {
 		m.session.RecordRealtimeInput(inputItemID, inputSummary, string(msg.Data))
+	}
+	// A text message the vendor bills per message (TXE-7363). Only a provider that bills per
+	// message pays for the check.
+	if schemas.RealtimeProviderBillsTextMessages(m.provider) && isRealtimeClientTextMessage(event) {
+		m.session.CountRealtimeTextMessage()
 	}
 	startsTurn := m.provider.ShouldStartRealtimeTurn(event)
 	if startsTurn {

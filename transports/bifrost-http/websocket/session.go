@@ -48,6 +48,10 @@ type Session struct {
 	// attached to a persisted turn, so late transcript updates do not pollute later turns.
 	realtimeConsumedTurnItemIDs map[string]struct{}
 
+	// realtimeTurnTextMessages counts the text messages the client sent since the last
+	// completed turn (fork, TXE-7363). The turn that completes next is billed for them.
+	realtimeTurnTextMessages int
+
 	// realtimeSessionTools holds the latest session tool definitions from
 	// session.created / session.updated / session.update events, so that
 	// each turn log can record which tools were available.
@@ -342,6 +346,26 @@ func (s *Session) ConsumeRealtimeTurnInputs() []RealtimeTurnInput {
 	return inputs
 }
 
+// CountRealtimeTextMessage records one text message the client sent into the session.
+func (s *Session) CountRealtimeTextMessage() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.realtimeTurnTextMessages++
+}
+
+// ConsumeRealtimeTurnTextMessages returns the text messages counted since the last completed
+// turn and resets the count, so each message is billed to exactly one turn.
+func (s *Session) ConsumeRealtimeTurnTextMessages() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := s.realtimeTurnTextMessages
+	s.realtimeTurnTextMessages = 0
+	return n
+}
+
 // PeekRealtimeTurnInputs returns pending realtime turn inputs without clearing them.
 func (s *Session) PeekRealtimeTurnInputs() []RealtimeTurnInput {
 	s.mu.RLock()
@@ -433,6 +457,7 @@ func (s *Session) Close() {
 	// goroutine briefly holds a reference to this session after close.
 	s.realtimeTurnInputs = nil
 	s.realtimeConsumedTurnItemIDs = nil
+	s.realtimeTurnTextMessages = 0
 	s.realtimeSessionTools = nil
 	s.realtimeVoice = ""
 	s.realtimeOutputText = ""

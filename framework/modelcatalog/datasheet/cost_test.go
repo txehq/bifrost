@@ -55,6 +55,47 @@ func TestCalculateCost_RealtimeTranscriptionPricingOverride(t *testing.T) {
 	assert.InDelta(t, 0.00014, breakdown.OutputCostDetails.TextCost, 1e-12)
 }
 
+// TestCalculateCost_RealtimeTextMessagesAreBilledPerMessage (TXE-7363): the text messages a client
+// sent into an xAI realtime voice turn are charged input_cost_per_text_message each, on the input
+// side as text. The rates are the upstream datasheet's for xai/grok-voice-3.0 (14 Nov 2026):
+// $0.004 per text message, $0.08 per minute of audio. Before the key was parsed a text message
+// was free.
+func TestCalculateCost_RealtimeTextMessagesAreBilledPerMessage(t *testing.T) {
+	pricing := configstoreTables.TableModelPricing{
+		Model: "grok-voice-3.0", Provider: "xai", Mode: "realtime",
+		InputCostPerSecond:      bifrost.Ptr(0.001333333333333),
+		InputCostPerTextMessage: bifrost.Ptr(0.004),
+		InputCostPerToken:       bifrost.Ptr(0.000001),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing})
+	turn := func(usage *schemas.ResponsesResponseUsage) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Usage: usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.RealtimeRequest, RoutingInfo: routingInfoFor(schemas.XAI, "grok-voice-3.0"),
+			},
+		}}
+	}
+
+	breakdown := s.CalculateCostBreakdown(turn(&schemas.ResponsesResponseUsage{TextMessages: bifrost.Ptr(3)}), nil)
+	require.NotNil(t, breakdown, "a turn that reported only text messages still owes them")
+	assert.InDelta(t, 3*0.004, breakdown.TotalCost, 1e-12)
+	require.NotNil(t, breakdown.InputCostDetails)
+	assert.InDelta(t, 3*0.004, breakdown.InputCostDetails.TextCost, 1e-12)
+
+	withTokens := s.CalculateCostBreakdown(turn(&schemas.ResponsesResponseUsage{InputTokens: 100, TotalTokens: 100, TextMessages: bifrost.Ptr(2)}), nil)
+	require.NotNil(t, withTokens)
+	assert.InDelta(t, 100*0.000001+2*0.004, withTokens.TotalCost, 1e-12, "the message charge is added to the turn's own price")
+
+	assert.InDelta(t, 100*0.000001, s.CalculateCost(turn(&schemas.ResponsesResponseUsage{InputTokens: 100, TotalTokens: 100}), nil), 1e-12,
+		"a turn with no text messages is charged no message fee")
+
+	// A turn that failed, or a session that closed, carries the messages on the error's
+	// BilledUsage; governance and logging price it here at the same rate.
+	assert.InDelta(t, 2*0.004, s.CalculateCostForUsage(&schemas.BifrostLLMUsage{TextMessages: bifrost.Ptr(2)}, schemas.XAI, "grok-voice-3.0", schemas.RealtimeRequest, nil), 1e-12,
+		"the text messages of a failed turn are charged")
+}
+
 func TestCalculateCost_RealtimeTranscriptionDurationPricing(t *testing.T) {
 	seconds := 3.4
 	pricing := configstoreTables.TableModelPricing{

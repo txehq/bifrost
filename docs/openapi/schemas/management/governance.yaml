@@ -2609,6 +2609,12 @@ PricingPatch:
     input_cost_per_second:
       type: number
       minimum: 0
+    input_cost_per_text_message:
+      type: number
+      minimum: 0
+      description: >-
+        Cost per text message a client sends into a realtime voice session
+        (usage.text_messages): a conversation.item.create carrying a user input_text item.
     input_cost_per_video_per_second:
       type: number
       minimum: 0

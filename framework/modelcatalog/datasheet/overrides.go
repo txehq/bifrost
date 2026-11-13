@@ -523,6 +523,7 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.OutputCostPerVideoPerSecond4kAudio, src: override.OutputCostPerVideoPerSecond4kAudio},
 		{dst: &patched.InputCostPerAudioPerSecond, src: override.InputCostPerAudioPerSecond},
 		{dst: &patched.InputCostPerSecond, src: override.InputCostPerSecond},
+		{dst: &patched.InputCostPerTextMessage, src: override.InputCostPerTextMessage},
 		{dst: &patched.InputCostPerAudioToken, src: override.InputCostPerAudioToken},
 		{dst: &patched.OutputCostPerAudioToken, src: override.OutputCostPerAudioToken},
 		{dst: &patched.InputCostPerCharacter, src: override.InputCostPerCharacter},

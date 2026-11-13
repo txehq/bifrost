@@ -574,6 +574,14 @@ export const PRICING_FIELDS = [
 		requestTypeGroups: ["audio", "video"],
 	},
 	{
+		// A realtime turn is priced in the responses mode, so an override reaches it through the
+		// Responses request type (TXE-7363).
+		key: "input_cost_per_text_message",
+		label: "Realtime text message",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
 		key: "output_cost_per_audio_token",
 		label: "Output / audio token",
 		group: "audio",

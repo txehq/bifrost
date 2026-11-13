@@ -162,9 +162,11 @@ type TableModelPricing struct {
 	OutputCostPerImageAbove1536x1024PixelsStandardQuality *float64 `gorm:"default:null;column:output_cost_per_image_above_1536x1024_pixels_standard_quality" json:"output_cost_per_image_above_1536_and_1024_pixels_standard_quality,omitempty"`
 
 	// Costs - Audio/Video
-	InputCostPerAudioToken      *float64 `gorm:"default:null;column:input_cost_per_audio_token" json:"input_cost_per_audio_token,omitempty"`
-	InputCostPerAudioPerSecond  *float64 `gorm:"default:null;column:input_cost_per_audio_per_second" json:"input_cost_per_audio_per_second,omitempty"`
-	InputCostPerSecond          *float64 `gorm:"default:null;column:input_cost_per_second" json:"input_cost_per_second,omitempty"` // Only for transcription models
+	InputCostPerAudioToken     *float64 `gorm:"default:null;column:input_cost_per_audio_token" json:"input_cost_per_audio_token,omitempty"`
+	InputCostPerAudioPerSecond *float64 `gorm:"default:null;column:input_cost_per_audio_per_second" json:"input_cost_per_audio_per_second,omitempty"`
+	InputCostPerSecond         *float64 `gorm:"default:null;column:input_cost_per_second" json:"input_cost_per_second,omitempty"` // Only for transcription models
+	// Realtime voice text messages, per message (fork, TXE-7363).
+	InputCostPerTextMessage     *float64 `gorm:"default:null;column:input_cost_per_text_message" json:"input_cost_per_text_message,omitempty"`
 	InputCostPerVideoPerSecond  *float64 `gorm:"default:null;column:input_cost_per_video_per_second" json:"input_cost_per_video_per_second,omitempty"`
 	OutputCostPerAudioToken     *float64 `gorm:"default:null;column:output_cost_per_audio_token" json:"output_cost_per_audio_token,omitempty"`
 	OutputCostPerVideoPerSecond *float64 `gorm:"default:null;column:output_cost_per_video_per_second" json:"output_cost_per_video_per_second,omitempty"`
