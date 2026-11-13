@@ -1,6 +1,7 @@
 package jobaccounting
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	cstables "github.com/capsohq/bifrost/framework/configstore/tables"
+	"github.com/capsohq/bifrost/framework/internal/testtime"
 	"github.com/capsohq/bifrost/framework/logstore"
 	"github.com/capsohq/bifrost/framework/modelcatalog"
 	"github.com/capsohq/bifrost/framework/modelcatalog/datasheet"
@@ -44,12 +46,12 @@ func (f *fakeVideoRetriever) RetrieveVideo(ctx context.Context, job *cstables.Ta
 	return f.resp, nil
 }
 
-func (f *fakeVideoRetriever) DownloadVideo(ctx context.Context, job *cstables.TableProviderJob) ([]byte, error) {
+func (f *fakeVideoRetriever) DownloadVideo(ctx context.Context, job *cstables.TableProviderJob) (io.ReadCloser, error) {
 	f.downloads++
 	if f.downloadErr != nil {
 		return nil, f.downloadErr
 	}
-	return f.video, nil
+	return io.NopCloser(bytes.NewReader(f.video)), nil
 }
 
 // videoJob builds a submitted video job row carrying the dimensions the request
@@ -1212,6 +1214,60 @@ func TestVideoPoll_TransientDownloadFailureRetriesThenSettlesAtTheFloor(t *testi
 	require.NoError(t, err)
 	assert.True(t, poll.Settleable, "the last attempt settles at the floor rather than run out the poll cap uncharged")
 	assert.Contains(t, poll.Payload.(VideoPayload).RenderedUnmeasurable, "connection reset")
+}
+
+// TXE-7334: a download that does not finish within renderedVideoTimeout is final, settled at the
+// floor on that poll and not retried: the sweeper settles one job at a time, so a retried slow file
+// would hold it on every poll. A sweeper shutting down mid-read is retried as before.
+func TestVideoPoll_SlowDownloadIsFinalNotRetried(t *testing.T) {
+	saved := renderedVideoTimeout
+	renderedVideoTimeout = testtime.Scale(50 * time.Millisecond)
+	t.Cleanup(func() { renderedVideoTimeout = saved })
+
+	retriever := &stallingDownload{resp: silentReplicateResponse("pred_slow")}
+	start := time.Now()
+	poll, err := NewVideoSettler(retriever).Poll(context.Background(), replicateVideoJob(t, "pred_slow", 5))
+	require.NoError(t, err, "out of time is final, not an error to retry")
+	assert.True(t, poll.Settleable)
+	assert.Contains(t, poll.Payload.(VideoPayload).RenderedUnmeasurable, "within")
+	assert.Less(t, time.Since(start), 5*time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stalled := make(chan struct{})
+	retriever = &stallingDownload{resp: silentReplicateResponse("pred_slow"), stalled: stalled}
+	go func() { <-stalled; cancel() }()
+	renderedVideoTimeout = time.Minute
+	_, err = NewVideoSettler(retriever).Poll(ctx, replicateVideoJob(t, "pred_slow", 5))
+	require.ErrorIs(t, err, errRenderedDurationRetry, "a shutdown is retried")
+}
+
+// stallingDownload serves an MP4 header, then blocks until the caller's context ends, closing
+// stalled (when set) once it blocks.
+type stallingDownload struct {
+	resp    *schemas.BifrostVideoGenerationResponse
+	stalled chan struct{}
+}
+
+func (s *stallingDownload) RetrieveVideo(context.Context, *cstables.TableProviderJob) (*schemas.BifrostVideoGenerationResponse, error) {
+	return s.resp, nil
+}
+
+func (s *stallingDownload) DownloadVideo(ctx context.Context, _ *cstables.TableProviderJob) (io.ReadCloser, error) {
+	return io.NopCloser(io.MultiReader(bytes.NewReader([]byte("\x00\x00\x00\x10ftypisom\x00\x00\x00\x00")), &ctxReader{ctx: ctx, stalled: s.stalled})), nil
+}
+
+type ctxReader struct {
+	ctx     context.Context
+	stalled chan struct{}
+}
+
+func (r *ctxReader) Read([]byte) (int, error) {
+	if r.stalled != nil {
+		close(r.stalled)
+		r.stalled = nil
+	}
+	<-r.ctx.Done()
+	return 0, r.ctx.Err()
 }
 
 // A vendor that reports the duration or its own cost is priced from that, with no download.

@@ -193,6 +193,10 @@ func TestTimingTablesBoundTheMediaDuration(t *testing.T) {
 		})
 	}
 	offsets := &mp4.Ctts{EntryCount: 2, Entries: []mp4.CttsEntry{{SampleCount: 11, SampleOffsetV0: 500}, {SampleCount: 1, SampleOffsetV0: 2000}}}
+	reordered := &mp4.Ctts{FullBox: mp4.FullBox{Version: 1}, EntryCount: 4, Entries: []mp4.CttsEntry{
+		{SampleCount: 1, SampleOffsetV1: 0}, {SampleCount: 1, SampleOffsetV1: 2000}, {SampleCount: 2, SampleOffsetV1: -1000}, {SampleCount: 8, SampleOffsetV1: 0},
+	}}
+	early := &mp4.Ctts{FullBox: mp4.FullBox{Version: 1}, EntryCount: 1, Entries: []mp4.CttsEntry{{SampleCount: 12, SampleOffsetV1: -10000}}}
 	for name, c := range map[string]struct {
 		data   []byte
 		wantMS int64
@@ -200,6 +204,11 @@ func TestTimingTablesBoundTheMediaDuration(t *testing.T) {
 		"mdhd shortened to 1 s":             {data: build(1000, 12, nil), wantMS: 12000},
 		"mdhd longer than the samples":      {data: build(15000, 12, nil), wantMS: 15000},
 		"a composition offset past the end": {data: build(12000, 12, offsets), wantMS: 14000},
+		// TXE-7334: the second sample presents 2 s late, until 4 s, and the two after it 1 s early; the
+		// last sample still ends the clip at 12 s. The largest offset added to the decode end gave 14 s.
+		"a reordered sample does not lengthen the clip": {data: build(1000, 12, reordered), wantMS: 12000},
+		// Offsets that pull every sample 10 s early do not make 12 s of samples shorter than 12 s.
+		"negative offsets do not shorten the clip": {data: build(1000, 12, early), wantMS: 12000},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := Read(context.Background(), &rangeCounter{data: c.data}, int64(len(c.data)))
@@ -214,8 +223,58 @@ func TestTimingTablesBoundTheMediaDuration(t *testing.T) {
 	}
 }
 
+// fixtureReordered is a 12-second clip with reordered frames, served by the provider error fixture to
+// harness folder 520 (TXE-7334). Its second sample presents 2 s late and the next two 1 s early, so
+// adding the largest offset to the decode end read 14 s. Write it again with
+// VIDEODURATION_WRITE_FIXTURES=1 go test ./videoduration/ -run TestReorderedFixture.
+const fixtureReordered = "testdata/twelve-seconds-reordered.mp4"
+
+func reorderedTwelveSeconds(t *testing.T) []byte {
+	t.Helper()
+	return buildMP4(t, func(w *mp4.Writer) {
+		at := mediaData(t, w, 120)
+		box(t, w, mp4.BoxTypeMoov(), func() {
+			leaf(t, w, &mp4.Mvhd{Timescale: 1000, DurationV0: 12000})
+			box(t, w, mp4.BoxTypeTrak(), func() {
+				leaf(t, w, &mp4.Tkhd{TrackID: 1})
+				box(t, w, mp4.BoxTypeMdia(), func() {
+					leaf(t, w, &mp4.Mdhd{Timescale: 1000, DurationV0: 12000})
+					leaf(t, w, &mp4.Hdlr{HandlerType: [4]byte{'v', 'i', 'd', 'e'}})
+					box(t, w, mp4.BoxTypeMinf(), func() {
+						box(t, w, mp4.BoxTypeStbl(), func() {
+							leaf(t, w, &mp4.Stts{EntryCount: 1, Entries: []mp4.SttsEntry{{SampleCount: 12, SampleDelta: 1000}}})
+							leaf(t, w, &mp4.Ctts{FullBox: mp4.FullBox{Version: 1}, EntryCount: 4, Entries: []mp4.CttsEntry{
+								{SampleCount: 1, SampleOffsetV1: 0}, {SampleCount: 1, SampleOffsetV1: 2000}, {SampleCount: 2, SampleOffsetV1: -1000}, {SampleCount: 8, SampleOffsetV1: 0},
+							}})
+							leaf(t, w, &mp4.Stsz{SampleSize: 10, SampleCount: 12})
+							leaf(t, w, &mp4.Stsc{EntryCount: 1, Entries: []mp4.StscEntry{{FirstChunk: 1, SamplesPerChunk: 12, SampleDescriptionIndex: 1}}})
+							leaf(t, w, &mp4.Stco{EntryCount: 1, ChunkOffset: []uint32{at}})
+						})
+					})
+				})
+			})
+		})
+	})
+}
+
+func TestReorderedFixture(t *testing.T) {
+	built := reorderedTwelveSeconds(t)
+	if os.Getenv("VIDEODURATION_WRITE_FIXTURES") == "1" {
+		if err := os.WriteFile(fixtureReordered, built, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if onDisk := readFixture(t, fixtureReordered); !bytes.Equal(onDisk, built) {
+		t.Fatalf("%s is not the clip reorderedTwelveSeconds builds: write it again", fixtureReordered)
+	}
+	if got, err := Read(context.Background(), bytes.NewReader(built), int64(len(built))); err != nil || got.VideoMS != 12000 {
+		t.Fatalf("got %+v, %v; want video 12000 ms", got, err)
+	}
+}
+
 // TestFragmentCompositionOffsetsExtendTheDuration checks that a fragment run's composition offsets
-// count: its last sample presents up to the largest offset after the run's decode end.
+// count, sample by sample: the three samples present until 4, 9.5 and 12.5 seconds, so the clip lasts
+// 12.5 s. Adding the largest offset to the run's decode end gave 13.5 s (TXE-7334).
 func TestFragmentCompositionOffsetsExtendTheDuration(t *testing.T) {
 	data := buildMP4(t, func(w *mp4.Writer) {
 		box(t, w, mp4.BoxTypeMoov(), func() {
@@ -232,8 +291,8 @@ func TestFragmentCompositionOffsetsExtendTheDuration(t *testing.T) {
 		})
 	})
 	got, err := Read(context.Background(), &rangeCounter{data: data}, int64(len(data)))
-	if err != nil || got.VideoMS != 13500 {
-		t.Fatalf("got %+v, %v; want video 13500 ms", got, err)
+	if err != nil || got.VideoMS != 12500 {
+		t.Fatalf("got %+v, %v; want video 12500 ms", got, err)
 	}
 }
 

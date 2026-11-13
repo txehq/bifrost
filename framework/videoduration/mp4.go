@@ -132,7 +132,7 @@ type mp4Track struct {
 	stsc   *mp4.Stsc
 	chunks []uint64
 	// stts is moov's timing table, and ctts its composition offsets: the media lasts at least until
-	// the last sample's decode end plus the largest offset, whatever mdhd says.
+	// the latest any sample presents, whatever mdhd says.
 	stts *mp4.Stts
 	ctts *mp4.Ctts
 	// hasChunks reports that the trak carried an stco or a co64.
@@ -513,10 +513,10 @@ func readMP4Duration(src *videoSource, rs io.ReadSeeker, size int64, limits Read
 			}
 			fragment.next = end.Uint64()
 			fragment.track.samples += uint64(run.count)
-			fragment.cursor.Add(fragment.cursor, run.ticks)
-			if presented := new(big.Int).Add(fragment.cursor, big.NewInt(run.offset)); presented.Cmp(fragment.presented) > 0 {
+			if presented := new(big.Int).Add(fragment.cursor, run.presented); presented.Cmp(fragment.presented) > 0 {
 				fragment.presented = presented
 			}
+			fragment.cursor.Add(fragment.cursor, run.ticks)
 			return nil, nil
 		}
 		return nil, nil
@@ -580,8 +580,8 @@ func readMP4Duration(src *videoSource, rs io.ReadSeeker, size int64, limits Read
 }
 
 // reconcileTiming raises t.ticks, mdhd's duration, to what the timing table presents: the sum of stts's
-// sample deltas plus the largest positive composition offset in ctts. stts must time exactly the
-// samples stsz sizes, or the table is inconsistent.
+// sample deltas, raised by a ctts to the latest any sample presents until (presentationEnd). stts must time
+// exactly the samples stsz sizes, or the table is inconsistent.
 func reconcileTiming(t *mp4Track) error {
 	if t.stts == nil {
 		return nil
@@ -596,17 +596,59 @@ func reconcileTiming(t *mp4Track) error {
 		return fmt.Errorf("%w: stts times %s samples where stsz sizes another count", errVideoInvalid, timed)
 	}
 	if t.ctts != nil {
-		var offset int64
-		for i := range t.ctts.Entries {
-			offset = max(offset, t.ctts.GetSampleOffset(i))
+		// Fork (TXE-7334): the latest any sample presents until, not the decode end plus the largest
+		// offset, which may belong to an earlier sample and overstate a reordered clip. The decode
+		// end stays the minimum: negative offsets cannot pull the clip shorter than its samples last.
+		if presented := presentationEnd(t.stts, t.ctts); presented.Cmp(end) > 0 {
+			end = presented
 		}
-		end.Add(end, big.NewInt(offset))
 	}
 	if !end.IsUint64() {
 		return fmt.Errorf("%w: the timing table runs past 2^64 ticks", errVideoInvalid)
 	}
 	t.ticks = max(t.ticks, end.Uint64())
 	return nil
+}
+
+// presentationEnd is the latest time any sample of a moov track presents until: its decode time plus
+// its duration plus its composition offset, the largest over every sample (fork, TXE-7334). Both
+// tables are run-length, so it walks the runs they share, never sample by sample: within a run of k
+// samples with one delta and one offset the last sample ends latest, at its start plus k deltas plus
+// the offset. A sample past ctts's last entry has offset 0, as the format reads it.
+func presentationEnd(stts *mp4.Stts, ctts *mp4.Ctts) *big.Int {
+	end, decode := new(big.Int), new(big.Int)
+	ci := 0
+	var cLeft uint64
+	if len(ctts.Entries) > 0 {
+		cLeft = uint64(ctts.Entries[0].SampleCount)
+	}
+	for _, e := range stts.Entries {
+		left := uint64(e.SampleCount)
+		delta := new(big.Int).SetUint64(uint64(e.SampleDelta))
+		for left > 0 {
+			for ci < len(ctts.Entries) && cLeft == 0 {
+				if ci++; ci < len(ctts.Entries) {
+					cLeft = uint64(ctts.Entries[ci].SampleCount)
+				}
+			}
+			k := left
+			var offset int64
+			if ci < len(ctts.Entries) {
+				k = min(k, cLeft)
+				offset = ctts.GetSampleOffset(ci)
+				cLeft -= k
+			}
+			span := new(big.Int).Mul(new(big.Int).SetUint64(k), delta)
+			last := new(big.Int).Add(decode, span)
+			last.Add(last, big.NewInt(offset))
+			if last.Cmp(end) > 0 {
+				end.Set(last)
+			}
+			decode.Add(decode, span)
+			left -= k
+		}
+	}
+	return end
 }
 
 // checkChunks walks a track's moov sample table, adds its samples to t.samples, and checks that each
@@ -668,9 +710,10 @@ type mp4Run struct {
 	ticks, bytes *big.Int
 	count        uint32
 	dataOffset   *int64
-	// offset is the largest positive composition offset of the run's samples: the last one presents
-	// that much after its decode end at most.
-	offset int64
+	// presented is the latest any of the run's samples presents until, from the run's start: a
+	// sample's start plus its duration plus its composition offset (fork, TXE-7334). It is ticks when
+	// the run carries no offsets.
+	presented *big.Int
 }
 
 // readTrun reads one trun's payload: each sample's duration and size are its own, or else the tfhd's
@@ -692,21 +735,36 @@ func readTrun(payload *io.SectionReader, ctx mp4.Context, tfhd *mp4.Tfhd, trex *
 		offset := int64(trun.DataOffset)
 		run.dataOffset = &offset
 	}
-	if flags&0x000800 != 0 {
-		for _, e := range trun.Entries {
-			offset := int64(e.SampleCompositionTimeOffsetV0)
-			if trun.GetVersion() != 0 {
-				offset = int64(e.SampleCompositionTimeOffsetV1)
-			}
-			run.offset = max(run.offset, offset)
-		}
-	}
 	var err error
 	run.ticks, err = trunSum(trun, 0x000100, func(e mp4.TrunEntry) uint32 { return e.SampleDuration },
 		tfhd.CheckFlag(mp4.TfhdDefaultSampleDurationPresent), tfhd.DefaultSampleDuration, trex,
 		func(t *mp4.Trex) uint32 { return t.DefaultSampleDuration })
 	if err != nil {
 		return mp4Run{}, fmt.Errorf("%w: a trun with no sample duration and no default", err)
+	}
+	run.presented = new(big.Int).Set(run.ticks)
+	if flags&0x000800 != 0 && len(trun.Entries) > 0 {
+		// Each sample's own duration, or the run's default: ticks is the count times it then.
+		each := new(big.Int)
+		if flags&0x000100 == 0 {
+			each.Quo(run.ticks, big.NewInt(int64(len(trun.Entries))))
+		}
+		at, latest := new(big.Int), new(big.Int)
+		for _, e := range trun.Entries {
+			offset := int64(e.SampleCompositionTimeOffsetV0)
+			if trun.GetVersion() != 0 {
+				offset = int64(e.SampleCompositionTimeOffsetV1)
+			}
+			duration := each
+			if flags&0x000100 != 0 {
+				duration = big.NewInt(int64(e.SampleDuration))
+			}
+			at.Add(at, duration)
+			if end := new(big.Int).Add(at, big.NewInt(offset)); end.Cmp(latest) > 0 {
+				latest = end
+			}
+		}
+		run.presented = latest
 	}
 	run.bytes, err = trunSum(trun, 0x000200, func(e mp4.TrunEntry) uint32 { return e.SampleSize },
 		tfhd.CheckFlag(mp4.TfhdDefaultSampleSizePresent), tfhd.DefaultSampleSize, trex,
