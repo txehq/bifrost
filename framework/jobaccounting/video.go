@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -85,6 +87,90 @@ var videoSettlementExemptions = map[schemas.ModelProvider]string{
 	schemas.ModelArk:   "TXE-7131 adds modelark with a settle-and-read-cost regression: it serves Seedance tasks through the Ark API and has never been settled",
 	schemas.Volcengine: "TXE-7131 adds volcengine with a settle-and-read-cost regression: it serves Seedance tasks through the Ark API and has never been settled",
 	schemas.Azure:      "TXE-7054 adds azure: its two video APIs (Sora 2 and the first-generation jobs API) use different ids and dimensions, and settlement must also be reached from /content",
+}
+
+// renderedVideoHostPolicy is where a settled provider's rendered video may be fetched from to
+// measure it (fork, TXE-7386). The settler downloads a finished job's video to read its length,
+// and the download fetches whatever URL the job's response names. A provider whose output URL a
+// caller can choose, such as a Replicate model the caller runs that answers with any URL, lists
+// the vendor's own CDN hosts: an output anywhere else is never fetched, and the job is charged the
+// seconds its create named as a floor, marked incomplete. A provider whose output URL only the
+// vendor generates says why, and its URLs are fetched wherever they point. The provider's
+// configured base URL origin is trusted for every provider: the operator set it.
+type renderedVideoHostPolicy struct {
+	// hosts are the vendor CDN hostnames a rendered video may be fetched from, each also matching
+	// its subdomains. Empty means any host, and vendorGenerated must then say why.
+	hosts []string
+	// vendorGenerated is why a caller cannot choose this provider's output URL.
+	vendorGenerated string
+}
+
+// renderedVideoHosts holds a policy for every provider in videoProviders.
+// TestEverySettledVideoProviderDeclaresWhereItsRenderedVideoMayBeFetched fails for a provider in
+// videoProviders that has none, so a new provider cannot be settled without saying whether a
+// caller can point its output at a host of their choosing.
+var renderedVideoHosts = map[schemas.ModelProvider]renderedVideoHostPolicy{
+	// A Replicate model is code anyone can publish, and its output can be any string: a model a
+	// caller runs can answer with a URL on a host it controls. Files Replicate itself stores are
+	// served from replicate.delivery.
+	schemas.Replicate: {hosts: []string{"replicate.delivery"}},
+	schemas.OpenAI:    {vendorGenerated: "the video is downloaded from OpenAI's own API (/v1/videos/{id}/content), never from a URL in the response"},
+	schemas.Gemini:    {vendorGenerated: "Gemini names a file it stores (a Files API URI) or returns the video inline"},
+	schemas.Vertex:    {vendorGenerated: "Vertex returns the video inline or names a Cloud Storage object, read through the Cloud Storage API with the key's credentials"},
+	schemas.Runway:    {vendorGenerated: "Runway runs only its own models, and the output URL is one it stores"},
+	schemas.Runware:   {vendorGenerated: "Runware runs only its own hosted models, and the output URL is one it stores"},
+	schemas.MiniMax:   {vendorGenerated: "MiniMax answers with a download URL for a file it stores"},
+	schemas.BytePlus:  {vendorGenerated: "BytePlus Seedance answers with a URL for a video it stores"},
+	schemas.Kling:     {vendorGenerated: "Kling answers with a URL for a video it stores"},
+	schemas.DashScope: {vendorGenerated: "DashScope answers with a URL for a video it stores"},
+	schemas.XAI:       {vendorGenerated: "xAI answers with a URL for a video it stores, and reports the cost itself"},
+	schemas.BFL:       {vendorGenerated: "BFL answers with a delivery URL for a video it stores"},
+}
+
+// ProviderOriginResolver is implemented by a VideoRetriever that can say which origin
+// (scheme://host[:port]) a provider's configured base URL names, "" when none is configured. A
+// rendered video on that origin is always fetched: the operator set it (fork, TXE-7386).
+type ProviderOriginResolver interface {
+	ProviderOrigin(provider schemas.ModelProvider) string
+}
+
+// untrustedRenderedVideoHost returns why the job's rendered video must not be fetched to measure
+// it, or "" when it may be. Only the clip the download fetches, the first, is checked. A clip with
+// no URL (inline, or downloaded from the vendor's own API) is fetched from no host the response
+// names.
+func (s *VideoSettler) untrustedRenderedVideoHost(job *cstables.TableProviderJob, resp *schemas.BifrostVideoGenerationResponse) string {
+	if resp == nil || len(resp.Videos) == 0 || resp.Videos[0].URL == nil || *resp.Videos[0].URL == "" {
+		return ""
+	}
+	provider := schemas.ModelProvider(job.Provider)
+	policy, ok := renderedVideoHosts[provider]
+	if !ok {
+		if resolver, isResolver := s.retriever.(BaseProviderResolver); isResolver {
+			policy, ok = renderedVideoHosts[resolver.BaseProvider(provider)]
+		}
+	}
+	if !ok {
+		return fmt.Sprintf("the rendered video is not fetched: %s declares no host its videos may be fetched from", provider)
+	}
+	if len(policy.hosts) == 0 {
+		return ""
+	}
+	u, err := url.Parse(*resp.Videos[0].URL)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return "the rendered video is not fetched: its URL is not an http(s) URL"
+	}
+	if resolver, isResolver := s.retriever.(ProviderOriginResolver); isResolver {
+		if origin := resolver.ProviderOrigin(provider); origin != "" && strings.EqualFold(origin, u.Scheme+"://"+u.Host) {
+			return ""
+		}
+	}
+	host := strings.ToLower(u.Hostname())
+	for _, allowed := range policy.hosts {
+		if host == allowed || strings.HasSuffix(host, "."+allowed) {
+			return ""
+		}
+	}
+	return fmt.Sprintf("the rendered video is not fetched: %s is not a host %s serves its videos from", host, provider)
 }
 
 // VideoRetriever is the provider call the video settler needs: given a job row,
@@ -273,6 +359,11 @@ func (s *VideoSettler) measureRenderedVideo(ctx context.Context, job *cstables.T
 	}
 	if modelcatalog.VideoDimensionsFromResponse(resp).OutputCount == 0 {
 		return 0, errors.New("the job returned no video clip")
+	}
+	// A video on a host the caller may have chosen is never fetched (TXE-7386): final, so the job
+	// is charged its floor, marked incomplete.
+	if reason := s.untrustedRenderedVideoHost(job, resp); reason != "" {
+		return 0, errors.New(reason)
 	}
 	callCtx, cancel := context.WithTimeout(ctx, renderedVideoTimeout)
 	defer cancel()

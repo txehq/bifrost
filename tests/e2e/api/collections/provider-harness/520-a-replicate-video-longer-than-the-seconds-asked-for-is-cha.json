@@ -469,6 +469,157 @@
           }
         }
       ]
+    },
+    {
+      "name": "520.10 replicate/fixture/rendered-foreign POST /v1/videos asking for 5 seconds; the model names its 12-second output on a host the caller chose, not the provider's origin (rendered video duration)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"replicate/fixture/rendered-foreign\",\n  \"prompt\": \"a paper boat drifting down a rain gutter\",\n  \"seconds\": \"5\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create is a queued task for the fixture prediction', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.include('pred_rendered_foreign');",
+              "  pm.variables.set('renderedVideoId', j.id);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "520.11 the sweeper never fetches a video on a host the caller chose: it charges the $0.50 floor for the 5 seconds asked for, marked incomplete (rendered video duration)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "{{setupToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs?providers=replicate&limit=1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "providers",
+              "value": "replicate"
+            },
+            {
+              "key": "limit",
+              "value": "1"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// TXE-7386: the output is on localhost, not the provider's configured 127.0.0.1 origin nor replicate.delivery,",
+              "// so the settler never downloads it and charges the 5 seconds the create asked for as a floor.",
+              "var CryptoJS = require('crypto-js');",
+              "function uuidv5(namespace, name) {",
+              "  var hash = CryptoJS.SHA1(CryptoJS.enc.Hex.parse(namespace.replace(/-/g, '')).concat(CryptoJS.enc.Utf8.parse(name))).toString();",
+              "  var b = hash.slice(0, 32).split('');",
+              "  b[12] = '5';",
+              "  b[16] = ((parseInt(b[16], 16) & 0x3) | 0x8).toString(16);",
+              "  var s = b.join('');",
+              "  return s.slice(0, 8) + '-' + s.slice(8, 12) + '-' + s.slice(12, 16) + '-' + s.slice(16, 20) + '-' + s.slice(20, 32);",
+              "}",
+              "var videoId = pm.variables.get('renderedVideoId');",
+              "var logId = uuidv5('b1e0f7c4-2a63-4d18-9f5b-6c0a3d8e41d7', 'replicate:' + videoId);",
+              "var token = pm.variables.get('setupToken');",
+              "var last = '';",
+              "function check(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + logId, method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    if (!err && res.code === 200 && res.json().cost !== undefined) {",
+              "      var j = res.json();",
+              "      pm.test('the video on a foreign host is charged its $0.50 floor, marked incomplete', function () {",
+              "        pm.expect(j.cost, JSON.stringify(j)).to.be.closeTo(0.5, 1e-9);",
+              "        var accounting = j.video_debug && j.video_debug.accounting;",
+              "        pm.expect(accounting, JSON.stringify(j.video_debug)).to.be.ok;",
+              "        pm.expect(accounting.seconds, JSON.stringify(accounting)).to.eql(5);",
+              "        pm.expect(accounting.incomplete, JSON.stringify(accounting)).to.eql(true);",
+              "      });",
+              "      return;",
+              "    }",
+              "    last = err ? String(err) : (res.code + ' ' + res.text().slice(0, 300));",
+              "    if (attempt < 120) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+              "    pm.test('the settlement row appeared', function () { pm.expect.fail('settlement row ' + logId + ' for ' + videoId + ' never appeared: ' + last); });",
+              "  });",
+              "}",
+              "check(0);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "520.12 the fixture served the foreign-host prediction's poll and never its file (rendered video duration)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{videoSettlementFixtureUrl}}/__hits",
+          "host": [
+            "{{videoSettlementFixtureUrl}}"
+          ],
+          "path": [
+            "__hits"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var hits = pm.response.json().data[0].hits;",
+              "pm.test('the prediction was polled', function () {",
+              "  pm.expect(hits['replicate.rendered-foreign.poll'], JSON.stringify(hits)).to.be.at.least(1);",
+              "});",
+              "pm.test('the video on the foreign host was never downloaded', function () {",
+              "  pm.expect(hits['replicate.rendered-foreign.download'] || 0, JSON.stringify(hits)).to.eql(0);",
+              "});"
+            ]
+          }
+        }
+      ]
     }
   ]
 }

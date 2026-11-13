@@ -1818,3 +1818,109 @@ func TestVideoReprice_RecordedTierIsSettled(t *testing.T) {
 	assert.True(t, repricing.seen[0].ResolutionSettled)
 	assert.Nil(t, repricing.seen[0].Extra, "the tier reaches pricing only as the settled typed field")
 }
+
+// TestEverySettledVideoProviderDeclaresWhereItsRenderedVideoMayBeFetched (TXE-7386): every settled
+// video provider says where its rendered video may be fetched from to measure it: the vendor's CDN
+// hosts, or why a caller cannot choose its output URL. A provider added to videoProviders without
+// one fails here, before a caller can point its output at a host of their choosing.
+func TestEverySettledVideoProviderDeclaresWhereItsRenderedVideoMayBeFetched(t *testing.T) {
+	for provider := range videoProviders {
+		policy, ok := renderedVideoHosts[provider]
+		if !assert.True(t, ok, "%s is settled but declares no host its rendered video may be fetched from", provider) {
+			continue
+		}
+		assert.True(t, len(policy.hosts) > 0 || policy.vendorGenerated != "",
+			"%s lists no host and does not say why a caller cannot choose its output URL", provider)
+		assert.False(t, len(policy.hosts) > 0 && policy.vendorGenerated != "", "%s both lists hosts and says any host is fine", provider)
+	}
+	for provider := range renderedVideoHosts {
+		_, ok := videoProviders[provider]
+		assert.True(t, ok, "%s declares rendered-video hosts but is not settled", provider)
+	}
+}
+
+// originVideoRetriever is a fakeVideoRetriever whose provider has a configured base URL origin, and
+// optionally is a custom provider over a base provider.
+type originVideoRetriever struct {
+	*fakeVideoRetriever
+	origin string
+	base   schemas.ModelProvider
+}
+
+func (r *originVideoRetriever) ProviderOrigin(schemas.ModelProvider) string { return r.origin }
+func (r *originVideoRetriever) BaseProvider(schemas.ModelProvider) schemas.ModelProvider {
+	return r.base
+}
+
+// TestVideoPoll_NeverFetchesARenderedVideoFromAHostTheCallerChose (TXE-7386): a Replicate model a
+// caller runs can answer with a URL on any host. The settler fetches a rendered video only from
+// replicate.delivery or the provider's configured origin; anywhere else it never downloads, and
+// the job is charged the seconds its create named, marked incomplete.
+func TestVideoPoll_NeverFetchesARenderedVideoFromAHostTheCallerChose(t *testing.T) {
+	cases := []struct {
+		name, url, origin string
+		custom            bool
+		fetched           bool
+	}{
+		{"replicate.delivery", "https://replicate.delivery/pbxt/out.mp4", "", false, true},
+		{"a replicate.delivery subdomain", "https://pbxt.replicate.delivery/out.mp4", "", false, true},
+		{"the provider's configured origin", "http://127.0.0.1:8791/pp/replicate/v1/files/out.mp4", "http://127.0.0.1:8791", false, true},
+		{"a custom provider over Replicate", "https://replicate.delivery/out.mp4", "", true, true},
+		{"a host the caller chose", "https://videos.attacker.example/out.mp4", "", false, false},
+		{"a look-alike suffix", "https://evilreplicate.delivery/out.mp4", "", false, false},
+		{"the configured host on another port", "http://127.0.0.1:9999/out.mp4", "http://127.0.0.1:8791", false, false},
+		{"a custom provider over Replicate, foreign host", "https://videos.attacker.example/out.mp4", "", true, false},
+		{"not an http URL", "ftp://replicate.delivery/out.mp4", "", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := silentReplicateResponse("pred_host")
+			resp.Videos[0].URL = bifrost.Ptr(tc.url)
+			fake := &fakeVideoRetriever{resp: resp, video: renderedMP4(t, 12)}
+			retriever := &originVideoRetriever{fakeVideoRetriever: fake, origin: tc.origin}
+			job := replicateVideoJob(t, "pred_host", 5)
+			if tc.custom {
+				job.Provider = "my-replicate"
+				retriever.base = schemas.Replicate
+			}
+
+			poll, err := NewVideoSettler(retriever).Poll(context.Background(), job)
+			require.NoError(t, err)
+			payload := poll.Payload.(VideoPayload)
+			if tc.fetched {
+				assert.Equal(t, 1, fake.downloads)
+				require.NotNil(t, payload.RenderedSeconds)
+				assert.Equal(t, 12, *payload.RenderedSeconds)
+				return
+			}
+			assert.Zero(t, fake.downloads, "a rendered video on %s was fetched", tc.url)
+			assert.Nil(t, payload.RenderedSeconds)
+			assert.Contains(t, payload.RenderedUnmeasurable, "is not fetched")
+		})
+	}
+
+	// Settled, such a job is charged the 5 seconds asked for, marked incomplete.
+	resp := silentReplicateResponse("pred_foreign")
+	resp.Videos[0].URL = bifrost.Ptr("https://videos.attacker.example/out.mp4")
+	fake := &fakeVideoRetriever{resp: resp, video: renderedMP4(t, 12)}
+	store := newFakeAccountingStore()
+	sweepVideoJob(t, store, replicateVideoJob(t, "pred_foreign", 5), fake)
+	assert.Zero(t, fake.downloads)
+	entry := store.logs[AccountingLogID(ProviderJobKindVideo, schemas.Replicate, "pred_foreign")]
+	require.NotNil(t, entry)
+	require.NotNil(t, entry.Cost)
+	assert.InDelta(t, 5*0.70, *entry.Cost, 1e-12, "charged the 5 seconds asked for as a floor")
+	assert.True(t, entry.VideoDebugParsed.Accounting.Incomplete)
+}
+
+// BenchmarkUntrustedRenderedVideoHost is what TXE-7386 adds before a rendered-video download: one
+// URL parse and a host compare, once per settled job that needs measuring.
+func BenchmarkUntrustedRenderedVideoHost(b *testing.B) {
+	settler := NewVideoSettler(&fakeVideoRetriever{})
+	job := &cstables.TableProviderJob{Provider: string(schemas.Replicate)}
+	resp := silentReplicateResponse("pred_bench")
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = settler.untrustedRenderedVideoHost(job, resp)
+	}
+}

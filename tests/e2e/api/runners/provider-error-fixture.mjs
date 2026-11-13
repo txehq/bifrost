@@ -61,7 +61,13 @@ const RENDERED_VIDEOS = {
 	"rendered-longer": RENDERED_LONGER_MP4,
 	"rendered-oversized": inflateMdat(RENDERED_LONGER_MP4, 2 << 20),
 	"rendered-reordered": readFileSync(join(VIDEODURATION_TESTDATA, "twelve-seconds-reordered.mp4")),
+	// TXE-7386: the 12-second clip as an output on a host the caller chose (a model that answers with any
+	// URL): the poll names it on localhost, not the provider's configured 127.0.0.1 origin. The settler must
+	// never fetch it, and charges the seconds the create asked for, marked incomplete.
+	"rendered-foreign": RENDERED_LONGER_MP4,
 };
+// The rendered videos whose output the poll names on another origin (TXE-7386).
+const RENDERED_FOREIGN = new Set(["rendered-foreign"]);
 
 // Per-model behaviour for POST /v1/chat/completions. The model name in the request
 // body selects the response, so one fixture serves every case. A model may carry a
@@ -433,6 +439,7 @@ const fixturePricing = {
 	"replicate/fixture/rendered-longer": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
 	"replicate/fixture/rendered-oversized": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
 	"replicate/fixture/rendered-reordered": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
+	"replicate/fixture/rendered-foreign": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
 	"turns-tiered": { provider: "openai_turns", ...turnRates },
 	"turns-fail": { provider: "openai_turns", ...turnRates },
 	"gpt-6-luna": { provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, input_cost_per_token_decisions: 0.000003, output_cost_per_token_decisions: 0.000004, supports_decisions: true },
@@ -2347,7 +2354,8 @@ const handleRequest = (req, res) => {
 	if (req.method === "GET" && renderedPoll && RENDERED_VIDEOS[renderedPoll[1].replace(/_/g, "-")]) {
 		const name = renderedPoll[1].replace(/_/g, "-");
 		countHit(`replicate.${name}.poll`);
-		return send(200, {}, JSON.stringify({ id: `pred_${renderedPoll[1]}`, status: "succeeded", output: `http://127.0.0.1:${port}/pp/replicate/v1/files/${name}.mp4` }));
+		const host = RENDERED_FOREIGN.has(name) ? "localhost" : "127.0.0.1";
+		return send(200, {}, JSON.stringify({ id: `pred_${renderedPoll[1]}`, status: "succeeded", output: `http://${host}:${port}/pp/replicate/v1/files/${name}.mp4` }));
 	}
 	const renderedFile = /^\/pp\/replicate\/v1\/files\/([a-z-]+)\.mp4$/.exec(path);
 	if (req.method === "GET" && renderedFile && RENDERED_VIDEOS[renderedFile[1]]) {
