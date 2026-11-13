@@ -113,6 +113,76 @@ func TestImageEditBackfillsAspectRatio(t *testing.T) {
 	}
 }
 
+// TXE-7356: the resolution tier, the inference steps and the dall-e-3 qualities a model is priced
+// by reach the response, where the cost path reads them. hd and standard used to be dropped here.
+func TestImageBackfillsPricedRequestShape(t *testing.T) {
+	req := &BifrostRequest{ImageGenerationRequest: &BifrostImageGenerationRequest{
+		Params: &ImageGenerationParameters{Quality: new("hd"), Resolution: "2k", NumInferenceSteps: new(60)},
+	}}
+	resp := &BifrostImageGenerationResponse{}
+	resp.BackfillParams(req)
+	p := resp.ImageGenerationResponseParameters
+	if p == nil || p.Quality != "hd" || p.Resolution != "2k" || p.NumInferenceSteps == nil || *p.NumInferenceSteps != 60 {
+		t.Fatalf("response params = %+v, want quality hd, resolution 2k, 60 steps", p)
+	}
+	// The response's copy is its own: a later change to the request does not move it.
+	*req.ImageGenerationRequest.Params.NumInferenceSteps = 10
+	if *p.NumInferenceSteps != 60 {
+		t.Fatalf("steps aliased the request: %d", *p.NumInferenceSteps)
+	}
+
+	streamResp := &BifrostImageGenerationStreamResponse{}
+	streamResp.BackfillParams(req)
+	if streamResp.Resolution != "2k" || streamResp.NumInferenceSteps == nil {
+		t.Fatalf("stream = resolution %q steps %v", streamResp.Resolution, streamResp.NumInferenceSteps)
+	}
+
+	// Stability's native "steps" extra param counts when num_inference_steps is unset.
+	edit := &BifrostRequest{ImageEditRequest: &BifrostImageEditRequest{
+		Params: &ImageEditParameters{Quality: new("standard"), ExtraParams: map[string]interface{}{"steps": float64(40)}},
+	}}
+	editResp := &BifrostImageGenerationResponse{}
+	editResp.BackfillParams(edit)
+	ep := editResp.ImageGenerationResponseParameters
+	if ep == nil || ep.Quality != "standard" || ep.NumInferenceSteps == nil || *ep.NumInferenceSteps != 40 {
+		t.Fatalf("edit response params = %+v, want quality standard and 40 steps", ep)
+	}
+
+	// Stability forwards the "steps" extra and ignores num_inference_steps, so the larger one is
+	// billed: a caller cannot set 10 typed steps, run 100 at the vendor and pay the 50-step rate.
+	both := &BifrostRequest{ImageGenerationRequest: &BifrostImageGenerationRequest{
+		Params: &ImageGenerationParameters{NumInferenceSteps: new(10), ExtraParams: map[string]interface{}{"steps": 100, "resolution": "4K"}},
+	}}
+	bothResp := &BifrostImageGenerationResponse{}
+	bothResp.BackfillParams(both)
+	bp := bothResp.ImageGenerationResponseParameters
+	if bp == nil || bp.NumInferenceSteps == nil || *bp.NumInferenceSteps != 100 || bp.Resolution != "4K" {
+		t.Fatalf("params = %+v, want 100 steps and the extra's 4K resolution", bp)
+	}
+
+	// The unified resolution and the extra one disagree: the larger tier is billed either way round.
+	// An extra that is not a known tier, or one of the other family, never replaces the unified tier.
+	for _, tc := range []struct{ typed, extra, want string }{
+		{"1K", "2K", "2K"}, {"2K", "1K", "2K"}, {"2k", "", "2k"}, {"", "1536", "1536"},
+		{"1K", "1e9K", "1K"}, {"1K", "Inf", "1K"}, {"2K", "1536", "2K"}, {"", "junk", ""}, {"junk", "2K", "2K"},
+	} {
+		r := &BifrostRequest{ImageGenerationRequest: &BifrostImageGenerationRequest{
+			Params: &ImageGenerationParameters{Resolution: TolerantString(tc.typed), ExtraParams: map[string]interface{}{"resolution": tc.extra}},
+		}}
+		got, _ := getImageResolutionAndStepsFromRequest(r)
+		if got != tc.want {
+			t.Fatalf("typed %q extra %q: resolution = %q, want %q", tc.typed, tc.extra, got, tc.want)
+		}
+	}
+
+	// A value the vendor reported wins over the request's.
+	vendor := &BifrostImageGenerationResponse{ImageGenerationResponseParameters: &ImageGenerationResponseParameters{Resolution: "1K"}}
+	vendor.BackfillParams(req)
+	if vendor.ImageGenerationResponseParameters.Resolution != "1K" {
+		t.Fatalf("resolution = %q, want the vendor's 1K", vendor.ImageGenerationResponseParameters.Resolution)
+	}
+}
+
 // TXE-6518 (contract C4 BF3): resolution decodes on both image generation and image edit.
 func TestImageParametersResolution(t *testing.T) {
 	var gen ImageGenerationParameters
@@ -284,6 +354,26 @@ func BenchmarkImageResponseBackfillParams(b *testing.B) {
 		for b.Loop() {
 			resp := &BifrostImageGenerationResponse{Data: data, Usage: &ImageUsage{OutputImages: new(2)}}
 			resp.BackfillParams(req)
+		}
+	})
+	// TXE-7356: the common priced request (size and quality), and one that also names a
+	// resolution tier and inference steps, which BackfillParams now echoes for pricing.
+	sized := &BifrostRequest{ImageGenerationRequest: &BifrostImageGenerationRequest{Model: "dall-e-3",
+		Params: &ImageGenerationParameters{Size: new("1024x1024"), Quality: new("hd")}}}
+	b.Run("size and quality", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			resp := &BifrostImageGenerationResponse{Data: data}
+			resp.BackfillParams(sized)
+		}
+	})
+	tiered := &BifrostRequest{ImageGenerationRequest: &BifrostImageGenerationRequest{Model: "stability.stable-diffusion-xl-v1",
+		Params: &ImageGenerationParameters{Size: new("1024x1024"), Resolution: "2K", NumInferenceSteps: new(60)}}}
+	b.Run("resolution and steps", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			resp := &BifrostImageGenerationResponse{Data: data}
+			resp.BackfillParams(tiered)
 		}
 	})
 }

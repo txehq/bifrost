@@ -3,6 +3,8 @@ package schemas
 import (
 	"bytes"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -184,6 +186,66 @@ func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
 		}
 		r.ImageGenerationResponseParameters.AspectRatio = aspectRatio
 	}
+
+	// Backfill Resolution and NumInferenceSteps (fork, TXE-7356) if the vendor reported neither.
+	resolution, steps := getImageResolutionAndStepsFromRequest(req)
+	if resolution != "" && (r.ImageGenerationResponseParameters == nil || r.ImageGenerationResponseParameters.Resolution == "") {
+		if r.ImageGenerationResponseParameters == nil {
+			r.ImageGenerationResponseParameters = &ImageGenerationResponseParameters{}
+		}
+		r.ImageGenerationResponseParameters.Resolution = resolution
+	}
+	if steps != nil && (r.ImageGenerationResponseParameters == nil || r.ImageGenerationResponseParameters.NumInferenceSteps == nil) {
+		if r.ImageGenerationResponseParameters == nil {
+			r.ImageGenerationResponseParameters = &ImageGenerationResponseParameters{}
+		}
+		r.ImageGenerationResponseParameters.NumInferenceSteps = steps
+	}
+}
+
+// getImageResolutionAndStepsFromRequest returns the resolution tier and inference step count the
+// image request asked for (fork, TXE-7356). Resolution is the larger tier of the unified field and
+// the "resolution" extra param. Steps are the larger of the unified num_inference_steps and a
+// "steps" extra param (the native name on Stability's Bedrock API, which forwards the extra and
+// ignores the unified field), so a request cannot be billed for fewer steps than the vendor ran.
+func getImageResolutionAndStepsFromRequest(req *BifrostRequest) (resolution string, steps *int) {
+	if req == nil {
+		return "", nil
+	}
+	var extra map[string]interface{}
+	switch {
+	case req.ImageGenerationRequest != nil && req.ImageGenerationRequest.Params != nil:
+		p := req.ImageGenerationRequest.Params
+		resolution, steps, extra = string(p.Resolution), p.NumInferenceSteps, p.ExtraParams
+	case req.ImageEditRequest != nil && req.ImageEditRequest.Params != nil:
+		p := req.ImageEditRequest.Params
+		resolution, steps, extra = string(p.Resolution), p.NumInferenceSteps, p.ExtraParams
+	default:
+		return "", nil
+	}
+	// Some providers forward the "resolution" extra and others the unified field, so when both name
+	// a tier of the same family and differ, the larger is billed: never less than the vendor may
+	// have rendered. An extra that is not a known tier never replaces the unified field.
+	if r, ok := extra["resolution"].(string); ok {
+		extraFamily, extraSize := ImageResolutionTier(r)
+		typedFamily, typedSize := ImageResolutionTier(resolution)
+		switch {
+		case extraFamily == "":
+		case strings.TrimSpace(resolution) == "" || typedFamily == "":
+			resolution = r
+		case extraFamily == typedFamily && extraSize > typedSize:
+			resolution = r
+		}
+	}
+	if steps != nil {
+		copied := *steps
+		steps = &copied
+	}
+	if n, ok := SafeExtractIntPointer(extra["steps"]); ok && n != nil && (steps == nil || *n > *steps) {
+		copied := *n
+		steps = &copied
+	}
+	return strings.TrimSpace(resolution), steps
 }
 
 // fillOutputImages writes usage.output_images as the number of images the vendor delivered in
@@ -280,11 +342,68 @@ func getNumInputImagesSizeQualityAndAspectRatioFromRequest(req *BifrostRequest) 
 	return numInputImages, size, quality, aspectRatio
 }
 
-// normalizeImageQuality returns the quality string only if it is supported by gpt-image-1.5 (low, medium, high, auto).
-// All other values (hd, standard, etc.) are discarded and return empty.
+// ImageResolutionTierK and ImageResolutionTierPixels are the two families of image resolution
+// tier vendors name (fork, TXE-7356): "0.5K" to "4K", and a pixel edge, "512" to "1536". Tiers
+// are ordered only within a family.
+const (
+	ImageResolutionTierK      = "k"
+	ImageResolutionTierPixels = "pixels"
+)
+
+// imageResolutionTiers is every resolution tier a vendor takes, by its upper-cased label: the
+// family and its order within the family. A label not listed here is not a tier.
+var imageResolutionTiers = map[string]struct {
+	family string
+	size   float64
+}{
+	"0.5K": {ImageResolutionTierK, 0.5}, "1K": {ImageResolutionTierK, 1}, "1.5K": {ImageResolutionTierK, 1.5},
+	"2K": {ImageResolutionTierK, 2}, "4K": {ImageResolutionTierK, 4},
+	"512": {ImageResolutionTierPixels, 512}, "1024": {ImageResolutionTierPixels, 1024}, "1536": {ImageResolutionTierPixels, 1536},
+}
+
+// ImageResolutionTierForSize returns the K tier a "WxH" size falls in: "1K" up to 1024 on both
+// edges, "2K" up to 2048, "4K" up to 4096, and "" for a larger or malformed size. Providers that
+// take a tier send this one for a size (Gemini, Replicate's nano-banana, through
+// utils.ConvertSizeToAspectRatioAndResolution), and the cost path prices a size by it when the
+// request named no tier (fork, TXE-7356), so the two cannot drift apart.
+func ImageResolutionTierForSize(size string) string {
+	w, h, ok := strings.Cut(strings.TrimSpace(size), "x")
+	if !ok {
+		return ""
+	}
+	width, err1 := strconv.Atoi(w)
+	height, err2 := strconv.Atoi(h)
+	if err1 != nil || err2 != nil || width <= 0 || height <= 0 {
+		return ""
+	}
+	switch {
+	case width <= 1024 && height <= 1024:
+		return "1K"
+	case width <= 2048 && height <= 2048:
+		return "2K"
+	case width <= 4096 && height <= 4096:
+		return "4K"
+	}
+	return ""
+}
+
+// ImageResolutionTier returns the family and order of a resolution tier label, matched
+// case-insensitively ("2k" is "2K"), or an empty family for a value that is not a known tier.
+func ImageResolutionTier(label string) (family string, size float64) {
+	t, ok := imageResolutionTiers[strings.ToUpper(strings.TrimSpace(label))]
+	if !ok {
+		return "", 0
+	}
+	return t.family, t.size
+}
+
+// normalizeImageQuality returns the quality string only if the datasheet prices it: low, medium,
+// high and auto (gpt-image), hd and standard (dall-e-3), and xhigh and max (fork, TXE-7356: before
+// it, hd and standard were discarded here, so a dall-e-3 image priced only by its joint size and
+// quality rate billed $0). Other values are discarded and return empty.
 func normalizeImageQuality(q string) string {
 	switch q {
-	case "low", "medium", "high", "auto":
+	case "low", "medium", "high", "auto", "hd", "standard", "xhigh", "max":
 		return q
 	default:
 		return ""
@@ -292,13 +411,18 @@ func normalizeImageQuality(q string) string {
 }
 
 type ImageGenerationResponseParameters struct {
-	Background    string    `json:"background,omitempty"`
-	OutputFormat  string    `json:"output_format,omitempty"`
-	Quality       string    `json:"quality,omitempty"`
-	Size          string    `json:"size,omitempty"`
-	AspectRatio   string    `json:"aspect_ratio,omitempty"`
-	FinishReasons []*string `json:"finish_reasons,omitempty"`
-	Seeds         []int     `json:"seeds,omitempty"`
+	Background   string `json:"background,omitempty"`
+	OutputFormat string `json:"output_format,omitempty"`
+	Quality      string `json:"quality,omitempty"`
+	Size         string `json:"size,omitempty"`
+	AspectRatio  string `json:"aspect_ratio,omitempty"`
+	// Resolution and NumInferenceSteps echo the request (fork, TXE-7356): some vendors price an
+	// image by the resolution tier asked for ("1K", "2K") or by the steps it ran, and the cost
+	// path reads only the response. BackfillParams fills them; a vendor that reports its own wins.
+	Resolution        string    `json:"resolution,omitempty"`
+	NumInferenceSteps *int      `json:"num_inference_steps,omitempty"`
+	FinishReasons     []*string `json:"finish_reasons,omitempty"`
+	Seeds             []int     `json:"seeds,omitempty"`
 }
 
 type ImageData struct {
@@ -420,6 +544,8 @@ type BifrostImageGenerationStreamResponse struct {
 	Size              string                     `json:"size,omitempty"`
 	AspectRatio       string                     `json:"aspect_ratio,omitempty"`
 	Quality           string                     `json:"quality,omitempty"`
+	Resolution        string                     `json:"resolution,omitempty"`          // fork (TXE-7356), see ImageGenerationResponseParameters
+	NumInferenceSteps *int                       `json:"num_inference_steps,omitempty"` // fork (TXE-7356), see ImageGenerationResponseParameters
 	Background        string                     `json:"background,omitempty"`
 	OutputFormat      string                     `json:"output_format,omitempty"`
 	RevisedPrompt     string                     `json:"revised_prompt,omitempty"`
@@ -460,6 +586,15 @@ func (r *BifrostImageGenerationStreamResponse) BackfillParams(req *BifrostReques
 	// Backfill AspectRatio if not already present from provider response
 	if aspectRatio != "" && r.AspectRatio == "" {
 		r.AspectRatio = aspectRatio
+	}
+
+	// Backfill Resolution and NumInferenceSteps (fork, TXE-7356)
+	resolution, steps := getImageResolutionAndStepsFromRequest(req)
+	if resolution != "" && r.Resolution == "" {
+		r.Resolution = resolution
+	}
+	if steps != nil && r.NumInferenceSteps == nil {
+		r.NumInferenceSteps = steps
 	}
 }
 

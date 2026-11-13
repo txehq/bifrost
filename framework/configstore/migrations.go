@@ -583,6 +583,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_service_tier_and_12h_cache_pricing_columns"}, run: migrationAddServiceTierAnd12hCachePricingColumns},
 	{IDs: []string{"add_input_cost_per_text_message_column"}, run: migrationAddInputCostPerTextMessageColumn},
 	{IDs: []string{"add_output_cost_per_second_resolution_band_columns"}, run: migrationAddOutputCostPerSecondResolutionBandColumns},
+	{IDs: []string{"add_image_variant_pricing_columns"}, run: migrationAddImageVariantPricingColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -13945,6 +13946,88 @@ func migrationAddImageSizeQualityPricingColumns(ctx context.Context, db *gorm.DB
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// imageVariantPricingColumns are the per-image output rate columns added by TXE-7356: the hd,
+// xhigh and max quality grids, the 768, 1792, 1080, 1440 and 2160 thresholds, the resolution
+// tiers (0.5K to 4K, and 512, 1024, 1536) and the inference-step rates.
+var imageVariantPricingColumns = []string{
+	"output_cost_per_image_above_1024x1024_pixels_hd_quality",
+	"output_cost_per_image_above_1024x1792_pixels_hd_quality",
+	"output_cost_per_image_above_1792x1024_pixels_hd_quality",
+	"output_cost_per_image_above_1024x1792_pixels_standard_quality",
+	"output_cost_per_image_above_1792x1024_pixels_standard_quality",
+	"output_cost_per_image_above_1024x1024_pixels_xhigh_quality",
+	"output_cost_per_image_above_1024x1536_pixels_xhigh_quality",
+	"output_cost_per_image_above_1024x768_pixels_xhigh_quality",
+	"output_cost_per_image_above_1920x1080_pixels_xhigh_quality",
+	"output_cost_per_image_above_2560x1440_pixels_xhigh_quality",
+	"output_cost_per_image_above_3840x2160_pixels_xhigh_quality",
+	"output_cost_per_image_above_1024x1024_pixels_max_quality",
+	"output_cost_per_image_above_1024x1536_pixels_max_quality",
+	"output_cost_per_image_above_1024x768_pixels_max_quality",
+	"output_cost_per_image_above_1920x1080_pixels_max_quality",
+	"output_cost_per_image_above_2560x1440_pixels_max_quality",
+	"output_cost_per_image_above_3840x2160_pixels_max_quality",
+	"output_cost_per_image_above_1024x768_pixels_low_quality",
+	"output_cost_per_image_above_1920x1080_pixels_low_quality",
+	"output_cost_per_image_above_2560x1440_pixels_low_quality",
+	"output_cost_per_image_above_3840x2160_pixels_low_quality",
+	"output_cost_per_image_above_1024x768_pixels_medium_quality",
+	"output_cost_per_image_above_1920x1080_pixels_medium_quality",
+	"output_cost_per_image_above_2560x1440_pixels_medium_quality",
+	"output_cost_per_image_above_3840x2160_pixels_medium_quality",
+	"output_cost_per_image_above_1024x768_pixels_high_quality",
+	"output_cost_per_image_above_1920x1080_pixels_high_quality",
+	"output_cost_per_image_above_2560x1440_pixels_high_quality",
+	"output_cost_per_image_above_3840x2160_pixels_high_quality",
+	"output_cost_per_image_0_5k",
+	"output_cost_per_image_1k",
+	"output_cost_per_image_2k",
+	"output_cost_per_image_4k",
+	"output_cost_per_image_512",
+	"output_cost_per_image_1024",
+	"output_cost_per_image_1536",
+	"output_cost_per_image_above_512x512_pixels_50_steps",
+	"output_cost_per_image_above_512x512_pixels_max_steps",
+	"output_cost_per_image_above_1024x1024_pixels_50_steps",
+	"output_cost_per_image_above_1024x1024_pixels_max_steps",
+	"output_cost_per_image_above_max_pixels_50_steps",
+	"output_cost_per_image_above_max_pixels_max_steps",
+}
+
+// migrationAddImageVariantPricingColumns adds the TXE-7356 per-image output rate columns to the
+// model pricing table. Expand-only: it adds nullable columns and changes no existing one, so an
+// older binary keeps reading the table.
+func migrationAddImageVariantPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_image_variant_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range imageVariantPricingColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range imageVariantPricingColumns {
 				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
 					return fmt.Errorf("failed to drop column %s: %w", field, err)
 				}

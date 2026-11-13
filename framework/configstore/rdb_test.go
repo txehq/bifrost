@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -5163,6 +5164,62 @@ func TestUpsertModelPricesBatch_InputCostPerQuerySurvivesResync(t *testing.T) {
 	require.NotNil(t, found)
 	require.NotNil(t, found.InputCostPerQuery, "input_cost_per_query missing from pricingSyncUpdateColumns")
 	assert.Equal(t, 0.002, *found.InputCostPerQuery)
+}
+
+// modelPricingColumns returns the database column of every field on TableModelPricing.
+func modelPricingColumns(t *testing.T, db *gorm.DB) []string {
+	t.Helper()
+	stmt := &gorm.Statement{DB: db}
+	require.NoError(t, stmt.Parse(&tables.TableModelPricing{}))
+	columns := make([]string, 0, len(stmt.Schema.Fields))
+	for _, field := range stmt.Schema.Fields {
+		if field.DBName != "" {
+			columns = append(columns, field.DBName)
+		}
+	}
+	return columns
+}
+
+// TestUpsertModelPricesBatch_ImageVariantColumnsSurviveResync runs every TXE-7356 column through
+// the ON CONFLICT DO UPDATE path, and checks the migration adds exactly real table columns. The
+// class check that every column is a sync column is TestPricingSyncUpdateColumns_CoverEveryPricingColumn.
+func TestUpsertModelPricesBatch_ImageVariantColumnsSurviveResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+	ctx := context.Background()
+
+	columns := modelPricingColumns(t, s.DB())
+	for _, column := range imageVariantPricingColumns {
+		assert.True(t, slices.Contains(columns, column), "migration column %s is not a TableModelPricing column", column)
+	}
+
+	row := tables.TableModelPricing{Model: "dall-e-3", Provider: "azure", Mode: "image_generation"}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	// Second sync sets every image variant rate, keyed by its column.
+	stmt := &gorm.Statement{DB: s.DB()}
+	require.NoError(t, stmt.Parse(&tables.TableModelPricing{}))
+	want := map[string]float64{}
+	rv := reflect.ValueOf(&row).Elem()
+	for i, column := range imageVariantPricingColumns {
+		field := stmt.Schema.LookUpField(column)
+		require.NotNil(t, field, column)
+		value := float64(i+1) / 1000
+		rv.FieldByName(field.Name).Set(reflect.ValueOf(&value))
+		want[field.Name] = value
+	}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	updated := reflect.ValueOf(got[0])
+	for name, value := range want {
+		field := updated.FieldByName(name)
+		if assert.False(t, field.IsNil(), "%s was dropped by the ON CONFLICT update", name) {
+			assert.InDelta(t, value, field.Elem().Float(), 1e-9, name)
+		}
+	}
 }
 
 // TestUpsertModelPricesBatch_SizeQualityImageColumnsSurviveResync pins the

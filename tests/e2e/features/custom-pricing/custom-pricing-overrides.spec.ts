@@ -157,3 +157,64 @@ test.describe("Custom pricing overrides - realtime text message rate", () => {
 		await expect(page.getByTestId(`pricing-override-field-input-${key}`)).toHaveValue("0.004");
 	});
 });
+
+// TXE-7356: the image size, quality, resolution-tier and step variants are pricing override
+// fields. An override that sets an hd quality rate, the dotted 0.5K tier and a step rate is saved
+// with all three in its patch under their datasheet keys, and reopens with all three.
+test.describe("Custom pricing overrides - image variant rates", () => {
+	const name = `e2e-image-variant-rate-${Date.now()}`;
+	const fields: Array<[string, string, number]> = [
+		["output_cost_per_image_above_1024_and_1024_pixels_hd_quality", "0.088", 0.088],
+		["output_cost_per_image_0.5K", "0.02", 0.02],
+		["output_cost_per_image_above_1024_and_1024_pixels_max_steps", "0.08", 0.08],
+	];
+
+	test.afterEach(async ({ request }) => {
+		const res = await request.get("/api/governance/pricing-overrides");
+		if (!res.ok()) return;
+		const body = await res.json();
+		for (const override of body.pricing_overrides ?? []) {
+			if (override.name === name) await request.delete(`/api/governance/pricing-overrides/${override.id}`);
+		}
+	});
+
+	test("saves an hd quality rate, the 0.5K tier rate and a step rate, and reopens with all three", async ({ page, request }) => {
+		await page.goto("/workspace/custom-pricing/overrides");
+		await page.getByTestId("pricing-override-create-btn").first().click();
+
+		await page.getByTestId("pricing-override-name-input").fill(name);
+		await page.getByTestId("pricing-override-pattern-input").fill("dall-e-3");
+		await page.getByTestId("pricing-override-request-types-btn").click();
+		await page.getByTestId("pricing-override-request-type-checkbox-image_generation").click();
+		await page.keyboard.press("Escape");
+
+		// The search matches a field's key as well as its label, so each key finds its own field.
+		for (const [key, value] of fields) {
+			await page.getByTestId("pricing-field-search").fill(key);
+			await page.getByTestId(`pricing-field-activate-${key}`).click();
+			await page.getByTestId(`pricing-override-field-input-${key}`).fill(value);
+		}
+
+		await page.getByTestId("pricing-override-save-btn").click();
+		await expect(page.getByTestId("pricing-override-save-btn")).toBeHidden();
+
+		// The saved patch carries each rate under its datasheet key, the dotted one included.
+		const res = await request.get("/api/governance/pricing-overrides");
+		expect(res.ok()).toBeTruthy();
+		const saved = ((await res.json()).pricing_overrides ?? []).find((o: { name: string }) => o.name === name);
+		expect(saved, "the override was saved").toBeTruthy();
+		const patch = JSON.parse(saved.pricing_patch);
+		for (const [key, , number] of fields) {
+			expect(patch[key], key).toBe(number);
+		}
+
+		// A reload reopens the override with every value in place.
+		await page.reload();
+		await page.getByTestId(`pricing-override-actions-btn-${saved.id}`).click();
+		await page.getByTestId(`pricing-override-edit-btn-${saved.id}`).click();
+		for (const [key, value] of fields) {
+			await page.getByTestId("pricing-field-search").fill(key);
+			await expect(page.getByTestId(`pricing-override-field-input-${key}`)).toHaveValue(value);
+		}
+	});
+});

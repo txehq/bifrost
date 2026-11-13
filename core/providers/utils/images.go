@@ -3,6 +3,8 @@ package utils
 import (
 	"strconv"
 	"strings"
+
+	"github.com/capsohq/bifrost/core/schemas"
 )
 
 // ConvertSizeToAspectRatioAndResolution converts a standard size string (e.g., "1024x1024")
@@ -25,13 +27,9 @@ func ConvertSizeToAspectRatioAndResolution(size string) (aspectRatio, imageSize 
 		return "", ""
 	}
 
-	if width <= 1024 && height <= 1024 {
-		imageSize = "1K"
-	} else if width <= 2048 && height <= 2048 {
-		imageSize = "2K"
-	} else if width <= 4096 && height <= 4096 {
-		imageSize = "4K"
-	}
+	// The pricing path derives the same tier from the size (schemas.ImageResolutionTierForSize), so
+	// a request priced by tier is billed for the tier this sends.
+	imageSize = schemas.ImageResolutionTierForSize(size)
 
 	ratio := float64(width) / float64(height)
 	if ratio >= 0.99 && ratio <= 1.01 {

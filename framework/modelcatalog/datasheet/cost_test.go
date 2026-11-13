@@ -459,7 +459,7 @@ func computeTranscriptionCostTotal(pricing *configstoreTables.TableModelPricing,
 }
 
 func computeImageCostTotal(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, imageSize string, imageQuality string, tier serviceTier) float64 {
-	return bcTotal(computeImageCost(pricing, imageUsage, imageSize, imageQuality, tier))
+	return bcTotal(computeImageCost(pricing, imageUsage, imageRequestShape{size: imageSize, quality: imageQuality}, tier))
 }
 
 func computeVideoCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, tier serviceTier) float64 {
@@ -1767,7 +1767,7 @@ func TestComputeCost_MultiModalBreakdown(t *testing.T) {
 		InputTokens:  1000,
 		OutputTokens: 200,
 		TotalTokens:  1200,
-	}, "", "", serviceTier{})
+	}, imageRequestShape{}, serviceTier{})
 	require.NotNil(t, img)
 	assert.InDelta(t, 1000*0.000002, img.InputCost, 1e-12)
 	assert.InDelta(t, 200*0.000008, img.OutputCost, 1e-12)
@@ -6855,6 +6855,148 @@ func TestCalculateCost_ImageGeneration_FallsBackThroughRateChain(t *testing.T) {
 	assert.InDelta(t, 0.004, s.CalculateCost(makeSizedImageResponse("openai", "gpt-image-1", "512x512", "standard", 1), nil), 1e-12)
 }
 
+// TXE-7356: image rates that the fork dropped at sync, so each of these images billed $0. The
+// rows are the live upstream datasheet's (getbifrost.ai/datasheet, fetched 2026-11-14), run
+// through the production JSON -> row conversion, so a missing json tag fails here too.
+const (
+	azureDallE3Row = `{"provider":"azure","mode":"image_generation",
+		"output_cost_per_image_above_1024_and_1024_pixels_hd_quality":0.088,
+		"output_cost_per_image_above_1024_and_1792_pixels_hd_quality":0.132,
+		"output_cost_per_image_above_1792_and_1024_pixels_hd_quality":0.132,
+		"output_cost_per_image_above_1024_and_1024_pixels_standard_quality":0.044,
+		"output_cost_per_image_above_1024_and_1792_pixels_standard_quality":0.088,
+		"output_cost_per_image_above_1792_and_1024_pixels_standard_quality":0.088}`
+	xaiGrokImagineQualityRow = `{"provider":"xai","mode":"image_generation","input_cost_per_image":0.04,
+		"output_cost_per_image_1K":0.04,"output_cost_per_image_2K":0.06}`
+	bedrockSDXL1Row = `{"provider":"bedrock","mode":"image_generation",
+		"output_cost_per_image_above_1024_and_1024_pixels_50_steps":0.04,
+		"output_cost_per_image_above_1024_and_1024_pixels_max_steps":0.08}`
+	bedrockSDXL09Row = `{"provider":"bedrock","mode":"image_generation",
+		"output_cost_per_image_above_512_and_512_pixels_50_steps":0.018,
+		"output_cost_per_image_above_512_and_512_pixels_max_steps":0.036,
+		"output_cost_per_image_above_max_and_max_pixels_50_steps":0.036,
+		"output_cost_per_image_above_max_and_max_pixels_max_steps":0.072}`
+	falGPTImage25FlareRow = `{"provider":"fal_ai","mode":"image_generation",
+		"output_cost_per_image_above_1024_and_768_pixels_high_quality":0.03612,
+		"output_cost_per_image_above_1920_and_1080_pixels_high_quality":0.0396,
+		"output_cost_per_image_above_2560_and_1440_pixels_high_quality":0.05529,
+		"output_cost_per_image_above_3840_and_2160_pixels_high_quality":0.10008,
+		"output_cost_per_image_above_1024_and_1024_pixels_xhigh_quality":0.09366,
+		"output_cost_per_image_above_1024_and_1536_pixels_xhigh_quality":0.07377,
+		"output_cost_per_image_above_1024_and_1024_pixels_max_quality":0.21072,
+		"output_cost_per_image_above_3840_and_2160_pixels_max_quality":0.40026}`
+	replicateNanoBanana2Row = `{"provider":"replicate","mode":"image_generation","output_cost_per_image":0.067,
+		"output_cost_per_image_1K":0.067,"output_cost_per_image_2K":0.101,"output_cost_per_image_4K":0.151}`
+	falTrellis2Row = `{"provider":"fal_ai","mode":"image_generation","output_cost_per_image_512":0.25,
+		"output_cost_per_image_1024":0.3,"output_cost_per_image_1536":0.35,"output_cost_per_image_0.5K":0.2}`
+)
+
+// variantImageResponse is makeSizedImageResponse plus the resolution tier and steps the request named.
+func variantImageResponse(provider schemas.ModelProvider, model, size, quality, resolution string, steps *int) *schemas.BifrostResponse {
+	resp := makeSizedImageResponse(provider, model, size, quality, 1)
+	resp.ImageGenerationResponse.ImageGenerationResponseParameters.Resolution = resolution
+	resp.ImageGenerationResponse.ImageGenerationResponseParameters.NumInferenceSteps = steps
+	return resp
+}
+
+func TestCalculateCost_ImageGeneration_TXE7356Variants(t *testing.T) {
+	rows := map[string]string{
+		"azure/dall-e-3":                                  azureDallE3Row,
+		"xai/grok-imagine-image-quality":                  xaiGrokImagineQualityRow,
+		"stability.stable-diffusion-xl-v1":                bedrockSDXL1Row,
+		"stability.stable-diffusion-xl-v0":                bedrockSDXL09Row,
+		"fal_ai/openai/gpt-image-2.5/flare/text-to-image": falGPTImage25FlareRow,
+		"replicate/google/nano-banana-2":                  replicateNanoBanana2Row,
+		"fal_ai/fal-ai/trellis-2":                         falTrellis2Row,
+	}
+	pricing := map[string]configstoreTables.TableModelPricing{}
+	for key, blob := range rows {
+		row := pricingRowFromDatasheetJSON(t, key, blob)
+		pricing[makeKey(row.Model, row.Provider, row.Mode)] = row
+	}
+	s := testStoreWithPricing(pricing)
+
+	tests := []struct {
+		name                      string
+		provider                  schemas.ModelProvider
+		model                     string
+		size, quality, resolution string
+		steps                     *int
+		expected                  float64
+	}{
+		// The ticket's example: $0.088 upstream, $0 on the fork before TXE-7356.
+		{"dall-e-3 hd 1024x1024", "azure", "dall-e-3", "1024x1024", "hd", "", nil, 0.088},
+		{"dall-e-3 hd 1792x1024", "azure", "dall-e-3", "1792x1024", "hd", "", nil, 0.132},
+		{"dall-e-3 hd 1024x1792", "azure", "dall-e-3", "1024x1792", "hd", "", nil, 0.132},
+		{"dall-e-3 standard 1024x1024", "azure", "dall-e-3", "1024x1024", "standard", "", nil, 0.044},
+		{"dall-e-3 standard 1792x1024", "azure", "dall-e-3", "1792x1024", "standard", "", nil, 0.088},
+		// xAI publishes only tier rates; xAI's own spelling is lower case.
+		{"grok-imagine-image-quality 1k", "xai", "grok-imagine-image-quality", "", "", "1k", nil, 0.04},
+		{"grok-imagine-image-quality 2k", "xai", "grok-imagine-image-quality", "", "", "2k", nil, 0.06},
+		{"grok-imagine-image-quality default tier", "xai", "grok-imagine-image-quality", "", "", "", nil, 0.04},
+		// A tier the row does not price rounds up to the next priced tier, never down.
+		{"grok-imagine-image-quality 1.5k rounds up to 2K", "xai", "grok-imagine-image-quality", "", "", "1.5k", nil, 0.06},
+		// Above every priced tier: the largest priced tier, never unpriced.
+		{"grok-imagine-image-quality 4k above every tier takes 2K", "xai", "grok-imagine-image-quality", "", "", "4k", nil, 0.06},
+		// A pixel tier on a row priced only by K tiers: no rate of its family, so the 1K default, never $0.
+		{"grok-imagine-image-quality numeric tier is another family", "xai", "grok-imagine-image-quality", "", "", "1024", nil, 0.04},
+		// Not a tier at all ("hd", "1e9K"): treated as naming none, so the default 1K rate.
+		{"grok-imagine-image-quality not a tier", "xai", "grok-imagine-image-quality", "", "", "hd", nil, 0.04},
+		{"grok-imagine-image-quality non-finite tier", "xai", "grok-imagine-image-quality", "", "", "1e9K", nil, 0.04},
+		// Bedrock SDXL 1.0: 50 or fewer steps (the default 30 when unset), or more.
+		{"sdxl 1.0 default steps", "bedrock", "stability.stable-diffusion-xl-v1", "1024x1024", "", "", nil, 0.04},
+		{"sdxl 1.0 50 steps", "bedrock", "stability.stable-diffusion-xl-v1", "1024x1024", "", "", bifrost.Ptr(50), 0.04},
+		{"sdxl 1.0 51 steps", "bedrock", "stability.stable-diffusion-xl-v1", "1024x1024", "", "", bifrost.Ptr(51), 0.08},
+		{"sdxl 1.0 size unknown", "bedrock", "stability.stable-diffusion-xl-v1", "", "", "", bifrost.Ptr(70), 0.08},
+		// Bedrock SDXL 0.9: 512x512 or smaller apart from larger.
+		{"sdxl 0.9 512x512 30 steps", "bedrock", "stability.stable-diffusion-xl-v0", "512x512", "", "", bifrost.Ptr(30), 0.018},
+		{"sdxl 0.9 512x512 60 steps", "bedrock", "stability.stable-diffusion-xl-v0", "512x512", "", "", bifrost.Ptr(60), 0.036},
+		{"sdxl 0.9 1024x1024 30 steps", "bedrock", "stability.stable-diffusion-xl-v0", "1024x1024", "", "", bifrost.Ptr(30), 0.036},
+		{"sdxl 0.9 1024x1024 60 steps", "bedrock", "stability.stable-diffusion-xl-v0", "1024x1024", "", "", bifrost.Ptr(60), 0.072},
+		// New thresholds and quality grids.
+		{"flare high 1024x768", "fal_ai", "openai/gpt-image-2.5/flare/text-to-image", "1024x768", "high", "", nil, 0.03612},
+		{"flare high 1920x1080", "fal_ai", "openai/gpt-image-2.5/flare/text-to-image", "1920x1080", "high", "", nil, 0.0396},
+		{"flare high 1080x1920 portrait", "fal_ai", "openai/gpt-image-2.5/flare/text-to-image", "1080x1920", "high", "", nil, 0.0396},
+		{"flare high 2560x1440", "fal_ai", "openai/gpt-image-2.5/flare/text-to-image", "2560x1440", "high", "", nil, 0.05529},
+		{"flare high 3840x2160", "fal_ai", "openai/gpt-image-2.5/flare/text-to-image", "3840x2160", "high", "", nil, 0.10008},
+		{"flare xhigh 1024x1024", "fal_ai", "openai/gpt-image-2.5/flare/text-to-image", "1024x1024", "xhigh", "", nil, 0.09366},
+		{"flare xhigh 1024x1536", "fal_ai", "openai/gpt-image-2.5/flare/text-to-image", "1024x1536", "xhigh", "", nil, 0.07377},
+		// Only the portrait orientation is published; the landscape image is the same pixels.
+		{"flare xhigh 1536x1024 takes the portrait rate", "fal_ai", "openai/gpt-image-2.5/flare/text-to-image", "1536x1024", "xhigh", "", nil, 0.07377},
+		{"flare max 1024x1024", "fal_ai", "openai/gpt-image-2.5/flare/text-to-image", "1024x1024", "max", "", nil, 0.21072},
+		{"flare max 3840x2160", "fal_ai", "openai/gpt-image-2.5/flare/text-to-image", "3840x2160", "max", "", nil, 0.40026},
+		// Tier rates: the named tier wins over the flat rate; no tier takes the flat rate.
+		{"nano-banana-2 4K", "replicate", "google/nano-banana-2", "", "", "4K", nil, 0.151},
+		{"nano-banana-2 2K", "replicate", "google/nano-banana-2", "", "", "2K", nil, 0.101},
+		{"nano-banana-2 no tier", "replicate", "google/nano-banana-2", "", "", "", nil, 0.067},
+		// A size and no tier: the tier Replicate sends for that size (4096x4096 is 4K), not the flat rate.
+		{"nano-banana-2 size 4096x4096", "replicate", "google/nano-banana-2", "4096x4096", "", "", nil, 0.151},
+		{"nano-banana-2 size 2048x1152", "replicate", "google/nano-banana-2", "2048x1152", "", "", nil, 0.101},
+		{"nano-banana-2 size 1024x1024", "replicate", "google/nano-banana-2", "1024x1024", "", "", nil, 0.067},
+		// A named tier wins over the size's tier.
+		{"nano-banana-2 size 4096x4096 tier 1K", "replicate", "google/nano-banana-2", "4096x4096", "", "1K", nil, 0.067},
+		{"trellis-2 1536", "fal_ai", "fal-ai/trellis-2", "", "", "1536", nil, 0.35},
+		{"trellis-2 512", "fal_ai", "fal-ai/trellis-2", "", "", "512", nil, 0.25},
+		{"trellis-2 0.5K", "fal_ai", "fal-ai/trellis-2", "", "", "0.5k", nil, 0.2},
+		// A row priced by named tiers other than 1K has no default: unpriced, not $0 priced.
+		{"trellis-2 no tier", "fal_ai", "fal-ai/trellis-2", "", "", "", nil, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cost := s.CalculateCost(variantImageResponse(tc.provider, tc.model, tc.size, tc.quality, tc.resolution, tc.steps), nil)
+			assert.InDelta(t, tc.expected, cost, 1e-12)
+		})
+	}
+}
+
+// The ticket's dall-e-3 example through the response fields main already had (size and quality
+// only), so it fails on main for the cost and not just for compiling: $0.088, never $0.
+func TestCalculateCost_ImageGeneration_AzureDallE3HDQuality(t *testing.T) {
+	row := pricingRowFromDatasheetJSON(t, "azure/dall-e-3", azureDallE3Row)
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey(row.Model, row.Provider, row.Mode): row})
+	assert.InDelta(t, 0.088, s.CalculateCost(makeSizedImageResponse("azure", "dall-e-3", "1024x1024", "hd", 1), nil), 1e-12)
+}
+
 func TestParseImageDimensions(t *testing.T) {
 	w, h := parseImageDimensions("1024x1536")
 	assert.Equal(t, 1024, w)
@@ -8594,6 +8736,56 @@ func TestCalculateCost_VideoResponsePricesUnstatedAudioWithAudio(t *testing.T) {
 
 // BenchmarkVideoOutputPerSecondRate is the request-path cost TXE-7306 adds: one more nil check
 // for an audio band before the silent band lookup.
+// TXE-7356: the request-path cost of pricing a per-image response, the common cases (a joint
+// size and quality rate, a flat rate) and the rates TXE-7356 adds (a resolution tier, steps).
+func BenchmarkCalculateCostImagePerImage(b *testing.B) {
+	flat := configstoreTables.TableModelPricing{Model: "flat-image", Provider: "openai", Mode: "image_generation", OutputCostPerImage: bifrost.Ptr(0.04)}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-image-1", "openai", "image_generation"): sizeQualityImagePricing(),
+		makeKey("flat-image", "openai", "image_generation"):  flat,
+	})
+	joint := makeSizedImageResponse("openai", "gpt-image-1", "1024x1536", "high", 1)
+	flatResp := makeSizedImageResponse("openai", "flat-image", "1024x1024", "", 1)
+	b.Run("joint size and quality", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = s.CalculateCost(joint, nil)
+		}
+	})
+	b.Run("flat per image", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = s.CalculateCost(flatResp, nil)
+		}
+	})
+}
+
+// BenchmarkCalculateCostImageVariants is BenchmarkCalculateCostImagePerImage for the TXE-7356 rates.
+func BenchmarkCalculateCostImageVariants(b *testing.B) {
+	tier := configstoreTables.TableModelPricing{Model: "grok-imagine-image-quality", Provider: "xai", Mode: "image_generation",
+		OutputCostPerImage1K: bifrost.Ptr(0.04), OutputCostPerImage2K: bifrost.Ptr(0.06)}
+	steps := configstoreTables.TableModelPricing{Model: "stability.stable-diffusion-xl-v1", Provider: "bedrock", Mode: "image_generation",
+		OutputCostPerImageAbove1024x1024Pixels50Steps: bifrost.Ptr(0.04), OutputCostPerImageAbove1024x1024PixelsMaxSteps: bifrost.Ptr(0.08)}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(tier.Model, tier.Provider, tier.Mode):    tier,
+		makeKey(steps.Model, steps.Provider, steps.Mode): steps,
+	})
+	tierResp := variantImageResponse("xai", tier.Model, "", "", "2k", nil)
+	stepsResp := variantImageResponse("bedrock", steps.Model, "1024x1024", "", "", bifrost.Ptr(60))
+	b.Run("resolution tier", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = s.CalculateCost(tierResp, nil)
+		}
+	})
+	b.Run("steps", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = s.CalculateCost(stepsResp, nil)
+		}
+	})
+}
+
 func BenchmarkVideoOutputPerSecondRate(b *testing.B) {
 	p := pixverseV6Pricing()
 	b.ReportAllocs()

@@ -721,7 +721,9 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		cost = computeTranscriptionCost(pricing, input.usage, input.audioSeconds, input.audioTokenDetails, input.tier)
 	case schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.ImageVariationRequest,
 		schemas.ImageGenerationTaskRequest, schemas.ImageEditTaskRequest:
-		cost = computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality, input.tier)
+		cost = computeImageCost(pricing, input.imageUsage, imageRequestShape{
+			size: input.imageSize, quality: input.imageQuality, resolution: input.imageResolution, steps: input.imageSteps,
+		}, input.tier)
 	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest, schemas.VideoEditRequest:
 		// A video response does not carry the request's audio flag, so the per-request price
 		// takes the provider's audio default. Settlement prices from the captured request
@@ -864,6 +866,8 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 		if result.ImageGenerationResponse.ImageGenerationResponseParameters != nil {
 			input.imageSize = result.ImageGenerationResponse.ImageGenerationResponseParameters.Size
 			input.imageQuality = result.ImageGenerationResponse.ImageGenerationResponseParameters.Quality
+			input.imageResolution = result.ImageGenerationResponse.ImageGenerationResponseParameters.Resolution
+			input.imageSteps = result.ImageGenerationResponse.ImageGenerationResponseParameters.NumInferenceSteps
 		}
 
 	case result.ImageTaskResponse != nil:
@@ -890,6 +894,8 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 		}
 		input.imageSize = result.ImageGenerationStreamResponse.Size
 		input.imageQuality = result.ImageGenerationStreamResponse.Quality
+		input.imageResolution = result.ImageGenerationStreamResponse.Resolution
+		input.imageSteps = result.ImageGenerationStreamResponse.NumInferenceSteps
 
 	case result.VideoGenerationResponse != nil:
 		video := result.VideoGenerationResponse
@@ -1629,20 +1635,29 @@ func computeAudioOutputCost(pricing *configstoreTables.TableModelPricing, usage 
 // computeImageCost handles image generation requests.
 // Input and output are calculated independently — each tries token-based pricing first,
 // then per-pixel pricing, falling back to per-image count pricing.
-// imageQuality must be one of "low", "medium", "high", "standard", "auto" to use
-// quality-specific rates; other values use base rates.
-func computeImageCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, imageSize string, imageQuality string, tier serviceTier) *schemas.BifrostCost {
+// shape.quality must be one of "low", "medium", "high", "standard", "hd", "xhigh", "max",
+// "auto" to use quality-specific rates; other values use base rates.
+func computeImageCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, shape imageRequestShape, tier serviceTier) *schemas.BifrostCost {
 	if imageUsage == nil {
 		return nil
 	}
 
 	tierTokens := imageInputTierTokens(imageUsage)
-	width, height := parseImageDimensions(imageSize)
+	width, height := parseImageDimensions(shape.size)
 	pixels := width * height
 	inputCost := computeImageInputCost(pricing, imageUsage, tierTokens, pixels, tier)
-	outputCost := computeImageOutputCost(pricing, imageUsage, tierTokens, width, height, pixels, imageQuality, tier)
+	outputCost := computeImageOutputCost(pricing, imageUsage, tierTokens, width, height, pixels, shape, tier)
 
 	return newInputOutputCost(inputCost, outputCost)
+}
+
+// imageRequestShape is what the response says about the image that was asked for: its pixel
+// size, quality, resolution tier and inference steps. Each selects a per-image rate.
+type imageRequestShape struct {
+	size       string
+	quality    string
+	resolution string // fork (TXE-7356): "1K", "2K", "0.5K", "512", ...
+	steps      *int   // fork (TXE-7356)
 }
 
 // computeImageInputCost calculates input cost: tokens first, then per-pixel, then per-image count fallback.
@@ -1675,8 +1690,8 @@ func computeImageInputCost(pricing *configstoreTables.TableModelPricing, imageUs
 }
 
 // computeImageOutputCost calculates output cost: tokens first, then per-pixel, then per-image count fallback.
-// imageQuality: "low", "medium", "high", "standard", "auto" use quality-specific rates when available; other values use base/size-tier rates.
-func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, totalTokens int, width, height, pixels int, imageQuality string, tier serviceTier) float64 {
+// shape.quality: "low", "medium", "high", "standard", "hd", "xhigh", "max", "auto" use quality-specific rates when available; other values use base/size-tier rates.
+func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, totalTokens int, width, height, pixels int, shape imageRequestShape, tier serviceTier) float64 {
 	// Try token-based pricing first
 	var outputTextTokens, outputImageTokens int
 	if imageUsage.OutputTokensDetails != nil {
@@ -1724,27 +1739,103 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 	if imageUsage.OutputTokensDetails != nil && imageUsage.OutputTokensDetails.NImages > 0 {
 		numOutputImages = imageUsage.OutputTokensDetails.NImages
 	}
-	q := imageQuality
+	q := shape.quality
 	if q == "" {
 		q = "auto"
 	}
-	// Most specific rate wins: joint size+quality, then quality-only, then
-	// size-only, then the flat per-image rate.
-	perImageRate := imageSizeRatesForQuality(pricing, q).rateForSize(width, height, pixels)
+	// Most specific rate wins: size and inference steps, then joint size+quality, then the
+	// resolution tier the request named, then quality-only, then size-only, then the flat
+	// per-image rate. A row with none of them leaves the image unpriced, never $0 priced.
+	perImageRate := imageStepsRate(pricing, shape.steps, pixels)
+	if perImageRate == nil {
+		perImageRate = imageSizeRatesForQuality(pricing, q).rateForSize(width, height, pixels)
+	}
+	if perImageRate == nil {
+		perImageRate = imageResolutionRate(pricing, shape.resolution)
+	}
 	if perImageRate == nil {
 		perImageRate = imageQualityRate(pricing, q)
 	}
 	if perImageRate == nil {
 		perImageRate = baseImageSizeRates(pricing).rateForSize(width, height, pixels)
 	}
+	// A size on a row priced by tier and not by size: the tier that size falls in, which is the
+	// tier Gemini and Replicate send for it. Reached only when no named tier priced the image.
+	if perImageRate == nil {
+		perImageRate = imageResolutionRate(pricing, schemas.ImageResolutionTierForSize(shape.size))
+	}
 	if perImageRate == nil {
 		perImageRate = pricing.OutputCostPerImage
+	}
+	// The vendor's default tier, 1K, on a row priced only by tier (xAI's
+	// grok-imagine-image-quality publishes 1K and 2K and nothing else; xAI, Gemini and
+	// Replicate's nano-banana all default to 1K): for a request that named no tier, a value
+	// that is not one, or a tier of the other family than the row prices. An image the row has
+	// any per-image rate for is never left unpriced.
+	if perImageRate == nil {
+		perImageRate = pricing.OutputCostPerImage1K
 	}
 	if perImageRate != nil {
 		return float64(numOutputImages) * *perImageRate
 	}
 
 	return 0
+}
+
+// imageResolutionRate returns the per-image rate for the resolution tier the request named
+// (fork, TXE-7356), or nil when it named no known tier (schemas.ImageResolutionTier) or the row
+// prices no tier of that family. Tiers match case-insensitively, so xAI's "2k" and Gemini's "2K"
+// select the same rate. A tier the row does not price takes the next larger tier it does (xAI's
+// "1.5k" bills at 2K), never a smaller one, and a tier above every priced one takes the largest:
+// a named tier is never left unpriced on a row that prices its family. The K tiers and the pixel
+// tiers are separate families and never round into each other.
+func imageResolutionRate(pricing *configstoreTables.TableModelPricing, resolution string) *float64 {
+	family, size := schemas.ImageResolutionTier(resolution)
+	if family == "" {
+		return nil
+	}
+	// Each family's tiers in ascending order, with the rate the row publishes for each.
+	sizes := []float64{0.5, 1, 2, 4}
+	rates := []*float64{pricing.OutputCostPerImageHalfK, pricing.OutputCostPerImage1K, pricing.OutputCostPerImage2K, pricing.OutputCostPerImage4K}
+	if family == schemas.ImageResolutionTierPixels {
+		sizes = []float64{512, 1024, 1536}
+		rates = []*float64{pricing.OutputCostPerImageRes512, pricing.OutputCostPerImageRes1024, pricing.OutputCostPerImageRes1536}
+	}
+	var largest *float64
+	for i, rate := range rates {
+		if rate == nil {
+			continue
+		}
+		if sizes[i] >= size {
+			return rate
+		}
+		largest = rate
+	}
+	return largest
+}
+
+// imageStepsRate returns the per-image rate for a model priced by inference steps (fork,
+// TXE-7356), or nil for a model that is not. Bedrock's Stable Diffusion XL prices 50 or fewer
+// steps (_50_steps) apart from more (_max_steps); a request that names no steps runs the
+// vendor default of 30, so it takes the 50-step rate. Within that, SDXL 0.9 prices 512x512 or
+// smaller (above_512_and_512) apart from anything larger (above_max_and_max), and SDXL 1.0
+// publishes one size (above_1024_and_1024) that prices every image it makes. An unknown size
+// (the request named none) is the vendor default, 512x512 on SDXL 0.9, so it takes the
+// smaller rate.
+func imageStepsRate(pricing *configstoreTables.TableModelPricing, steps *int, pixels int) *float64 {
+	small, square1024, larger := pricing.OutputCostPerImageAbove512x512Pixels50Steps,
+		pricing.OutputCostPerImageAbove1024x1024Pixels50Steps, pricing.OutputCostPerImageAboveMaxPixels50Steps
+	if steps != nil && *steps > 50 {
+		small, square1024, larger = pricing.OutputCostPerImageAbove512x512PixelsMaxSteps,
+			pricing.OutputCostPerImageAbove1024x1024PixelsMaxSteps, pricing.OutputCostPerImageAboveMaxPixelsMaxSteps
+	}
+	switch {
+	case pixels > 512*512 && larger != nil:
+		return larger
+	case square1024 != nil:
+		return square1024
+	}
+	return small
 }
 
 // imageSizeRates holds the per-image output rates for each size threshold:
@@ -1761,6 +1852,13 @@ type imageSizeRates struct {
 	above16MP      *float64
 	above32MP      *float64
 	above64MP      *float64
+	// Fork (TXE-7356): the thresholds the quality grids add.
+	above1024x768  *float64
+	above1024x1792 *float64
+	above1792x1024 *float64
+	above1920x1080 *float64
+	above2560x1440 *float64
+	above3840x2160 *float64
 }
 
 // rateForSize returns the rate for the largest size threshold the generated
@@ -1777,12 +1875,23 @@ type imageSizeRates struct {
 //
 // 1536x1024 and 1024x1536 have identical pixel counts, so they are matched on
 // width and height rather than on the total, and are checked ahead of the
-// square 1024x1024 threshold that both of them exceed.
+// square 1024x1024 threshold that both of them exceed. 1792x1024 and 1024x1792
+// are matched the same way (fork, TXE-7356). When a row prices only one
+// orientation of such a pair, the other orientation takes that rate: the two
+// are the same number of pixels.
+//
+// The 1920x1080, 2560x1440, 3840x2160 and 1024x768 thresholds (fork, TXE-7356)
+// are published for the landscape orientation only and are matched on the
+// pixel total, so a portrait image of the same size takes the same rate.
 func (r imageSizeRates) rateForSize(width, height, pixels int) *float64 {
 	const (
 		pixels512x512      = 512 * 512
+		pixels1024x768     = 1024 * 768
 		pixels1024x1024    = 1024 * 1024
+		pixels1920x1080    = 1920 * 1080
+		pixels2560x1440    = 2560 * 1440
 		pixels2048x2048    = 2048 * 2048
+		pixels3840x2160    = 3840 * 2160
 		pixels4Megapixels  = 4_000_000
 		pixels4096x4096    = 4096 * 4096
 		pixels8Megapixels  = 8_000_000
@@ -1799,22 +1908,54 @@ func (r imageSizeRates) rateForSize(width, height, pixels int) *float64 {
 		return r.above4096x4096
 	case pixels >= pixels16Megapixels && r.above16MP != nil:
 		return r.above16MP
+	case pixels >= pixels3840x2160 && r.above3840x2160 != nil:
+		return r.above3840x2160
 	case pixels >= pixels8Megapixels && r.above8MP != nil:
 		return r.above8MP
 	case pixels >= pixels2048x2048 && r.above2048x2048 != nil:
 		return r.above2048x2048
 	case pixels >= pixels4Megapixels && r.above4MP != nil:
 		return r.above4MP
-	case width >= 1536 && height >= 1024 && r.above1536x1024 != nil:
-		return r.above1536x1024
-	case width >= 1024 && height >= 1536 && r.above1024x1536 != nil:
-		return r.above1024x1536
+	case pixels >= pixels2560x1440 && r.above2560x1440 != nil:
+		return r.above2560x1440
+	case pixels >= pixels1920x1080 && r.above1920x1080 != nil:
+		return r.above1920x1080
+	}
+	if rate := orientedSizeRate(width, height, 1792, 1024, r.above1792x1024, r.above1024x1792); rate != nil {
+		return rate
+	}
+	if rate := orientedSizeRate(width, height, 1536, 1024, r.above1536x1024, r.above1024x1536); rate != nil {
+		return rate
+	}
+	switch {
 	case pixels >= pixels1024x1024 && r.above1024x1024 != nil:
 		return r.above1024x1024
+	case pixels >= pixels1024x768 && r.above1024x768 != nil:
+		return r.above1024x768
 	case pixels >= pixels512x512 && r.above512x512 != nil:
 		return r.above512x512
 	}
 	return nil
+}
+
+// orientedSizeRate returns the rate for an image at or above long x short in either
+// orientation: the landscape rate for a landscape image and the portrait rate for a portrait
+// one, or the one orientation the row prices when it prices only one. Nil when the image is
+// below the threshold in both orientations or the row prices neither.
+func orientedSizeRate(width, height, long, short int, landscape, portrait *float64) *float64 {
+	landscapeFits := width >= long && height >= short
+	portraitFits := width >= short && height >= long
+	switch {
+	case landscapeFits && landscape != nil:
+		return landscape
+	case portraitFits && portrait != nil:
+		return portrait
+	case !landscapeFits && !portraitFits:
+		return nil
+	case landscape != nil:
+		return landscape
+	}
+	return portrait
 }
 
 // baseImageSizeRates collects the size-threshold rates that apply regardless of
@@ -1842,27 +1983,65 @@ func imageSizeRatesForQuality(pricing *configstoreTables.TableModelPricing, qual
 	switch quality {
 	case "low":
 		return imageSizeRates{
+			above1024x768:  pricing.OutputCostPerImageAbove1024x768PixelsLowQuality,
 			above1024x1024: pricing.OutputCostPerImageAbove1024x1024PixelsLowQuality,
 			above1024x1536: pricing.OutputCostPerImageAbove1024x1536PixelsLowQuality,
 			above1536x1024: pricing.OutputCostPerImageAbove1536x1024PixelsLowQuality,
+			above1920x1080: pricing.OutputCostPerImageAbove1920x1080PixelsLowQuality,
+			above2560x1440: pricing.OutputCostPerImageAbove2560x1440PixelsLowQuality,
+			above3840x2160: pricing.OutputCostPerImageAbove3840x2160PixelsLowQuality,
 		}
 	case "medium":
 		return imageSizeRates{
+			above1024x768:  pricing.OutputCostPerImageAbove1024x768PixelsMediumQuality,
 			above1024x1024: pricing.OutputCostPerImageAbove1024x1024PixelsMediumQuality,
 			above1024x1536: pricing.OutputCostPerImageAbove1024x1536PixelsMediumQuality,
 			above1536x1024: pricing.OutputCostPerImageAbove1536x1024PixelsMediumQuality,
+			above1920x1080: pricing.OutputCostPerImageAbove1920x1080PixelsMediumQuality,
+			above2560x1440: pricing.OutputCostPerImageAbove2560x1440PixelsMediumQuality,
+			above3840x2160: pricing.OutputCostPerImageAbove3840x2160PixelsMediumQuality,
 		}
 	case "high":
 		return imageSizeRates{
+			above1024x768:  pricing.OutputCostPerImageAbove1024x768PixelsHighQuality,
 			above1024x1024: pricing.OutputCostPerImageAbove1024x1024PixelsHighQuality,
 			above1024x1536: pricing.OutputCostPerImageAbove1024x1536PixelsHighQuality,
 			above1536x1024: pricing.OutputCostPerImageAbove1536x1024PixelsHighQuality,
+			above1920x1080: pricing.OutputCostPerImageAbove1920x1080PixelsHighQuality,
+			above2560x1440: pricing.OutputCostPerImageAbove2560x1440PixelsHighQuality,
+			above3840x2160: pricing.OutputCostPerImageAbove3840x2160PixelsHighQuality,
 		}
 	case "standard":
 		return imageSizeRates{
 			above1024x1024: pricing.OutputCostPerImageAbove1024x1024PixelsStandardQuality,
 			above1024x1536: pricing.OutputCostPerImageAbove1024x1536PixelsStandardQuality,
 			above1536x1024: pricing.OutputCostPerImageAbove1536x1024PixelsStandardQuality,
+			above1024x1792: pricing.OutputCostPerImageAbove1024x1792PixelsStandardQuality,
+			above1792x1024: pricing.OutputCostPerImageAbove1792x1024PixelsStandardQuality,
+		}
+	case "hd":
+		return imageSizeRates{
+			above1024x1024: pricing.OutputCostPerImageAbove1024x1024PixelsHDQuality,
+			above1024x1792: pricing.OutputCostPerImageAbove1024x1792PixelsHDQuality,
+			above1792x1024: pricing.OutputCostPerImageAbove1792x1024PixelsHDQuality,
+		}
+	case "xhigh":
+		return imageSizeRates{
+			above1024x768:  pricing.OutputCostPerImageAbove1024x768PixelsXHighQuality,
+			above1024x1024: pricing.OutputCostPerImageAbove1024x1024PixelsXHighQuality,
+			above1024x1536: pricing.OutputCostPerImageAbove1024x1536PixelsXHighQuality,
+			above1920x1080: pricing.OutputCostPerImageAbove1920x1080PixelsXHighQuality,
+			above2560x1440: pricing.OutputCostPerImageAbove2560x1440PixelsXHighQuality,
+			above3840x2160: pricing.OutputCostPerImageAbove3840x2160PixelsXHighQuality,
+		}
+	case "max":
+		return imageSizeRates{
+			above1024x768:  pricing.OutputCostPerImageAbove1024x768PixelsMaxQuality,
+			above1024x1024: pricing.OutputCostPerImageAbove1024x1024PixelsMaxQuality,
+			above1024x1536: pricing.OutputCostPerImageAbove1024x1536PixelsMaxQuality,
+			above1920x1080: pricing.OutputCostPerImageAbove1920x1080PixelsMaxQuality,
+			above2560x1440: pricing.OutputCostPerImageAbove2560x1440PixelsMaxQuality,
+			above3840x2160: pricing.OutputCostPerImageAbove3840x2160PixelsMaxQuality,
 		}
 	}
 	return imageSizeRates{}

@@ -3070,6 +3070,15 @@ append_dynamic_columns_postgres() {
     fi
   done
 
+  # governance_model_pricing image quality grids, size thresholds, resolution tiers and steps
+  # (added via add_image_variant_pricing_columns, TXE-7356)
+  for col in $IMAGE_VARIANT_PRICING_COLUMNS; do
+    if column_exists_postgres "governance_model_pricing" "$col"; then
+      echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 2;" >> "$output_file"
+    fi
+  done
+
   # logs.redaction_mapping (added via logs_add_redaction_mapping_column)
   if column_exists_postgres "logs" "redaction_mapping"; then
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
@@ -4659,6 +4668,13 @@ append_dynamic_columns_sqlite() {
         echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 2;" >> "$output_file"
       fi
     done
+    # (added via add_image_variant_pricing_columns, TXE-7356)
+    for col in $IMAGE_VARIANT_PRICING_COLUMNS; do
+      if column_exists_sqlite "$config_db" "governance_model_pricing" "$col"; then
+        echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 1;" >> "$output_file"
+        echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 2;" >> "$output_file"
+      fi
+    done
   fi
 
   # logs.redaction_mapping (added via logs_add_redaction_mapping_column)
@@ -4811,6 +4827,31 @@ append_dynamic_columns_sqlite() {
 # ============================================================================
 # Faker Column Coverage Validation
 # ============================================================================
+
+# The governance_model_pricing columns add_image_variant_pricing_columns adds (TXE-7356), in the
+# order of imageVariantPricingColumns in framework/configstore/migrations.go. Both faker generators
+# above cover them; the coverage validation below fails if one is left out.
+IMAGE_VARIANT_PRICING_COLUMNS="
+  output_cost_per_image_above_1024x1024_pixels_hd_quality output_cost_per_image_above_1024x1792_pixels_hd_quality
+  output_cost_per_image_above_1792x1024_pixels_hd_quality output_cost_per_image_above_1024x1792_pixels_standard_quality
+  output_cost_per_image_above_1792x1024_pixels_standard_quality output_cost_per_image_above_1024x1024_pixels_xhigh_quality
+  output_cost_per_image_above_1024x1536_pixels_xhigh_quality output_cost_per_image_above_1024x768_pixels_xhigh_quality
+  output_cost_per_image_above_1920x1080_pixels_xhigh_quality output_cost_per_image_above_2560x1440_pixels_xhigh_quality
+  output_cost_per_image_above_3840x2160_pixels_xhigh_quality output_cost_per_image_above_1024x1024_pixels_max_quality
+  output_cost_per_image_above_1024x1536_pixels_max_quality output_cost_per_image_above_1024x768_pixels_max_quality
+  output_cost_per_image_above_1920x1080_pixels_max_quality output_cost_per_image_above_2560x1440_pixels_max_quality
+  output_cost_per_image_above_3840x2160_pixels_max_quality output_cost_per_image_above_1024x768_pixels_low_quality
+  output_cost_per_image_above_1920x1080_pixels_low_quality output_cost_per_image_above_2560x1440_pixels_low_quality
+  output_cost_per_image_above_3840x2160_pixels_low_quality output_cost_per_image_above_1024x768_pixels_medium_quality
+  output_cost_per_image_above_1920x1080_pixels_medium_quality output_cost_per_image_above_2560x1440_pixels_medium_quality
+  output_cost_per_image_above_3840x2160_pixels_medium_quality output_cost_per_image_above_1024x768_pixels_high_quality
+  output_cost_per_image_above_1920x1080_pixels_high_quality output_cost_per_image_above_2560x1440_pixels_high_quality
+  output_cost_per_image_above_3840x2160_pixels_high_quality output_cost_per_image_0_5k output_cost_per_image_1k
+  output_cost_per_image_2k output_cost_per_image_4k output_cost_per_image_512 output_cost_per_image_1024
+  output_cost_per_image_1536 output_cost_per_image_above_512x512_pixels_50_steps
+  output_cost_per_image_above_512x512_pixels_max_steps output_cost_per_image_above_1024x1024_pixels_50_steps
+  output_cost_per_image_above_1024x1024_pixels_max_steps output_cost_per_image_above_max_pixels_50_steps
+  output_cost_per_image_above_max_pixels_max_steps"
 
 # Extract table -> columns mapping from the generated faker SQL
 # Output format: table_name:col1,col2,col3 (one per line)

@@ -985,6 +985,35 @@ func TestReplicateImageGenerationInputImagesFieldMapping(t *testing.T) {
 }
 
 // TestBifrostToReplicateResponsesRequestConversion tests the conversion from Bifrost responses request to Replicate format
+// TXE-7356: the unified resolution tier is the one sent, over the tier derived from size, so a
+// Go SDK request (which carries no extra-param copy) renders at the tier it is billed for. An
+// explicit resolution extra param still wins, as before.
+func TestReplicateImageInputSendsTheUnifiedResolution(t *testing.T) {
+	size := "1024x1024"
+	gen, err := replicate.ToReplicateImageGenerationInput(&schemas.BifrostImageGenerationRequest{
+		Model: "google/nano-banana-2", Input: &schemas.ImageGenerationInput{Prompt: "p"},
+		Params: &schemas.ImageGenerationParameters{Size: &size, Resolution: "4K"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, gen.Input.Resolution)
+	assert.Equal(t, "4K", *gen.Input.Resolution)
+
+	derived, err := replicate.ToReplicateImageGenerationInput(&schemas.BifrostImageGenerationRequest{
+		Model: "google/nano-banana-2", Input: &schemas.ImageGenerationInput{Prompt: "p"},
+		Params: &schemas.ImageGenerationParameters{Size: &size},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, derived.Input.Resolution)
+	assert.Equal(t, "1K", *derived.Input.Resolution, "no unified tier: the size's tier")
+
+	edit := replicate.ToReplicateImageEditInput(&schemas.BifrostImageEditRequest{
+		Model: "google/nano-banana-2", Input: &schemas.ImageEditInput{Prompt: "p", Images: []schemas.ImageInput{{URL: "https://example.com/a.png"}}},
+		Params: &schemas.ImageEditParameters{Size: &size, Resolution: "2K"},
+	})
+	require.NotNil(t, edit.Input.Resolution)
+	assert.Equal(t, "2K", *edit.Input.Resolution)
+}
+
 func TestBifrostToReplicateResponsesRequestConversion(t *testing.T) {
 	maxOutputTokens := 100
 	temp := 0.7

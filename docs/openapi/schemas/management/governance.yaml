@@ -2593,6 +2593,145 @@ PricingPatch:
     output_cost_per_image_above_1536_and_1024_pixels_standard_quality:
       type: number
       minimum: 0
+    output_cost_per_image_above_1024_and_1792_pixels_standard_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1792_and_1024_pixels_standard_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_1024_pixels_hd_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_1792_pixels_hd_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1792_and_1024_pixels_hd_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_768_pixels_low_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1920_and_1080_pixels_low_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_2560_and_1440_pixels_low_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_3840_and_2160_pixels_low_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_768_pixels_medium_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1920_and_1080_pixels_medium_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_2560_and_1440_pixels_medium_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_3840_and_2160_pixels_medium_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_768_pixels_high_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1920_and_1080_pixels_high_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_2560_and_1440_pixels_high_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_3840_and_2160_pixels_high_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_768_pixels_xhigh_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_1024_pixels_xhigh_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_1536_pixels_xhigh_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1920_and_1080_pixels_xhigh_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_2560_and_1440_pixels_xhigh_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_3840_and_2160_pixels_xhigh_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_768_pixels_max_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_1024_pixels_max_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_1536_pixels_max_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1920_and_1080_pixels_max_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_2560_and_1440_pixels_max_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_3840_and_2160_pixels_max_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_0.5K:
+      type: number
+      minimum: 0
+      description: Per image at the request's 0.5K resolution tier.
+    output_cost_per_image_1K:
+      type: number
+      minimum: 0
+      description: Per image at the request's 1K resolution tier; also bills a request that names no resolution on a model priced only by tier.
+    output_cost_per_image_2K:
+      type: number
+      minimum: 0
+      description: Per image at the request's 2K resolution tier.
+    output_cost_per_image_4K:
+      type: number
+      minimum: 0
+      description: Per image at the request's 4K resolution tier.
+    output_cost_per_image_512:
+      type: number
+      minimum: 0
+      description: Per image at the request's 512 resolution tier.
+    output_cost_per_image_1024:
+      type: number
+      minimum: 0
+      description: Per image at the request's 1024 resolution tier.
+    output_cost_per_image_1536:
+      type: number
+      minimum: 0
+      description: Per image at the request's 1536 resolution tier.
+    output_cost_per_image_above_512_and_512_pixels_50_steps:
+      type: number
+      minimum: 0
+      description: Per image at or below 512x512 that ran 50 or fewer inference steps.
+    output_cost_per_image_above_512_and_512_pixels_max_steps:
+      type: number
+      minimum: 0
+      description: Per image at or below 512x512 that ran more than 50 inference steps.
+    output_cost_per_image_above_max_and_max_pixels_50_steps:
+      type: number
+      minimum: 0
+      description: Per image larger than 512x512 that ran 50 or fewer inference steps.
+    output_cost_per_image_above_max_and_max_pixels_max_steps:
+      type: number
+      minimum: 0
+      description: Per image larger than 512x512 that ran more than 50 inference steps.
+    output_cost_per_image_above_1024_and_1024_pixels_50_steps:
+      type: number
+      minimum: 0
+      description: Per image of any size that ran 50 or fewer inference steps, on a model that publishes this one step-priced size.
+    output_cost_per_image_above_1024_and_1024_pixels_max_steps:
+      type: number
+      minimum: 0
+      description: Per image of any size that ran more than 50 inference steps, on a model that publishes this one step-priced size.
     input_cost_per_image_token:
       type: number
       minimum: 0

@@ -30,6 +30,9 @@ func (a *Accumulator) buildCompleteImageFromImageStreamChunks(chunks []*ImageStr
 					},
 				},
 			}
+			// The image's priced dimensions ride on the response, as on a non-stream one, so a
+			// recalculation from the stored response prices what was billed (TXE-7356).
+			finalResponse.ImageGenerationResponseParameters = streamImageParameters(chunks, i)
 			// Fork: a stream of several images (BytePlus Seedream, fal-ai) sends each finished
 			// image as its own event and ends on a completed event that repeats only the last
 			// one, so the images at the other indexes are added here.
@@ -118,8 +121,44 @@ func (a *Accumulator) buildCompleteImageFromImageStreamChunks(chunks []*ImageStr
 		Model:   model,
 		Data:    imageData,
 	}
+	finalResponse.ImageGenerationResponseParameters = streamImageParameters(chunks, len(chunks)-1)
 
 	return finalResponse
+}
+
+// streamImageParameters returns the response parameters a stream reported, read from the chunk
+// at index from and, for each one it leaves empty, the latest earlier chunk that carries it
+// (fork, TXE-7356). Size, quality, resolution and inference steps price the image, and the stored
+// accumulated response is what a recalculation reads, so dropping them re-priced a streamed 4K
+// image at the default tier. Nil when no chunk reports any.
+func streamImageParameters(chunks []*ImageStreamChunk, from int) *schemas.ImageGenerationResponseParameters {
+	params := schemas.ImageGenerationResponseParameters{}
+	set := false
+	for j := min(from, len(chunks)-1); j >= 0; j-- {
+		d := chunks[j].Delta
+		if d == nil {
+			continue
+		}
+		fill := func(dst *string, src string) {
+			if *dst == "" && src != "" {
+				*dst, set = src, true
+			}
+		}
+		fill(&params.Size, d.Size)
+		fill(&params.Quality, d.Quality)
+		fill(&params.AspectRatio, d.AspectRatio)
+		fill(&params.Background, d.Background)
+		fill(&params.OutputFormat, d.OutputFormat)
+		fill(&params.Resolution, d.Resolution)
+		if params.NumInferenceSteps == nil && d.NumInferenceSteps != nil {
+			steps := *d.NumInferenceSteps
+			params.NumInferenceSteps, set = &steps, true
+		}
+	}
+	if !set {
+		return nil
+	}
+	return &params
 }
 
 // isCompletedImageEvent reports whether an image stream event carries a finished image.
@@ -302,6 +341,8 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 			Size:              result.ImageGenerationStreamResponse.Size,
 			AspectRatio:       result.ImageGenerationStreamResponse.AspectRatio,
 			Quality:           result.ImageGenerationStreamResponse.Quality,
+			Resolution:        result.ImageGenerationStreamResponse.Resolution,        // TXE-7356: a priced dimension
+			NumInferenceSteps: result.ImageGenerationStreamResponse.NumInferenceSteps, // TXE-7356: a priced dimension
 			Background:        result.ImageGenerationStreamResponse.Background,
 			OutputFormat:      result.ImageGenerationStreamResponse.OutputFormat,
 			RevisedPrompt:     result.ImageGenerationStreamResponse.RevisedPrompt,

@@ -161,6 +161,52 @@ type TableModelPricing struct {
 	OutputCostPerImageAbove1024x1536PixelsStandardQuality *float64 `gorm:"default:null;column:output_cost_per_image_above_1024x1536_pixels_standard_quality" json:"output_cost_per_image_above_1024_and_1536_pixels_standard_quality,omitempty"`
 	OutputCostPerImageAbove1536x1024PixelsStandardQuality *float64 `gorm:"default:null;column:output_cost_per_image_above_1536x1024_pixels_standard_quality" json:"output_cost_per_image_above_1536_and_1024_pixels_standard_quality,omitempty"`
 
+	// Fork (TXE-7356): hd, xhigh and max quality grids, the 768, 1792, 1080, 1440 and 2160
+	// thresholds, resolution tiers and inference-step rates. Column names use the compact
+	// <W>x<H> form (and 0_5k for 0.5K) so they stay within PostgreSQL's 63-byte identifier limit.
+	OutputCostPerImageAbove1024x1024PixelsHDQuality       *float64 `gorm:"default:null;column:output_cost_per_image_above_1024x1024_pixels_hd_quality" json:"output_cost_per_image_above_1024_and_1024_pixels_hd_quality,omitempty"`
+	OutputCostPerImageAbove1024x1792PixelsHDQuality       *float64 `gorm:"default:null;column:output_cost_per_image_above_1024x1792_pixels_hd_quality" json:"output_cost_per_image_above_1024_and_1792_pixels_hd_quality,omitempty"`
+	OutputCostPerImageAbove1792x1024PixelsHDQuality       *float64 `gorm:"default:null;column:output_cost_per_image_above_1792x1024_pixels_hd_quality" json:"output_cost_per_image_above_1792_and_1024_pixels_hd_quality,omitempty"`
+	OutputCostPerImageAbove1024x1792PixelsStandardQuality *float64 `gorm:"default:null;column:output_cost_per_image_above_1024x1792_pixels_standard_quality" json:"output_cost_per_image_above_1024_and_1792_pixels_standard_quality,omitempty"`
+	OutputCostPerImageAbove1792x1024PixelsStandardQuality *float64 `gorm:"default:null;column:output_cost_per_image_above_1792x1024_pixels_standard_quality" json:"output_cost_per_image_above_1792_and_1024_pixels_standard_quality,omitempty"`
+	OutputCostPerImageAbove1024x1024PixelsXHighQuality    *float64 `gorm:"default:null;column:output_cost_per_image_above_1024x1024_pixels_xhigh_quality" json:"output_cost_per_image_above_1024_and_1024_pixels_xhigh_quality,omitempty"`
+	OutputCostPerImageAbove1024x1536PixelsXHighQuality    *float64 `gorm:"default:null;column:output_cost_per_image_above_1024x1536_pixels_xhigh_quality" json:"output_cost_per_image_above_1024_and_1536_pixels_xhigh_quality,omitempty"`
+	OutputCostPerImageAbove1024x768PixelsXHighQuality     *float64 `gorm:"default:null;column:output_cost_per_image_above_1024x768_pixels_xhigh_quality" json:"output_cost_per_image_above_1024_and_768_pixels_xhigh_quality,omitempty"`
+	OutputCostPerImageAbove1920x1080PixelsXHighQuality    *float64 `gorm:"default:null;column:output_cost_per_image_above_1920x1080_pixels_xhigh_quality" json:"output_cost_per_image_above_1920_and_1080_pixels_xhigh_quality,omitempty"`
+	OutputCostPerImageAbove2560x1440PixelsXHighQuality    *float64 `gorm:"default:null;column:output_cost_per_image_above_2560x1440_pixels_xhigh_quality" json:"output_cost_per_image_above_2560_and_1440_pixels_xhigh_quality,omitempty"`
+	OutputCostPerImageAbove3840x2160PixelsXHighQuality    *float64 `gorm:"default:null;column:output_cost_per_image_above_3840x2160_pixels_xhigh_quality" json:"output_cost_per_image_above_3840_and_2160_pixels_xhigh_quality,omitempty"`
+	OutputCostPerImageAbove1024x1024PixelsMaxQuality      *float64 `gorm:"default:null;column:output_cost_per_image_above_1024x1024_pixels_max_quality" json:"output_cost_per_image_above_1024_and_1024_pixels_max_quality,omitempty"`
+	OutputCostPerImageAbove1024x1536PixelsMaxQuality      *float64 `gorm:"default:null;column:output_cost_per_image_above_1024x1536_pixels_max_quality" json:"output_cost_per_image_above_1024_and_1536_pixels_max_quality,omitempty"`
+	OutputCostPerImageAbove1024x768PixelsMaxQuality       *float64 `gorm:"default:null;column:output_cost_per_image_above_1024x768_pixels_max_quality" json:"output_cost_per_image_above_1024_and_768_pixels_max_quality,omitempty"`
+	OutputCostPerImageAbove1920x1080PixelsMaxQuality      *float64 `gorm:"default:null;column:output_cost_per_image_above_1920x1080_pixels_max_quality" json:"output_cost_per_image_above_1920_and_1080_pixels_max_quality,omitempty"`
+	OutputCostPerImageAbove2560x1440PixelsMaxQuality      *float64 `gorm:"default:null;column:output_cost_per_image_above_2560x1440_pixels_max_quality" json:"output_cost_per_image_above_2560_and_1440_pixels_max_quality,omitempty"`
+	OutputCostPerImageAbove3840x2160PixelsMaxQuality      *float64 `gorm:"default:null;column:output_cost_per_image_above_3840x2160_pixels_max_quality" json:"output_cost_per_image_above_3840_and_2160_pixels_max_quality,omitempty"`
+	OutputCostPerImageAbove1024x768PixelsLowQuality       *float64 `gorm:"default:null;column:output_cost_per_image_above_1024x768_pixels_low_quality" json:"output_cost_per_image_above_1024_and_768_pixels_low_quality,omitempty"`
+	OutputCostPerImageAbove1920x1080PixelsLowQuality      *float64 `gorm:"default:null;column:output_cost_per_image_above_1920x1080_pixels_low_quality" json:"output_cost_per_image_above_1920_and_1080_pixels_low_quality,omitempty"`
+	OutputCostPerImageAbove2560x1440PixelsLowQuality      *float64 `gorm:"default:null;column:output_cost_per_image_above_2560x1440_pixels_low_quality" json:"output_cost_per_image_above_2560_and_1440_pixels_low_quality,omitempty"`
+	OutputCostPerImageAbove3840x2160PixelsLowQuality      *float64 `gorm:"default:null;column:output_cost_per_image_above_3840x2160_pixels_low_quality" json:"output_cost_per_image_above_3840_and_2160_pixels_low_quality,omitempty"`
+	OutputCostPerImageAbove1024x768PixelsMediumQuality    *float64 `gorm:"default:null;column:output_cost_per_image_above_1024x768_pixels_medium_quality" json:"output_cost_per_image_above_1024_and_768_pixels_medium_quality,omitempty"`
+	OutputCostPerImageAbove1920x1080PixelsMediumQuality   *float64 `gorm:"default:null;column:output_cost_per_image_above_1920x1080_pixels_medium_quality" json:"output_cost_per_image_above_1920_and_1080_pixels_medium_quality,omitempty"`
+	OutputCostPerImageAbove2560x1440PixelsMediumQuality   *float64 `gorm:"default:null;column:output_cost_per_image_above_2560x1440_pixels_medium_quality" json:"output_cost_per_image_above_2560_and_1440_pixels_medium_quality,omitempty"`
+	OutputCostPerImageAbove3840x2160PixelsMediumQuality   *float64 `gorm:"default:null;column:output_cost_per_image_above_3840x2160_pixels_medium_quality" json:"output_cost_per_image_above_3840_and_2160_pixels_medium_quality,omitempty"`
+	OutputCostPerImageAbove1024x768PixelsHighQuality      *float64 `gorm:"default:null;column:output_cost_per_image_above_1024x768_pixels_high_quality" json:"output_cost_per_image_above_1024_and_768_pixels_high_quality,omitempty"`
+	OutputCostPerImageAbove1920x1080PixelsHighQuality     *float64 `gorm:"default:null;column:output_cost_per_image_above_1920x1080_pixels_high_quality" json:"output_cost_per_image_above_1920_and_1080_pixels_high_quality,omitempty"`
+	OutputCostPerImageAbove2560x1440PixelsHighQuality     *float64 `gorm:"default:null;column:output_cost_per_image_above_2560x1440_pixels_high_quality" json:"output_cost_per_image_above_2560_and_1440_pixels_high_quality,omitempty"`
+	OutputCostPerImageAbove3840x2160PixelsHighQuality     *float64 `gorm:"default:null;column:output_cost_per_image_above_3840x2160_pixels_high_quality" json:"output_cost_per_image_above_3840_and_2160_pixels_high_quality,omitempty"`
+	OutputCostPerImageHalfK                               *float64 `gorm:"default:null;column:output_cost_per_image_0_5k" json:"output_cost_per_image_0.5K,omitempty"`
+	OutputCostPerImage1K                                  *float64 `gorm:"default:null;column:output_cost_per_image_1k" json:"output_cost_per_image_1K,omitempty"`
+	OutputCostPerImage2K                                  *float64 `gorm:"default:null;column:output_cost_per_image_2k" json:"output_cost_per_image_2K,omitempty"`
+	OutputCostPerImage4K                                  *float64 `gorm:"default:null;column:output_cost_per_image_4k" json:"output_cost_per_image_4K,omitempty"`
+	OutputCostPerImageRes512                              *float64 `gorm:"default:null;column:output_cost_per_image_512" json:"output_cost_per_image_512,omitempty"`
+	OutputCostPerImageRes1024                             *float64 `gorm:"default:null;column:output_cost_per_image_1024" json:"output_cost_per_image_1024,omitempty"`
+	OutputCostPerImageRes1536                             *float64 `gorm:"default:null;column:output_cost_per_image_1536" json:"output_cost_per_image_1536,omitempty"`
+	OutputCostPerImageAbove512x512Pixels50Steps           *float64 `gorm:"default:null;column:output_cost_per_image_above_512x512_pixels_50_steps" json:"output_cost_per_image_above_512_and_512_pixels_50_steps,omitempty"`
+	OutputCostPerImageAbove512x512PixelsMaxSteps          *float64 `gorm:"default:null;column:output_cost_per_image_above_512x512_pixels_max_steps" json:"output_cost_per_image_above_512_and_512_pixels_max_steps,omitempty"`
+	OutputCostPerImageAbove1024x1024Pixels50Steps         *float64 `gorm:"default:null;column:output_cost_per_image_above_1024x1024_pixels_50_steps" json:"output_cost_per_image_above_1024_and_1024_pixels_50_steps,omitempty"`
+	OutputCostPerImageAbove1024x1024PixelsMaxSteps        *float64 `gorm:"default:null;column:output_cost_per_image_above_1024x1024_pixels_max_steps" json:"output_cost_per_image_above_1024_and_1024_pixels_max_steps,omitempty"`
+	OutputCostPerImageAboveMaxPixels50Steps               *float64 `gorm:"default:null;column:output_cost_per_image_above_max_pixels_50_steps" json:"output_cost_per_image_above_max_and_max_pixels_50_steps,omitempty"`
+	OutputCostPerImageAboveMaxPixelsMaxSteps              *float64 `gorm:"default:null;column:output_cost_per_image_above_max_pixels_max_steps" json:"output_cost_per_image_above_max_and_max_pixels_max_steps,omitempty"`
+
 	// Costs - Audio/Video
 	InputCostPerAudioToken     *float64 `gorm:"default:null;column:input_cost_per_audio_token" json:"input_cost_per_audio_token,omitempty"`
 	InputCostPerAudioPerSecond *float64 `gorm:"default:null;column:input_cost_per_audio_per_second" json:"input_cost_per_audio_per_second,omitempty"`

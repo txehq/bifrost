@@ -3101,6 +3101,14 @@
                       ],
                       "description": "Size of the generated image"
                     },
+                    "resolution": {
+                      "type": "string",
+                      "description": "The resolution tier the request asked for (for example `1K` or `2K`), echoed from the\nrequest when the provider reports none. Some models are priced by it.\n"
+                    },
+                    "num_inference_steps": {
+                      "type": "integer",
+                      "description": "The inference steps the request asked for (`num_inference_steps`, or a `steps` extra\nparameter), echoed from the request when the provider reports none. Some models are\npriced by it.\n"
+                    },
                     "content_filter": {
                       "type": "object",
                       "description": "Images the provider blocked while answering 200. Blocked images take no slot in `data`;\n`filtered_count` is how many were blocked and `reasons` are the provider's reason codes\nverbatim. When every image was blocked, `data` is an empty array.\n",
@@ -3277,6 +3285,14 @@
                     "quality": {
                       "type": "string",
                       "description": "Quality setting used"
+                    },
+                    "resolution": {
+                      "type": "string",
+                      "description": "Resolution tier the request asked for, echoed when the provider reports none"
+                    },
+                    "num_inference_steps": {
+                      "type": "integer",
+                      "description": "Inference steps the request asked for, echoed when the provider reports none"
                     },
                     "background": {
                       "type": "string",
@@ -3930,6 +3946,14 @@
                       ],
                       "description": "Size of the generated image"
                     },
+                    "resolution": {
+                      "type": "string",
+                      "description": "The resolution tier the request asked for (for example `1K` or `2K`), echoed from the\nrequest when the provider reports none. Some models are priced by it.\n"
+                    },
+                    "num_inference_steps": {
+                      "type": "integer",
+                      "description": "The inference steps the request asked for (`num_inference_steps`, or a `steps` extra\nparameter), echoed from the request when the provider reports none. Some models are\npriced by it.\n"
+                    },
                     "content_filter": {
                       "type": "object",
                       "description": "Images the provider blocked while answering 200. Blocked images take no slot in `data`;\n`filtered_count` is how many were blocked and `reasons` are the provider's reason codes\nverbatim. When every image was blocked, `data` is an empty array.\n",
@@ -4096,6 +4120,14 @@
                     "quality": {
                       "type": "string",
                       "description": "Quality setting used"
+                    },
+                    "resolution": {
+                      "type": "string",
+                      "description": "Resolution tier the request asked for, echoed when the provider reports none"
+                    },
+                    "num_inference_steps": {
+                      "type": "integer",
+                      "description": "Inference steps the request asked for, echoed when the provider reports none"
                     },
                     "background": {
                       "type": "string",
@@ -4428,6 +4460,14 @@
                         "auto"
                       ],
                       "description": "Size of the generated image"
+                    },
+                    "resolution": {
+                      "type": "string",
+                      "description": "The resolution tier the request asked for (for example `1K` or `2K`), echoed from the\nrequest when the provider reports none. Some models are priced by it.\n"
+                    },
+                    "num_inference_steps": {
+                      "type": "integer",
+                      "description": "The inference steps the request asked for (`num_inference_steps`, or a `steps` extra\nparameter), echoed from the request when the provider reports none. Some models are\npriced by it.\n"
                     },
                     "content_filter": {
                       "type": "object",
@@ -140344,6 +140384,187 @@
           "output_cost_per_image_above_1536_and_1024_pixels_standard_quality": {
             "type": "number",
             "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1792_pixels_standard_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1792_and_1024_pixels_standard_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1024_pixels_hd_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1792_pixels_hd_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1792_and_1024_pixels_hd_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_768_pixels_low_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1920_and_1080_pixels_low_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_2560_and_1440_pixels_low_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_3840_and_2160_pixels_low_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_768_pixels_medium_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1920_and_1080_pixels_medium_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_2560_and_1440_pixels_medium_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_3840_and_2160_pixels_medium_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_768_pixels_high_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1920_and_1080_pixels_high_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_2560_and_1440_pixels_high_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_3840_and_2160_pixels_high_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_768_pixels_xhigh_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1024_pixels_xhigh_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1536_pixels_xhigh_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1920_and_1080_pixels_xhigh_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_2560_and_1440_pixels_xhigh_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_3840_and_2160_pixels_xhigh_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_768_pixels_max_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1024_pixels_max_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1536_pixels_max_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1920_and_1080_pixels_max_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_2560_and_1440_pixels_max_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_3840_and_2160_pixels_max_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_0.5K": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per image at the request's 0.5K resolution tier."
+          },
+          "output_cost_per_image_1K": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per image at the request's 1K resolution tier; also bills a request that names no resolution on a model priced only by tier."
+          },
+          "output_cost_per_image_2K": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per image at the request's 2K resolution tier."
+          },
+          "output_cost_per_image_4K": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per image at the request's 4K resolution tier."
+          },
+          "output_cost_per_image_512": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per image at the request's 512 resolution tier."
+          },
+          "output_cost_per_image_1024": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per image at the request's 1024 resolution tier."
+          },
+          "output_cost_per_image_1536": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per image at the request's 1536 resolution tier."
+          },
+          "output_cost_per_image_above_512_and_512_pixels_50_steps": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per image at or below 512x512 that ran 50 or fewer inference steps."
+          },
+          "output_cost_per_image_above_512_and_512_pixels_max_steps": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per image at or below 512x512 that ran more than 50 inference steps."
+          },
+          "output_cost_per_image_above_max_and_max_pixels_50_steps": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per image larger than 512x512 that ran 50 or fewer inference steps."
+          },
+          "output_cost_per_image_above_max_and_max_pixels_max_steps": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per image larger than 512x512 that ran more than 50 inference steps."
+          },
+          "output_cost_per_image_above_1024_and_1024_pixels_50_steps": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per image of any size that ran 50 or fewer inference steps, on a model that publishes this one step-priced size."
+          },
+          "output_cost_per_image_above_1024_and_1024_pixels_max_steps": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per image of any size that ran more than 50 inference steps, on a model that publishes this one step-priced size."
           },
           "input_cost_per_image_token": {
             "type": "number",
