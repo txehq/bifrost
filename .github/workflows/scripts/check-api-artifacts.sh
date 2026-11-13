@@ -18,7 +18,8 @@
 # invariants run as they are. Every check runs, and the script fails if any did, naming each
 # with the command that fixes it. It leaves the working tree as it found it.
 #
-# Run from the repository root. Needs python3 with PyYAML (bundle.py) and Go.
+# Run from the repository root. Needs python3 with requirements/api-artifacts.txt (PyYAML for
+# bundle.py, jsonschema for the invariants) and Go.
 #
 # Usage: check-api-artifacts.sh [--only N[,N...]]   (N: 1-4, the steps above; default all)
 set -uo pipefail
