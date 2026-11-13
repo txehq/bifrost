@@ -604,6 +604,18 @@ func (s *RDBConfigStore) UpsertFeatureFlag(ctx context.Context, id string, enabl
 	}).Create(&row).Error
 }
 
+// effectiveLogRetentionDays is the retention a stored log_retention_days stands for. A
+// row written before the setting existed, or from a config.json that omitted it, holds 0,
+// which means "never set": the gateway applies logstore.DefaultLogRetentionDays, and the
+// read reports that value so that GET /api/config saves back unchanged through PUT, whose
+// minimum is 1 (fork, TXE-7070).
+func effectiveLogRetentionDays(stored int) int {
+	if stored < 1 {
+		return logstore.DefaultLogRetentionDays
+	}
+	return stored
+}
+
 // GetClientConfig retrieves the client configuration from the database.
 func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, error) {
 	var dbConfig tables.TableClientConfig
@@ -622,7 +634,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		RetainContentInObjectStorage:   dbConfig.RetainContentInObjectStorage,
 		DisableDBPingsInHealth:         dbConfig.DisableDBPingsInHealth,
 		DumpErrorsInConsoleLogs:        dbConfig.DumpErrorsInConsoleLogs,
-		LogRetentionDays:               dbConfig.LogRetentionDays,
+		LogRetentionDays:               effectiveLogRetentionDays(dbConfig.LogRetentionDays),
 		EnforceAuthOnInference:         dbConfig.EnforceAuthOnInference,
 		DualCredentialConflictBehavior: dbConfig.DualCredentialConflictBehavior,
 		ExtraFieldsPlacement:           dbConfig.ExtraFieldsPlacement,

@@ -9,11 +9,17 @@ import (
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
+// DefaultLogRetentionDays is the log retention a gateway applies when
+// client_config.log_retention_days was never set (stored or read as 0). It is the
+// default config.schema.json, the Helm chart and the docs state, and the value
+// GET /api/config reports for such a gateway, so a read saves back unchanged
+// (fork, TXE-7070).
+const DefaultLogRetentionDays = 365
+
 const (
-	cleanupInterval      = 24 * time.Hour
-	minJitter            = 15 * time.Minute
-	maxJitter            = 30 * time.Minute
-	defaultRetentionDays = 365
+	cleanupInterval = 24 * time.Hour
+	minJitter       = 15 * time.Minute
+	maxJitter       = 30 * time.Minute
 
 	// batchSize is how many expired rows one retention statement deletes. At
 	// ~5.6M expired rows per day, 100-row batches under a 30-minute cap could
@@ -161,7 +167,7 @@ func (c *LogsCleaner) cleanupOldLogs(ctx context.Context) {
 	retentionDays := c.config.RetentionDays
 	c.mu.Unlock()
 	if retentionDays < 1 {
-		retentionDays = defaultRetentionDays
+		retentionDays = DefaultLogRetentionDays
 	}
 
 	// Calculate cutoff time

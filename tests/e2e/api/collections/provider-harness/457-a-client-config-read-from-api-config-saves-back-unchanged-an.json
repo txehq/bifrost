@@ -1,0 +1,244 @@
+{
+  "name": "457. A client config read from /api/config saves back unchanged, and log_retention_days reads as the retention applied (config round trip)",
+  "description": "TXE-7070. A gateway whose config never set client.log_retention_days read 0 from GET /api/config, and PUT /api/config refused that same object with 400 \"log_retention_days must be at least 1\", so a settings page that changes one field could not save. Such a gateway prunes logs at the documented default, 365 days, and now reads as 365, from memory and from the store; the object saves back unchanged. Runs on the provider error fixture gateway (tests/e2e/api/provider_config/provider-error-fixture.config.json, whose client section does not set the field) with providerErrorFixture=1; skipped otherwise. No upstream call. Run with FEATURE=\"config round trip\".",
+  "item": [
+    {
+      "name": "457.1 fixture gateway reads its client config from memory: log_retention_days is the default it applies (config round trip)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var t = pm.response.text();",
+              "pm.test('the client config is readable', function () { pm.expect(pm.response.code, t.slice(0, 400)).to.equal(200); pm.expect(pm.response.json().client_config, t.slice(0, 400)).to.be.an('object'); });",
+              "var cc = pm.response.json().client_config || {};",
+              "// The fixture config's client section does not set log_retention_days. The gateway prunes at the",
+              "// documented default, 365, and must report that, not 0: a save refuses a value below 1 (TXE-7070).",
+              "pm.test('log_retention_days reads as the default 365', function () { pm.expect(cc.log_retention_days, t.slice(0, 400)).to.equal(365); });",
+              "pm.collectionVariables.set('h457ClientConfig', JSON.stringify(cc));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        }
+      }
+    },
+    {
+      "name": "457.2 fixture gateway saves the client config read from memory back unchanged (config round trip)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var saved = pm.collectionVariables.get('h457ClientConfig');",
+              "  if (!saved) { throw new Error('457.1 must run first: it stores the client config this save sends back'); }",
+              "  pm.request.body.raw = JSON.stringify({ client_config: JSON.parse(saved) });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Every field as GET returned it, none changed: a read must always save back (TXE-7070). Before the fix",
+              "// this answered 400 \"log_retention_days must be at least 1\".",
+              "pm.test('the unchanged client config is accepted', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(200); });",
+              "pm.sendRequest({ url: pm.variables.replaceIn('{{baseUrl}}') + '/api/config', method: 'GET', header: { 'X-Bifrost-Setup-Token': 'bifrost-e2e-setup-token' } }, function (err, res) {",
+              "  pm.test('log_retention_days still reads 365 after the save', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.json().client_config.log_retention_days, res.text().slice(0, 400)).to.equal(365); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        }
+      }
+    },
+    {
+      "name": "457.3 fixture gateway reads its client config from the store (from_db=true): log_retention_days is the default it applies (config round trip)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var t = pm.response.text();",
+              "pm.test('the client config is readable', function () { pm.expect(pm.response.code, t.slice(0, 400)).to.equal(200); pm.expect(pm.response.json().client_config, t.slice(0, 400)).to.be.an('object'); });",
+              "var cc = pm.response.json().client_config || {};",
+              "// The fixture config's client section does not set log_retention_days. The gateway prunes at the",
+              "// documented default, 365, and must report that, not 0: a save refuses a value below 1 (TXE-7070).",
+              "pm.test('log_retention_days reads as the default 365', function () { pm.expect(cc.log_retention_days, t.slice(0, 400)).to.equal(365); });",
+              "pm.collectionVariables.set('h457ClientConfigFromDB', JSON.stringify(cc));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config?from_db=true",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ],
+          "query": [
+            {
+              "key": "from_db",
+              "value": "true"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "457.4 fixture gateway saves the client config read from the store back unchanged (config round trip)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var saved = pm.collectionVariables.get('h457ClientConfigFromDB');",
+              "  if (!saved) { throw new Error('457.3 must run first: it stores the client config this save sends back'); }",
+              "  pm.request.body.raw = JSON.stringify({ client_config: JSON.parse(saved) });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Every field as GET returned it, none changed: a read must always save back (TXE-7070). Before the fix",
+              "// this answered 400 \"log_retention_days must be at least 1\".",
+              "pm.test('the unchanged client config is accepted', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(200); });",
+              "pm.sendRequest({ url: pm.variables.replaceIn('{{baseUrl}}') + '/api/config', method: 'GET', header: { 'X-Bifrost-Setup-Token': 'bifrost-e2e-setup-token' } }, function (err, res) {",
+              "  pm.test('log_retention_days still reads 365 after the save', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.json().client_config.log_retention_days, res.text().slice(0, 400)).to.equal(365); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        }
+      }
+    }
+  ]
+}

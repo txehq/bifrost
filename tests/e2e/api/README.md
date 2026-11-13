@@ -319,6 +319,25 @@ scripts/test-offline.sh make run-provider-harness-test FEATURE="offline egress" 
   APP_DIR="$APP_DIR" ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 PARALLEL=0
 ```
 
+## Client config round trip
+
+Folder 457 pins TXE-7070: the `client_config` that `GET /api/config` returns saves back unchanged through
+`PUT /api/config`. The fixture config's `client` section does not set `log_retention_days`, so the gateway
+prunes logs at the documented default of 365 days. Rows 1 and 3 read the config from memory and from the store
+(`?from_db=true`) and expect `log_retention_days: 365`, where the read used to return 0. Rows 2 and 4 send each
+object back as it was read and expect 200, where the save used to refuse it with 400
+`log_retention_days must be at least 1`. The rows call only the gateway's management API.
+
+Start the fixture and the isolated gateway as for content-length truncation above, then:
+
+```bash
+node tests/e2e/api/runners/provider-harness-folders.mjs build
+newman run tmp/provider-harness.json \
+  --folder "457. A client config read from /api/config saves back unchanged, and log_retention_days reads as the retention applied (config round trip)" \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1
+```
+
 ## Provider 5xx failover and 429 retry-hint propagation
 
 These deterministic cases use a local HTTP fixture and an isolated gateway. They make no live
