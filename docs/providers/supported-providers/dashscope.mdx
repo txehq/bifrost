@@ -214,7 +214,7 @@ A Wan image model (`wan*`) is task-based and is refused on these two routes with
 
 ### Response
 
-Each link in `output.choices[].message.content[].image` becomes one `data[]` item with `url`. DashScope keeps a result link for 24 hours; the response does not carry an expiry field yet. `usage.output_images` is DashScope's `usage.image_count`, and `size` is its reported `width` and `height`. Z-Image also reports `input_tokens`, `output_tokens`, `total_tokens` and `output_tokens_details.reasoning_tokens` when `prompt_extend` rewrote the prompt, and the rewritten prompt is returned as `revised_prompt`. A 200 with no image is an error: `provider_empty_result` (HTTP 502), or DashScope's own code when the body carries one.
+Each link in `output.choices[].message.content[].image` becomes one `data[]` item with `url`. DashScope keeps a result link for 24 hours, so the response carries `expires_at`: the time Bifrost read the answer plus 24 hours (DashScope's synchronous answer reports no creation time). `usage.output_images` is DashScope's `usage.image_count`, and `size` is its reported `width` and `height`. Z-Image also reports `input_tokens`, `output_tokens`, `total_tokens` and `output_tokens_details.reasoning_tokens` when `prompt_extend` rewrote the prompt, and the rewritten prompt is returned as `revised_prompt`. A 200 with no image is an error: `provider_empty_result` (HTTP 502), or DashScope's own code when the body carries one.
 
 ## Speech (Qwen3-TTS)
 

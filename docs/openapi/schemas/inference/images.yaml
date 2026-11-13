@@ -182,6 +182,15 @@ ImageGenerationResponse:
         Images the provider blocked while answering 200. Blocked images take no slot in `data`;
         `filtered_count` is how many were blocked and `reasons` are the provider's reason codes
         verbatim. When every image was blocked, `data` is an empty array.
+    expires_at:
+      type: integer
+      format: int64
+      description: |
+        Unix timestamp (seconds) after which the links in `data` stop working. Present when the
+        response carries at least one `url` and the provider documents a fixed link lifetime
+        (BytePlus Seedream, MiniMax and Alibaba DashScope: 24 hours; Tencent TokenHub: 12 hours):
+        the provider's `created` time, or the time the answer was read when it reports none, plus
+        that lifetime. Absent for image bytes and for providers that document no lifetime.
     usage:
       $ref: "#/ImageUsage"
     extra_fields:

@@ -199,7 +199,7 @@ curl -X POST http://localhost:8080/v1/images/generations \
 | `n` | `n` | 1 to 9 |
 | `size` | `width` + `height` | When both sides are 512 to 2048 and divisible by 8. Otherwise Bifrost picks the closest supported aspect ratio. |
 | `aspect_ratio` | `aspect_ratio` | `1:1`, `16:9`, `4:3`, `3:2`, `2:3`, `3:4`, `9:16`, `21:9`. Takes priority over `size`. |
-| `response_format` | `response_format` | `b64_json` becomes `base64`. MiniMax image URLs expire after 24 hours. |
+| `response_format` | `response_format` | `b64_json` becomes `base64`. MiniMax image URLs expire after 24 hours; a response with a URL carries `expires_at` (`created` + 24 hours). |
 | `seed` | `seed` | |
 | `extra_params.prompt_optimizer` | `prompt_optimizer` | |
 

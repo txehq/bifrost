@@ -3,6 +3,7 @@ package schemas
 import (
 	"bytes"
 	"fmt"
+	"time"
 )
 
 type ImageEventType string
@@ -82,8 +83,32 @@ type BifrostImageGenerationResponse struct {
 	// reason codes verbatim. When every image was blocked, Data is an empty array, never null.
 	ContentFilter *ContentFilterInfo `json:"content_filter,omitempty"`
 
+	// Fork (TXE-7051, contract C9): Unix seconds after which the links in Data stop working, for a
+	// vendor that documents a fixed link lifetime (see ImageLinkLifetimes). Nil when the response
+	// carries no link, or the vendor documents no lifetime.
+	ExpiresAt *int64 `json:"expires_at,omitempty"`
+
 	Usage       *ImageUsage                `json:"usage,omitempty"`
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// ImageLinkLifetimes is how long each vendor documents its image result links to work (fork,
+// TXE-7051, contract C9). It is the one place a lifetime is written: BackfillParams turns it into
+// expires_at on every sync image response of the provider, so a provider's converter sets
+// nothing and cannot forget it. A vendor that documents no fixed lifetime has no row, and its
+// responses carry no expires_at. A custom provider is not looked up: Bifrost does not know which
+// vendor is behind it.
+//
+// Sources: BytePlus ModelArk Seedream ("the link is valid for 24 hours"), MiniMax image
+// generation (URLs expire after 24 hours), Tencent TokenHub Hy image (signed URLs valid for 12
+// hours), Alibaba Model Studio Qwen-Image and Z-Image (links "are valid for only 24 hours").
+// TestImageLinkLifetimesMatchProviderDocs fails when a provider page documents an image link
+// lifetime that has no row here.
+var ImageLinkLifetimes = map[ModelProvider]time.Duration{
+	BytePlus:  24 * time.Hour,
+	MiniMax:   24 * time.Hour,
+	Tencent:   12 * time.Hour,
+	DashScope: 24 * time.Hour,
 }
 
 // BackfillParams populates response fields from the original request that are needed
@@ -97,6 +122,9 @@ type BifrostImageGenerationResponse struct {
 // vendor blocked carries "data": [] next to its content_filter, never "data": null.
 //
 // And it writes usage.output_images (fork, TXE-6438, contract C5), see fillOutputImages.
+//
+// And it writes expires_at for a vendor with a documented link lifetime (fork, TXE-7051,
+// contract C9), see fillExpiresAt.
 func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
 	if r == nil {
 		return
@@ -108,6 +136,8 @@ func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
 	if req == nil {
 		return
 	}
+	provider, _, _ := req.GetRequestFields()
+	r.fillExpiresAt(provider, time.Now)
 	numInputImages, size, quality, aspectRatio := getNumInputImagesSizeQualityAndAspectRatioFromRequest(req)
 
 	// Backfill Model from whichever inner request carries it. Some provider APIs
@@ -172,6 +202,33 @@ func (r *BifrostImageGenerationResponse) fillOutputImages() {
 		r.Usage = &ImageUsage{}
 	}
 	r.Usage.OutputImages = new(len(r.Data))
+}
+
+// fillExpiresAt writes expires_at as the creation time plus the vendor's documented link lifetime
+// (fork, TXE-7051, contract C9). The creation time is the vendor's own created when the response
+// carries one, and the time the answer was read otherwise. It writes nothing when the provider
+// has no documented lifetime, when a converter already set a vendor-reported expiry, or when the
+// response carries no link (bytes do not expire). A provider without a row costs one map lookup.
+func (r *BifrostImageGenerationResponse) fillExpiresAt(provider ModelProvider, now func() time.Time) {
+	lifetime, ok := ImageLinkLifetimes[provider]
+	if !ok || r.ExpiresAt != nil {
+		return
+	}
+	hasLink := false
+	for i := range r.Data {
+		if r.Data[i].URL != "" {
+			hasLink = true
+			break
+		}
+	}
+	if !hasLink {
+		return
+	}
+	created := r.Created
+	if created <= 0 {
+		created = now().Unix()
+	}
+	r.ExpiresAt = new(created + int64(lifetime/time.Second))
 }
 
 // getNumInputImagesSizeQualityAndAspectRatioFromRequest extracts request params for cost
