@@ -3674,11 +3674,20 @@ func CheckOperationAllowed(defaultProvider schemas.ModelProvider, config *schema
 // past the limit fails with *network.ResponseBodyTooLargeError instead of being
 // decompressed in full. The body is never cut short.
 func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
+	limit := network.MaxResponseBodyBytes()
+	// A streamed response (an error answer to a streaming request) is read here through the bounded
+	// reader: resp.Body() would drain the stream whole before any check could run.
+	if bodyStream := resp.BodyStream(); bodyStream != nil {
+		streamed, err := network.ReadAllLimit(bodyStream, limit)
+		if err != nil {
+			return nil, err
+		}
+		resp.SetBody(streamed)
+	}
 	body := resp.Body()
 	if len(body) == 0 {
 		return nil, nil
 	}
-	limit := network.MaxResponseBodyBytes()
 	// The transport already refuses a longer body; this covers a response filled any other way.
 	if int64(len(body)) > limit {
 		return nil, &network.ResponseBodyTooLargeError{Limit: limit}

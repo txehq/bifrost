@@ -1544,3 +1544,48 @@ func TestContextTransport_BufferedBodyIsBoundedByTheResponseLimit(t *testing.T) 
 		})
 	}
 }
+
+// TXE-7148: a streaming request's error answer is held to the response limit. Before, resp.Body()
+// and CheckAndDecodeBody drained the live body stream whole, so a 500 of any size reached memory
+// even with client.max_response_body_size_mb set. A successful stream stays unbounded.
+func TestContextTransport_StreamedErrorBodyIsBoundedButSuccessIsNot(t *testing.T) {
+	network.SetMaxResponseBodySizeMB(1)
+	t.Cleanup(func() { network.SetMaxResponseBodySizeMB(0) })
+	big := strings.Repeat("x", 2<<20)
+	serve := func(status string) *fasthttp.Client {
+		srv := newScriptedServer(t, func(conn net.Conn, br *bufio.Reader) {
+			for readRequest(br) {
+				writeIgnoringClose(conn, fmt.Sprintf("HTTP/1.1 %s\r\nContent-Length: %d\r\n\r\n%s", status, len(big), big))
+			}
+		})
+		return BuildStreamingClient(srv.client(5 * time.Second))
+	}
+
+	t.Run("an error answer fails through CheckAndDecodeBody and the provider error parser", func(t *testing.T) {
+		req, resp := streamGet(t, serve("500 Internal Server Error"), "POST")
+		defer fasthttp.ReleaseRequest(req)
+		defer func() { resp.CloseBodyStream(); fasthttp.ReleaseResponse(resp) }() //nolint:errcheck
+		var errorResp map[string]any
+		bifrostErr := HandleProviderAPIError(resp, &errorResp)
+		require.NotNil(t, bifrostErr)
+		require.True(t, bifrostErr.IsBifrostError, "%+v", bifrostErr)
+		require.Equal(t, schemas.ErrorTypeBifrostInternal, bifrostErr.ExtraFields.ErrorType)
+		require.True(t, errors.Is(bifrostErr.Error.Error, network.ErrResponseBodyTooLarge))
+	})
+
+	t.Run("a direct resp.Body() drain of an error answer stops at the limit", func(t *testing.T) {
+		req, resp := streamGet(t, serve("502 Bad Gateway"), "POST")
+		defer fasthttp.ReleaseRequest(req)
+		defer func() { resp.CloseBodyStream(); fasthttp.ReleaseResponse(resp) }() //nolint:errcheck
+		require.LessOrEqual(t, len(resp.Body()), 1<<20, "the stream must not be buffered past the limit")
+	})
+
+	t.Run("a successful stream is read whole", func(t *testing.T) {
+		req, resp := streamGet(t, serve("200 OK"), "POST")
+		defer fasthttp.ReleaseRequest(req)
+		defer func() { resp.CloseBodyStream(); fasthttp.ReleaseResponse(resp) }() //nolint:errcheck
+		body, err := io.ReadAll(resp.BodyStream())
+		require.NoError(t, err)
+		require.Equal(t, len(big), len(body))
+	})
+}
