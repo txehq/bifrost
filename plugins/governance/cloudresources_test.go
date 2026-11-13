@@ -1,7 +1,10 @@
 package governance
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -341,6 +344,127 @@ func TestRawRequestBodyIsRead(t *testing.T) {
 	}
 }
 
+// A raw body is read whole for topics, less the members of its wire format that hold
+// conversation text (rawBodyTextMembers, TXE-7230): a native chat whose prompt is exactly a
+// topic name is served, while a topic anywhere else in the same body is still refused. A body
+// whose format is not known is read whole.
+func TestRawRequestBodyConversationTextIsNotATopic(t *testing.T) {
+	const own, other = "projects/p/topics/tenant-a", "projects/p/topics/tenant-b"
+	plugin := restrictedPlugin(t, nil, []string{own})
+	chat := func(raw string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.Vertex, Model: "m",
+			Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}, RawRequestBody: []byte(raw)}}
+	}
+	video := func(raw string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{Provider: schemas.Vertex, Model: "veo",
+			Input: &schemas.VideoGenerationInput{Prompt: "p"}, RawRequestBody: []byte(raw)}}
+	}
+	geminiPrompt := `{"contents":[{"role":"user","parts":[{"text":"` + other + `"}]}]`
+	for name, tc := range map[string]struct {
+		integration string
+		req         *schemas.BifrostRequest
+		refused     bool
+	}{
+		// Served: the topic-shaped string is conversation text.
+		"a Gemini prompt that is a topic name":         {"genai", chat(geminiPrompt + `}`), false},
+		"a Gemini system instruction that is one":      {"genai", chat(`{"systemInstruction":{"parts":[{"text":"` + other + `"}]},"contents":[]}`), false},
+		"a snake case system instruction":              {"genai", chat(`{"system_instruction":{"parts":[{"text":"` + other + `"}]}}`), false},
+		"a Gemini embedding of one":                    {"genai", chat(`{"content":{"parts":[{"text":"` + other + `"}]}}`), false},
+		"a batch embedding of one":                     {"genai", chat(`{"requests":[{"content":{"parts":[{"text":"` + other + `"}]}}]}`), false},
+		"a Veo prompt that is one, own topic notified": {"genai", video(`{"instances":[{"prompt":"` + other + `"}],"parameters":{"pubsubTopic":"` + own + `"}}`), false},
+		"an Anthropic prompt that is one":              {"anthropic", chat(`{"messages":[{"role":"user","content":"` + other + `"}]}`), false},
+		"an Anthropic text block that is one":          {"anthropic", chat(`{"messages":[{"role":"user","content":[{"type":"text","text":"` + other + `"}]}]}`), false},
+		"an Anthropic system prompt that is one":       {"anthropic", chat(`{"system":"` + other + `","messages":[]}`), false},
+		"an Anthropic system text block that is one":   {"anthropic", chat(`{"system":[{"type":"text","text":"` + other + `"}]}`), false},
+		// Refused: a topic outside the list anywhere but conversation text, in the same body.
+		"a topic in a Gemini parameter beside the prompt": {"genai", chat(geminiPrompt + `,"generationConfig":{"pubsubTopic":"` + other + `"}}`), true},
+		"a topic in a part that is not text":              {"genai", chat(`{"contents":[{"parts":[{"fileData":{"fileUri":"` + other + `"}}]}]}`), true},
+		"a topic under a text member that is an object":   {"genai", chat(`{"contents":[{"parts":[{"text":{"topic":"` + other + `"}}]}]}`), true},
+		"a topic in a text member at the wrong level":     {"genai", chat(`{"text":"` + other + `"}`), true},
+		"a Veo prompt beside another topic":               {"genai", video(`{"instances":[{"prompt":"p"}],"parameters":{"pubsubTopic":"` + other + `"}}`), true},
+		"a topic in an Anthropic tool input":              {"anthropic", chat(`{"messages":[{"role":"assistant","content":[{"type":"tool_use","input":{"topic":"` + other + `"}}]}]}`), true},
+		"a topic in an Anthropic metadata member":         {"anthropic", chat(`{"messages":[],"metadata":{"user_id":"` + other + `"}}`), true},
+		"Gemini text paths on an Anthropic body":          {"anthropic", chat(geminiPrompt + `}`), true},
+		"a prompt on a route whose format is not known":   {"", chat(geminiPrompt + `}`), true},
+		"a prompt on a route that lists no text members":  {"openai", chat(`{"messages":[{"role":"user","content":"` + other + `"}]}`), true},
+	} {
+		ctx := presentCtx(mcpTestVKValue)
+		if tc.integration != "" {
+			ctx.SetValue(schemas.BifrostContextKeyIntegrationType, tc.integration)
+		}
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, tc.req)
+		require.NoError(t, err)
+		if !tc.refused {
+			assert.Nil(t, shortCircuit, name)
+			continue
+		}
+		require.NotNil(t, shortCircuit, name)
+		assert.Equal(t, 403, *shortCircuit.Error.StatusCode, name)
+		assert.Contains(t, shortCircuit.Error.Error.Message, other, name)
+	}
+	// A passthrough body built on an integration's route is in that route's format (the
+	// Anthropic route sends native Messages as a passthrough request) and is read like a raw
+	// body. The generic passthrough routes set no integration, so their bodies are read whole.
+	anthropicPrompt := `{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":[{"type":"text","text":"` + other + `"}]}]`
+	passthrough := func(body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.Vertex, Method: "POST", Path: "/v1/messages", Body: []byte(body)}}
+	}
+	for name, tc := range map[string]struct {
+		integration string
+		body        string
+		refused     bool
+	}{
+		"a native Messages prompt that is a topic name":      {"anthropic", anthropicPrompt + `}`, false},
+		"the same with a topic in metadata":                  {"anthropic", anthropicPrompt + `,"metadata":{"user_id":"` + other + `"}}`, true},
+		"a topic-name prompt on a generic passthrough route": {"", anthropicPrompt + `}`, true},
+	} {
+		ctx := presentCtx(mcpTestVKValue)
+		if tc.integration != "" {
+			ctx.SetValue(schemas.BifrostContextKeyIntegrationType, tc.integration)
+		}
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, passthrough(tc.body))
+		require.NoError(t, err)
+		if !tc.refused {
+			assert.Nil(t, shortCircuit, name)
+			continue
+		}
+		require.NotNil(t, shortCircuit, name)
+		assert.Equal(t, 403, *shortCircuit.Error.StatusCode, name)
+	}
+}
+
+// Every integration that forwards the body it received (sets BifrostContextKeyUseRawRequestBody
+// to true) lists the conversation text members of its wire format in rawBodyTextMembers. One
+// that does not is not less safe (its body is read whole) but refuses a prompt that is exactly
+// a topic name (TXE-7230), so it is listed when it starts forwarding. An integration is the
+// file named for its route type (genai.go is "genai").
+func TestEveryRawBodyIntegrationListsItsTextMembers(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("..", "..", "transports", "bifrost-http", "integrations", "*.go"))
+	require.NoError(t, err)
+	require.NotEmpty(t, files, "the integrations of transports/bifrost-http are read from the repository")
+	forwards := regexp.MustCompile(`SetValue\(\s*schemas\.BifrostContextKeyUseRawRequestBody\s*,\s*true\s*\)`)
+	found := 0
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		source, err := os.ReadFile(file)
+		require.NoError(t, err)
+		if !forwards.Match(source) {
+			continue
+		}
+		found++
+		integration := strings.TrimSuffix(filepath.Base(file), ".go")
+		_, listed := rawBodyTextMembers[integration]
+		assert.True(t, listed, "%s forwards raw request bodies: list the conversation text members of the %q wire format in rawBodyTextMembers (or, if the file is not one integration, map it here)", file, integration)
+	}
+	assert.NotZero(t, found, "no integration forwards a raw body: the pattern no longer matches how one does")
+	for integration := range rawBodyTextMembers {
+		_, err := os.Stat(filepath.Join("..", "..", "transports", "bifrost-http", "integrations", integration+".go"))
+		assert.NoError(t, err, "rawBodyTextMembers lists %q, which is not an integration", integration)
+	}
+}
+
 // An inline batch on Vertex or Bedrock is uploaded by the provider as an input file, to a
 // location the gateway derives and the request does not name. A key limited to its storage
 // cannot be held to the list there, so the inline form is refused and the file form is not.
@@ -389,10 +513,29 @@ func BenchmarkPreLLMHookCloudResourceAllowlists(b *testing.B) {
 		}}})
 	}
 	stored := "gs://shared-bucket/tenant-a/in/a.png"
+	// A native Gemini chat forwarded as its raw body (TXE-7230), 20 turns of text. "plain" never
+	// says "topics", so it is not decoded; "mentions_topics" says it in every turn, so it is
+	// decoded and walked; "topic_prompt" has a last turn that is exactly a topic name, which is
+	// conversation text and served (on main before TXE-7230 it was refused, so it has no before).
+	geminiBody := func(turn, last string) []byte {
+		contents := make([]string, 0, 20)
+		for i := 0; i < 19; i++ {
+			contents = append(contents, `{"role":"user","parts":[{"text":"`+turn+`"}]}`)
+		}
+		contents = append(contents, `{"role":"user","parts":[{"text":"`+last+`"}]}`)
+		return []byte(`{"contents":[` + strings.Join(contents, ",") + `],"generationConfig":{"temperature":0.2}}`)
+	}
+	rawChat := func(body []byte) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "m", Input: messages[:1], RawRequestBody: body}}
+	}
+	mentions := strings.Repeat("Two topics for the call. ", 40)
 	requests := map[string]*schemas.BifrostRequest{
 		"chat_web_images": {RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "m", Input: messages}},
 		"chat_stored_image": {RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "m", Input: []schemas.ChatMessage{{
 			Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: stored}}}}}}}},
+		"genai_raw_plain":           rawChat(geminiBody(text, text)),
+		"genai_raw_mentions_topics": rawChat(geminiBody(mentions, mentions)),
+		"genai_raw_topic_prompt":    rawChat(geminiBody(mentions, "projects/p/topics/tenant-b")),
 	}
 	keys := map[string][2][]string{
 		"no_lists":           {nil, nil},
@@ -405,15 +548,21 @@ func BenchmarkPreLLMHookCloudResourceAllowlists(b *testing.B) {
 		plugin := newAccessTestPlugin(b, vk, nil)
 		plugin.objectOwnershipEnforcedFn = func() bool { return false }
 		for reqName, req := range requests {
-			b.Run(keyName+"/"+reqName, func(b *testing.B) {
+			newCtx := func() *schemas.BifrostContext {
 				ctx := presentCtx(mcpTestVKValue)
-				if _, shortCircuit, err := plugin.PreLLMHook(ctx, req); err != nil || shortCircuit != nil {
+				if strings.HasPrefix(reqName, "genai_") {
+					ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "genai")
+				}
+				return ctx
+			}
+			b.Run(keyName+"/"+reqName, func(b *testing.B) {
+				if _, shortCircuit, err := plugin.PreLLMHook(newCtx(), req); err != nil || shortCircuit != nil {
 					b.Fatalf("the request is refused: %v %v", err, shortCircuit)
 				}
 				b.ReportAllocs()
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
-					_, _, _ = plugin.PreLLMHook(presentCtx(mcpTestVKValue), req)
+					_, _, _ = plugin.PreLLMHook(newCtx(), req)
 				}
 			})
 		}
