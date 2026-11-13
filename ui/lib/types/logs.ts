@@ -507,6 +507,7 @@ export interface InputCostDetails {
 	text_cost?: number;
 	audio_cost?: number;
 	image_cost?: number;
+	video_cost?: number; // video tokens and embedded seconds of video
 	cached_read_cost?: number;
 	cached_write_cost?: number;
 	request_cost?: number; // flat per-request / OCR per-page / container per-session

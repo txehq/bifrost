@@ -260,7 +260,7 @@ func TestCostAttributesReconcileToTotal(t *testing.T) {
 	cost := &BifrostCost{
 		InputCost: 0.30, OutputCost: 0.50, AdditionalCost: 0.20, TotalCost: 1.00,
 		InputCostDetails: &InputCostDetails{
-			TextCost: 0.10, AudioCost: 0.05, ImageCost: 0.05,
+			TextCost: 0.10, AudioCost: 0.05, ImageCost: 0.03, VideoCost: 0.02,
 			CachedReadCost: 0.04, CachedWriteCost: 0.03, RequestCost: 0.03,
 		},
 		OutputCostDetails: &OutputCostDetails{
@@ -292,7 +292,7 @@ func TestCostAttributesReconcileToTotal(t *testing.T) {
 	near("sides sum to total",
 		f(AttrBifrostCostInput)+f(AttrBifrostCostOutput)+f(AttrBifrostCostAdditional), f(AttrUsageCost))
 	near("input details sum to input side",
-		f(AttrBifrostCostInputText)+f(AttrBifrostCostInputAudio)+f(AttrBifrostCostInputImage)+
+		f(AttrBifrostCostInputText)+f(AttrBifrostCostInputAudio)+f(AttrBifrostCostInputImage)+f(AttrBifrostCostInputVideo)+
 			f(AttrBifrostCostInputCachedRead)+f(AttrBifrostCostInputCachedWrite)+f(AttrBifrostCostInputRequest),
 		f(AttrBifrostCostInput))
 	near("output details sum to output side",
