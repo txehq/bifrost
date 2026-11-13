@@ -14401,26 +14401,13 @@ var resourceOverrideCalls = map[schemas.RequestType]resourceOverrideCall{
 
 // resourceOverrideGaps are the calls a base serves without honouring their override: it
 // sends the vendor's own path, or the override with the placeholder still in it. Each entry
-// names the ticket that fixes it, and the test fails on a stale entry. The batch and file
-// calls have none since TXE-7085: a base that templates them is in
-// providerUtils.ResourcePathOverrideBases, and one that cannot (bedrock: ids are job ARNs and
-// S3 URIs, calls go to signed AWS endpoints) is in providerUtils.ResourcePathOverrideRefusedBases,
-// which refuses the override when the provider is written. What is left are the model and
-// video calls the openai base templates since TXE-7020, which TXE-7096 brings to the other
-// bases; nothing else may be added here.
-var resourceOverrideGaps = map[schemas.ModelProvider]map[schemas.RequestType]string{
-	schemas.Anthropic: {schemas.ModelRetrieveRequest: "TXE-7096"},
-	schemas.Gemini:    {schemas.ModelRetrieveRequest: "TXE-7096", schemas.VideoRetrieveRequest: "TXE-7096", schemas.VideoDownloadRequest: "TXE-7096"},
-	schemas.XAI:       {schemas.ModelRetrieveRequest: "TXE-7096", schemas.VideoRetrieveRequest: "TXE-7096", schemas.VideoDownloadRequest: "TXE-7096"},
-	schemas.Cohere:    {schemas.ModelRetrieveRequest: "TXE-7096"},
-	schemas.ModelArk:  {schemas.VideoRetrieveRequest: "TXE-7096", schemas.VideoDownloadRequest: "TXE-7096", schemas.VideoDeleteRequest: "TXE-7096"},
-	schemas.Volcengine: {
-		schemas.VideoRetrieveRequest: "TXE-7096", schemas.VideoDownloadRequest: "TXE-7096", schemas.VideoDeleteRequest: "TXE-7096",
-	},
-	schemas.Replicate: {schemas.VideoRetrieveRequest: "TXE-7096", schemas.VideoDownloadRequest: "TXE-7096"},
-	schemas.Minimax:   {schemas.VideoRetrieveRequest: "TXE-7096", schemas.VideoDownloadRequest: "TXE-7096", schemas.VideoDeleteRequest: "TXE-7096"},
-	schemas.Kling:     {schemas.VideoRetrieveRequest: "TXE-7096", schemas.VideoDownloadRequest: "TXE-7096"},
-}
+// names the ticket that fixes it, and the test fails on a stale entry. There are none since
+// TXE-7096: every call a base serves is either templated
+// (providerUtils.ResourcePathOverrideBases) or refused when the provider is written, with
+// the reason (providerUtils.ResourcePathOverrideRefusedBases: bedrock's batch and file calls,
+// gemini's and kling's video queries). A new entry needs a ticket that brings it to one of
+// the two.
+var resourceOverrideGaps = map[schemas.ModelProvider]map[schemas.RequestType]string{}
 
 // resourceOverridePath is the override every probe configures for requestType (given its
 // placeholders), and the path the call must reach (given its ids, each in its placeholder's
@@ -14473,7 +14460,8 @@ func TestCustomProviderResourcePathOverrides(t *testing.T) {
 			}
 			keys := []schemas.Key{guardKey(base)}
 			templatesAny := len(providerUtils.ResourcePathOverrideBases[base]) > 0
-			refusal, refused := providerUtils.ResourcePathOverrideRefusedBases[base]
+			refusals := providerUtils.ResourcePathOverrideRefusedBases[base]
+			refused := len(refusals) > 0
 			// Core picks the keys of a batch or file call by the provider's own key. A custom
 			// provider that reported its base's name there would be served with the base
 			// provider's keys, or with none, and never reach its override (replicate,
@@ -14481,11 +14469,15 @@ func TestCustomProviderResourcePathOverrides(t *testing.T) {
 			if got := provider.GetProviderKey(); (templatesAny || refused) && got != name {
 				t.Errorf("a custom provider on the %s base reports the provider key %q, want its own name %q", base, got, name)
 			}
-			if refused {
-				for _, requestType := range providerUtils.BatchAndFileResourceRequestTypes {
-					if ticket, gap := resourceOverrideGaps[base][requestType]; gap || providerUtils.TemplatesResourcePath(base, requestType) {
-						t.Errorf("%s refuses %s overrides when written (%s), so the pair may be neither in ResourcePathOverrideBases nor carry a gap (%s)", base, requestType, refusal, ticket)
-					}
+			for requestType, refusal := range refusals {
+				if _, listed := providerUtils.ResourcePathPlaceholders[requestType]; !listed {
+					t.Errorf("%s refuses %s overrides, which is not a request type of ResourcePathPlaceholders", base, requestType)
+				}
+				if ticket, gap := resourceOverrideGaps[base][requestType]; gap || providerUtils.TemplatesResourcePath(base, requestType) {
+					t.Errorf("%s refuses %s overrides when written (%s), so the pair may be neither in ResourcePathOverrideBases nor carry a gap (%s)", base, requestType, refusal, ticket)
+				}
+				if err := providerUtils.ResourcePathOverrideRefusal(base, requestType, overrides[requestType]); err == nil || !strings.Contains(err.Error(), refusal) {
+					t.Errorf("%s %s: the refusal on write must name the reason %q, got %v", base, requestType, refusal, err)
 				}
 			}
 			for _, requestType := range requestTypes {
@@ -14517,11 +14509,11 @@ func TestCustomProviderResourcePathOverrides(t *testing.T) {
 				}
 				ticket, gap := resourceOverrideGaps[base][requestType]
 				switch {
-				case refused && slices.Contains(providerUtils.BatchAndFileResourceRequestTypes, requestType):
+				case refusals[requestType] != "":
 					// The override is refused on write; a provider built past that check
 					// still must not follow it.
 					if honoured {
-						t.Errorf("%s %s reached the override's path, but the base refuses such overrides when written (%s)", base, requestType, refusal)
+						t.Errorf("%s %s reached the override's path, but the base refuses such overrides when written (%s)", base, requestType, refusals[requestType])
 					}
 				case gap && listed:
 					t.Errorf("%s %s is in ResourcePathOverrideBases but carries a gap (%s)", base, requestType, ticket)

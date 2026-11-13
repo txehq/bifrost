@@ -1006,7 +1006,8 @@
           "batch_results": true,
           "file_retrieve": true,
           "file_delete": true,
-          "file_content": true
+          "file_content": true,
+          "model_retrieve": true
         },
         "request_path_overrides": {
           "batch_retrieve": "/moved/batch_retrieve/{batch_id}",
@@ -1014,7 +1015,8 @@
           "batch_results": "/moved/batch_results/{batch_id}",
           "file_retrieve": "/moved/file_retrieve/{file_id}",
           "file_delete": "/moved/file_delete/{file_id}",
-          "file_content": "/moved/file_content/{file_id}"
+          "file_content": "/moved/file_content/{file_id}",
+          "model_retrieve": "/moved/model_retrieve/{model}"
         }
       },
       "network_config": {
@@ -1042,14 +1044,16 @@
           "batch_cancel": true,
           "batch_results": true,
           "file_retrieve": true,
-          "file_delete": true
+          "file_delete": true,
+          "model_retrieve": true
         },
         "request_path_overrides": {
           "batch_retrieve": "/moved/batch_retrieve/{batch_id}",
           "batch_cancel": "/moved/batch_cancel/{batch_id}",
           "batch_results": "/moved/batch_results/{batch_id}",
           "file_retrieve": "/moved/file_retrieve/{file_id}",
-          "file_delete": "/moved/file_delete/{file_id}"
+          "file_delete": "/moved/file_delete/{file_id}",
+          "model_retrieve": "/moved/model_retrieve/{model}"
         }
       },
       "network_config": {
@@ -1120,6 +1124,36 @@
           "file_retrieve": "/moved/file_retrieve/{file_id}",
           "file_delete": "/moved/file_delete/{file_id}",
           "file_content": "/moved/file_content/{file_id}"
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/ovr/volcengine",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "tkp_ovr_moved_volcengine": {
+      "keys": [
+        {
+          "name": "tk-key-ovr-moved-volcengine",
+          "value": "ovr-fixture-key-volcengine-moved",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "volcengine",
+        "allowed_requests": {
+          "video_retrieve": true,
+          "video_download": true,
+          "video_delete": true
+        },
+        "request_path_overrides": {
+          "video_retrieve": "/moved/video_retrieve/{video_id}",
+          "video_download": "/moved/video_download/{video_id}",
+          "video_delete": "/moved/video_delete/{video_id}"
         }
       },
       "network_config": {

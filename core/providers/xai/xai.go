@@ -106,11 +106,15 @@ func (provider *XAIProvider) ModelRetrieve(ctx *schemas.BifrostContext, key sche
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := providerUtils.ResourceRequestURLInContext(ctx, provider.networkConfig.BaseURL, "/v1/models/"+escapedModel, provider.customProviderConfig, escapedModel, schemas.ModelRetrieveRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	return openai.HandleOpenAIModelRetrieveRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models/"+escapedModel),
+		requestURL,
 		key,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),

@@ -953,10 +953,14 @@ func (provider *VolcengineProvider) VideoRetrieve(ctx *schemas.BifrostContext, k
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := providerUtils.ResourceRequestURLInContext(ctx, provider.networkConfig.BaseURL, volcenginePathVideos+"/"+escapedVideoID, provider.customProviderConfig, escapedVideoID, schemas.VideoRetrieveRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 	return openai.HandleOpenAIVideoRetrieveRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, fmt.Sprintf("%s/%s", volcenginePathVideos, escapedVideoID)),
+		requestURL,
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -978,11 +982,15 @@ func (provider *VolcengineProvider) VideoDownload(ctx *schemas.BifrostContext, k
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := providerUtils.ResourceRequestURLInContext(ctx, provider.networkConfig.BaseURL, volcenginePathVideos+"/"+escapedVideoID+"/content", provider.customProviderConfig, escapedVideoID, schemas.VideoDownloadRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, fmt.Sprintf("%s/%s/content", volcenginePathVideos, escapedVideoID)))
+	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
@@ -1014,10 +1022,14 @@ func (provider *VolcengineProvider) VideoDelete(ctx *schemas.BifrostContext, key
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := providerUtils.ResourceRequestURLInContext(ctx, provider.networkConfig.BaseURL, volcenginePathVideos+"/"+escapedVideoID, provider.customProviderConfig, escapedVideoID, schemas.VideoDeleteRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 	return openai.HandleOpenAIVideoDeleteRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, fmt.Sprintf("%s/%s", volcenginePathVideos, escapedVideoID)),
+		requestURL,
 		videoID,
 		key,
 		provider.networkConfig.ExtraHeaders,

@@ -376,13 +376,19 @@ func rejectModelExtraParam(extraParams map[string]interface{}) *schemas.BifrostE
 // doVideoRequest sends one JSON request to an xAI video endpoint and returns a copy of the
 // body of a 2xx answer. A create passes singleAttempt, which writes it to xAI at most once.
 func (provider *XAIProvider) doVideoRequest(ctx *schemas.BifrostContext, key schemas.Key, method, path string, jsonData []byte, singleAttempt, sendBackRawRequest, sendBackRawResponse bool) ([]byte, time.Duration, *schemas.BifrostError) {
+	return provider.doVideoRequestURL(ctx, key, method, provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, path), jsonData, singleAttempt, sendBackRawRequest, sendBackRawResponse)
+}
+
+// doVideoRequestURL is doVideoRequest for a call whose whole URL is already resolved, such as
+// a task query that a request_path_overrides template moved.
+func (provider *XAIProvider) doVideoRequestURL(ctx *schemas.BifrostContext, key schemas.Key, method, requestURL string, jsonData []byte, singleAttempt, sendBackRawRequest, sendBackRawResponse bool) ([]byte, time.Duration, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, path))
+	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(method)
 	if value := key.Value.GetValue(); value != "" {
 		req.Header.Set("Authorization", "Bearer "+value)
@@ -490,21 +496,27 @@ func (provider *XAIProvider) VideoRetrieve(ctx *schemas.BifrostContext, key sche
 	if bifrostErr := providerUtils.CheckOperationAllowed(schemas.XAI, provider.customProviderConfig, schemas.VideoRetrieveRequest); bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	return provider.retrieveVideoTask(ctx, key, request)
+	return provider.retrieveVideoTask(ctx, key, request, schemas.VideoRetrieveRequest)
 }
 
 // retrieveVideoTask is the query behind VideoRetrieve and VideoDownload, each of which checks
-// its own permission first.
-func (provider *XAIProvider) retrieveVideoTask(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+// its own permission first. requestTypes name the request_path_overrides entries the query
+// reads, in order: a download's query is its upstream call, so it reads video_download first,
+// then video_retrieve.
+func (provider *XAIProvider) retrieveVideoTask(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest, requestTypes ...schemas.RequestType) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 	requestID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
 	escapedID, idErr := providerUtils.EscapeResourceID(requestID, "video_id")
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := providerUtils.ResourceRequestURLInContext(ctx, provider.networkConfig.BaseURL, "/v1/videos/"+escapedID, provider.customProviderConfig, escapedID, requestTypes...)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-	body, latency, bifrostErr := provider.doVideoRequest(ctx, key, http.MethodGet, "/v1/videos/"+escapedID, nil, false, false, sendBackRawResponse)
+	body, latency, bifrostErr := provider.doVideoRequestURL(ctx, key, http.MethodGet, requestURL, nil, false, false, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -535,7 +547,7 @@ func (provider *XAIProvider) VideoDownload(ctx *schemas.BifrostContext, key sche
 		return nil, schemas.NewUnsupportedParameterError("variant", fmt.Sprintf(
 			"variant %q is not available from xAI, which produces only the video", *request.Variant))
 	}
-	task, bifrostErr := provider.retrieveVideoTask(ctx, key, &schemas.BifrostVideoRetrieveRequest{Provider: request.Provider, ID: request.ID})
+	task, bifrostErr := provider.retrieveVideoTask(ctx, key, &schemas.BifrostVideoRetrieveRequest{Provider: request.Provider, ID: request.ID}, schemas.VideoDownloadRequest, schemas.VideoRetrieveRequest)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}

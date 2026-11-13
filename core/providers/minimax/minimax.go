@@ -206,7 +206,7 @@ func (provider *MiniMaxProvider) VideoRetrieve(ctx *schemas.BifrostContext, key 
 	if bifrostErr := provider.checkAllowed(schemas.VideoRetrieveRequest); bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	return provider.videoRetrieve(ctx, key, request)
+	return provider.videoRetrieve(ctx, key, request, schemas.VideoRetrieveRequest)
 }
 
 // applyMiniMaxReasoningSplit asks MiniMax to return thinking in reasoning_content instead of inline <think> tags, unless the caller set reasoning_split.
@@ -241,13 +241,19 @@ func miniMaxChatResponseHandler(body []byte, response *schemas.BifrostChatRespon
 
 // doMiniMaxRequest sends a JSON request to MiniMax and returns a copy of the decoded body of a 2xx response.
 func (provider *MiniMaxProvider) doMiniMaxRequest(ctx *schemas.BifrostContext, key schemas.Key, method, path string, jsonData []byte, sendBackRawRequest, sendBackRawResponse bool) ([]byte, time.Duration, *schemas.BifrostError) {
+	return provider.doMiniMaxRequestURL(ctx, key, method, provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, path), jsonData, sendBackRawRequest, sendBackRawResponse)
+}
+
+// doMiniMaxRequestURL is doMiniMaxRequest for a call whose whole URL is already resolved, such
+// as a task call that a request_path_overrides template moved.
+func (provider *MiniMaxProvider) doMiniMaxRequestURL(ctx *schemas.BifrostContext, key schemas.Key, method, requestURL string, jsonData []byte, sendBackRawRequest, sendBackRawResponse bool) ([]byte, time.Duration, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, path))
+	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(method)
 	if value := key.Value.GetValue(); value != "" {
 		req.Header.Set("Authorization", "Bearer "+value)
@@ -383,18 +389,22 @@ func (provider *MiniMaxProvider) VideoGeneration(ctx *schemas.BifrostContext, ke
 }
 
 // VideoRetrieve queries the status of a MiniMax video generation task.
-func (provider *MiniMaxProvider) videoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+func (provider *MiniMaxProvider) videoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest, requestTypes ...schemas.RequestType) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 	taskID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
 	escapedTaskID, idErr := providerUtils.EscapeResourceID(taskID, "video_id")
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := providerUtils.ResourceRequestURLInContext(ctx, provider.networkConfig.BaseURL, "/v2/query/video_generation/"+escapedTaskID, provider.customProviderConfig, escapedTaskID, requestTypes...)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
-	body, latency, bifrostErr := provider.doMiniMaxRequest(ctx, key, http.MethodGet, "/v2/query/video_generation/"+escapedTaskID, nil, sendBackRawRequest, sendBackRawResponse)
+	body, latency, bifrostErr := provider.doMiniMaxRequestURL(ctx, key, http.MethodGet, requestURL, nil, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -425,7 +435,8 @@ func (provider *MiniMaxProvider) VideoDownload(ctx *schemas.BifrostContext, key 
 	if bifrostErr := provider.checkAllowed(schemas.VideoDownloadRequest); bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	task, bifrostErr := provider.videoRetrieve(ctx, key, &schemas.BifrostVideoRetrieveRequest{Provider: request.Provider, ID: request.ID})
+	// The task query is this call's upstream call: it reads video_download, then video_retrieve.
+	task, bifrostErr := provider.videoRetrieve(ctx, key, &schemas.BifrostVideoRetrieveRequest{Provider: request.Provider, ID: request.ID}, schemas.VideoDownloadRequest, schemas.VideoRetrieveRequest)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -471,8 +482,13 @@ func (provider *MiniMaxProvider) VideoDelete(ctx *schemas.BifrostContext, key sc
 		return nil, idErr
 	}
 
+	requestURL, urlErr := providerUtils.ResourceRequestURLInContext(ctx, provider.networkConfig.BaseURL, "/v2/video_generation/"+escapedTaskID, provider.customProviderConfig, escapedTaskID, schemas.VideoDeleteRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
+
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-	body, latency, bifrostErr := provider.doMiniMaxRequest(ctx, key, http.MethodDelete, "/v2/video_generation/"+escapedTaskID, nil, false, sendBackRawResponse)
+	body, latency, bifrostErr := provider.doMiniMaxRequestURL(ctx, key, http.MethodDelete, requestURL, nil, false, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}

@@ -430,7 +430,7 @@ The `request_path_overrides` field allows you to override the default API endpoi
 - Using provider forks with modified API paths
 
 <Warning>
-**Not Supported:** `request_path_overrides` is not supported for `gemini` and `bedrock` base provider types due to their specialized API implementations. The one exception is the batch and file calls that name a resource by id, described below: the `gemini` base follows their templates, and the `bedrock` base refuses them when the provider is created or updated.
+**Not Supported:** `request_path_overrides` is not supported for `gemini` and `bedrock` base provider types due to their specialized API implementations. The exception is the calls that name a resource by id, described below. The `gemini` base follows the templates of its batch, file and model calls and refuses its video ones. The `bedrock` base refuses its batch and file ones. A refused override is refused when the provider is created or updated.
 </Warning>
 
 The field accepts a mapping of request types to either custom **paths** or **full URLs**:
@@ -554,7 +554,27 @@ On the `gemini` base the id replaces the placeholder without its `batches/` or `
 
 The `bedrock` base cannot follow such a template: its batch and file ids are job ARNs and S3 URIs and its calls go to signed AWS endpoints, so there is no path on the provider's base URL to replace. A `bedrock`-based provider with an override for one of these six request types is refused when it is created or updated. The remaining base types serve none of these calls. The built-in providers keep their vendors' own paths.
 
-Only the `openai` base reads these overrides on model, video, container and stored-response calls yet.
+The model and video calls that name their target follow the same templates on the bases that serve them:
+
+| Base | Request type | Default path |
+|---|---|---|
+| `anthropic`, `cohere`, `xai` | `model_retrieve` | `/v1/models/{model}` |
+| `gemini` | `model_retrieve` | `/models/{model}` (the id without its `models/` prefix) |
+| `xai` | `video_retrieve`, `video_download` | `/v1/videos/{video_id}` |
+| `modelark`, `volcengine` | `video_retrieve`, `video_delete` | `/contents/generations/tasks/{video_id}` |
+| `modelark`, `volcengine` | `video_download` | `/contents/generations/tasks/{video_id}/content` |
+| `replicate` | `video_retrieve`, `video_download` | `/v1/predictions/{video_id}` |
+| `minimax` | `video_retrieve`, `video_download` | `/v2/query/video_generation/{video_id}` |
+| `minimax` | `video_delete` | `/v2/video_generation/{video_id}` |
+
+On `xai`, `replicate` and `minimax` a download first queries the task, then fetches the finished file from the link the task gives. The query is the call that names the video, so it uses the `video_download` override, or the `video_retrieve` one when `video_download` has none. The file link is the vendor's and is not moved.
+
+Two bases refuse a `video_retrieve` or `video_download` override when the provider is created or updated:
+
+- **`gemini`:** a video id names either a long-running operation (`operations/{name}` or `models/{model}/operations/{name}`) or an Interactions task (`interactions/{id}`). These are two APIs with different paths, so one `{video_id}` template cannot place both.
+- **`kling`:** a task is queried by its `task_ids` or `external_task_ids` query parameter on one fixed path, and the answer is a list. There is no id in a path for a template to place.
+
+Container and stored-response calls follow these overrides on the `openai` base only.
 
 **Example: OpenAI-Compatible Endpoint with Custom Paths**
 
