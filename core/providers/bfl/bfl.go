@@ -86,6 +86,13 @@ func (provider *BFLProvider) setRequestHeaders(ctx context.Context, req *fasthtt
 // doRequest sends one request to BFL and returns the body of a 2xx answer. Any other status is
 // BFL's error, with its status code kept (parseBFLError).
 func (provider *BFLProvider) doRequest(ctx *schemas.BifrostContext, key schemas.Key, method, requestURL string, jsonData []byte, sendBackRawRequest, sendBackRawResponse bool) ([]byte, time.Duration, *schemas.BifrostError) {
+	return provider.doRequestCaptured(ctx, key, method, requestURL, jsonData, jsonData, sendBackRawRequest, sendBackRawResponse)
+}
+
+// doRequestCaptured is doRequest with a separate captured copy of the body: jsonData goes to BFL,
+// captured is what an error carries as its raw request. They differ when the body holds a
+// credential from the key configuration, which the caller never sent (TXE-7062).
+func (provider *BFLProvider) doRequestCaptured(ctx *schemas.BifrostContext, key schemas.Key, method, requestURL string, jsonData, captured []byte, sendBackRawRequest, sendBackRawResponse bool) ([]byte, time.Duration, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
@@ -105,12 +112,12 @@ func (provider *BFLProvider) doRequest(ctx *schemas.BifrostContext, key schemas.
 		return nil, latency, bifrostErr
 	}
 	if resp.StatusCode() < fasthttp.StatusOK || resp.StatusCode() >= fasthttp.StatusMultipleChoices {
-		return nil, latency, providerUtils.EnrichError(ctx, parseBFLError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		return nil, latency, providerUtils.EnrichError(ctx, parseBFLError(resp), captured, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
 		rawErrBody := append([]byte(nil), resp.Body()...)
-		return nil, latency, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
+		return nil, latency, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), captured, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 	return append([]byte(nil), body...), latency, nil
 }

@@ -571,6 +571,11 @@ export const sglKeyConfigSchema = z
 	});
 
 // Cloudflare key config schema
+// Fork (TXE-7062): the BFL webhook secret is optional; a request may send its own instead.
+export const bflKeyConfigSchema = z.object({
+	webhook_secret: secretVarSchema.optional(),
+});
+
 export const cloudflareKeyConfigSchema = z
 	.object({
 		account_id: secretVarSchema.optional(),
@@ -694,6 +699,7 @@ export const modelProviderKeySchema = z
 		databricks_key_config: databricksKeyConfigSchema.optional(),
 		github_copilot_key_config: githubCopilotKeyConfigSchema.optional(),
 		cloudflare_key_config: cloudflareKeyConfigSchema.optional(),
+		bfl_key_config: bflKeyConfigSchema.optional(),
 		oauth_key_config: oauthKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 		use_anthropic_endpoints: z.boolean().optional(),

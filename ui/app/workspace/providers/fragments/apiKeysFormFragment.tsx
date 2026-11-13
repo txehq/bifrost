@@ -159,6 +159,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	const isDatabricks = effectiveProvider === "databricks";
 	const isGithubCopilot = effectiveProvider === "github-copilot";
 	const isCloudflare = effectiveProvider === "cloudflare";
+	const isBFL = effectiveProvider === "bfl";
 	// openai, and every custom provider built on the openai base, may mint its bearer from
 	// oauth_key_config instead of carrying a static API key.
 	const isOpenAICompatible = effectiveProvider === "openai";
@@ -1257,6 +1258,26 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 								<FormDescription>The Cloudflare account that runs Workers AI.</FormDescription>
 								<FormControl>
 									<SecretVarInput data-testid="key-input-cloudflare-account-id" placeholder="env.CLOUDFLARE_ACCOUNT_ID" {...field} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+			)}
+			{isBFL && (
+				<div className="space-y-4">
+					<FormField
+						control={control}
+						name="key.bfl_key_config.webhook_secret"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Webhook Secret (Optional)</FormLabel>
+								<FormDescription>
+									Sent to BFL as webhook_secret on image tasks that carry a callback_url, unless the request sends its own.
+								</FormDescription>
+								<FormControl>
+									<SecretVarInput data-testid="key-input-bfl-webhook-secret" placeholder="env.BFL_WEBHOOK_SECRET" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>

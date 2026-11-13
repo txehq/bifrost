@@ -163,6 +163,7 @@ type Key struct {
 	OllamaKeyConfig        *OllamaKeyConfig        `json:"ollama_key_config,omitempty"`         // Ollama-specific key configuration
 	SGLKeyConfig           *SGLKeyConfig           `json:"sgl_key_config,omitempty"`            // SGLang-specific key configuration
 	DatabricksKeyConfig    *DatabricksKeyConfig    `json:"databricks_key_config,omitempty"`     // Databricks-specific key configuration
+	BFLKeyConfig           *BFLKeyConfig           `json:"bfl_key_config,omitempty"`            // BFL-specific key configuration (fork, TXE-7062)
 	GithubCopilotKeyConfig *GithubCopilotKeyConfig `json:"github_copilot_key_config,omitempty"` // GitHub Copilot-specific key configuration
 	CloudflareKeyConfig    *CloudflareKeyConfig    `json:"cloudflare_key_config,omitempty"`     // Cloudflare Workers AI-specific key configuration
 	OAuthKeyConfig         *OAuthKeyConfig         `json:"oauth_key_config,omitempty"`          // OAuth-minted bearer for OpenAI-compatible providers; used when Value is empty
@@ -977,6 +978,15 @@ type SGLKeyConfig struct {
 // It allows each key to target a different Cloudflare account.
 type CloudflareKeyConfig struct {
 	AccountID SecretVar `json:"account_id"` // Cloudflare account ID (required, supports env. prefix)
+}
+
+// BFLKeyConfig is the BFL-specific key configuration (fork, TXE-7062).
+//
+// WebhookSecret is the secret BFL signs its webhook calls with. When an image task create
+// carries callback_url (sent to BFL as webhook_url) and no webhook_secret of its own, the key's
+// secret is sent as BFL's webhook_secret; a webhook_secret on the request wins.
+type BFLKeyConfig struct {
+	WebhookSecret *SecretVar `json:"webhook_secret,omitempty"` // supports env. prefix
 }
 
 // DatabricksAPIFormat selects which Databricks inference surface a key targets. Both surfaces

@@ -369,6 +369,7 @@ var (
 		"databricks_key_config":     `{}`,
 		"github_copilot_key_config": `{}`,
 		"cloudflare_key_config":     `{}`,
+		"bfl_key_config":            `{}`,
 		"oauth_key_config":          `{}`,
 		"enabled":                   `false`,
 		"use_for_batch_api":         `false`,
@@ -2852,5 +2853,40 @@ func TestCreateProviderKey_SecretReferenceGuardWhenAuthBypassed(t *testing.T) {
 				t.Fatalf("got %d stored keys, want 1", len(keys))
 			}
 		})
+	}
+}
+
+// TXE-7062: the BFL webhook secret is redacted on GET, a client echoing the redacted key back
+// keeps the stored secret, and a new value replaces it.
+func TestBFLKey_WebhookSecretRedactedRoundTrip(t *testing.T) {
+	h := &ProviderHandler{}
+	stored := schemas.Key{
+		ID: "k1", Name: "bfl", Weight: 1, Value: *schemas.NewSecretVar("bfl-api-key"),
+		BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar("bfl-webhook-secret-value")},
+	}
+	redacted := (&configstore.ProviderConfig{Keys: []schemas.Key{stored}}).Redacted().Keys[0]
+	if redacted.BFLKeyConfig == nil || redacted.BFLKeyConfig.WebhookSecret == nil {
+		t.Fatal("GET dropped bfl_key_config.webhook_secret")
+	}
+	if got := redacted.BFLKeyConfig.WebhookSecret.GetValue(); got == "bfl-webhook-secret-value" || strings.Contains(got, "webhook-secret-value") {
+		t.Fatalf("GET returned the webhook secret: %q", got)
+	}
+
+	merged, err := h.mergeUpdatedKey(stored, redacted)
+	if err != nil {
+		t.Fatalf("merge of an untouched redacted key failed: %v", err)
+	}
+	if got := merged.BFLKeyConfig.WebhookSecret.GetValue(); got != "bfl-webhook-secret-value" {
+		t.Errorf("echoing the redacted secret replaced the stored one: got %q", got)
+	}
+
+	update := redacted
+	update.BFLKeyConfig = &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar("a-new-secret")}
+	merged, err = h.mergeUpdatedKey(stored, update)
+	if err != nil {
+		t.Fatalf("merge of a new secret failed: %v", err)
+	}
+	if got := merged.BFLKeyConfig.WebhookSecret.GetValue(); got != "a-new-secret" {
+		t.Errorf("a new secret was not taken: got %q", got)
 	}
 }

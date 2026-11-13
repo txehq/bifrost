@@ -235,6 +235,17 @@ CloudflareKeyConfig:
   required:
     - account_id
 
+BFLKeyConfig:
+  type: object
+  description: |
+    BFL-specific key configuration. `webhook_secret` is the secret BFL signs its webhook calls
+    with. It is sent as BFL's `webhook_secret` on an image task create that carries
+    `callback_url` and no `webhook_secret` of its own; the request's own value wins. Redacted in
+    every response.
+  properties:
+    webhook_secret:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+
 VLLMKeyConfig:
   type: object
   description: vLLM-specific key configuration for per-key routing to different vLLM instances
@@ -382,6 +393,8 @@ Key:
       $ref: '#/SglKeyConfig'
     cloudflare_key_config:
       $ref: '#/CloudflareKeyConfig'
+    bfl_key_config:
+      $ref: '#/BFLKeyConfig'
     replicate_key_config:
       $ref: '#/ReplicateKeyConfig'
     oauth_key_config:

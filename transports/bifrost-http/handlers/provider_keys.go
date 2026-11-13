@@ -530,6 +530,7 @@ func decodeKeyUpdate(body []byte, oldRawKey schemas.Key) (schemas.Key, error) {
 		"ollama_key_config":         func() { updateKey.OllamaKeyConfig = oldRawKey.OllamaKeyConfig },
 		"sgl_key_config":            func() { updateKey.SGLKeyConfig = oldRawKey.SGLKeyConfig },
 		"databricks_key_config":     func() { updateKey.DatabricksKeyConfig = oldRawKey.DatabricksKeyConfig },
+		"bfl_key_config":            func() { updateKey.BFLKeyConfig = oldRawKey.BFLKeyConfig },
 		"github_copilot_key_config": func() { updateKey.GithubCopilotKeyConfig = oldRawKey.GithubCopilotKeyConfig },
 		"cloudflare_key_config":     func() { updateKey.CloudflareKeyConfig = oldRawKey.CloudflareKeyConfig },
 		"oauth_key_config":          func() { updateKey.OAuthKeyConfig = oldRawKey.OAuthKeyConfig },
@@ -761,6 +762,16 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 			if err := preserve(item.incoming, item.stored, item.field); err != nil {
 				return schemas.Key{}, err
 			}
+		}
+	}
+	// A client echoing back the redacted webhook secret keeps the stored one (TXE-7062).
+	if mergedKey.BFLKeyConfig != nil && mergedKey.BFLKeyConfig.WebhookSecret != nil {
+		var stored *schemas.SecretVar
+		if oldRawKey.BFLKeyConfig != nil {
+			stored = oldRawKey.BFLKeyConfig.WebhookSecret
+		}
+		if err := preserve(mergedKey.BFLKeyConfig.WebhookSecret, stored, "bfl_key_config.webhook_secret"); err != nil {
+			return schemas.Key{}, err
 		}
 	}
 	if mergedKey.GithubCopilotKeyConfig != nil {

@@ -279,6 +279,11 @@ export const DefaultCloudflareKeyConfig: CloudflareKeyConfig = {
 	account_id: { value: "", ref: "" },
 } as const satisfies Required<CloudflareKeyConfig>;
 
+// BFLKeyConfig matching Go's schemas.BFLKeyConfig (fork, TXE-7062)
+export interface BFLKeyConfig {
+	webhook_secret?: SecretVar;
+}
+
 // DatabricksKeyConfig matching Go's schemas.DatabricksKeyConfig
 export interface DatabricksKeyConfig {
 	workspace_url: SecretVar;
@@ -397,6 +402,7 @@ export interface ModelProviderKey {
 	databricks_key_config?: DatabricksKeyConfig;
 	github_copilot_key_config?: GithubCopilotKeyConfig;
 	cloudflare_key_config?: CloudflareKeyConfig;
+	bfl_key_config?: BFLKeyConfig;
 	oauth_key_config?: OAuthKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
 	status?: "unknown" | "success" | "list_models_failed";

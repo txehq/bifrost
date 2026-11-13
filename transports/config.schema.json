@@ -737,7 +737,7 @@
           "$ref": "#/$defs/provider"
         },
         "bfl": {
-          "$ref": "#/$defs/provider"
+          "$ref": "#/$defs/provider_with_bfl_config"
         },
         "google-cloud-tts": {
           "$ref": "#/$defs/provider"
@@ -7636,6 +7636,46 @@
           "required": [
             "cloudflare_key_config"
           ]
+        }
+      ]
+    },
+    "bfl_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "bfl_key_config": {
+              "type": "object",
+              "properties": {
+                "webhook_secret": {
+                  "type": "string",
+                  "description": "Secret BFL signs its webhook calls with (can use env. prefix). Sent as webhook_secret on an image task that carries callback_url and no webhook_secret of its own"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
+    "provider_with_bfl_config": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/provider"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "keys": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/bfl_key"
+              }
+            }
+          }
         }
       ]
     },
