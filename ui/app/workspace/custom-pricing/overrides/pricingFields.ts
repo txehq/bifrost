@@ -623,12 +623,6 @@ export const PRICING_FIELDS = [
 		requestTypeGroups: ["image"],
 	},
 	{
-		key: "output_cost_per_image_token_priority",
-		label: "Output / image token (priority)",
-		group: "image",
-		requestTypeGroups: ["image"],
-	},
-	{
 		key: "output_cost_per_image",
 		label: "Output / image",
 		group: "image",

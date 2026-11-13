@@ -502,7 +502,6 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority, src: override.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority},
 		{dst: &patched.CacheCreationInputTokenCostAbove12hrUltrafast, src: override.CacheCreationInputTokenCostAbove12hrUltrafast},
 		{dst: &patched.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast, src: override.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast},
-		{dst: &patched.OutputCostPerImageTokenPriority, src: override.OutputCostPerImageTokenPriority},
 		{dst: &patched.InputCostPerAudioTokenFlex, src: override.InputCostPerAudioTokenFlex},
 		{dst: &patched.InputCostPerAudioTokenPriority, src: override.InputCostPerAudioTokenPriority},
 		{dst: &patched.InputCostPerTokenFast, src: override.InputCostPerTokenFast},

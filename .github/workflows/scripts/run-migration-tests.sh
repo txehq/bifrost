@@ -1253,7 +1253,6 @@ governance_model_pricing|cache_creation_input_token_cost_above_12hr_priority|NUL
 governance_model_pricing|cache_creation_cost_above_12hr_above_272k_tokens_priority|NULL|id = 1
 governance_model_pricing|cache_creation_input_token_cost_above_12hr_ultrafast|NULL|id = 1
 governance_model_pricing|cache_creation_cost_above_12hr_above_272k_tokens_ultrafast|NULL|id = 1
-governance_model_pricing|output_cost_per_image_token_priority|NULL|id = 1
 governance_model_pricing|input_cost_per_audio_token_flex|NULL|id = 1
 governance_model_pricing|input_cost_per_audio_token_priority|NULL|id = 1
 mcp_tool_logs|user_name|'Migration Test User'|id = 'mcp-log-migration-001'

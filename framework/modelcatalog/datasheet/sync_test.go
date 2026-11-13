@@ -353,6 +353,7 @@ var ignoredUpstreamCostKeys = map[string]string{
 	"cache_read_input_audio_token_cost_flex":                "TXE-7361: cached audio by service tier",
 	"cache_read_input_audio_token_cost_priority":            "TXE-7361: cached audio by service tier",
 	"cache_read_input_token_cost_balanced":                  "TXE-7353: deliberately ignored: upstream publishes _balanced rates only for sail/*, which is not a fork provider, so no request the fork serves can reach them",
+	"output_cost_per_image_token_priority":                  "TXE-7372: an image response carries no served service tier, so a priority image rate cannot be applied until it does",
 	"input_cost_per_audio_token_above_200k_tokens_flex":     "TXE-7355: 200k audio tier",
 	"input_cost_per_audio_token_above_200k_tokens_priority": "TXE-7355: 200k audio tier",
 	"input_cost_per_token_balanced":                         "TXE-7353: deliberately ignored: upstream publishes _balanced rates only for sail/*, which is not a fork provider, so no request the fork serves can reach them",

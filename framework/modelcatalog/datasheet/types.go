@@ -280,8 +280,6 @@ type Options struct {
 	OutputCostPerImageAutoQuality                 *float64 `json:"output_cost_per_image_auto_quality,omitempty"`
 	InputCostPerImageToken                        *float64 `json:"input_cost_per_image_token,omitempty"`
 	OutputCostPerImageToken                       *float64 `json:"output_cost_per_image_token,omitempty"`
-	// Priority image output tokens (Gemini image models; fork, TXE-7353).
-	OutputCostPerImageTokenPriority *float64 `json:"output_cost_per_image_token_priority,omitempty"`
 
 	// Costs - Image, joint size and quality. These are the most specific
 	// per-image rates: they win over the quality-only and size-only rates
@@ -868,7 +866,6 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority:  entry.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority,
 		CacheCreationInputTokenCostAbove12hrUltrafast:                entry.CacheCreationInputTokenCostAbove12hrUltrafast,
 		CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast: entry.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast,
-		OutputCostPerImageTokenPriority:                              entry.OutputCostPerImageTokenPriority,
 		InputCostPerAudioTokenFlex:                                   entry.InputCostPerAudioTokenFlex,
 		InputCostPerAudioTokenPriority:                               entry.InputCostPerAudioTokenPriority,
 		InputCostPerTokenFast:                                        entry.InputCostPerTokenFast,
@@ -1033,7 +1030,6 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority:  pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority,
 		CacheCreationInputTokenCostAbove12hrUltrafast:                pricing.CacheCreationInputTokenCostAbove12hrUltrafast,
 		CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast: pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast,
-		OutputCostPerImageTokenPriority:                              pricing.OutputCostPerImageTokenPriority,
 		InputCostPerAudioTokenFlex:                                   pricing.InputCostPerAudioTokenFlex,
 		InputCostPerAudioTokenPriority:                               pricing.InputCostPerAudioTokenPriority,
 		InputCostPerTokenFast:                                        pricing.InputCostPerTokenFast,

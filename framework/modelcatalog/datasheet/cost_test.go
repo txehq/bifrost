@@ -8761,22 +8761,6 @@ func TestComputeTextCost_AudioInputTokensByTier(t *testing.T) {
 	assert.InDelta(t, 1.8e-06, tieredAudioTokenInputRate(&p, 1000, serviceTier{isPriority: true}), 1e-15)
 }
 
-// gemini/gemini-2.5-flash-image publishes image output tokens at 3e-05 and 5.4e-05 on priority.
-func TestComputeImageCost_PriorityImageOutputTokens(t *testing.T) {
-	p := decodeEntry(t, `{
-		"provider": "gemini", "mode": "image_generation",
-		"input_cost_per_token": 3e-07, "output_cost_per_token": 2.5e-06,
-		"output_cost_per_image_token": 3e-05,
-		"output_cost_per_image_token_priority": 5.4e-05
-	}`)
-	usage := &schemas.ImageUsage{
-		InputTokens: 100, OutputTokens: 1290, TotalTokens: 1390,
-		OutputTokensDetails: &schemas.ImageTokenDetails{ImageTokens: 1290},
-	}
-	assert.InDelta(t, 100*3e-07+1290*3e-05, computeImageCostTotal(&p, usage, "", "", serviceTier{}), 1e-12)
-	assert.InDelta(t, 100*3e-07+1290*5.4e-05, computeImageCostTotal(&p, usage, "", "", serviceTier{isPriority: true}), 1e-12)
-}
-
 // gpt-6-luna publishes decision rates of 1e-07 input and 2e-07 above 272k, decision cache reads
 // at 1e-08 (2e-08 above 272k) and decision cache writes at 1.25e-07 (2.5e-07 above 272k).
 func TestComputeDecisionCost_Above272kAndCacheRates(t *testing.T) {

@@ -2227,9 +2227,6 @@ func tieredImageInputRate(pricing *configstoreTables.TableModelPricing, totalTok
 // tieredImageOutputRate returns the effective rate for image tokens on the output side.
 // Falls back to the general tieredOutputRate when no image-specific rate is configured.
 func tieredImageOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
-	if tier.isPriority && pricing.OutputCostPerImageTokenPriority != nil {
-		return *pricing.OutputCostPerImageTokenPriority
-	}
 	if pricing.OutputCostPerImageToken != nil {
 		return *pricing.OutputCostPerImageToken
 	}

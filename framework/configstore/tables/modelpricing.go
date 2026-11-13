@@ -60,7 +60,6 @@ type TableModelPricing struct {
 	CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority  *float64 `gorm:"default:null;column:cache_creation_cost_above_12hr_above_272k_tokens_priority" json:"cache_creation_input_token_cost_above_12hr_above_272k_tokens_priority,omitempty"`
 	CacheCreationInputTokenCostAbove12hrUltrafast                *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_12hr_ultrafast" json:"cache_creation_input_token_cost_above_12hr_ultrafast,omitempty"`
 	CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast *float64 `gorm:"default:null;column:cache_creation_cost_above_12hr_above_272k_tokens_ultrafast" json:"cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast,omitempty"`
-	OutputCostPerImageTokenPriority                              *float64 `gorm:"default:null;column:output_cost_per_image_token_priority" json:"output_cost_per_image_token_priority,omitempty"`
 	InputCostPerAudioTokenFlex                                   *float64 `gorm:"default:null;column:input_cost_per_audio_token_flex" json:"input_cost_per_audio_token_flex,omitempty"`
 	InputCostPerAudioTokenPriority                               *float64 `gorm:"default:null;column:input_cost_per_audio_token_priority" json:"input_cost_per_audio_token_priority,omitempty"`
 	// Costs - 128k Tier

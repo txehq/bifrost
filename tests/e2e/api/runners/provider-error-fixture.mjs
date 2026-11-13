@@ -87,6 +87,35 @@ const behaviours = {
 			usage: { prompt_tokens: 20, completion_tokens: 2, total_tokens: 22, prompt_tokens_details: { cached_tokens: 7 } },
 		}),
 	}),
+	// Folder 565 (TXE-7353): answers served on a tier, for the rows that read back the tier's rates. tiers-flex-long
+	// is a 250k-token prompt served on flex, past its 200k tier; tiers-priority-audio is an audio prompt served on
+	// priority. fixturePricing prices both.
+	"tiers-flex-long": () => ({
+		status: 200,
+		headers: {},
+		body: JSON.stringify({
+			id: "chatcmpl-tiers-flex-long",
+			object: "chat.completion",
+			created: 1,
+			model: "tiers-flex-long",
+			service_tier: "flex",
+			choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
+			usage: { prompt_tokens: 250000, completion_tokens: 1000, total_tokens: 251000, prompt_tokens_details: { cached_tokens: 50000 } },
+		}),
+	}),
+	"tiers-priority-audio": () => ({
+		status: 200,
+		headers: {},
+		body: JSON.stringify({
+			id: "chatcmpl-tiers-priority-audio",
+			object: "chat.completion",
+			created: 1,
+			model: "tiers-priority-audio",
+			service_tier: "priority",
+			choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
+			usage: { prompt_tokens: 1000, completion_tokens: 100, total_tokens: 1100, prompt_tokens_details: { audio_tokens: 400, text_tokens: 600 } },
+		}),
+	}),
 };
 // Azure OpenAI's documented answer to a prompt its content filter blocked, TXE-6527 (contract C6): HTTP 400 with
 // error.code "content_filter" and the per-category verdicts under innererror.
@@ -358,6 +387,10 @@ const nativeDecisionAnswer = (body) => {
 	if (body.model === "gpt-6-luna") {
 		return { model: "gpt-6-luna-2026", answers: [], usage: decisionUsage };
 	}
+	// Folder 565 (TXE-7353): a 300k-token decision, 100k of it read from cache, past the 272k decision tier.
+	if (body.model === "gpt-6-luna-long") {
+		return { model: "gpt-6-luna-long", answers: [{ type: "predicate", name: "is_refund_request", probability: 0.97 }], usage: { input_tokens: 300000, input_tokens_details: { cached_tokens: 100000 }, output_tokens: 10, total_tokens: 300010 } };
+	}
 	return undefined;
 };
 const openRouterDecisionAnswer = () => ({ model: "typesafe/jev-1.13.0", answers: {}, usage: { input_tokens: 1000, output_tokens: 10, cost: 0.25 } });
@@ -372,6 +405,26 @@ const fixturePricing = {
 	"turns-tiered": { provider: "openai_turns", ...turnRates },
 	"turns-fail": { provider: "openai_turns", ...turnRates },
 	"gpt-6-luna": { provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, input_cost_per_token_decisions: 0.000003, output_cost_per_token_decisions: 0.000004, supports_decisions: true },
+	// Folder 565 (TXE-7353): the live datasheet's gpt-6-luna decision rates above 272k and its decision cache rates,
+	// gemini-3.1-pro-preview's flex rates above 200k, and gemini-2.5-flash's priority audio rate.
+	"gpt-6-luna-long": {
+		provider: "openai", mode: "chat", supports_decisions: true,
+		input_cost_per_token: 1e-7, output_cost_per_token: 5e-7,
+		input_cost_per_token_decisions: 1e-7, output_cost_per_token_decisions: 0,
+		input_cost_per_token_above_272k_tokens_decisions: 2e-7, output_cost_per_token_above_272k_tokens_decisions: 0,
+		cache_read_input_token_cost_decisions: 1e-8, cache_read_input_token_cost_above_272k_tokens_decisions: 2e-8,
+	},
+	"tiers-flex-long": {
+		provider: "openai", mode: "chat",
+		input_cost_per_token: 2e-6, output_cost_per_token: 1.2e-5,
+		input_cost_per_token_flex: 1e-6, output_cost_per_token_flex: 6e-6, cache_read_input_token_cost_flex: 2e-7,
+		input_cost_per_token_above_200k_tokens_flex: 2e-6, output_cost_per_token_above_200k_tokens_flex: 9e-6, cache_read_input_token_cost_above_200k_tokens_flex: 4e-7,
+	},
+	"tiers-priority-audio": {
+		provider: "openai", mode: "chat",
+		input_cost_per_token: 3e-7, output_cost_per_token: 2.5e-6, input_cost_per_token_priority: 5.4e-7, output_cost_per_token_priority: 4.5e-6,
+		input_cost_per_audio_token: 1e-6, input_cost_per_audio_token_priority: 1.8e-6,
+	},
 	"typesafe/jev-1.13": { provider: "openrouter", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
 	"decision-emulated": { provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, cache_read_input_token_cost: 0.0000001 },
 	"pp-custom-legacy": { provider: "openai", mode: "responses", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
