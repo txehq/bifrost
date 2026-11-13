@@ -1,6 +1,6 @@
 {
   "name": "436. A sync image response says when its links expire (image link expiry)",
-  "description": "TXE-7051, contract C9. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. Before the change no sync image response carried an expiry, so a caller that downloads the links had no deadline to read. Now a response with at least one link, from a provider that documents a fixed link lifetime (schemas.ImageLinkLifetimes: BytePlus Seedream, MiniMax and Alibaba DashScope 24 hours, Tencent TokenHub 12 hours), carries expires_at = created + that lifetime, written in one place for every such provider. The rows cover both routes the change reaches: MiniMax generation (a link back carries expires_at counted from the time the answer was read, because MiniMax reports no creation time; bytes back carry none), and BytePlus Seedream generation and edit (expires_at counted from the created Seedream reports). Providers with no documented lifetime are pinned by Go tests.",
+  "description": "TXE-7051, contract C9. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. Before the change no sync image response carried an expiry, so a caller that downloads the links had no deadline to read. Now a response with at least one link, from a provider that documents a fixed link lifetime (schemas.ImageLinkLifetimes: BytePlus Seedream, MiniMax and Alibaba DashScope 24 hours, Tencent TokenHub 12 hours), carries expires_at = created + that lifetime, written in one place for every such provider. The rows cover both routes the change reaches: MiniMax generation (a link back carries expires_at counted from the time the answer was read, because MiniMax reports no creation time; bytes back carry none), BytePlus Seedream generation and edit (expires_at counted from the created Seedream reports), and DashScope Qwen-Image generation (counted from the time the answer was read: DashScope's synchronous answer reports no creation time). Providers with no documented lifetime are pinned by Go tests.",
   "item": [
     {
       "name": "minimax/image-01 /v1/images/generations with a link back: expires_at is created plus the 24 hours MiniMax documents (image link expiry)",
@@ -220,6 +220,73 @@
         "body": {
           "mode": "raw",
           "raw": "{\"model\":\"byteplus/seedream-4-0-250828\",\"prompt\":\"a lighthouse at dusk\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "dashscope/qwen-image-2.0 /v1/images/generations with a link back: expires_at is the time the answer was read plus the 24 hours DashScope documents (image link expiry)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.variables.set('dashscopeExpirySentAt', Math.floor(Date.now() / 1000));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text();",
+              "var body = pm.response.json();",
+              "var sentAt = Number(pm.variables.get('dashscopeExpirySentAt'));",
+              "pm.test('the client gets 200 with one link', function () {",
+              "  pm.expect(pm.response.code, text).to.equal(200);",
+              "  pm.expect(body.data, text).to.be.an('array').with.length(1);",
+              "  pm.expect(body.data[0].url, text).to.match(/^https:\\/\\//);",
+              "});",
+              "pm.test('created is the time the answer was read: DashScope reports no creation time', function () {",
+              "  pm.expect(body.created, text).to.be.a('number').within(sentAt - 5, sentAt + 120);",
+              "});",
+              "pm.test('expires_at is created + 86400', function () {",
+              "  pm.expect(body.expires_at, text).to.equal(body.created + 86400);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"dashscope/qwen-image-2.0\",\"prompt\":\"a lighthouse at dusk\",\"n\":1}"
         },
         "url": {
           "raw": "{{baseUrl}}/v1/images/generations",
