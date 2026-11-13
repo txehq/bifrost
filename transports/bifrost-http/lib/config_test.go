@@ -25116,7 +25116,14 @@ func TestValidateCustomProvider_ResourcePathOverrides(t *testing.T) {
 		// A base that serves these calls but cannot move them refuses the override, with or
 		// without the placeholder (TXE-7085); a blank one is no override.
 		for base, reason := range providerUtils.ResourcePathOverrideRefusedBases {
-			for _, override := range []string{"/v1/files", "/v1/x/" + providerUtils.ResourcePathPlaceholders[requestType]} {
+			withPlaceholders := "/v1/x/" + strings.Join(providerUtils.ResourcePathPlaceholders[requestType], "/")
+			if !slices.Contains(providerUtils.BatchAndFileResourceRequestTypes, requestType) {
+				// The refusal covers the batch and file calls the base cannot move; it does not
+				// read the other overrides at all.
+				require.NoError(t, ValidateCustomProvider(withOverrides(base, map[schemas.RequestType]string{requestType: withPlaceholders}), schemas.ModelProvider("my-"+string(base))), "%s on %s", requestType, base)
+				continue
+			}
+			for _, override := range []string{"/v1/files", withPlaceholders} {
 				err := ValidateCustomProvider(withOverrides(base, map[schemas.RequestType]string{requestType: override}), schemas.ModelProvider("my-"+string(base)))
 				require.Error(t, err, "%s on %s", requestType, base)
 				assert.Contains(t, err.Error(), "request_path_overrides."+string(requestType)+" is not supported on the "+string(base)+" base", "%s on %s", requestType, base)
