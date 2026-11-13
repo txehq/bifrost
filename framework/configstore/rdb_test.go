@@ -4009,6 +4009,15 @@ func TestPricingSyncUpdateColumns_CoverEveryPricingColumn(t *testing.T) {
 		}
 	}
 
+	// PostgreSQL truncates an identifier past 63 bytes, and a truncated column no longer matches
+	// its GORM mapping, so the rate reads back nil (rename_truncated_pricing_column fixed one such
+	// column; TXE-7353's first 12h names were three more). A column name may not be longer.
+	for _, field := range stmt.Schema.Fields {
+		if len(field.DBName) > 63 {
+			t.Errorf("governance_model_pricing.%s is %d bytes; PostgreSQL truncates identifiers past 63. Give the column a shorter name and keep the datasheet key as its json tag", field.DBName, len(field.DBName))
+		}
+	}
+
 	// Every rate, set, then changed and re-upserted, reads back changed.
 	setRates := func(row *tables.TableModelPricing, offset float64) []string {
 		v := reflect.ValueOf(row).Elem()
