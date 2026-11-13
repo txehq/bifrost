@@ -1,0 +1,565 @@
+{
+  "name": "551. A custom provider's video id names it, so retrieve and download reach it with its own key (custom provider video ids) [SERIAL]",
+  "description": "TXE-7085 (Codex P1 on #221). A custom provider on the replicate, volcengine or modelark base reports its own name since TXE-7085, and the video ids it returns carry that name (`<id>:<custom provider>`). The gateway routes a retrieve, download or delete by that suffix, so the call reaches the custom provider, with its own key and base_url. Before, the ids carried the base's suffix (`:replicate`, `:volcengine`, `:modelark`) and those calls went to the built-in provider. The custom providers are the folder-485 ones (tkp_ovr_<base>, base_url /pp/ovr/<base> on the provider error fixture); the fixture answers their default video paths for one prediction (pred_ovr_video) and one Ark task (cgt-ovr-video) and records every call with the name of the key it carried. Replicate serves create and retrieve only; volcengine and modelark also download. An id with the legacy base suffix is routed by the gateway to the built-in provider, so its handling in the custom provider (providerUtils.StripVideoIDProviderSuffixOrBase) is reachable only through the Go SDK and is pinned by Go tests. Red before this change: each create returns the base's suffix.",
+  "item": [
+    {
+      "name": "[NO-CONTENT] tkp_ovr_replicate video create: POST /v1/videos returns an id that names tkp_ovr_replicate (custom provider video ids)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-replicate"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"tkp_ovr_replicate/fixture/ovr-video\",\"prompt\":\"a cat on a mat\",\"seconds\":\"4\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('custom provider video ids setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the video was created', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+              "pm.test('its id names the custom provider, so a later call is routed back to it (before TXE-7085: :replicate)', function () {",
+              "  pm.expect(body.id, pm.response.text()).to.equal('pred_ovr_video:tkp_ovr_replicate');",
+              "});",
+              "pm.collectionVariables.set('cpv_replicate_id', body.id || '');",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/ovr/') === 0; });",
+              "  pm.test('one call reached the custom provider\\'s upstream: POST /pp/ovr/replicate/v1/models/fixture/ovr-video/predictions', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['POST /pp/ovr/replicate/v1/models/fixture/ovr-video/predictions']);",
+              "  });",
+              "  pm.test('it carried the custom provider\\'s key tk-key-ovr-replicate', function () {",
+              "    pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-replicate']);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "tkp_ovr_replicate video retrieve: GET /v1/videos/{id} with the returned id reaches tkp_ovr_replicate with its key (custom provider video ids)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-replicate"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/{{cpv_replicate_id}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "{{cpv_replicate_id}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('custom provider video ids setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the video was retrieved from the custom provider', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.id, pm.response.text()).to.equal('pred_ovr_video:tkp_ovr_replicate');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/ovr/') === 0; });",
+              "  pm.test('one call reached the custom provider\\'s upstream: GET /pp/ovr/replicate/v1/predictions/pred_ovr_video', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/replicate/v1/predictions/pred_ovr_video']);",
+              "  });",
+              "  pm.test('it carried the custom provider\\'s key tk-key-ovr-replicate', function () {",
+              "    pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-replicate']);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[NO-CONTENT] tkp_ovr_volcengine video create: POST /v1/videos returns an id that names tkp_ovr_volcengine (custom provider video ids)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-volcengine"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"tkp_ovr_volcengine/doubao-seedance-1-0-pro-250528\",\"prompt\":\"a cat on a mat\",\"seconds\":\"4\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('custom provider video ids setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the video was created', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+              "pm.test('its id names the custom provider, so a later call is routed back to it (before TXE-7085: :volcengine)', function () {",
+              "  pm.expect(body.id, pm.response.text()).to.equal('cgt-ovr-video:tkp_ovr_volcengine');",
+              "});",
+              "pm.collectionVariables.set('cpv_volcengine_id', body.id || '');",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/ovr/') === 0; });",
+              "  pm.test('one call reached the custom provider\\'s upstream: POST /pp/ovr/volcengine/contents/generations/tasks', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['POST /pp/ovr/volcengine/contents/generations/tasks']);",
+              "  });",
+              "  pm.test('it carried the custom provider\\'s key tk-key-ovr-volcengine', function () {",
+              "    pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-volcengine']);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "tkp_ovr_volcengine video retrieve: GET /v1/videos/{id} with the returned id reaches tkp_ovr_volcengine with its key (custom provider video ids)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-volcengine"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/{{cpv_volcengine_id}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "{{cpv_volcengine_id}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('custom provider video ids setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the video was retrieved from the custom provider', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.id, pm.response.text()).to.equal('cgt-ovr-video:tkp_ovr_volcengine');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/ovr/') === 0; });",
+              "  pm.test('one call reached the custom provider\\'s upstream: GET /pp/ovr/volcengine/contents/generations/tasks/cgt-ovr-video', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/volcengine/contents/generations/tasks/cgt-ovr-video']);",
+              "  });",
+              "  pm.test('it carried the custom provider\\'s key tk-key-ovr-volcengine', function () {",
+              "    pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-volcengine']);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[NO-CONTENT] tkp_ovr_volcengine video download: GET /v1/videos/{id}/content with the returned id reaches tkp_ovr_volcengine with its key (custom provider video ids)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-volcengine"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/{{cpv_volcengine_id}}/content",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "{{cpv_volcengine_id}}",
+            "content"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('custom provider video ids setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the content came from the custom provider', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.text()).to.equal('ovr video bytes');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/ovr/') === 0; });",
+              "  pm.test('one call reached the custom provider\\'s upstream: GET /pp/ovr/volcengine/contents/generations/tasks/cgt-ovr-video/content', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/volcengine/contents/generations/tasks/cgt-ovr-video/content']);",
+              "  });",
+              "  pm.test('it carried the custom provider\\'s key tk-key-ovr-volcengine', function () {",
+              "    pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-volcengine']);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[NO-CONTENT] tkp_ovr_modelark video create: POST /v1/videos returns an id that names tkp_ovr_modelark (custom provider video ids)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-modelark"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"tkp_ovr_modelark/doubao-seedance-1-0-pro-250528\",\"prompt\":\"a cat on a mat\",\"seconds\":\"4\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('custom provider video ids setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the video was created', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+              "pm.test('its id names the custom provider, so a later call is routed back to it (before TXE-7085: :modelark)', function () {",
+              "  pm.expect(body.id, pm.response.text()).to.equal('cgt-ovr-video:tkp_ovr_modelark');",
+              "});",
+              "pm.collectionVariables.set('cpv_modelark_id', body.id || '');",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/ovr/') === 0; });",
+              "  pm.test('one call reached the custom provider\\'s upstream: POST /pp/ovr/modelark/contents/generations/tasks', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['POST /pp/ovr/modelark/contents/generations/tasks']);",
+              "  });",
+              "  pm.test('it carried the custom provider\\'s key tk-key-ovr-modelark', function () {",
+              "    pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-modelark']);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "tkp_ovr_modelark video retrieve: GET /v1/videos/{id} with the returned id reaches tkp_ovr_modelark with its key (custom provider video ids)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-modelark"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/{{cpv_modelark_id}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "{{cpv_modelark_id}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('custom provider video ids setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "pm.test('the video was retrieved from the custom provider', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(body.id, pm.response.text()).to.equal('cgt-ovr-video:tkp_ovr_modelark');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/ovr/') === 0; });",
+              "  pm.test('one call reached the custom provider\\'s upstream: GET /pp/ovr/modelark/contents/generations/tasks/cgt-ovr-video', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/modelark/contents/generations/tasks/cgt-ovr-video']);",
+              "  });",
+              "  pm.test('it carried the custom provider\\'s key tk-key-ovr-modelark', function () {",
+              "    pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-modelark']);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[NO-CONTENT] tkp_ovr_modelark video download: GET /v1/videos/{id}/content with the returned id reaches tkp_ovr_modelark with its key (custom provider video ids)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-modelark"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/{{cpv_modelark_id}}/content",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "{{cpv_modelark_id}}",
+            "content"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('custom provider video ids setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the content came from the custom provider', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.text()).to.equal('ovr video bytes');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/ovr/') === 0; });",
+              "  pm.test('one call reached the custom provider\\'s upstream: GET /pp/ovr/modelark/contents/generations/tasks/cgt-ovr-video/content', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/modelark/contents/generations/tasks/cgt-ovr-video/content']);",
+              "  });",
+              "  pm.test('it carried the custom provider\\'s key tk-key-ovr-modelark', function () {",
+              "    pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-modelark']);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

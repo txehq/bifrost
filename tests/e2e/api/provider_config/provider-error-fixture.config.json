@@ -1075,7 +1075,11 @@
         "allowed_requests": {
           "file_retrieve": true,
           "file_delete": true,
-          "file_content": true
+          "file_content": true,
+          "video_generation": true,
+          "video_retrieve": true,
+          "video_download": true,
+          "video_delete": true
         },
         "request_path_overrides": {
           "file_retrieve": "/moved/file_retrieve/{file_id}",
@@ -1106,7 +1110,11 @@
         "allowed_requests": {
           "file_retrieve": true,
           "file_delete": true,
-          "file_content": true
+          "file_content": true,
+          "video_generation": true,
+          "video_retrieve": true,
+          "video_download": true,
+          "video_delete": true
         },
         "request_path_overrides": {
           "file_retrieve": "/moved/file_retrieve/{file_id}",
@@ -1136,7 +1144,9 @@
         "base_provider_type": "replicate",
         "allowed_requests": {
           "file_retrieve": true,
-          "file_delete": true
+          "file_delete": true,
+          "video_generation": true,
+          "video_retrieve": true
         },
         "request_path_overrides": {
           "file_retrieve": "/moved/file_retrieve/{file_id}",

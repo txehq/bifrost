@@ -1969,8 +1969,38 @@ const ovrAnswers = {
 	},
 };
 ovrAnswers.volcengine = ovrAnswers.modelark;
+// Video on the same custom providers (folder 485 rows 21-28, TXE-7085). A custom provider on these bases names
+// itself in the video ids it returns, so a retrieve, download or delete with that id is routed back to it, with its
+// own key; before, it returned the base's suffix and those calls went to the built-in provider. The calls take the
+// bases' default video paths under each provider's base_url: Replicate's model predictions and prediction by id,
+// and Ark's content-generation tasks for volcengine and modelark. Only the one prediction or task named here
+// answers, so an id that lost or kept its suffix is a 404 that shows in GET /__wire.
+const OVR_VIDEO_PREDICTION = "pred_ovr_video";
+const OVR_VIDEO_TASK = "cgt-ovr-video";
+const ovrVideoAnswer = (base, method, rest) => {
+	const json = (body, status = 200) => ({ status, body: JSON.stringify(body) });
+	if (base === "replicate") {
+		if (method === "POST" && rest === "/v1/models/fixture/ovr-video/predictions") return json({ id: OVR_VIDEO_PREDICTION, model: "fixture/ovr-video", status: "starting", created_at: "2026-11-14T00:00:00Z" }, 201);
+		if (method === "GET" && rest === `/v1/predictions/${OVR_VIDEO_PREDICTION}`) {
+			return json({ id: OVR_VIDEO_PREDICTION, model: "fixture/ovr-video", status: "succeeded", output: "https://fixture.invalid/ovr/video.mp4", created_at: "2026-11-14T00:00:00Z", completed_at: "2026-11-14T00:00:30Z", metrics: { predict_time: 30 } });
+		}
+		return undefined;
+	}
+	if (base !== "volcengine" && base !== "modelark") return undefined;
+	const tasks = "/contents/generations/tasks";
+	if (method === "POST" && rest === tasks) return json({ id: OVR_VIDEO_TASK });
+	if (method === "GET" && rest === `${tasks}/${OVR_VIDEO_TASK}`) {
+		return json({ id: OVR_VIDEO_TASK, model: "doubao-seedance-1-0-pro-250528", status: "succeeded", content: { video_url: "https://fixture.invalid/ovr/video.mp4" }, usage: { completion_tokens: 108900, total_tokens: 108900 }, resolution: "720p", ratio: "16:9", duration: 5, created_at: 1762700000, updated_at: 1762700090 });
+	}
+	if (method === "GET" && rest === `${tasks}/${OVR_VIDEO_TASK}/content`) return { status: 200, contentType: "video/mp4", body: "ovr video bytes" };
+	if (method === "DELETE" && rest === `${tasks}/${OVR_VIDEO_TASK}`) return { status: 200, body: "" };
+	return undefined;
+};
 const ovrAnswer = (method, path) => {
 	const notFound = { status: 404, body: errorBody(`the vendor behind the path overrides serves nothing at ${method} ${path}`, "invalid_request_error", "not_found") };
+	const [videoBase, ...restParts] = path.slice(OVR_ROOT.length + 1).split("/");
+	const video = ovrVideoAnswer(videoBase, method, "/" + restParts.join("/"));
+	if (video) return video;
 	const [base, moved, requestType, id, ...more] = path.slice(OVR_ROOT.length + 1).split("/");
 	const answer = moved === "moved" && more.length === 0 && ovrAnswers[base] ? ovrAnswers[base][`${method} ${requestType}`] : undefined;
 	if (!answer || id !== (requestType.startsWith("batch_") ? OVR_BATCH_ID : OVR_FILE_ID)) return notFound;

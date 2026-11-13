@@ -350,6 +350,13 @@ Start the fixture and the isolated gateway as for content-length truncation abov
 make run-provider-harness-test FEATURE="resource path overrides" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
 ```
 
+Folder 551 uses the same `tkp_ovr_replicate`, `tkp_ovr_volcengine` and `tkp_ovr_modelark` providers for video. A
+custom provider on these bases names itself in the video ids it returns (TXE-7085), so a retrieve or download with
+that id is routed back to it, and the rows assert the upstream path and key in `/__wire`. The fixture answers their
+default video paths (Replicate's `/v1/models/fixture/ovr-video/predictions` and `/v1/predictions/pred_ovr_video`;
+Ark's `/contents/generations/tasks` and `.../cgt-ovr-video`, with `/content`) under `/pp/ovr/<base>`. Run it with
+`FEATURE="custom provider video ids"`.
+
 ## xAI batch and files on an xai-based custom provider
 
 Folder 479 pins TXE-7084: `tkp_xaicompat` in the fixture config is an `xai`-based custom provider whose
