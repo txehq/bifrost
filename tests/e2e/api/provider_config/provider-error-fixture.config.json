@@ -130,6 +130,7 @@
             "gpt-image-1.5",
             "gpt-image-blocked",
             "gpt-image-drop",
+            "fixture-dalle-3",
             "upstream-cut",
             "upstream-oversize",
             "upstream-oversize-gzip-500",

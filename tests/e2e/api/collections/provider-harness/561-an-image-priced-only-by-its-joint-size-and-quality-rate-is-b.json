@@ -1,0 +1,217 @@
+{
+  "name": "561. An image priced only by its joint size and quality rate is billed at it: dall-e-3 hd and standard, 1024 and 1792, not $0 (image variant pricing)",
+  "item": [
+    {
+      "name": "561.1 openai/fixture-dalle-3 POST /v1/images/generations quality hd 1024x1024 is billed $0.088, the hd rate, and the response says hd (image variant pricing)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/fixture-dalle-3\",\n  \"prompt\": \"a lighthouse at dusk\",\n  \"size\": \"1024x1024\",\n  \"quality\": \"hd\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the client gets 200 with one image', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.json().data, pm.response.text()).to.be.an('array').with.length(1);",
+              "});",
+              "pm.test('the response carries the quality and size the image was priced by', function () {",
+              "  var body = pm.response.json();",
+              "  pm.expect(body.quality, pm.response.text()).to.equal('hd');",
+              "  pm.expect(body.size, pm.response.text()).to.equal('1024x1024');",
+              "});",
+              "// The fixture prices fixture-dalle-3 with dall-e-3's live upstream row: joint size and quality rates and no",
+              "// flat rate. 1024x1024 hd is $0.088. Before TXE-7356 the fork dropped hd at sync and billed $0.",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var requestId = pm.response.headers.get('x-bifrost-request-id');",
+              "var token = pm.variables.get('setup_token') || 'bifrost-e2e-setup-token';",
+              "function readCost(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?limit=50', method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    var rows = (!err && res.code === 200 && res.json().logs) || [];",
+              "    var row = rows.filter(function (r) { return r.id === requestId; })[0];",
+              "    if (tries > 0 && (!row || row.status === 'processing')) { setTimeout(function () { readCost(tries - 1); }, 300); return; }",
+              "    pm.test('the log row of this request is readable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(row, 'no log row for ' + requestId).to.be.an('object'); });",
+              "    pm.test('the logged cost is the hd 1024x1024 rate, $0.088', function () { pm.expect(row && (row.cost || 0), JSON.stringify(row && { cost: row.cost })).to.be.closeTo(0.088, 1e-9); });",
+              "  });",
+              "}",
+              "readCost(40);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "561.2 openai/fixture-dalle-3 POST /v1/images/generations quality standard 1792x1024 is billed $0.088, the standard 1792 rate (image variant pricing)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/fixture-dalle-3\",\n  \"prompt\": \"a lighthouse at dusk\",\n  \"size\": \"1792x1024\",\n  \"quality\": \"standard\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the client gets 200 and the response says standard', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.json().quality, pm.response.text()).to.equal('standard');",
+              "});",
+              "// 1792x1024 standard is $0.088 upstream. Before TXE-7356 the fork had no 1792 rate and dropped standard, so $0.",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var requestId = pm.response.headers.get('x-bifrost-request-id');",
+              "var token = pm.variables.get('setup_token') || 'bifrost-e2e-setup-token';",
+              "function readCost(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?limit=50', method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    var rows = (!err && res.code === 200 && res.json().logs) || [];",
+              "    var row = rows.filter(function (r) { return r.id === requestId; })[0];",
+              "    if (tries > 0 && (!row || row.status === 'processing')) { setTimeout(function () { readCost(tries - 1); }, 300); return; }",
+              "    pm.test('the log row of this request is readable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(row, 'no log row for ' + requestId).to.be.an('object'); });",
+              "    pm.test('the logged cost is the standard 1792x1024 rate, $0.088', function () { pm.expect(row && (row.cost || 0), JSON.stringify(row && { cost: row.cost })).to.be.closeTo(0.088, 1e-9); });",
+              "  });",
+              "}",
+              "readCost(40);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "561.3 openai/fixture-dalle-3 POST /v1/images/generations quality hd 1024x1792 is billed $0.132, the portrait hd rate (image variant pricing)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/fixture-dalle-3\",\n  \"prompt\": \"a lighthouse at dusk\",\n  \"size\": \"1024x1792\",\n  \"quality\": \"hd\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var requestId = pm.response.headers.get('x-bifrost-request-id');",
+              "var token = pm.variables.get('setup_token') || 'bifrost-e2e-setup-token';",
+              "function readCost(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?limit=50', method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    var rows = (!err && res.code === 200 && res.json().logs) || [];",
+              "    var row = rows.filter(function (r) { return r.id === requestId; })[0];",
+              "    if (tries > 0 && (!row || row.status === 'processing')) { setTimeout(function () { readCost(tries - 1); }, 300); return; }",
+              "    pm.test('the log row of this request is readable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(row, 'no log row for ' + requestId).to.be.an('object'); });",
+              "    pm.test('the logged cost is the hd 1024x1792 rate, $0.132', function () { pm.expect(row && (row.cost || 0), JSON.stringify(row && { cost: row.cost })).to.be.closeTo(0.132, 1e-9); });",
+              "  });",
+              "}",
+              "readCost(40);"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

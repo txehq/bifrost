@@ -433,11 +433,58 @@ Any field you set (including `0`) is applied as an override; omitted fields are 
 | `output_cost_per_image_above_1024_and_1024_pixels_standard_quality` | Generated image at or above 1024×1024, standard quality |
 | `output_cost_per_image_above_1024_and_1536_pixels_standard_quality` | Generated image at or above 1024×1536, standard quality |
 | `output_cost_per_image_above_1536_and_1024_pixels_standard_quality` | Generated image at or above 1536×1024, standard quality |
+| `output_cost_per_image_above_1024_and_1792_pixels_standard_quality` | Generated image at or above 1024×1792, standard quality |
+| `output_cost_per_image_above_1792_and_1024_pixels_standard_quality` | Generated image at or above 1792×1024, standard quality |
+| `output_cost_per_image_above_1024_and_1024_pixels_hd_quality` | Generated image at or above 1024×1024, hd quality |
+| `output_cost_per_image_above_1024_and_1792_pixels_hd_quality` | Generated image at or above 1024×1792, hd quality |
+| `output_cost_per_image_above_1792_and_1024_pixels_hd_quality` | Generated image at or above 1792×1024, hd quality |
+| `output_cost_per_image_above_1024_and_768_pixels_low_quality` | Generated image at or above 1024×768 pixels, low quality |
+| `output_cost_per_image_above_1920_and_1080_pixels_low_quality` | Generated image at or above 1920×1080 pixels, low quality |
+| `output_cost_per_image_above_2560_and_1440_pixels_low_quality` | Generated image at or above 2560×1440 pixels, low quality |
+| `output_cost_per_image_above_3840_and_2160_pixels_low_quality` | Generated image at or above 3840×2160 pixels, low quality |
+| `output_cost_per_image_above_1024_and_768_pixels_medium_quality` | Generated image at or above 1024×768 pixels, medium quality |
+| `output_cost_per_image_above_1920_and_1080_pixels_medium_quality` | Generated image at or above 1920×1080 pixels, medium quality |
+| `output_cost_per_image_above_2560_and_1440_pixels_medium_quality` | Generated image at or above 2560×1440 pixels, medium quality |
+| `output_cost_per_image_above_3840_and_2160_pixels_medium_quality` | Generated image at or above 3840×2160 pixels, medium quality |
+| `output_cost_per_image_above_1024_and_768_pixels_high_quality` | Generated image at or above 1024×768 pixels, high quality |
+| `output_cost_per_image_above_1920_and_1080_pixels_high_quality` | Generated image at or above 1920×1080 pixels, high quality |
+| `output_cost_per_image_above_2560_and_1440_pixels_high_quality` | Generated image at or above 2560×1440 pixels, high quality |
+| `output_cost_per_image_above_3840_and_2160_pixels_high_quality` | Generated image at or above 3840×2160 pixels, high quality |
+| `output_cost_per_image_above_1024_and_768_pixels_xhigh_quality` | Generated image at or above 1024×768 pixels, xhigh quality |
+| `output_cost_per_image_above_1024_and_1024_pixels_xhigh_quality` | Generated image at or above 1024×1024 pixels, xhigh quality |
+| `output_cost_per_image_above_1024_and_1536_pixels_xhigh_quality` | Generated image at or above 1024×1536 pixels, xhigh quality |
+| `output_cost_per_image_above_1920_and_1080_pixels_xhigh_quality` | Generated image at or above 1920×1080 pixels, xhigh quality |
+| `output_cost_per_image_above_2560_and_1440_pixels_xhigh_quality` | Generated image at or above 2560×1440 pixels, xhigh quality |
+| `output_cost_per_image_above_3840_and_2160_pixels_xhigh_quality` | Generated image at or above 3840×2160 pixels, xhigh quality |
+| `output_cost_per_image_above_1024_and_768_pixels_max_quality` | Generated image at or above 1024×768 pixels, max quality |
+| `output_cost_per_image_above_1024_and_1024_pixels_max_quality` | Generated image at or above 1024×1024 pixels, max quality |
+| `output_cost_per_image_above_1024_and_1536_pixels_max_quality` | Generated image at or above 1024×1536 pixels, max quality |
+| `output_cost_per_image_above_1920_and_1080_pixels_max_quality` | Generated image at or above 1920×1080 pixels, max quality |
+| `output_cost_per_image_above_2560_and_1440_pixels_max_quality` | Generated image at or above 2560×1440 pixels, max quality |
+| `output_cost_per_image_above_3840_and_2160_pixels_max_quality` | Generated image at or above 3840×2160 pixels, max quality |
+| `output_cost_per_image_0.5K` | Generated image at the `0.5K` resolution tier (the request's `resolution`) |
+| `output_cost_per_image_1K` | Generated image at the `1K` resolution tier; also the rate for a request that names no `resolution` on a model priced only by tier |
+| `output_cost_per_image_2K` | Generated image at the `2K` resolution tier |
+| `output_cost_per_image_4K` | Generated image at the `4K` resolution tier |
+| `output_cost_per_image_512` | Generated image at the `512` resolution tier |
+| `output_cost_per_image_1024` | Generated image at the `1024` resolution tier |
+| `output_cost_per_image_1536` | Generated image at the `1536` resolution tier |
+| `output_cost_per_image_above_512_and_512_pixels_50_steps` | Generated image at or below 512×512, 50 or fewer steps (the request's `num_inference_steps`, or `steps`; unset counts as 50 or fewer) |
+| `output_cost_per_image_above_512_and_512_pixels_max_steps` | Generated image at or below 512×512, more than 50 steps |
+| `output_cost_per_image_above_max_and_max_pixels_50_steps` | Generated image larger than 512×512, 50 or fewer steps |
+| `output_cost_per_image_above_max_and_max_pixels_max_steps` | Generated image larger than 512×512, more than 50 steps |
+| `output_cost_per_image_above_1024_and_1024_pixels_50_steps` | Generated image of any size on a model that publishes this one step-priced size, 50 or fewer steps |
+| `output_cost_per_image_above_1024_and_1024_pixels_max_steps` | Generated image of any size on a model that publishes this one step-priced size, more than 50 steps |
 
 <Info>The megapixel rates are available in **Bifrost v2.0.0 and above**.</Info>
 
-When several per-image rates could apply, the most specific one wins: a joint size and quality
-rate first, then a quality-only rate, then a size-only rate, then the flat `output_cost_per_image`.
+When several per-image rates could apply, the most specific one wins: a size and steps rate
+first, then a joint size and quality rate, then the resolution tier the request named, then a
+quality-only rate, then a size-only rate, then the flat `output_cost_per_image`. A model priced
+only by resolution tier bills a request that names no `resolution` at its `1K` rate, the
+default tier of the vendors that publish one; a tier the model does not price leaves the image
+unpriced. When a model prices only one orientation of a 1536×1024 or 1792×1024 pair, the other
+orientation takes the same rate.
 The 1024×1536 and 1536×1024 thresholds have the same pixel count, so they are matched on width
 and height rather than on the total. An image that clears both (width at least 1536 and height at
 least 1536) is billed at the 1536×1024 rate, which is checked first.

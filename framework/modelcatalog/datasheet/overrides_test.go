@@ -577,6 +577,20 @@ func TestPatchPricing_MegapixelImageTiers(t *testing.T) {
 	assert.Equal(t, 0.12, *patched.OutputCostPerImageAbove64Megapixels)
 }
 
+func TestPatchPricing_ImageVariantRates(t *testing.T) {
+	patched := patchPricing(configstoreTables.TableModelPricing{Model: "dall-e-3", Provider: "azure", Mode: "image_generation"}, Options{
+		OutputCostPerImageAbove1024x1024PixelsHDQuality: bifrost.Ptr(0.088),
+		OutputCostPerImage2K:                            bifrost.Ptr(0.06),
+		OutputCostPerImageAbove1024x1024PixelsMaxSteps:  bifrost.Ptr(0.08),
+	})
+	require.NotNil(t, patched.OutputCostPerImageAbove1024x1024PixelsHDQuality)
+	require.NotNil(t, patched.OutputCostPerImage2K)
+	require.NotNil(t, patched.OutputCostPerImageAbove1024x1024PixelsMaxSteps)
+	assert.Equal(t, 0.088, *patched.OutputCostPerImageAbove1024x1024PixelsHDQuality)
+	assert.Equal(t, 0.06, *patched.OutputCostPerImage2K)
+	assert.Equal(t, 0.08, *patched.OutputCostPerImageAbove1024x1024PixelsMaxSteps)
+}
+
 func TestApplyScopedOverrides_ScopePrecedence(t *testing.T) {
 	s := newTestStore()
 

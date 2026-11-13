@@ -176,6 +176,17 @@ ImageGenerationResponse:
         - "1024x1536"
         - "auto"
       description: Size of the generated image
+    resolution:
+      type: string
+      description: |
+        The resolution tier the request asked for (for example `1K` or `2K`), echoed from the
+        request when the provider reports none. Some models are priced by it.
+    num_inference_steps:
+      type: integer
+      description: |
+        The inference steps the request asked for (`num_inference_steps`, or a `steps` extra
+        parameter), echoed from the request when the provider reports none. Some models are
+        priced by it.
     content_filter:
       $ref: "./videos.yaml#/VideoContentFilter"
       description: |
@@ -345,6 +356,12 @@ ImageGenerationStreamResponse:
     quality:
       type: string
       description: Quality setting used
+    resolution:
+      type: string
+      description: Resolution tier the request asked for, echoed when the provider reports none
+    num_inference_steps:
+      type: integer
+      description: Inference steps the request asked for, echoed when the provider reports none
     background:
       type: string
       description: Background type used
@@ -815,6 +832,12 @@ ImageEditStreamResponse:
     quality:
       type: string
       description: Quality setting used
+    resolution:
+      type: string
+      description: Resolution tier the request asked for, echoed when the provider reports none
+    num_inference_steps:
+      type: integer
+      description: Inference steps the request asked for, echoed when the provider reports none
     background:
       type: string
       description: Background type used

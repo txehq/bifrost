@@ -113,6 +113,49 @@ func TestImageEditBackfillsAspectRatio(t *testing.T) {
 	}
 }
 
+// TXE-7356: the resolution tier, the inference steps and the dall-e-3 qualities a model is priced
+// by reach the response, where the cost path reads them. hd and standard used to be dropped here.
+func TestImageBackfillsPricedRequestShape(t *testing.T) {
+	req := &BifrostRequest{ImageGenerationRequest: &BifrostImageGenerationRequest{
+		Params: &ImageGenerationParameters{Quality: new("hd"), Resolution: "2k", NumInferenceSteps: new(60)},
+	}}
+	resp := &BifrostImageGenerationResponse{}
+	resp.BackfillParams(req)
+	p := resp.ImageGenerationResponseParameters
+	if p == nil || p.Quality != "hd" || p.Resolution != "2k" || p.NumInferenceSteps == nil || *p.NumInferenceSteps != 60 {
+		t.Fatalf("response params = %+v, want quality hd, resolution 2k, 60 steps", p)
+	}
+	// The response's copy is its own: a later change to the request does not move it.
+	*req.ImageGenerationRequest.Params.NumInferenceSteps = 10
+	if *p.NumInferenceSteps != 60 {
+		t.Fatalf("steps aliased the request: %d", *p.NumInferenceSteps)
+	}
+
+	streamResp := &BifrostImageGenerationStreamResponse{}
+	streamResp.BackfillParams(req)
+	if streamResp.Resolution != "2k" || streamResp.NumInferenceSteps == nil {
+		t.Fatalf("stream = resolution %q steps %v", streamResp.Resolution, streamResp.NumInferenceSteps)
+	}
+
+	// Stability's native "steps" extra param counts when num_inference_steps is unset.
+	edit := &BifrostRequest{ImageEditRequest: &BifrostImageEditRequest{
+		Params: &ImageEditParameters{Quality: new("standard"), ExtraParams: map[string]interface{}{"steps": float64(40)}},
+	}}
+	editResp := &BifrostImageGenerationResponse{}
+	editResp.BackfillParams(edit)
+	ep := editResp.ImageGenerationResponseParameters
+	if ep == nil || ep.Quality != "standard" || ep.NumInferenceSteps == nil || *ep.NumInferenceSteps != 40 {
+		t.Fatalf("edit response params = %+v, want quality standard and 40 steps", ep)
+	}
+
+	// A value the vendor reported wins over the request's.
+	vendor := &BifrostImageGenerationResponse{ImageGenerationResponseParameters: &ImageGenerationResponseParameters{Resolution: "1K"}}
+	vendor.BackfillParams(req)
+	if vendor.ImageGenerationResponseParameters.Resolution != "1K" {
+		t.Fatalf("resolution = %q, want the vendor's 1K", vendor.ImageGenerationResponseParameters.Resolution)
+	}
+}
+
 // TXE-6518 (contract C4 BF3): resolution decodes on both image generation and image edit.
 func TestImageParametersResolution(t *testing.T) {
 	var gen ImageGenerationParameters

@@ -296,6 +296,58 @@ type Options struct {
 	OutputCostPerImageAbove1024x1024PixelsStandardQuality *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_standard_quality,omitempty"`
 	OutputCostPerImageAbove1024x1536PixelsStandardQuality *float64 `json:"output_cost_per_image_above_1024_and_1536_pixels_standard_quality,omitempty"`
 	OutputCostPerImageAbove1536x1024PixelsStandardQuality *float64 `json:"output_cost_per_image_above_1536_and_1024_pixels_standard_quality,omitempty"`
+	// Fork (TXE-7356): the hd, xhigh and max quality grids, and the 768, 1792,
+	// 1080, 1440 and 2160 size thresholds, priced exactly like the joint rates above.
+	OutputCostPerImageAbove1024x1024PixelsHDQuality       *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_hd_quality,omitempty"`
+	OutputCostPerImageAbove1024x1792PixelsHDQuality       *float64 `json:"output_cost_per_image_above_1024_and_1792_pixels_hd_quality,omitempty"`
+	OutputCostPerImageAbove1792x1024PixelsHDQuality       *float64 `json:"output_cost_per_image_above_1792_and_1024_pixels_hd_quality,omitempty"`
+	OutputCostPerImageAbove1024x1792PixelsStandardQuality *float64 `json:"output_cost_per_image_above_1024_and_1792_pixels_standard_quality,omitempty"`
+	OutputCostPerImageAbove1792x1024PixelsStandardQuality *float64 `json:"output_cost_per_image_above_1792_and_1024_pixels_standard_quality,omitempty"`
+	OutputCostPerImageAbove1024x1024PixelsXHighQuality    *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_xhigh_quality,omitempty"`
+	OutputCostPerImageAbove1024x1536PixelsXHighQuality    *float64 `json:"output_cost_per_image_above_1024_and_1536_pixels_xhigh_quality,omitempty"`
+	OutputCostPerImageAbove1024x768PixelsXHighQuality     *float64 `json:"output_cost_per_image_above_1024_and_768_pixels_xhigh_quality,omitempty"`
+	OutputCostPerImageAbove1920x1080PixelsXHighQuality    *float64 `json:"output_cost_per_image_above_1920_and_1080_pixels_xhigh_quality,omitempty"`
+	OutputCostPerImageAbove2560x1440PixelsXHighQuality    *float64 `json:"output_cost_per_image_above_2560_and_1440_pixels_xhigh_quality,omitempty"`
+	OutputCostPerImageAbove3840x2160PixelsXHighQuality    *float64 `json:"output_cost_per_image_above_3840_and_2160_pixels_xhigh_quality,omitempty"`
+	OutputCostPerImageAbove1024x1024PixelsMaxQuality      *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_max_quality,omitempty"`
+	OutputCostPerImageAbove1024x1536PixelsMaxQuality      *float64 `json:"output_cost_per_image_above_1024_and_1536_pixels_max_quality,omitempty"`
+	OutputCostPerImageAbove1024x768PixelsMaxQuality       *float64 `json:"output_cost_per_image_above_1024_and_768_pixels_max_quality,omitempty"`
+	OutputCostPerImageAbove1920x1080PixelsMaxQuality      *float64 `json:"output_cost_per_image_above_1920_and_1080_pixels_max_quality,omitempty"`
+	OutputCostPerImageAbove2560x1440PixelsMaxQuality      *float64 `json:"output_cost_per_image_above_2560_and_1440_pixels_max_quality,omitempty"`
+	OutputCostPerImageAbove3840x2160PixelsMaxQuality      *float64 `json:"output_cost_per_image_above_3840_and_2160_pixels_max_quality,omitempty"`
+	OutputCostPerImageAbove1024x768PixelsLowQuality       *float64 `json:"output_cost_per_image_above_1024_and_768_pixels_low_quality,omitempty"`
+	OutputCostPerImageAbove1920x1080PixelsLowQuality      *float64 `json:"output_cost_per_image_above_1920_and_1080_pixels_low_quality,omitempty"`
+	OutputCostPerImageAbove2560x1440PixelsLowQuality      *float64 `json:"output_cost_per_image_above_2560_and_1440_pixels_low_quality,omitempty"`
+	OutputCostPerImageAbove3840x2160PixelsLowQuality      *float64 `json:"output_cost_per_image_above_3840_and_2160_pixels_low_quality,omitempty"`
+	OutputCostPerImageAbove1024x768PixelsMediumQuality    *float64 `json:"output_cost_per_image_above_1024_and_768_pixels_medium_quality,omitempty"`
+	OutputCostPerImageAbove1920x1080PixelsMediumQuality   *float64 `json:"output_cost_per_image_above_1920_and_1080_pixels_medium_quality,omitempty"`
+	OutputCostPerImageAbove2560x1440PixelsMediumQuality   *float64 `json:"output_cost_per_image_above_2560_and_1440_pixels_medium_quality,omitempty"`
+	OutputCostPerImageAbove3840x2160PixelsMediumQuality   *float64 `json:"output_cost_per_image_above_3840_and_2160_pixels_medium_quality,omitempty"`
+	OutputCostPerImageAbove1024x768PixelsHighQuality      *float64 `json:"output_cost_per_image_above_1024_and_768_pixels_high_quality,omitempty"`
+	OutputCostPerImageAbove1920x1080PixelsHighQuality     *float64 `json:"output_cost_per_image_above_1920_and_1080_pixels_high_quality,omitempty"`
+	OutputCostPerImageAbove2560x1440PixelsHighQuality     *float64 `json:"output_cost_per_image_above_2560_and_1440_pixels_high_quality,omitempty"`
+	OutputCostPerImageAbove3840x2160PixelsHighQuality     *float64 `json:"output_cost_per_image_above_3840_and_2160_pixels_high_quality,omitempty"`
+
+	// Costs - Image, resolution tier (fork, TXE-7356). Some vendors price an image by the
+	// resolution tier the request names (resolution: "1K", "2K", ...) rather than by its pixel
+	// size. Selected from the request's resolution, ahead of every size rate.
+	OutputCostPerImageHalfK   *float64 `json:"output_cost_per_image_0.5K,omitempty"`
+	OutputCostPerImage1K      *float64 `json:"output_cost_per_image_1K,omitempty"`
+	OutputCostPerImage2K      *float64 `json:"output_cost_per_image_2K,omitempty"`
+	OutputCostPerImage4K      *float64 `json:"output_cost_per_image_4K,omitempty"`
+	OutputCostPerImageRes512  *float64 `json:"output_cost_per_image_512,omitempty"`
+	OutputCostPerImageRes1024 *float64 `json:"output_cost_per_image_1024,omitempty"`
+	OutputCostPerImageRes1536 *float64 `json:"output_cost_per_image_1536,omitempty"`
+
+	// Costs - Image, inference steps (fork, TXE-7356). Bedrock's Stable Diffusion XL prices
+	// an image by size and by whether it ran 50 or fewer steps (_50_steps) or more
+	// (_max_steps). "max" is every size larger than the model's smaller step-priced size.
+	OutputCostPerImageAbove512x512Pixels50Steps    *float64 `json:"output_cost_per_image_above_512_and_512_pixels_50_steps,omitempty"`
+	OutputCostPerImageAbove512x512PixelsMaxSteps   *float64 `json:"output_cost_per_image_above_512_and_512_pixels_max_steps,omitempty"`
+	OutputCostPerImageAbove1024x1024Pixels50Steps  *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_50_steps,omitempty"`
+	OutputCostPerImageAbove1024x1024PixelsMaxSteps *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_max_steps,omitempty"`
+	OutputCostPerImageAboveMaxPixels50Steps        *float64 `json:"output_cost_per_image_above_max_and_max_pixels_50_steps,omitempty"`
+	OutputCostPerImageAboveMaxPixelsMaxSteps       *float64 `json:"output_cost_per_image_above_max_and_max_pixels_max_steps,omitempty"`
 
 	// Costs - Audio/Video
 	InputCostPerAudioToken *float64 `json:"input_cost_per_audio_token,omitempty"`
@@ -515,6 +567,8 @@ type costInput struct {
 	imageUsage          *schemas.ImageUsage
 	imageSize           string // e.g. "1024x1024", used for per-pixel pricing
 	imageQuality        string // "low", "medium", "high", "auto" (gpt-image-1.5); empty = use base rate
+	imageResolution     string // resolution tier the request named, e.g. "1K" (fork, TXE-7356)
+	imageSteps          *int   // inference steps the request named (fork, TXE-7356)
 	videoSeconds        *int
 	videoSize           string // e.g. "1920x1080", used for resolution-banded video pricing
 	videoCount          int    // generated clips on the response; 0 until the job returns them
@@ -970,6 +1024,48 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		OutputCostPerImageAbove1024x1024PixelsStandardQuality: entry.OutputCostPerImageAbove1024x1024PixelsStandardQuality,
 		OutputCostPerImageAbove1024x1536PixelsStandardQuality: entry.OutputCostPerImageAbove1024x1536PixelsStandardQuality,
 		OutputCostPerImageAbove1536x1024PixelsStandardQuality: entry.OutputCostPerImageAbove1536x1024PixelsStandardQuality,
+		OutputCostPerImageAbove1024x1024PixelsHDQuality:       entry.OutputCostPerImageAbove1024x1024PixelsHDQuality,
+		OutputCostPerImageAbove1024x1792PixelsHDQuality:       entry.OutputCostPerImageAbove1024x1792PixelsHDQuality,
+		OutputCostPerImageAbove1792x1024PixelsHDQuality:       entry.OutputCostPerImageAbove1792x1024PixelsHDQuality,
+		OutputCostPerImageAbove1024x1792PixelsStandardQuality: entry.OutputCostPerImageAbove1024x1792PixelsStandardQuality,
+		OutputCostPerImageAbove1792x1024PixelsStandardQuality: entry.OutputCostPerImageAbove1792x1024PixelsStandardQuality,
+		OutputCostPerImageAbove1024x1024PixelsXHighQuality:    entry.OutputCostPerImageAbove1024x1024PixelsXHighQuality,
+		OutputCostPerImageAbove1024x1536PixelsXHighQuality:    entry.OutputCostPerImageAbove1024x1536PixelsXHighQuality,
+		OutputCostPerImageAbove1024x768PixelsXHighQuality:     entry.OutputCostPerImageAbove1024x768PixelsXHighQuality,
+		OutputCostPerImageAbove1920x1080PixelsXHighQuality:    entry.OutputCostPerImageAbove1920x1080PixelsXHighQuality,
+		OutputCostPerImageAbove2560x1440PixelsXHighQuality:    entry.OutputCostPerImageAbove2560x1440PixelsXHighQuality,
+		OutputCostPerImageAbove3840x2160PixelsXHighQuality:    entry.OutputCostPerImageAbove3840x2160PixelsXHighQuality,
+		OutputCostPerImageAbove1024x1024PixelsMaxQuality:      entry.OutputCostPerImageAbove1024x1024PixelsMaxQuality,
+		OutputCostPerImageAbove1024x1536PixelsMaxQuality:      entry.OutputCostPerImageAbove1024x1536PixelsMaxQuality,
+		OutputCostPerImageAbove1024x768PixelsMaxQuality:       entry.OutputCostPerImageAbove1024x768PixelsMaxQuality,
+		OutputCostPerImageAbove1920x1080PixelsMaxQuality:      entry.OutputCostPerImageAbove1920x1080PixelsMaxQuality,
+		OutputCostPerImageAbove2560x1440PixelsMaxQuality:      entry.OutputCostPerImageAbove2560x1440PixelsMaxQuality,
+		OutputCostPerImageAbove3840x2160PixelsMaxQuality:      entry.OutputCostPerImageAbove3840x2160PixelsMaxQuality,
+		OutputCostPerImageAbove1024x768PixelsLowQuality:       entry.OutputCostPerImageAbove1024x768PixelsLowQuality,
+		OutputCostPerImageAbove1920x1080PixelsLowQuality:      entry.OutputCostPerImageAbove1920x1080PixelsLowQuality,
+		OutputCostPerImageAbove2560x1440PixelsLowQuality:      entry.OutputCostPerImageAbove2560x1440PixelsLowQuality,
+		OutputCostPerImageAbove3840x2160PixelsLowQuality:      entry.OutputCostPerImageAbove3840x2160PixelsLowQuality,
+		OutputCostPerImageAbove1024x768PixelsMediumQuality:    entry.OutputCostPerImageAbove1024x768PixelsMediumQuality,
+		OutputCostPerImageAbove1920x1080PixelsMediumQuality:   entry.OutputCostPerImageAbove1920x1080PixelsMediumQuality,
+		OutputCostPerImageAbove2560x1440PixelsMediumQuality:   entry.OutputCostPerImageAbove2560x1440PixelsMediumQuality,
+		OutputCostPerImageAbove3840x2160PixelsMediumQuality:   entry.OutputCostPerImageAbove3840x2160PixelsMediumQuality,
+		OutputCostPerImageAbove1024x768PixelsHighQuality:      entry.OutputCostPerImageAbove1024x768PixelsHighQuality,
+		OutputCostPerImageAbove1920x1080PixelsHighQuality:     entry.OutputCostPerImageAbove1920x1080PixelsHighQuality,
+		OutputCostPerImageAbove2560x1440PixelsHighQuality:     entry.OutputCostPerImageAbove2560x1440PixelsHighQuality,
+		OutputCostPerImageAbove3840x2160PixelsHighQuality:     entry.OutputCostPerImageAbove3840x2160PixelsHighQuality,
+		OutputCostPerImageHalfK:                               entry.OutputCostPerImageHalfK,
+		OutputCostPerImage1K:                                  entry.OutputCostPerImage1K,
+		OutputCostPerImage2K:                                  entry.OutputCostPerImage2K,
+		OutputCostPerImage4K:                                  entry.OutputCostPerImage4K,
+		OutputCostPerImageRes512:                              entry.OutputCostPerImageRes512,
+		OutputCostPerImageRes1024:                             entry.OutputCostPerImageRes1024,
+		OutputCostPerImageRes1536:                             entry.OutputCostPerImageRes1536,
+		OutputCostPerImageAbove512x512Pixels50Steps:           entry.OutputCostPerImageAbove512x512Pixels50Steps,
+		OutputCostPerImageAbove512x512PixelsMaxSteps:          entry.OutputCostPerImageAbove512x512PixelsMaxSteps,
+		OutputCostPerImageAbove1024x1024Pixels50Steps:         entry.OutputCostPerImageAbove1024x1024Pixels50Steps,
+		OutputCostPerImageAbove1024x1024PixelsMaxSteps:        entry.OutputCostPerImageAbove1024x1024PixelsMaxSteps,
+		OutputCostPerImageAboveMaxPixels50Steps:               entry.OutputCostPerImageAboveMaxPixels50Steps,
+		OutputCostPerImageAboveMaxPixelsMaxSteps:              entry.OutputCostPerImageAboveMaxPixelsMaxSteps,
 
 		InputCostPerAudioToken:      entry.InputCostPerAudioToken,
 		InputCostPerAudioPerSecond:  entry.InputCostPerAudioPerSecond,
@@ -1141,6 +1237,48 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerImageAbove1024x1024PixelsStandardQuality: pricing.OutputCostPerImageAbove1024x1024PixelsStandardQuality,
 		OutputCostPerImageAbove1024x1536PixelsStandardQuality: pricing.OutputCostPerImageAbove1024x1536PixelsStandardQuality,
 		OutputCostPerImageAbove1536x1024PixelsStandardQuality: pricing.OutputCostPerImageAbove1536x1024PixelsStandardQuality,
+		OutputCostPerImageAbove1024x1024PixelsHDQuality:       pricing.OutputCostPerImageAbove1024x1024PixelsHDQuality,
+		OutputCostPerImageAbove1024x1792PixelsHDQuality:       pricing.OutputCostPerImageAbove1024x1792PixelsHDQuality,
+		OutputCostPerImageAbove1792x1024PixelsHDQuality:       pricing.OutputCostPerImageAbove1792x1024PixelsHDQuality,
+		OutputCostPerImageAbove1024x1792PixelsStandardQuality: pricing.OutputCostPerImageAbove1024x1792PixelsStandardQuality,
+		OutputCostPerImageAbove1792x1024PixelsStandardQuality: pricing.OutputCostPerImageAbove1792x1024PixelsStandardQuality,
+		OutputCostPerImageAbove1024x1024PixelsXHighQuality:    pricing.OutputCostPerImageAbove1024x1024PixelsXHighQuality,
+		OutputCostPerImageAbove1024x1536PixelsXHighQuality:    pricing.OutputCostPerImageAbove1024x1536PixelsXHighQuality,
+		OutputCostPerImageAbove1024x768PixelsXHighQuality:     pricing.OutputCostPerImageAbove1024x768PixelsXHighQuality,
+		OutputCostPerImageAbove1920x1080PixelsXHighQuality:    pricing.OutputCostPerImageAbove1920x1080PixelsXHighQuality,
+		OutputCostPerImageAbove2560x1440PixelsXHighQuality:    pricing.OutputCostPerImageAbove2560x1440PixelsXHighQuality,
+		OutputCostPerImageAbove3840x2160PixelsXHighQuality:    pricing.OutputCostPerImageAbove3840x2160PixelsXHighQuality,
+		OutputCostPerImageAbove1024x1024PixelsMaxQuality:      pricing.OutputCostPerImageAbove1024x1024PixelsMaxQuality,
+		OutputCostPerImageAbove1024x1536PixelsMaxQuality:      pricing.OutputCostPerImageAbove1024x1536PixelsMaxQuality,
+		OutputCostPerImageAbove1024x768PixelsMaxQuality:       pricing.OutputCostPerImageAbove1024x768PixelsMaxQuality,
+		OutputCostPerImageAbove1920x1080PixelsMaxQuality:      pricing.OutputCostPerImageAbove1920x1080PixelsMaxQuality,
+		OutputCostPerImageAbove2560x1440PixelsMaxQuality:      pricing.OutputCostPerImageAbove2560x1440PixelsMaxQuality,
+		OutputCostPerImageAbove3840x2160PixelsMaxQuality:      pricing.OutputCostPerImageAbove3840x2160PixelsMaxQuality,
+		OutputCostPerImageAbove1024x768PixelsLowQuality:       pricing.OutputCostPerImageAbove1024x768PixelsLowQuality,
+		OutputCostPerImageAbove1920x1080PixelsLowQuality:      pricing.OutputCostPerImageAbove1920x1080PixelsLowQuality,
+		OutputCostPerImageAbove2560x1440PixelsLowQuality:      pricing.OutputCostPerImageAbove2560x1440PixelsLowQuality,
+		OutputCostPerImageAbove3840x2160PixelsLowQuality:      pricing.OutputCostPerImageAbove3840x2160PixelsLowQuality,
+		OutputCostPerImageAbove1024x768PixelsMediumQuality:    pricing.OutputCostPerImageAbove1024x768PixelsMediumQuality,
+		OutputCostPerImageAbove1920x1080PixelsMediumQuality:   pricing.OutputCostPerImageAbove1920x1080PixelsMediumQuality,
+		OutputCostPerImageAbove2560x1440PixelsMediumQuality:   pricing.OutputCostPerImageAbove2560x1440PixelsMediumQuality,
+		OutputCostPerImageAbove3840x2160PixelsMediumQuality:   pricing.OutputCostPerImageAbove3840x2160PixelsMediumQuality,
+		OutputCostPerImageAbove1024x768PixelsHighQuality:      pricing.OutputCostPerImageAbove1024x768PixelsHighQuality,
+		OutputCostPerImageAbove1920x1080PixelsHighQuality:     pricing.OutputCostPerImageAbove1920x1080PixelsHighQuality,
+		OutputCostPerImageAbove2560x1440PixelsHighQuality:     pricing.OutputCostPerImageAbove2560x1440PixelsHighQuality,
+		OutputCostPerImageAbove3840x2160PixelsHighQuality:     pricing.OutputCostPerImageAbove3840x2160PixelsHighQuality,
+		OutputCostPerImageHalfK:                               pricing.OutputCostPerImageHalfK,
+		OutputCostPerImage1K:                                  pricing.OutputCostPerImage1K,
+		OutputCostPerImage2K:                                  pricing.OutputCostPerImage2K,
+		OutputCostPerImage4K:                                  pricing.OutputCostPerImage4K,
+		OutputCostPerImageRes512:                              pricing.OutputCostPerImageRes512,
+		OutputCostPerImageRes1024:                             pricing.OutputCostPerImageRes1024,
+		OutputCostPerImageRes1536:                             pricing.OutputCostPerImageRes1536,
+		OutputCostPerImageAbove512x512Pixels50Steps:           pricing.OutputCostPerImageAbove512x512Pixels50Steps,
+		OutputCostPerImageAbove512x512PixelsMaxSteps:          pricing.OutputCostPerImageAbove512x512PixelsMaxSteps,
+		OutputCostPerImageAbove1024x1024Pixels50Steps:         pricing.OutputCostPerImageAbove1024x1024Pixels50Steps,
+		OutputCostPerImageAbove1024x1024PixelsMaxSteps:        pricing.OutputCostPerImageAbove1024x1024PixelsMaxSteps,
+		OutputCostPerImageAboveMaxPixels50Steps:               pricing.OutputCostPerImageAboveMaxPixels50Steps,
+		OutputCostPerImageAboveMaxPixelsMaxSteps:              pricing.OutputCostPerImageAboveMaxPixelsMaxSteps,
 
 		InputCostPerAudioToken:      pricing.InputCostPerAudioToken,
 		InputCostPerAudioPerSecond:  pricing.InputCostPerAudioPerSecond,

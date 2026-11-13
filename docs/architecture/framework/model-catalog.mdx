@@ -210,6 +210,12 @@ type PricingEntry struct {
     OutputCostPerImageAbove1024x1024PixelsStandardQuality *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_standard_quality,omitempty"`
     OutputCostPerImageAbove1024x1536PixelsStandardQuality *float64 `json:"output_cost_per_image_above_1024_and_1536_pixels_standard_quality,omitempty"`
     OutputCostPerImageAbove1536x1024PixelsStandardQuality *float64 `json:"output_cost_per_image_above_1536_and_1024_pixels_standard_quality,omitempty"`
+    // ... the hd, xhigh and max grids and the 768, 1792, 1080, 1440 and 2160 thresholds, e.g.
+    OutputCostPerImageAbove1024x1024PixelsHDQuality       *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_hd_quality,omitempty"`
+    // Costs - Image, resolution tier and inference steps (e.g. 0.5K to 4K; 50 or more steps)
+    OutputCostPerImage1K                           *float64 `json:"output_cost_per_image_1K,omitempty"`
+    OutputCostPerImageAbove1024x1024Pixels50Steps  *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_50_steps,omitempty"`
+    OutputCostPerImageAbove1024x1024PixelsMaxSteps *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_max_steps,omitempty"`
     // Costs - Audio/Video
     InputCostPerAudioToken      *float64 `json:"input_cost_per_audio_token,omitempty"`
     InputCostPerAudioPerSecond  *float64 `json:"input_cost_per_audio_per_second,omitempty"`
