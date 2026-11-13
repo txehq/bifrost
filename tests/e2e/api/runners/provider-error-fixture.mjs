@@ -382,6 +382,9 @@ const fixturePricing = {
 	"fixture-image-safety": { provider: "gemini", mode: "image_generation", input_cost_per_token: 0.000001, output_cost_per_image: 0.04 },
 	// A provider the datasheet knows and list-models cannot enumerate, for run-bounds-wire.mjs.
 	"fireworks_ai/accounts/fixture/models/known": { provider: "fireworks_ai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
+	// TXE-7297: a per-second Kling video rate, so folder 519 can read the price a settled job got from the 5.1 second
+	// clip the Kling query reports. Nothing settles a video unless a row turns provider job accounting on.
+	"kling-3.0": { provider: "kling", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
 };
 
 // Provider wire capture, TXE-5539. The config points each provider these rows use at /pp/<provider>, so one fixture
