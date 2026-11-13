@@ -514,6 +514,12 @@ func summarizeResults(pricing PricingManager, in batchInput) (*Settlement, error
 			continue
 		}
 		usageSeen = true
+		requestType := lineRequestType(in.Endpoint, item)
+		if requestType == schemas.ImageGenerationRequest || requestType == schemas.ImageEditRequest {
+			// Fixed per line before the per-model sums: a line with no modality breakdown counts
+			// its output as image tokens, and a sum beside a line that has one would drop that.
+			extracted.usage.MaterializeImageLineOutputTokens()
+		}
 		if merged := schemas.MergeBifrostLLMUsage(&totalUsage, extracted.usage); merged != nil {
 			totalUsage = *merged
 		}
@@ -535,7 +541,7 @@ func summarizeResults(pricing PricingManager, in batchInput) (*Settlement, error
 		}
 		breakdowns[extracted.model] = breakdown
 
-		costDetails := pricing.CalculateBatchCostDetailsForUsage(extracted.usage, in.Provider, extracted.model, lineRequestType(in.Endpoint, item), in.Scopes)
+		costDetails := pricing.CalculateBatchCostDetailsForUsage(extracted.usage, in.Provider, extracted.model, requestType, in.Scopes)
 		if !costDetails.Priced {
 			missingPricingSeen = true
 			unpricedCount++

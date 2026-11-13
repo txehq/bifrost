@@ -2060,6 +2060,46 @@ func billingTurnsOf(usage *BifrostLLMUsage) []BifrostLLMUsage {
 	return []BifrostLLMUsage{*single}
 }
 
+// ImageLineOutputTokens is how many of an image response's output tokens are image tokens
+// (fork, TXE-7354). With a modality breakdown it is the image count the vendor reported (0 for a
+// text-only answer). With none (a Gemini or Vertex result whose usageMetadata has no
+// candidatesTokensDetails, so the details are absent or carry only reasoning tokens) it is every
+// output token, as the synchronous image pricing reads the aggregate.
+func (u *BifrostLLMUsage) ImageLineOutputTokens() int {
+	if u == nil {
+		return 0
+	}
+	d := u.CompletionTokensDetails
+	if d == nil {
+		return u.CompletionTokens
+	}
+	if d.ImageTokens != nil {
+		return *d.ImageTokens
+	}
+	if d.TextTokens > 0 || d.AudioTokens > 0 {
+		return 0
+	}
+	return u.CompletionTokens
+}
+
+// MaterializeImageLineOutputTokens writes ImageLineOutputTokens into
+// CompletionTokensDetails.ImageTokens (fork, TXE-7354). Run it on each image line before lines
+// are summed: MergeBifrostLLMUsage sums only reported image counts, so a line with no
+// breakdown merged beside one with a breakdown would otherwise lose its image tokens.
+func (u *BifrostLLMUsage) MaterializeImageLineOutputTokens() {
+	if u == nil || u.CompletionTokens <= 0 {
+		return
+	}
+	if u.CompletionTokensDetails != nil && u.CompletionTokensDetails.ImageTokens != nil {
+		return
+	}
+	n := u.ImageLineOutputTokens()
+	if u.CompletionTokensDetails == nil {
+		u.CompletionTokensDetails = &ChatCompletionTokensDetails{}
+	}
+	u.CompletionTokensDetails.ImageTokens = &n
+}
+
 // NormalizeReasoningTokens folds a top-level reasoning_tokens into CompletionTokensDetails, keeping a nested value if set.
 // (sglang sets reasoning tokens in usage.reasoning_tokens instead of usage.completion_tokens_details.reasoning_tokens).
 func (u *BifrostLLMUsage) NormalizeReasoningTokens() {

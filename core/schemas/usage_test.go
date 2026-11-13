@@ -1217,3 +1217,27 @@ func TestRateLimitTokens(t *testing.T) {
 		}
 	}
 }
+
+// TXE-7354: an image line's image output tokens, and fixing that count on the line.
+func TestImageLineOutputTokens(t *testing.T) {
+	image := 1290
+	for _, tc := range []struct {
+		name    string
+		details *ChatCompletionTokensDetails
+		want    int
+	}{
+		{"no details", nil, 1300},
+		{"reasoning only", &ChatCompletionTokensDetails{ReasoningTokens: 200}, 1300},
+		{"text only", &ChatCompletionTokensDetails{TextTokens: 1300}, 0},
+		{"reported image tokens", &ChatCompletionTokensDetails{TextTokens: 10, ImageTokens: &image}, 1290},
+	} {
+		u := &BifrostLLMUsage{CompletionTokens: 1300, CompletionTokensDetails: tc.details}
+		if got := u.ImageLineOutputTokens(); got != tc.want {
+			t.Errorf("%s: ImageLineOutputTokens = %d, want %d", tc.name, got, tc.want)
+		}
+		u.MaterializeImageLineOutputTokens()
+		if u.CompletionTokensDetails == nil || u.CompletionTokensDetails.ImageTokens == nil || *u.CompletionTokensDetails.ImageTokens != tc.want {
+			t.Errorf("%s: materialized ImageTokens = %+v, want %d", tc.name, u.CompletionTokensDetails, tc.want)
+		}
+	}
+}

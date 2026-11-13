@@ -2540,6 +2540,38 @@ func TestSummarizeResultsPricesAMixedBatchPerLine(t *testing.T) {
 	}
 }
 
+// TXE-7354: an image batch's lines are summed per model for repricing. A line with no modality
+// breakdown counts its output as image tokens, and that count is fixed on the line before the sum:
+// summed beside a line that reports 1290 image tokens, it would otherwise reprice at the text rate.
+func TestSummarizeResultsKeepsFallbackImageTokensInTheModelSum(t *testing.T) {
+	line := func(id string, details map[string]interface{}) schemas.BatchResultItem {
+		usage := map[string]interface{}{"input_tokens": 8, "output_tokens": 1300, "total_tokens": 1308}
+		if details != nil {
+			usage["output_tokens_details"] = details
+		}
+		return schemas.BatchResultItem{CustomID: id, Status: schemas.BatchResultStatusSucceeded, Response: &schemas.BatchResultResponse{StatusCode: 200, Body: map[string]interface{}{
+			"model": "gemini-2.5-flash-image",
+			"data":  []interface{}{map[string]interface{}{"b64_json": "aW1hZ2U="}},
+			"usage": usage,
+		}}}
+	}
+	settlement, err := summarizeResults(chatAndImageBatchPricing{}, batchInput{
+		Provider: schemas.Gemini,
+		BatchID:  "batches/img",
+		BatchPayload: BatchPayload{Endpoint: schemas.BatchEndpointImageGeneration, Results: []schemas.BatchResultItem{
+			line("with-details", map[string]interface{}{"image_tokens": 1290, "text_tokens": 10}),
+			line("no-details", nil),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("summarizeResults: %v", err)
+	}
+	usage := settlement.ModelBreakdowns["gemini-2.5-flash-image"].Usage
+	if usage.CompletionTokensDetails == nil || usage.CompletionTokensDetails.ImageTokens == nil || *usage.CompletionTokensDetails.ImageTokens != 1290+1300 {
+		t.Fatalf("summed image tokens = %+v, want 2590 (1290 reported + 1300 counted on the line without a breakdown)", usage.CompletionTokensDetails)
+	}
+}
+
 type chatAndImageBatchPricing struct{ fakePricing }
 
 func (chatAndImageBatchPricing) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.BatchCostDetails {

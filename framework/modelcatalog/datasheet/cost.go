@@ -1334,7 +1334,7 @@ func computeBatchTokenCost(pricing *configstoreTables.TableModelPricing, usage *
 		// gemini/gemini-2.5-flash-image publishes output_cost_per_image_token_batches 1.5e-05,
 		// twelve times its text batch rate).
 		if imageLine {
-			tokens := min(max(batchImageOutputTokens(usage), 0), usage.CompletionTokens)
+			tokens := min(max(usage.ImageLineOutputTokens(), 0), usage.CompletionTokens)
 			if rate, ok := out.rate(pricing.OutputCostPerImageTokenBatches, pricing.OutputCostPerImageToken); ok && tokens > 0 {
 				outputCost += float64(tokens) * (rate - outputRate)
 			}
@@ -1350,25 +1350,6 @@ func computeBatchTokenCost(pricing *configstoreTables.TableModelPricing, usage *
 		outputCost *= *pricing.InferenceGeoUSMultiplier
 	}
 	return newInputOutputCost(inputCost, outputCost)
-}
-
-// batchImageOutputTokens is how many of an image line's output tokens are image tokens. With a
-// modality breakdown it is the image count the vendor reported (0 for a text-only answer). With
-// none (a Gemini or Vertex result whose usageMetadata has no candidatesTokensDetails, so the
-// details are absent or carry only reasoning tokens) it is every output token, as the
-// synchronous computeImageOutputCost prices the aggregate.
-func batchImageOutputTokens(usage *schemas.BifrostLLMUsage) int {
-	d := usage.CompletionTokensDetails
-	if d == nil {
-		return usage.CompletionTokens
-	}
-	if d.ImageTokens != nil {
-		return *d.ImageTokens
-	}
-	if d.TextTokens > 0 || d.AudioTokens > 0 {
-		return 0
-	}
-	return usage.CompletionTokens
 }
 
 // batchRatio is the batch discount a row applies to its synchronous rates: the resolved batch
