@@ -3243,6 +3243,15 @@ var pricingSyncUpdateColumns = []string{
 	"web_search_cost_per_request",
 	"input_cost_per_query",
 	"code_interpreter_cost_per_session",
+	// Bedrock Guardrails, per policy unit (TXE-7365)
+	"guardrail_cost_per_content_policy_unit",
+	"guardrail_cost_per_content_policy_image_unit",
+	"guardrail_cost_per_topic_policy_unit",
+	"guardrail_cost_per_word_policy_unit",
+	"guardrail_cost_per_sensitive_information_policy_unit",
+	"guardrail_cost_per_sensitive_information_policy_free_unit",
+	"guardrail_cost_per_contextual_grounding_policy_unit",
+	"guardrail_cost_per_automated_reasoning_policy_unit",
 	"cost_per_request",
 	// Costs - OCR
 	"ocr_cost_per_page",

@@ -1345,6 +1345,7 @@ type ResponsesResponseUsage struct {
 	TotalTokens         int                            `json:"total_tokens"`                  // Total number of tokens used
 	AudioSeconds        *float64                       `json:"audio_seconds,omitempty"`       // Duration-based audio usage when tokens are unavailable
 	TextMessages        *int                           `json:"text_messages,omitempty"`       // Client text messages sent into a realtime voice turn; mirrors BifrostLLMUsage.TextMessages (fork, TXE-7363)
+	GuardrailUnits      *GuardrailUnits                `json:"guardrail_units,omitempty"`     // Provider-side guardrail policy units; mirrors BifrostLLMUsage.GuardrailUnits (fork, TXE-7365)
 	Cost                *BifrostCost                   `json:"cost,omitempty"`                // Only for the providers which support cost calculation
 	Iterations          []ResponsesResponseUsage       `json:"iterations,omitempty"`          // iterations field is sent by anthropic
 	ToolUsage           *ToolUsage                     `json:"tool_usage,omitempty"`          // Server-side tool call counts; moved to the response's top-level tool_usage on the wire

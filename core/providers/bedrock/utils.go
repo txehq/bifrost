@@ -4041,3 +4041,46 @@ func downgradeExtendedCacheTTLInBedrockRequest(req *BedrockConverseRequest) {
 		}
 	}
 }
+
+// bedrockGuardrailUnits sums the policy units Bedrock Guardrails consumed across every assessment of a
+// response's guardrail trace, input and output (fork, TXE-7365). Bedrock bills each kind of unit at its
+// own rate (aws.amazon.com/bedrock/pricing), and reports them only in the trace's
+// invocationMetrics.usage, so a request whose guardrail trace is disabled reports none. Nil when the
+// trace carries no units.
+func bedrockGuardrailUnits(trace *BedrockConverseTrace) *schemas.GuardrailUnits {
+	if trace == nil || trace.Guardrail == nil {
+		return nil
+	}
+	var units *schemas.GuardrailUnits
+	add := func(assessment BedrockGuardrailAssessment) {
+		if assessment.InvocationMetrics == nil || assessment.InvocationMetrics.Usage == nil {
+			return
+		}
+		u := assessment.InvocationMetrics.Usage
+		value := func(p *int64) int64 {
+			if p == nil {
+				return 0
+			}
+			return *p
+		}
+		units = units.Add(&schemas.GuardrailUnits{
+			ContentPolicyUnits:                  value(u.ContentPolicyUnits),
+			ContentPolicyImageUnits:             value(u.ContentPolicyImageUnits),
+			TopicPolicyUnits:                    value(u.TopicPolicyUnits),
+			WordPolicyUnits:                     value(u.WordPolicyUnits),
+			SensitiveInformationPolicyUnits:     value(u.SensitiveInformationPolicyUnits),
+			SensitiveInformationPolicyFreeUnits: value(u.SensitiveInformationPolicyFreeUnits),
+			ContextualGroundingPolicyUnits:      value(u.ContextualGroundingPolicyUnits),
+			AutomatedReasoningPolicyUnits:       value(u.AutomatedReasoningPolicyUnits),
+		})
+	}
+	for _, assessment := range trace.Guardrail.InputAssessment {
+		add(assessment)
+	}
+	for _, assessments := range trace.Guardrail.OutputAssessments {
+		for _, assessment := range assessments {
+			add(assessment)
+		}
+	}
+	return units
+}

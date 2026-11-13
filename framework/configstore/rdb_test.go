@@ -3988,6 +3988,48 @@ func TestUpsertModelPricesBatch_InputCostPerTextMessage_SurvivesResync(t *testin
 	assert.InDelta(t, 0.005, *got[0].InputCostPerTextMessage, 1e-12)
 }
 
+// TestUpsertModelPricesBatch_GuardrailUnitRates_SurviveResync (TXE-7365): the second sync of an
+// existing row updates every Bedrock guardrail unit rate.
+func TestUpsertModelPricesBatch_GuardrailUnitRates_SurviveResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+	row := func(scale float64) tables.TableModelPricing {
+		return tables.TableModelPricing{
+			Model: "guardrails", Provider: "bedrock", Mode: "guardrail",
+			GuardrailCostPerContentPolicyUnit:                  cost(0.00015 * scale),
+			GuardrailCostPerContentPolicyImageUnit:             cost(0.00075 * scale),
+			GuardrailCostPerTopicPolicyUnit:                    cost(0.00015 * scale),
+			GuardrailCostPerWordPolicyUnit:                     cost(0.0001 * scale),
+			GuardrailCostPerSensitiveInformationPolicyUnit:     cost(0.0001 * scale),
+			GuardrailCostPerSensitiveInformationPolicyFreeUnit: cost(0.00001 * scale),
+			GuardrailCostPerContextualGroundingPolicyUnit:      cost(0.0001 * scale),
+			GuardrailCostPerAutomatedReasoningPolicyUnit:       cost(0.00017 * scale),
+		}
+	}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row(1)}))
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row(2)}))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	want := row(2)
+	for name, pair := range map[string][2]*float64{
+		"content":        {want.GuardrailCostPerContentPolicyUnit, got[0].GuardrailCostPerContentPolicyUnit},
+		"content image":  {want.GuardrailCostPerContentPolicyImageUnit, got[0].GuardrailCostPerContentPolicyImageUnit},
+		"topic":          {want.GuardrailCostPerTopicPolicyUnit, got[0].GuardrailCostPerTopicPolicyUnit},
+		"word":           {want.GuardrailCostPerWordPolicyUnit, got[0].GuardrailCostPerWordPolicyUnit},
+		"sensitive":      {want.GuardrailCostPerSensitiveInformationPolicyUnit, got[0].GuardrailCostPerSensitiveInformationPolicyUnit},
+		"sensitive free": {want.GuardrailCostPerSensitiveInformationPolicyFreeUnit, got[0].GuardrailCostPerSensitiveInformationPolicyFreeUnit},
+		"grounding":      {want.GuardrailCostPerContextualGroundingPolicyUnit, got[0].GuardrailCostPerContextualGroundingPolicyUnit},
+		"reasoning":      {want.GuardrailCostPerAutomatedReasoningPolicyUnit, got[0].GuardrailCostPerAutomatedReasoningPolicyUnit},
+	} {
+		require.NotNil(t, pair[1], name)
+		assert.InDelta(t, *pair[0], *pair[1], 1e-12, "%s kept its first-sync value", name)
+	}
+}
+
 func TestUpsertModelPricesBatch_WebSearchCostPerRequest_SurvivesResync(t *testing.T) {
 	s := setupRDBTestStore(t)
 	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))

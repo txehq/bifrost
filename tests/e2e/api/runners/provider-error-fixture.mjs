@@ -420,6 +420,14 @@ const openRouterDecisionAnswer = () => ({ model: "typesafe/jev-1.13.0", answers:
 const turnRates = { mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, input_cost_per_token_above_272k_tokens: 0.00001, output_cost_per_token_above_272k_tokens: 0.00002, input_cost_per_token_priority: 0.000002, output_cost_per_token_priority: 0.000004 };
 const fixturePricing = {
 	"turns-priced": { provider: "openai_turns", ...turnRates },
+	// Folder 581 (TXE-7365): a Bedrock chat model's token rates, and bedrock/guardrails exactly as the upstream
+	// datasheet publishes it, one map of Bedrock guardrail unit to price, which the gateway's sync spreads into
+	// per-unit rates.
+	"bedrock/amazon.nova-lite-v1:0": { provider: "bedrock", mode: "chat", input_cost_per_token: 0.00000006, output_cost_per_token: 0.00000024 },
+	"bedrock/guardrails": {
+		provider: "bedrock", mode: "guardrail", base_model: "guardrails",
+		guardrail_cost_per_unit: { automatedReasoningPolicyUnits: 0.00017, contentPolicyImageUnits: 0.00075, contentPolicyUnits: 0.00015, contextualGroundingPolicyUnits: 0.0001, sensitiveInformationPolicyFreeUnits: 0, sensitiveInformationPolicyUnits: 0.0001, topicPolicyUnits: 0.00015, wordPolicyUnits: 0 },
+	},
 	// Folder 520 (TXE-7329): $0.10 a second, so the 12 rendered seconds settle at $1.20 and the 5 asked for at $0.50.
 	// The sheet's key drops its first segment, as for every provider-prefixed key, leaving the Replicate model name.
 	"replicate/fixture/rendered-longer": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
@@ -1016,12 +1024,22 @@ const vendorChatAnswer = (site, body) => {
 };
 
 // Bedrock Converse (TXE-7083), reached over the TLS listener through bedrock_key_config.endpoints.runtime.
-const bedrockConverseAnswer = (path) => ({
+// A request that carries a guardrailConfig (folder 581, TXE-7365) gets Bedrock's guardrail trace, with
+// the policy units the guardrail consumed in each assessment's invocationMetrics.usage: 4 content,
+// 1 topic and 1 sensitive-information units in all.
+const bedrockGuardrailTrace = {
+	guardrail: {
+		inputAssessment: { "fixture-guardrail": { invocationMetrics: { guardrailProcessingLatency: 120, usage: { contentPolicyUnits: 1, topicPolicyUnits: 1, sensitiveInformationPolicyUnits: 1, wordPolicyUnits: 0 } } } },
+		outputAssessments: { "fixture-guardrail": [{ invocationMetrics: { guardrailProcessingLatency: 80, usage: { contentPolicyUnits: 3 } } }] },
+	},
+};
+const bedrockConverseAnswer = (path, body) => ({
 	status: 200,
 	body: JSON.stringify({
 		output: { message: { role: "assistant", content: [{ text: `hello from the bedrock fixture (${decodeURIComponent(path.split("/")[2])})` }] } },
 		stopReason: "end_turn",
 		usage: { inputTokens: 3, outputTokens: 7, totalTokens: 10 },
+		...(body && body.guardrailConfig ? { trace: bedrockGuardrailTrace } : {}),
 	}),
 });
 const isBedrockConversePath = (path) => /^\/model\/[^/]+\/converse$/.test(path);
@@ -1256,7 +1274,7 @@ const seedreamStream = (model, result) => {
 };
 
 const wireAnswer = (path, body, bytes) => {
-	if (isBedrockConversePath(path)) return bedrockConverseAnswer(path);
+	if (isBedrockConversePath(path)) return bedrockConverseAnswer(path, body);
 	if (path.startsWith("/pp/storage/")) return storageAnswer(path, body);
 	if (path === "/pp/bfl/v1/flux-3-video") return { status: 200, body: JSON.stringify(bflVideoSubmitAnswer()) };
 	if (path.startsWith("/pp/bfl/v1/")) return { status: 200, body: JSON.stringify(bflSubmitAnswer()) };

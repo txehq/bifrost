@@ -218,3 +218,49 @@ test.describe("Custom pricing overrides - image variant rates", () => {
 		}
 	});
 });
+
+// TXE-7365: the Bedrock guardrail unit rates are pricing override fields for chat. An override on the
+// chat model sets the rate its guardrailed requests are charged; it is saved and reopens with the value.
+test.describe("Custom pricing overrides - Bedrock guardrail unit rate", () => {
+	const name = `e2e-guardrail-unit-rate-${Date.now()}`;
+
+	test.afterEach(async ({ request }) => {
+		const res = await request.get("/api/governance/pricing-overrides");
+		if (!res.ok()) return;
+		const body = await res.json();
+		for (const override of body.pricing_overrides ?? []) {
+			if (override.name === name) await request.delete(`/api/governance/pricing-overrides/${override.id}`);
+		}
+	});
+
+	test("saves a guardrail content policy unit rate and reopens with it", async ({ page, request }) => {
+		const key = "guardrail_cost_per_content_policy_unit";
+		await page.goto("/workspace/custom-pricing/overrides");
+		await page.getByTestId("pricing-override-create-btn").first().click();
+
+		await page.getByTestId("pricing-override-name-input").fill(name);
+		await page.getByTestId("pricing-override-pattern-input").fill("amazon.nova-lite-v1:0");
+		await page.getByTestId("pricing-override-request-types-btn").click();
+		await page.getByTestId("pricing-override-request-type-checkbox-chat_completion").click();
+		await page.keyboard.press("Escape");
+
+		await page.getByTestId("pricing-field-search").fill("content policy unit");
+		await page.getByTestId(`pricing-field-activate-${key}`).click();
+		await page.getByTestId(`pricing-override-field-input-${key}`).fill("0.001");
+
+		await page.getByTestId("pricing-override-save-btn").click();
+		await expect(page.getByTestId("pricing-override-save-btn")).toBeHidden();
+
+		const res = await request.get("/api/governance/pricing-overrides");
+		expect(res.ok()).toBeTruthy();
+		const saved = ((await res.json()).pricing_overrides ?? []).find((o: { name: string }) => o.name === name);
+		expect(saved, "the override was saved").toBeTruthy();
+		expect(JSON.parse(saved.pricing_patch)[key]).toBe(0.001);
+
+		await page.reload();
+		await page.getByTestId(`pricing-override-actions-btn-${saved.id}`).click();
+		await page.getByTestId(`pricing-override-edit-btn-${saved.id}`).click();
+		await page.getByTestId("pricing-field-search").fill("content policy unit");
+		await expect(page.getByTestId(`pricing-override-field-input-${key}`)).toHaveValue("0.001");
+	});
+});

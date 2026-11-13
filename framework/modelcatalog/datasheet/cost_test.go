@@ -1496,6 +1496,78 @@ func TestEntryUnmarshal_WebSearchCostPerRequestFallsBackToSearchContext(t *testi
 	assert.Nil(t, none.WebSearchCostPerRequest)
 }
 
+// upstreamBedrockGuardrailsEntry is bedrock/guardrails exactly as the upstream datasheet publishes it
+// (getbifrost.ai/datasheet, 14 Nov 2026; source aws.amazon.com/bedrock/pricing).
+const upstreamBedrockGuardrailsEntry = `{"guardrail_cost_per_unit":{"automatedReasoningPolicyUnits":0.00017,"contentPolicyImageUnits":0.00075,"contentPolicyUnits":0.00015,"contextualGroundingPolicyUnits":0.0001,"sensitiveInformationPolicyFreeUnits":0,"sensitiveInformationPolicyUnits":0.0001,"topicPolicyUnits":0.00015,"wordPolicyUnits":0},"mode":"guardrail","source":"https://aws.amazon.com/bedrock/pricing/","provider":"bedrock","base_model":"guardrails"}`
+
+// TestEntryUnmarshal_GuardrailCostPerUnitSpreadsIntoUnitRates (TXE-7365): upstream's map of unit to
+// price lands on the per-unit rates, and a flat rate already set is not overwritten.
+func TestEntryUnmarshal_GuardrailCostPerUnitSpreadsIntoUnitRates(t *testing.T) {
+	var entry Entry
+	require.NoError(t, json.Unmarshal([]byte(upstreamBedrockGuardrailsEntry), &entry))
+	for name, got := range map[string]*float64{
+		"content": entry.GuardrailCostPerContentPolicyUnit, "content image": entry.GuardrailCostPerContentPolicyImageUnit,
+		"topic": entry.GuardrailCostPerTopicPolicyUnit, "word": entry.GuardrailCostPerWordPolicyUnit,
+		"sensitive": entry.GuardrailCostPerSensitiveInformationPolicyUnit, "sensitive free": entry.GuardrailCostPerSensitiveInformationPolicyFreeUnit,
+		"grounding": entry.GuardrailCostPerContextualGroundingPolicyUnit, "reasoning": entry.GuardrailCostPerAutomatedReasoningPolicyUnit,
+	} {
+		require.NotNil(t, got, name)
+	}
+	assert.InDelta(t, 0.00015, *entry.GuardrailCostPerContentPolicyUnit, 1e-12)
+	assert.InDelta(t, 0.00075, *entry.GuardrailCostPerContentPolicyImageUnit, 1e-12)
+	assert.InDelta(t, 0.00017, *entry.GuardrailCostPerAutomatedReasoningPolicyUnit, 1e-12)
+	assert.Zero(t, *entry.GuardrailCostPerWordPolicyUnit)
+
+	var flat Entry
+	require.NoError(t, json.Unmarshal([]byte(`{"guardrail_cost_per_content_policy_unit":0.0002,"guardrail_cost_per_unit":{"contentPolicyUnits":0.00015}}`), &flat))
+	assert.InDelta(t, 0.0002, *flat.GuardrailCostPerContentPolicyUnit, 1e-12, "a flat rate wins over the map")
+}
+
+// TestCalculateCost_BedrockGuardrailUnitsAreBilled (TXE-7365): a Bedrock request whose guardrail
+// reported policy units is charged each kind at its upstream rate, on the additional side as
+// guardrail cost, on top of its tokens. The rates come from bedrock/guardrails unless the request's
+// own model row sets them (a pricing override). Before the key was parsed the units were free.
+func TestCalculateCost_BedrockGuardrailUnitsAreBilled(t *testing.T) {
+	var guardrailsEntry Entry
+	require.NoError(t, json.Unmarshal([]byte(upstreamBedrockGuardrailsEntry), &guardrailsEntry))
+	guardrails := convertEntryToTablePricing("bedrock/guardrails", guardrailsEntry)
+	model := chatPricing(0.000003, 0.000015)
+	model.Model, model.Provider, model.Mode = "anthropic.claude-sonnet-4-5", "bedrock", "chat"
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(model.Model, "bedrock", "chat"):       model,
+		makeKey("guardrails", "bedrock", "guardrail"): guardrails,
+	})
+	units := &schemas.GuardrailUnits{
+		ContentPolicyUnits: 4, ContentPolicyImageUnits: 1, TopicPolicyUnits: 1, WordPolicyUnits: 1,
+		SensitiveInformationPolicyUnits: 1, ContextualGroundingPolicyUnits: 3,
+	}
+	chat := func(units *schemas.GuardrailUnits) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110, GuardrailUnits: units},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest, RoutingInfo: routingInfoFor(schemas.Bedrock, "anthropic.claude-sonnet-4-5"),
+			},
+		}}
+	}
+	tokens := 100*0.000003 + 10*0.000015
+	guardrail := 4*0.00015 + 1*0.00075 + 1*0.00015 + 1*0.0 + 1*0.0001 + 3*0.0001
+
+	breakdown := s.CalculateCostBreakdown(chat(units), nil)
+	require.NotNil(t, breakdown)
+	assert.InDelta(t, tokens+guardrail, breakdown.TotalCost, 1e-12)
+	require.NotNil(t, breakdown.AdditionalCostDetails)
+	assert.InDelta(t, guardrail, breakdown.AdditionalCostDetails.GuardrailCost, 1e-12)
+	assert.InDelta(t, tokens, s.CalculateCost(chat(nil), nil), 1e-12, "no guardrail units, tokens only")
+
+	// A pricing override on the model's own row sets its own guardrail rates, which win.
+	model.GuardrailCostPerContentPolicyUnit = bifrost.Ptr(0.001)
+	s = testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(model.Model, "bedrock", "chat"):       model,
+		makeKey("guardrails", "bedrock", "guardrail"): guardrails,
+	})
+	assert.InDelta(t, tokens+4*0.001, s.CalculateCost(chat(units), nil), 1e-12)
+}
+
 func TestComputeTextCost_DeprecatedNumSearchQueriesNotPriced(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
 	p.WebSearchCostPerRequest = bifrost.Ptr(0.01)
@@ -9307,4 +9379,31 @@ func BenchmarkVideoBandRateTier(b *testing.B) {
 			}
 		})
 	}
+}
+
+// BenchmarkAddProviderGuardrailCost is the pricing cost TXE-7365 adds: a request that reports
+// guardrail units (the guardrails row read under the store's read lock, then eight terms), and the
+// common request that reports none (one nil check).
+func BenchmarkAddProviderGuardrailCost(b *testing.B) {
+	var guardrailsEntry Entry
+	if err := json.Unmarshal([]byte(upstreamBedrockGuardrailsEntry), &guardrailsEntry); err != nil {
+		b.Fatal(err)
+	}
+	guardrails := convertEntryToTablePricing("bedrock/guardrails", guardrailsEntry)
+	model := chatPricing(0.000003, 0.000015)
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey("guardrails", "bedrock", "guardrail"): guardrails})
+	withUnits := &schemas.BifrostLLMUsage{GuardrailUnits: &schemas.GuardrailUnits{ContentPolicyUnits: 4, TopicPolicyUnits: 1, SensitiveInformationPolicyUnits: 1}}
+	withoutUnits := &schemas.BifrostLLMUsage{PromptTokens: 100}
+	b.Run("with_units", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = s.addProviderGuardrailCost(nil, &model, "bedrock", withUnits)
+		}
+	})
+	b.Run("without_units", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = s.addProviderGuardrailCost(nil, &model, "bedrock", withoutUnits)
+		}
+	})
 }

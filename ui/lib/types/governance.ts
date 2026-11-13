@@ -746,6 +746,14 @@ export interface PricingOverridePatch {
 	web_search_cost_per_request?: number;
 	input_cost_per_query?: number;
 	code_interpreter_cost_per_session?: number;
+	guardrail_cost_per_content_policy_unit?: number;
+	guardrail_cost_per_content_policy_image_unit?: number;
+	guardrail_cost_per_topic_policy_unit?: number;
+	guardrail_cost_per_word_policy_unit?: number;
+	guardrail_cost_per_sensitive_information_policy_unit?: number;
+	guardrail_cost_per_sensitive_information_policy_free_unit?: number;
+	guardrail_cost_per_contextual_grounding_policy_unit?: number;
+	guardrail_cost_per_automated_reasoning_policy_unit?: number;
 	inference_geo_us_multiplier?: number;
 	cost_per_request?: number;
 	// OCR
