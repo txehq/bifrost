@@ -77,12 +77,7 @@ type HybridLogStore struct {
 	// instead of truncating the object it replaces.
 	pendingAgentMu sync.Mutex
 	pendingAgent   map[string]*uploadWork
-	// agentRowLocks, striped by log id, make an Agent payload update (its row write and
-	// the upload it tracks) and a worker's has_object write atomic with respect to each
-	// other. Only the latest tracked upload may set has_object; without the lock a
-	// superseded upload could check "latest", lose the race to the update, and then mark
-	// the row as offloaded to an object older than the row (TXE-7318).
-	agentRowLocks [agentRowLockStripes]sync.Mutex
+	agentRowLocks  [agentRowLockStripes]sync.Mutex // per-log locks; see agentRowLock
 	// excludedPayloadFields is the set of payload field names (DB column names) that must NOT be offloaded to object storage and must remain in the DB.
 	excludedPayloadFields map[string]struct{}
 	// excludedRequestTypes is the set of log object types that are never offloaded; their rows stay complete in the DB.
@@ -559,8 +554,13 @@ func (h *HybridLogStore) settlePendingAgentUpload(work *uploadWork) {
 // agentRowLockStripes is the number of locks agentRowLocks spreads Agent logs over.
 const agentRowLockStripes = 64
 
-// agentRowLock returns the lock that serialises id's payload update against the
-// has_object write of its uploads.
+// agentRowLock returns the lock, striped by log id, that serialises id's payload update
+// against the has_object write of its uploads. UpdateAgentLog holds it across its row
+// write and the enqueue that tracks its upload; markAgentLogOffloaded holds it across
+// its "latest upload?" check and the has_object write. Only the latest tracked upload
+// may set has_object. Without the lock, a superseded upload could pass the check, lose
+// the race to the update, and then mark the row as offloaded to an object older than
+// the row (TXE-7318).
 func (h *HybridLogStore) agentRowLock(id string) *sync.Mutex {
 	hash := fnv.New32a()
 	_, _ = hash.Write([]byte(id))
