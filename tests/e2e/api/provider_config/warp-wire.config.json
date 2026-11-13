@@ -1,5 +1,6 @@
 {
   "$schema": "https://www.getbifrost.ai/schema",
+  "setup_token": "bifrost-e2e-setup-token",
   "client": {
     "enforce_auth_on_inference": false,
     "enable_logging": true

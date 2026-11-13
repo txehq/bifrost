@@ -202,6 +202,20 @@ export const GROUPS = [
 		config: "tests/e2e/api/provider_config/a2a-push.config.json",
 		vars: (p) => ({ a2aPushFixtureUrl: `http://127.0.0.1:${p.main}`, setupToken: SETUP_TOKEN }),
 	},
+	{
+		// Folder 276 (TXE-7322): Warp's namespaces live in a Weaviate, which no fixture here can stand
+		// in for, so the run is given one: FIXTURE_WEAVIATE_URL, a Weaviate on loopback that the
+		// fixture-folder job starts as a digest-pinned container (go-unit-tests.yml). The config's
+		// Weaviate port is rewritten to it. The warp-wire fixture is the model, the embedder and
+		// the pricing datasheets.
+		id: "warp-wire",
+		variables: ["warpWireFixtureUrl"],
+		ports: { main: 8792 },
+		external: { env: "FIXTURE_WEAVIATE_URL", port: 8080, what: "a Weaviate on loopback; start one with .github/workflows/scripts/start-fixture-weaviate.sh [port] and set the URL it prints" },
+		fixture: (p) => ({ script: "warp-wire-fixture.mjs", args: [], env: { WARP_WIRE_FIXTURE_PORT: p.main } }),
+		config: "tests/e2e/api/provider_config/warp-wire.config.json",
+		vars: (p) => ({ warpWire: "1", warpWireFixtureUrl: `http://127.0.0.1:${p.main}`, setupToken: SETUP_TOKEN }),
+	},
 ];
 
 export function loadData(path = DATA_FILE) {
@@ -404,6 +418,15 @@ async function runGroup(group, folders, { gateway, workDir }) {
 		ports[key] = await freePort(group.span || [0]);
 		mapping.push([def, ports[key]]);
 		for (const d of (group.span || [0]).filter((d) => d !== 0)) mapping.push([def + d, ports[key] + d]);
+	}
+	// A service the runner cannot start itself (a Weaviate) is given to it: its URL comes from the
+	// environment, and the port the config names for it is rewritten to that one.
+	if (group.external) {
+		const raw = process.env[group.external.env];
+		if (!raw) throw new Error(`${group.external.env} is not set: this group needs ${group.external.what}`);
+		const url = new URL(raw);
+		if (!["127.0.0.1", "localhost"].includes(url.hostname)) throw new Error(`${group.external.env} must be on loopback, not ${url.hostname}`);
+		mapping.push([group.external.port, Number(url.port)]);
 	}
 	const datasheets = await serveEmptyDatasheets();
 	const fixtures = [];
