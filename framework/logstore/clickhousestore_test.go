@@ -1325,7 +1325,7 @@ func TestClickHouseHybridHasObjectSurvivesDuplicateCreate(t *testing.T) {
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, mkEntry()))
 
 	// The upload worker sets has_object asynchronously after the S3 put.
-	waitForUploads(t, func() bool {
+	waitForUploads(t, hybrid, func() bool {
 		log, err := ch.FindByID(ctx, "ch-hybrid-1")
 		return err == nil && log.HasObject
 	})
@@ -1335,6 +1335,7 @@ func TestClickHouseHybridHasObjectSurvivesDuplicateCreate(t *testing.T) {
 
 	// Duplicate create retry must not resurrect the stale processing row.
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, mkEntry()))
+	waitForUploadsSettled(t, hybrid)
 
 	found, err := hybrid.FindByID(ctx, "ch-hybrid-1")
 	require.NoError(t, err)

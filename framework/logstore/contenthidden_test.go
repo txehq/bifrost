@@ -48,7 +48,7 @@ func TestHybrid_ContentHiddenStripsDBRowAndSkipsHydration(t *testing.T) {
 	// Wait for the has_object flag, not just the object: processUpload writes the
 	// flag after the Put, so waiting on objStore.Len() alone races the assertion
 	// below under parallel load.
-	waitForOffload(t, inner, "hidden-1")
+	waitForOffload(t, hybrid, inner, "hidden-1")
 	require.Equal(t, 1, objStore.Len())
 
 	// The DB row must hold no request/response content: no content payload fields,
@@ -104,7 +104,7 @@ func TestHybrid_ContentHiddenIgnoresExclusionList(t *testing.T) {
 	require.NoError(t, hidden.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, hidden))
 
-	waitForUploads(t, func() bool { return objStore.Len() == 2 })
+	waitForUploads(t, hybrid, func() bool { return objStore.Len() == 2 })
 
 	// Normal entry: exclusion keeps params in the DB row and out of the object.
 	normalRow, err := inner.FindByID(ctx, "normal-1")
@@ -140,10 +140,10 @@ func TestHybrid_ContentHiddenBatchMixed(t *testing.T) {
 	require.NoError(t, hiddenEntry.SerializeFields())
 
 	require.NoError(t, hybrid.BatchCreateIfNotExists(ctx, []*Log{visibleEntry, hiddenEntry}))
-	waitForUploads(t, func() bool { return objStore.Len() == 2 })
+	waitForUploads(t, hybrid, func() bool { return objStore.Len() == 2 })
 	// The hydration assertion below needs the visible row's has_object flag,
 	// which processUpload commits only after the object Put.
-	waitForOffload(t, inner, "batch-visible")
+	waitForOffload(t, hybrid, inner, "batch-visible")
 
 	visibleRow, err := inner.FindByID(ctx, "batch-visible")
 	require.NoError(t, err)
@@ -176,7 +176,7 @@ func TestHybrid_ContentHiddenProjectedReadsKeepFlag(t *testing.T) {
 	entry.ContentHidden = true
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForUploads(t, hybrid, func() bool { return objStore.Len() == 1 })
 
 	// A projection that requests payload fields but not content_hidden must
 	// still not hydrate: ensureHydrationFields forces the flag into the

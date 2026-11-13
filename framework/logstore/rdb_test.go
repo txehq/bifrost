@@ -1604,7 +1604,7 @@ func TestHybrid_GuardrailDebugStaysQueryable(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForOffload(t, inner, "log-guardrail")
+	waitForOffload(t, hybrid, inner, "log-guardrail")
 
 	row, err := inner.FindByID(ctx, "log-guardrail")
 	require.NoError(t, err)
