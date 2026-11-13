@@ -1,0 +1,294 @@
+{
+  "name": "561. The override API keeps every explicit batch rate the datasheet publishes (explicit batch rates) [SERIAL]",
+  "description": "TXE-7354. The upstream datasheet publishes explicit batch rates per token category and context tier (cache_read_input_token_cost_batches on 240 models, the 272k, 200k and 100k batch tiers, batch audio and image tokens, the 1h and 12h batch writes). The fork dropped them at sync and derived every batch category from the synchronous rate, so azure/gpt-5.4's batch cache read billed at 1.25e-07 against a published 1.3e-07, and a Gemini image batch line, with no image batch rate, was left unpriced. The batch arithmetic is pinned by Go unit tests: a batch settles in the background sweeper, which no request in a run can drive. This folder pins the wire surface: an override carrying every new batch field is stored and read back whole, with each field's own value (before the change the API decoded the patch without them and they were gone). The override is VK-scoped and never used; no provider is called, so the folder also runs against the fixture.",
+  "item": [
+    {
+      "name": "561.1 Setup - Create VK for the batch-rate override - openai/gpt-6-sol",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.unset('batchRatesVkId');",
+              "pm.request.body.raw = JSON.stringify({",
+              "  name: 'Explicit Batch Rates VK ' + Date.now(),",
+              "  provider_configs: [{ provider: 'openai', weight: 1.0, allowed_models: ['*'], key_ids: ['*'] }]",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Create VK returns 2xx', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "var body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var vk = body && (body.virtual_key || body);",
+              "pm.test('Created VK exposes an id', function () {",
+              "  pm.expect(vk && vk.id, 'id in: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+              "});",
+              "if (vk && vk.id) { pm.collectionVariables.set('batchRatesVkId', vk.id); }"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "561.2 [EXPECT-201] a VK-scoped override on every explicit batch rate is stored whole - openai/gpt-6-sol",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['batchRatesVkId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "pm.collectionVariables.unset('batchRatesOverrideId');",
+              "pm.request.body.raw = JSON.stringify({",
+              "  name: 'e2e-batch-rates-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),",
+              "  // Virtual-key scoped and never used for a request, so nothing in the suite is repriced.",
+              "  scope_kind: 'virtual_key',",
+              "  virtual_key_id: pm.collectionVariables.get('batchRatesVkId'),",
+              "  match_type: 'exact',",
+              "  pattern: 'gpt-6-sol',",
+              "  request_types: ['chat'],",
+              "  patch: {\"input_cost_per_token_above_100k_tokens_batches\": 1e-06, \"output_cost_per_token_above_100k_tokens_batches\": 2e-06, \"input_cost_per_token_above_200k_tokens_batches\": 3e-06, \"output_cost_per_token_above_200k_tokens_batches\": 4e-06, \"input_cost_per_token_above_272k_tokens_batches\": 5e-06, \"output_cost_per_token_above_272k_tokens_batches\": 6e-06, \"cache_read_input_token_cost_batches\": 7e-06, \"cache_read_input_token_cost_above_100k_tokens_batches\": 8e-06, \"cache_read_input_token_cost_above_200k_tokens_batches\": 9e-06, \"cache_read_input_token_cost_above_272k_tokens_batches\": 1e-05, \"cache_creation_input_token_cost_batches\": 1.1e-05, \"cache_creation_input_token_cost_above_100k_tokens_batches\": 1.2e-05, \"cache_creation_input_token_cost_above_272k_tokens_batches\": 1.3e-05, \"cache_creation_input_token_cost_batches_1h\": 1.4e-05, \"cache_creation_input_token_cost_above_12hr_batches\": 1.5e-05, \"cache_creation_input_token_cost_above_12hr_above_272k_tokens_batches\": 1.6e-05, \"input_cost_per_audio_token_batches\": 1.7e-05, \"input_cost_per_image_token_batches\": 1.8e-05, \"output_cost_per_image_token_batches\": 1.9e-05}",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Override on the explicit batch rates is accepted', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.eql(201);",
+              "});",
+              "var body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var ov = body && (body.pricing_override || body);",
+              "if (ov && ov.id) { pm.collectionVariables.set('batchRatesOverrideId', ov.id); }",
+              "var expected = {\"input_cost_per_token_above_100k_tokens_batches\": 1e-06, \"output_cost_per_token_above_100k_tokens_batches\": 2e-06, \"input_cost_per_token_above_200k_tokens_batches\": 3e-06, \"output_cost_per_token_above_200k_tokens_batches\": 4e-06, \"input_cost_per_token_above_272k_tokens_batches\": 5e-06, \"output_cost_per_token_above_272k_tokens_batches\": 6e-06, \"cache_read_input_token_cost_batches\": 7e-06, \"cache_read_input_token_cost_above_100k_tokens_batches\": 8e-06, \"cache_read_input_token_cost_above_200k_tokens_batches\": 9e-06, \"cache_read_input_token_cost_above_272k_tokens_batches\": 1e-05, \"cache_creation_input_token_cost_batches\": 1.1e-05, \"cache_creation_input_token_cost_above_100k_tokens_batches\": 1.2e-05, \"cache_creation_input_token_cost_above_272k_tokens_batches\": 1.3e-05, \"cache_creation_input_token_cost_batches_1h\": 1.4e-05, \"cache_creation_input_token_cost_above_12hr_batches\": 1.5e-05, \"cache_creation_input_token_cost_above_12hr_above_272k_tokens_batches\": 1.6e-05, \"input_cost_per_audio_token_batches\": 1.7e-05, \"input_cost_per_image_token_batches\": 1.8e-05, \"output_cost_per_image_token_batches\": 1.9e-05};",
+              "var stored = null;",
+              "try { stored = ov && JSON.parse(ov.pricing_patch); } catch (e) { stored = null; }",
+              "pm.test('the stored patch keeps every explicit batch rate', function () {",
+              "  pm.expect(stored, 'pricing_patch in: ' + pm.response.text()).to.be.an('object');",
+              "  Object.keys(expected).forEach(function (k) {",
+              "    pm.expect(stored[k], k + ' in ' + JSON.stringify(stored)).to.eql(expected[k]);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides"
+          ]
+        }
+      }
+    },
+    {
+      "name": "561.3 the override reads back with every explicit batch rate - openai/gpt-6-sol",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['batchRatesOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('override read responds', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var id = pm.collectionVariables.get('batchRatesOverrideId');",
+              "var ov = null;",
+              "((body && body.pricing_overrides) || []).forEach(function (o) { if (o.id === id) { ov = o; } });",
+              "pm.test('the override is listed under its virtual key', function () {",
+              "  pm.expect(ov, 'override ' + id + ' in: ' + pm.response.text()).to.not.equal(null);",
+              "});",
+              "var expected = {\"input_cost_per_token_above_100k_tokens_batches\": 1e-06, \"output_cost_per_token_above_100k_tokens_batches\": 2e-06, \"input_cost_per_token_above_200k_tokens_batches\": 3e-06, \"output_cost_per_token_above_200k_tokens_batches\": 4e-06, \"input_cost_per_token_above_272k_tokens_batches\": 5e-06, \"output_cost_per_token_above_272k_tokens_batches\": 6e-06, \"cache_read_input_token_cost_batches\": 7e-06, \"cache_read_input_token_cost_above_100k_tokens_batches\": 8e-06, \"cache_read_input_token_cost_above_200k_tokens_batches\": 9e-06, \"cache_read_input_token_cost_above_272k_tokens_batches\": 1e-05, \"cache_creation_input_token_cost_batches\": 1.1e-05, \"cache_creation_input_token_cost_above_100k_tokens_batches\": 1.2e-05, \"cache_creation_input_token_cost_above_272k_tokens_batches\": 1.3e-05, \"cache_creation_input_token_cost_batches_1h\": 1.4e-05, \"cache_creation_input_token_cost_above_12hr_batches\": 1.5e-05, \"cache_creation_input_token_cost_above_12hr_above_272k_tokens_batches\": 1.6e-05, \"input_cost_per_audio_token_batches\": 1.7e-05, \"input_cost_per_image_token_batches\": 1.8e-05, \"output_cost_per_image_token_batches\": 1.9e-05};",
+              "var stored = null;",
+              "try { stored = ov && JSON.parse(ov.pricing_patch); } catch (e) { stored = null; }",
+              "pm.test('the stored patch keeps every explicit batch rate', function () {",
+              "  pm.expect(stored, 'pricing_patch in: ' + pm.response.text()).to.be.an('object');",
+              "  Object.keys(expected).forEach(function (k) {",
+              "    pm.expect(stored[k], k + ' in ' + JSON.stringify(stored)).to.eql(expected[k]);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides?scope_kind=virtual_key&virtual_key_id={{batchRatesVkId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides"
+          ],
+          "query": [
+            {
+              "key": "scope_kind",
+              "value": "virtual_key"
+            },
+            {
+              "key": "virtual_key_id",
+              "value": "{{batchRatesVkId}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "561.4 Teardown - Delete the batch-rate override - openai/gpt-6-sol",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['batchRatesOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Override deleted', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "pm.collectionVariables.unset('batchRatesOverrideId');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{batchRatesOverrideId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides",
+            "{{batchRatesOverrideId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "561.5 Teardown - Delete VK - openai/gpt-6-sol",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['batchRatesVkId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('VK deleted', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "pm.collectionVariables.unset('batchRatesVkId');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys/{{batchRatesVkId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{batchRatesVkId}}"
+          ]
+        }
+      }
+    }
+  ]
+}

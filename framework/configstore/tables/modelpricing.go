@@ -62,6 +62,26 @@ type TableModelPricing struct {
 	CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast *float64 `gorm:"default:null;column:cache_creation_cost_above_12hr_above_272k_tokens_ultrafast" json:"cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast,omitempty"`
 	InputCostPerAudioTokenFlex                                   *float64 `gorm:"default:null;column:input_cost_per_audio_token_flex" json:"input_cost_per_audio_token_flex,omitempty"`
 	InputCostPerAudioTokenPriority                               *float64 `gorm:"default:null;column:input_cost_per_audio_token_priority" json:"input_cost_per_audio_token_priority,omitempty"`
+	// Costs - explicit batch rates by token category and context tier (fork, TXE-7354).
+	InputCostPerTokenAbove100kTokensBatches                    *float64 `gorm:"default:null;column:input_cost_per_token_above_100k_tokens_batches" json:"input_cost_per_token_above_100k_tokens_batches,omitempty"`
+	OutputCostPerTokenAbove100kTokensBatches                   *float64 `gorm:"default:null;column:output_cost_per_token_above_100k_tokens_batches" json:"output_cost_per_token_above_100k_tokens_batches,omitempty"`
+	InputCostPerTokenAbove200kTokensBatches                    *float64 `gorm:"default:null;column:input_cost_per_token_above_200k_tokens_batches" json:"input_cost_per_token_above_200k_tokens_batches,omitempty"`
+	OutputCostPerTokenAbove200kTokensBatches                   *float64 `gorm:"default:null;column:output_cost_per_token_above_200k_tokens_batches" json:"output_cost_per_token_above_200k_tokens_batches,omitempty"`
+	InputCostPerTokenAbove272kTokensBatches                    *float64 `gorm:"default:null;column:input_cost_per_token_above_272k_tokens_batches" json:"input_cost_per_token_above_272k_tokens_batches,omitempty"`
+	OutputCostPerTokenAbove272kTokensBatches                   *float64 `gorm:"default:null;column:output_cost_per_token_above_272k_tokens_batches" json:"output_cost_per_token_above_272k_tokens_batches,omitempty"`
+	CacheReadInputTokenCostBatches                             *float64 `gorm:"default:null;column:cache_read_input_token_cost_batches" json:"cache_read_input_token_cost_batches,omitempty"`
+	CacheReadInputTokenCostAbove100kTokensBatches              *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_100k_tokens_batches" json:"cache_read_input_token_cost_above_100k_tokens_batches,omitempty"`
+	CacheReadInputTokenCostAbove200kTokensBatches              *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_200k_tokens_batches" json:"cache_read_input_token_cost_above_200k_tokens_batches,omitempty"`
+	CacheReadInputTokenCostAbove272kTokensBatches              *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_272k_tokens_batches" json:"cache_read_input_token_cost_above_272k_tokens_batches,omitempty"`
+	CacheCreationInputTokenCostBatches                         *float64 `gorm:"default:null;column:cache_creation_input_token_cost_batches" json:"cache_creation_input_token_cost_batches,omitempty"`
+	CacheCreationInputTokenCostAbove100kTokensBatches          *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_100k_tokens_batches" json:"cache_creation_input_token_cost_above_100k_tokens_batches,omitempty"`
+	CacheCreationInputTokenCostAbove272kTokensBatches          *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_272k_tokens_batches" json:"cache_creation_input_token_cost_above_272k_tokens_batches,omitempty"`
+	CacheCreationInputTokenCostBatches1h                       *float64 `gorm:"default:null;column:cache_creation_input_token_cost_batches_1h" json:"cache_creation_input_token_cost_batches_1h,omitempty"`
+	CacheCreationInputTokenCostAbove12hrBatches                *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_12hr_batches" json:"cache_creation_input_token_cost_above_12hr_batches,omitempty"`
+	CacheCreationInputTokenCostAbove12hrAbove272kTokensBatches *float64 `gorm:"default:null;column:cache_creation_cost_above_12hr_above_272k_tokens_batches" json:"cache_creation_input_token_cost_above_12hr_above_272k_tokens_batches,omitempty"`
+	InputCostPerAudioTokenBatches                              *float64 `gorm:"default:null;column:input_cost_per_audio_token_batches" json:"input_cost_per_audio_token_batches,omitempty"`
+	InputCostPerImageTokenBatches                              *float64 `gorm:"default:null;column:input_cost_per_image_token_batches" json:"input_cost_per_image_token_batches,omitempty"`
+	OutputCostPerImageTokenBatches                             *float64 `gorm:"default:null;column:output_cost_per_image_token_batches" json:"output_cost_per_image_token_batches,omitempty"`
 	// Costs - 128k Tier
 	InputCostPerTokenAbove128kTokens          *float64 `gorm:"default:null;column:input_cost_per_token_above_128k_tokens" json:"input_cost_per_token_above_128k_tokens,omitempty"`
 	InputCostPerImageAbove128kTokens          *float64 `gorm:"default:null;column:input_cost_per_image_above_128k_tokens" json:"input_cost_per_image_above_128k_tokens,omitempty"`

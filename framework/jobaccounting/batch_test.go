@@ -1399,6 +1399,41 @@ func TestUsageFromValue_CacheTokenConventions(t *testing.T) {
 		assert.Equal(t, 400, usage.PromptTokensDetails.CachedReadTokens)
 	})
 
+	// TXE-7354: an OpenAI batch line reports its cache writes, by lifetime, inside prompt_tokens,
+	// and a Gemini line its audio tokens. Both are kept, so the batch rates for 12h writes and
+	// audio input apply, and the writes are not added to the prompt count again.
+	t.Run("openai cache writes and audio tokens are kept inside prompt_tokens", func(t *testing.T) {
+		usage, err := usageFromValue(map[string]interface{}{
+			"prompt_tokens":     10000,
+			"completion_tokens": 50,
+			"prompt_tokens_details": map[string]interface{}{
+				"cached_tokens":              1000,
+				"audio_tokens":               300,
+				"cache_write_tokens":         8000,
+				"cache_write_tokens_details": map[string]interface{}{"ttl_30m_tokens": 6000, "ttl_12h_tokens": 2000},
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 10000, usage.PromptTokens, "cache writes must not be added again")
+		require.NotNil(t, usage.PromptTokensDetails)
+		assert.Equal(t, 1000, usage.PromptTokensDetails.CachedReadTokens)
+		assert.Equal(t, 8000, usage.PromptTokensDetails.CachedWriteTokens)
+		assert.Equal(t, 300, usage.PromptTokensDetails.AudioTokens)
+		require.NotNil(t, usage.PromptTokensDetails.CachedWriteTokenDetails)
+		assert.Equal(t, 6000, usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens30m)
+		assert.Equal(t, 2000, usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens12h)
+
+		// A split without a total still counts the writes.
+		split, err := usageFromValue(map[string]interface{}{
+			"prompt_tokens":         10000,
+			"prompt_tokens_details": map[string]interface{}{"cache_write_tokens_details": map[string]interface{}{"ttl_12h_tokens": 2000}},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, split.PromptTokensDetails)
+		assert.Equal(t, 2000, split.PromptTokensDetails.CachedWriteTokens)
+		assert.Equal(t, 10000, split.PromptTokens)
+	})
+
 	t.Run("anthropic cache_read_input_tokens is exclusive of input_tokens", func(t *testing.T) {
 		usage, err := usageFromValue(map[string]interface{}{
 			"input_tokens":            600, // excludes the 400 cached

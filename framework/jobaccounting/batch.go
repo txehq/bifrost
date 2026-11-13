@@ -633,9 +633,10 @@ func BatchRequestType(endpoint schemas.BatchEndpoint) schemas.RequestType {
 		return schemas.ChatCompletionRequest
 	case schemas.BatchEndpointImageGeneration:
 		// Image lines are named as what they are, so they are never priced at text-token
-		// rates. The catalog has no batch rates for image output yet, so pricing reports
-		// them unpriced and the job is parked as missing batch pricing with its usage
-		// kept, per-modality detail included, for a later repricing pass.
+		// rates. A row that prices image tokens prices them at its image batch rate
+		// (TXE-7354); one priced per image or per pixel reports them unpriced, and the job
+		// is parked as missing batch pricing with its usage kept, per-modality detail
+		// included, for a later repricing pass.
 		return schemas.ImageGenerationRequest
 	case schemas.BatchEndpointImageEdit:
 		return schemas.ImageEditRequest
@@ -798,6 +799,15 @@ func usageFromValue(value interface{}) (*schemas.BifrostLLMUsage, error) {
 		// bucket — see the inclusive/exclusive note below.
 		PromptTokensDetails struct {
 			CachedTokens int `json:"cached_tokens"`
+			// Audio input tokens and OpenAI's cache writes, which are part of prompt_tokens like
+			// cached_tokens, split by lifetime (fork, TXE-7354): kept so a batch line prices them
+			// at their own batch rates.
+			AudioTokens             int `json:"audio_tokens"`
+			CacheWriteTokens        int `json:"cache_write_tokens"`
+			CacheWriteTokensDetails struct {
+				TTL30mTokens int `json:"ttl_30m_tokens"`
+				TTL12hTokens int `json:"ttl_12h_tokens"`
+			} `json:"cache_write_tokens_details"`
 		} `json:"prompt_tokens_details"`
 		// An image line reports its tokens per modality (the unified image usage). They
 		// are kept on the usage so a repricing pass can apply image rates to them.
@@ -856,17 +866,33 @@ func usageFromValue(value interface{}) (*schemas.BifrostLLMUsage, error) {
 		Cost:             usage.Cost,
 	}
 	totalCacheReadTokens := cacheReadTokens + inclusiveCacheReadTokens
-	if totalCacheReadTokens > 0 || cacheWriteTokens > 0 {
+	// OpenAI's cache writes are a breakdown of prompt_tokens, like cached_tokens, so they are
+	// not added to the prompt count (TXE-7354).
+	inclusiveCacheWrite := usage.PromptTokensDetails.CacheWriteTokens
+	split := usage.PromptTokensDetails.CacheWriteTokensDetails
+	if inclusiveCacheWrite == 0 {
+		inclusiveCacheWrite = split.TTL30mTokens + split.TTL12hTokens
+	}
+	totalCacheWriteTokens := cacheWriteTokens + inclusiveCacheWrite
+	if totalCacheReadTokens > 0 || totalCacheWriteTokens > 0 {
 		out.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
 			CachedReadTokens:  totalCacheReadTokens,
-			CachedWriteTokens: cacheWriteTokens,
+			CachedWriteTokens: totalCacheWriteTokens,
 		}
-		if cacheWrite5m > 0 || cacheWrite1h > 0 {
+		if cacheWrite5m > 0 || cacheWrite1h > 0 || split.TTL30mTokens > 0 || split.TTL12hTokens > 0 {
 			out.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
-				CachedWriteTokens5m: cacheWrite5m,
-				CachedWriteTokens1h: cacheWrite1h,
+				CachedWriteTokens5m:  cacheWrite5m,
+				CachedWriteTokens1h:  cacheWrite1h,
+				CachedWriteTokens30m: split.TTL30mTokens,
+				CachedWriteTokens12h: split.TTL12hTokens,
 			}
 		}
+	}
+	if audio := usage.PromptTokensDetails.AudioTokens; audio > 0 {
+		if out.PromptTokensDetails == nil {
+			out.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
+		}
+		out.PromptTokensDetails.AudioTokens = audio
 	}
 	if d := usage.InputTokensDetails; d != nil && (d.TextTokens > 0 || d.ImageTokens > 0) {
 		if out.PromptTokensDetails == nil {

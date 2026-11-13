@@ -376,7 +376,17 @@ func (s *Store) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage
 		return BatchCostDetails{}
 	}
 
+	price := computeBatchTextCost
 	switch normalizeStreamRequestType(requestType) {
+	case schemas.ImageGenerationRequest, schemas.ImageEditRequest:
+		// An image line (fork, TXE-7354) is priced on its tokens only when the row prices image
+		// tokens, in a batch or synchronously. A row priced per image or per pixel has no batch
+		// rate to apply, so the line stays unpriced and the job waits for repricing, as before.
+		if pricing.OutputCostPerImageTokenBatches == nil && pricing.OutputCostPerImageToken == nil {
+			return BatchCostDetails{}
+		}
+		price = computeBatchImageCost
+		fallthrough
 	case schemas.BatchResultsRequest, schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.EmbeddingRequest:
 		inputRate := resolveBatchRate(pricing.InputCostPerToken, pricing.InputCostPerTokenBatches)
 		outputRate := resolveBatchRate(pricing.OutputCostPerToken, pricing.OutputCostPerTokenBatches)
@@ -390,7 +400,7 @@ func (s *Store) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage
 		// the bare-usage batch path never sees a full response to read a served
 		// tier off, mirroring CalculateCostForUsage.
 		tier := tierFromResponse(nil, usage.Speed, usage.InferenceGeo)
-		breakdown := computeBatchTextCost(pricing, usage, tier)
+		breakdown := price(pricing, usage, tier)
 		// Time-of-day pricing, as in computeCostFromInput: the off-peak multiplier
 		// scales the usage charge (and the effective rates reported with it), never
 		// the flat per-request fee added below.
@@ -1197,6 +1207,20 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 // not, the rate defaults to defaultBatchPricingRatio of the synchronous rate.
 // A model with neither rate is left unpriced.
 func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) *schemas.BifrostCost {
+	return computeBatchTokenCost(pricing, usage, tier, false)
+}
+
+// computeBatchImageCost prices an image line of a batch (fork, TXE-7354): computeBatchTextCost,
+// with the image tokens the line reports on either side at the image batch rates, as the
+// synchronous image path prices them at the image token rates.
+func computeBatchImageCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) *schemas.BifrostCost {
+	return computeBatchTokenCost(pricing, usage, tier, true)
+}
+
+// computeBatchTokenCost is computeBatchTextCost and computeBatchImageCost: imageLine prices the
+// image tokens a line reports apart at the image rates. A chat line's image tokens stay at the
+// text rate, as the synchronous chat path leaves them.
+func computeBatchTokenCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier, imageLine bool) *schemas.BifrostCost {
 	if usage == nil {
 		return nil
 	}
@@ -1227,72 +1251,38 @@ func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *s
 		cachedWriteTokens12h = min(cachedWriteTokens12h, cachedWriteTokens)
 		cachedWriteTokens1h = min(cachedWriteTokens1h, cachedWriteTokens-cachedWriteTokens12h)
 
-		batchInputRate := *resolvedInputRate
-		inputRate := batchInputRate
-		cacheReadRate := batchInputRate
-		cacheWriteRate := batchInputRate
-		cacheWriteAbove1hrRate := batchInputRate
-		cacheWriteAbove12hrRate := batchInputRate
-		// Catalog long-context tiers and cache rates describe synchronous pricing.
-		// Batch discounts stack with them, so scale each category by the same
-		// batch/input ratio instead of charging every token at the flat batch rate.
-		if pricing.InputCostPerToken != nil && *pricing.InputCostPerToken > 0 {
-			batchRatio := batchInputRate / *pricing.InputCostPerToken
-
-			switch {
-			case promptTokens > TokenTierAbove272K && pricing.InputCostPerTokenAbove272kTokens != nil:
-				inputRate = *pricing.InputCostPerTokenAbove272kTokens * batchRatio
-			case promptTokens > TokenTierAbove200K && pricing.InputCostPerTokenAbove200kTokens != nil:
-				inputRate = *pricing.InputCostPerTokenAbove200kTokens * batchRatio
-			case promptTokens > TokenTierAbove128K && pricing.InputCostPerTokenAbove128kTokens != nil:
-				inputRate = *pricing.InputCostPerTokenAbove128kTokens * batchRatio
-			case promptTokens > TokenTierAbove100K && pricing.InputCostPerTokenAbove100kTokens != nil:
-				inputRate = *pricing.InputCostPerTokenAbove100kTokens * batchRatio
-			}
-
-			if pricing.CacheReadInputTokenCost != nil {
-				cacheReadRate = *pricing.CacheReadInputTokenCost * batchRatio
-			}
-			if promptTokens > TokenTierAbove272K && pricing.CacheReadInputTokenCostAbove272kTokens != nil {
-				cacheReadRate = *pricing.CacheReadInputTokenCostAbove272kTokens * batchRatio
-			} else if promptTokens > TokenTierAbove200K && pricing.CacheReadInputTokenCostAbove200kTokens != nil {
-				cacheReadRate = *pricing.CacheReadInputTokenCostAbove200kTokens * batchRatio
-			} else if promptTokens > TokenTierAbove100K && pricing.CacheReadInputTokenCostAbove100kTokens != nil {
-				cacheReadRate = *pricing.CacheReadInputTokenCostAbove100kTokens * batchRatio
-			}
-
-			if pricing.CacheCreationInputTokenCost != nil {
-				cacheWriteRate = *pricing.CacheCreationInputTokenCost * batchRatio
-			}
-			if promptTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostAbove272kTokens != nil {
-				cacheWriteRate = *pricing.CacheCreationInputTokenCostAbove272kTokens * batchRatio
-			} else if promptTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove200kTokens != nil {
-				cacheWriteRate = *pricing.CacheCreationInputTokenCostAbove200kTokens * batchRatio
-			} else if promptTokens > TokenTierAbove100K && pricing.CacheCreationInputTokenCostAbove100kTokens != nil {
-				cacheWriteRate = *pricing.CacheCreationInputTokenCostAbove100kTokens * batchRatio
-			}
-
-			if promptTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens != nil {
-				cacheWriteAbove1hrRate = *pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens * batchRatio
-			} else if promptTokens > TokenTierAbove100K && pricing.CacheCreationInputTokenCostAbove1hrAbove100kTokens != nil {
-				cacheWriteAbove1hrRate = *pricing.CacheCreationInputTokenCostAbove1hrAbove100kTokens * batchRatio
-			} else if pricing.CacheCreationInputTokenCostAbove1hr != nil {
-				cacheWriteAbove1hrRate = *pricing.CacheCreationInputTokenCostAbove1hr * batchRatio
-			} else {
-				cacheWriteAbove1hrRate = cacheWriteRate
-			}
-
-			// OpenAI 12h writes (fork, TXE-7353): the synchronous 12h rate for the context
-			// window, scaled like every other category; the above-1hr rate without one.
-			switch {
-			case promptTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokens != nil:
-				cacheWriteAbove12hrRate = *pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokens * batchRatio
-			case pricing.CacheCreationInputTokenCostAbove12hr != nil:
-				cacheWriteAbove12hrRate = *pricing.CacheCreationInputTokenCostAbove12hr * batchRatio
-			default:
-				cacheWriteAbove12hrRate = cacheWriteAbove1hrRate
-			}
-		}
+		// Each category is priced at its explicit batch rate when the row publishes one (fork,
+		// TXE-7354), else at its synchronous rate scaled by the batch/input ratio: catalog
+		// long-context tiers and cache rates describe synchronous pricing, and the batch discount
+		// stacks with them. A row without a standard input rate has no ratio, so a category
+		// without an explicit batch rate falls back to the flat batch input rate.
+		in := batchRates{ratio: batchRatio(pricing.InputCostPerToken, *resolvedInputRate), prompt: promptTokens}
+		inputRate := in.pick(*resolvedInputRate,
+			batchTier{TokenTierAbove272K, pricing.InputCostPerTokenAbove272kTokensBatches, pricing.InputCostPerTokenAbove272kTokens},
+			batchTier{TokenTierAbove200K, pricing.InputCostPerTokenAbove200kTokensBatches, pricing.InputCostPerTokenAbove200kTokens},
+			batchTier{TokenTierAbove128K, nil, pricing.InputCostPerTokenAbove128kTokens},
+			batchTier{TokenTierAbove100K, pricing.InputCostPerTokenAbove100kTokensBatches, pricing.InputCostPerTokenAbove100kTokens},
+		)
+		cacheReadRate := in.pick(in.rateOr(*resolvedInputRate, pricing.CacheReadInputTokenCostBatches, pricing.CacheReadInputTokenCost),
+			batchTier{TokenTierAbove272K, pricing.CacheReadInputTokenCostAbove272kTokensBatches, pricing.CacheReadInputTokenCostAbove272kTokens},
+			batchTier{TokenTierAbove200K, pricing.CacheReadInputTokenCostAbove200kTokensBatches, pricing.CacheReadInputTokenCostAbove200kTokens},
+			batchTier{TokenTierAbove100K, pricing.CacheReadInputTokenCostAbove100kTokensBatches, pricing.CacheReadInputTokenCostAbove100kTokens},
+		)
+		cacheWriteRate := in.pick(in.rateOr(*resolvedInputRate, pricing.CacheCreationInputTokenCostBatches, pricing.CacheCreationInputTokenCost),
+			batchTier{TokenTierAbove272K, pricing.CacheCreationInputTokenCostAbove272kTokensBatches, pricing.CacheCreationInputTokenCostAbove272kTokens},
+			batchTier{TokenTierAbove200K, nil, pricing.CacheCreationInputTokenCostAbove200kTokens},
+			batchTier{TokenTierAbove100K, pricing.CacheCreationInputTokenCostAbove100kTokensBatches, pricing.CacheCreationInputTokenCostAbove100kTokens},
+		)
+		// Anthropic's 1h writes (Vertex publishes cache_creation_input_token_cost_batches_1h);
+		// the base write rate without a 1h rate.
+		cacheWriteAbove1hrRate := in.pick(in.rateOr(cacheWriteRate, pricing.CacheCreationInputTokenCostBatches1h, pricing.CacheCreationInputTokenCostAbove1hr),
+			batchTier{TokenTierAbove200K, nil, pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens},
+			batchTier{TokenTierAbove100K, nil, pricing.CacheCreationInputTokenCostAbove1hrAbove100kTokens},
+		)
+		// OpenAI 12h writes (TXE-7353); the above-1hr rate without a 12h rate.
+		cacheWriteAbove12hrRate := in.pick(in.rateOr(cacheWriteAbove1hrRate, pricing.CacheCreationInputTokenCostAbove12hrBatches, pricing.CacheCreationInputTokenCostAbove12hr),
+			batchTier{TokenTierAbove272K, pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokensBatches, pricing.CacheCreationInputTokenCostAbove12hrAbove272kTokens},
+		)
 
 		nonCachedPrompt := promptTokens - cachedReadTokens - cachedWriteTokens
 		inputCost = float64(nonCachedPrompt)*inputRate +
@@ -1300,29 +1290,55 @@ func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *s
 			float64(cachedWriteTokens-cachedWriteTokens1h-cachedWriteTokens12h)*cacheWriteRate +
 			float64(cachedWriteTokens1h)*cacheWriteAbove1hrRate +
 			float64(cachedWriteTokens12h)*cacheWriteAbove12hrRate
+
+		// Audio input tokens a row reports apart move from the text rate to the audio batch rate
+		// (TXE-7354: Gemini publishes input_cost_per_audio_token_batches), as the synchronous path
+		// moves them to the audio rate; on an image line, image input tokens move to the image
+		// batch rate. A row with no audio or image rate keeps them at the text rate.
+		if d := usage.PromptTokensDetails; d != nil {
+			imageTokens := 0
+			if imageLine {
+				imageTokens = d.ImageTokens
+			}
+			remaining := nonCachedPrompt
+			for _, m := range []struct {
+				tokens          int
+				explicit, synch *float64
+			}{
+				{d.AudioTokens, pricing.InputCostPerAudioTokenBatches, pricing.InputCostPerAudioToken},
+				{imageTokens, pricing.InputCostPerImageTokenBatches, pricing.InputCostPerImageToken},
+			} {
+				tokens := min(max(m.tokens, 0), remaining)
+				if rate, ok := in.rate(m.explicit, m.synch); ok && tokens > 0 {
+					inputCost += float64(tokens) * (rate - inputRate)
+					remaining -= tokens
+				}
+			}
+		}
 	}
 
 	outputCost := 0.0
 	if usage.CompletionTokens > 0 {
-		outputRate := *resolvedOutputRate
 		// Tier is selected by prompt/context size, mirroring computeTextCost's
 		// tieredOutputRate — output pricing tiers key off input context length,
 		// not completion length.
-		if pricing.OutputCostPerToken != nil && *pricing.OutputCostPerToken > 0 {
-			outputBatchRatio := outputRate / *pricing.OutputCostPerToken
-			promptTokens := usage.PromptTokens
-			switch {
-			case promptTokens > TokenTierAbove272K && pricing.OutputCostPerTokenAbove272kTokens != nil:
-				outputRate = *pricing.OutputCostPerTokenAbove272kTokens * outputBatchRatio
-			case promptTokens > TokenTierAbove200K && pricing.OutputCostPerTokenAbove200kTokens != nil:
-				outputRate = *pricing.OutputCostPerTokenAbove200kTokens * outputBatchRatio
-			case promptTokens > TokenTierAbove128K && pricing.OutputCostPerTokenAbove128kTokens != nil:
-				outputRate = *pricing.OutputCostPerTokenAbove128kTokens * outputBatchRatio
-			case promptTokens > TokenTierAbove100K && pricing.OutputCostPerTokenAbove100kTokens != nil:
-				outputRate = *pricing.OutputCostPerTokenAbove100kTokens * outputBatchRatio
+		out := batchRates{ratio: batchRatio(pricing.OutputCostPerToken, *resolvedOutputRate), prompt: usage.PromptTokens}
+		outputRate := out.pick(*resolvedOutputRate,
+			batchTier{TokenTierAbove272K, pricing.OutputCostPerTokenAbove272kTokensBatches, pricing.OutputCostPerTokenAbove272kTokens},
+			batchTier{TokenTierAbove200K, pricing.OutputCostPerTokenAbove200kTokensBatches, pricing.OutputCostPerTokenAbove200kTokens},
+			batchTier{TokenTierAbove128K, nil, pricing.OutputCostPerTokenAbove128kTokens},
+			batchTier{TokenTierAbove100K, pricing.OutputCostPerTokenAbove100kTokensBatches, pricing.OutputCostPerTokenAbove100kTokens},
+		)
+		outputCost = float64(usage.CompletionTokens) * outputRate
+		// Image output tokens a row reports apart take the image batch rate (TXE-7354:
+		// gemini/gemini-2.5-flash-image publishes output_cost_per_image_token_batches 1.5e-05,
+		// twelve times its text batch rate).
+		if d := usage.CompletionTokensDetails; imageLine && d != nil && d.ImageTokens != nil {
+			tokens := min(max(*d.ImageTokens, 0), usage.CompletionTokens)
+			if rate, ok := out.rate(pricing.OutputCostPerImageTokenBatches, pricing.OutputCostPerImageToken); ok && tokens > 0 {
+				outputCost += float64(tokens) * (rate - outputRate)
 			}
 		}
-		outputCost = float64(usage.CompletionTokens) * outputRate
 	}
 
 	// Data residency (Anthropic inference_geo:"us") scales all token or cache costs
@@ -1334,6 +1350,60 @@ func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *s
 		outputCost *= *pricing.InferenceGeoUSMultiplier
 	}
 	return newInputOutputCost(inputCost, outputCost)
+}
+
+// batchRatio is the batch discount a row applies to its synchronous rates: the resolved batch
+// rate over the standard one, or 0 (no ratio) when the row has no positive standard rate.
+func batchRatio(standard *float64, batch float64) float64 {
+	if standard == nil || *standard <= 0 {
+		return 0
+	}
+	return batch / *standard
+}
+
+// batchTier is one context tier of a batch category: above threshold prompt tokens it takes the
+// explicit batch rate, or the synchronous rate scaled by the batch ratio.
+type batchTier struct {
+	threshold      int
+	explicit, sync *float64
+}
+
+// batchRates resolves batch rates for one side (input or output) of a batch row.
+type batchRates struct {
+	ratio  float64 // 0 when the row has no standard rate to scale from
+	prompt int
+}
+
+// rate returns the explicit batch rate, else the synchronous rate scaled by the batch ratio.
+func (b batchRates) rate(explicit, sync *float64) (float64, bool) {
+	if explicit != nil {
+		return *explicit, true
+	}
+	if sync != nil && b.ratio > 0 {
+		return *sync * b.ratio, true
+	}
+	return 0, false
+}
+
+// rateOr is rate with a fallback for a category the row prices neither way.
+func (b batchRates) rateOr(fallback float64, explicit, sync *float64) float64 {
+	if r, ok := b.rate(explicit, sync); ok {
+		return r
+	}
+	return fallback
+}
+
+// pick returns the rate of the largest tier the prompt is past that the row prices, else base.
+// Tiers are given largest threshold first.
+func (b batchRates) pick(base float64, tiers ...batchTier) float64 {
+	for _, t := range tiers {
+		if b.prompt > t.threshold {
+			if r, ok := b.rate(t.explicit, t.sync); ok {
+				return r
+			}
+		}
+	}
+	return base
 }
 
 // computeEmbeddingCost handles embedding requests (input-only).

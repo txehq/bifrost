@@ -585,6 +585,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_output_cost_per_second_resolution_band_columns"}, run: migrationAddOutputCostPerSecondResolutionBandColumns},
 	{IDs: []string{"add_image_variant_pricing_columns"}, run: migrationAddImageVariantPricingColumns},
 	{IDs: []string{"add_guardrail_unit_rate_columns"}, run: migrationAddGuardrailUnitRateColumns},
+	{IDs: []string{"add_explicit_batch_pricing_columns"}, run: migrationAddExplicitBatchPricingColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16882,6 +16883,69 @@ var serviceTierAnd12hCachePricingColumns = []string{
 	"cache_creation_cost_above_12hr_above_272k_tokens_ultrafast",
 	"input_cost_per_audio_token_flex",
 	"input_cost_per_audio_token_priority",
+}
+
+// explicitBatchPricingColumns are the governance_model_pricing columns
+// migrationAddExplicitBatchPricingColumns adds (fork, TXE-7354).
+var explicitBatchPricingColumns = []string{
+	"input_cost_per_token_above_100k_tokens_batches",
+	"output_cost_per_token_above_100k_tokens_batches",
+	"input_cost_per_token_above_200k_tokens_batches",
+	"output_cost_per_token_above_200k_tokens_batches",
+	"input_cost_per_token_above_272k_tokens_batches",
+	"output_cost_per_token_above_272k_tokens_batches",
+	"cache_read_input_token_cost_batches",
+	"cache_read_input_token_cost_above_100k_tokens_batches",
+	"cache_read_input_token_cost_above_200k_tokens_batches",
+	"cache_read_input_token_cost_above_272k_tokens_batches",
+	"cache_creation_input_token_cost_batches",
+	"cache_creation_input_token_cost_above_100k_tokens_batches",
+	"cache_creation_input_token_cost_above_272k_tokens_batches",
+	"cache_creation_input_token_cost_batches_1h",
+	"cache_creation_input_token_cost_above_12hr_batches",
+	"cache_creation_cost_above_12hr_above_272k_tokens_batches",
+	"input_cost_per_audio_token_batches",
+	"input_cost_per_image_token_batches",
+	"output_cost_per_image_token_batches",
+}
+
+// migrationAddExplicitBatchPricingColumns adds the explicit batch rates the upstream datasheet
+// publishes per token category and context tier (fork, TXE-7354). Expand-only: nullable columns,
+// nothing read from or rewritten in existing rows.
+func migrationAddExplicitBatchPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return addPricingColumnsMigration(ctx, db, logger, "add_explicit_batch_pricing_columns", explicitBatchPricingColumns)
+}
+
+// addPricingColumnsMigration runs one expand-only migration that adds nullable
+// governance_model_pricing columns, and drops them on rollback.
+func addPricingColumnsMigration(ctx context.Context, db *gorm.DB, logger schemas.Logger, migrationName string, columns []string) error {
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
 }
 
 // migrationAddServiceTierAnd12hCachePricingColumns adds the service-tier and 12h cache-write

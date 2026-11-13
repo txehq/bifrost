@@ -155,6 +155,58 @@ test.describe("Custom pricing overrides - realtime text message rate", () => {
 		await page.getByTestId(`pricing-override-edit-btn-${saved.id}`).click();
 		await page.getByTestId("pricing-field-search").fill("text message");
 		await expect(page.getByTestId(`pricing-override-field-input-${key}`)).toHaveValue("0.004");
+// TXE-7354: the explicit batch rates are pricing override fields. An override that sets the batch
+// cache-read rate, the batch 12h write above 272k (whose column name is shortened), and the batch
+// image output rate as an explicit zero is saved with all three and reopens with them.
+test.describe("Custom pricing overrides - explicit batch rates", () => {
+	const name = `e2e-batch-rates-${Date.now()}`;
+
+	test.afterEach(async ({ request }) => {
+		const res = await request.get("/api/governance/pricing-overrides");
+		if (!res.ok()) return;
+		const body = await res.json();
+		for (const override of body.pricing_overrides ?? []) {
+			if (override.name === name) await request.delete(`/api/governance/pricing-overrides/${override.id}`);
+		}
+	});
+
+	test("saves a batch cache-read rate, a batch 12h write above 272k and an explicit zero batch image rate, and reopens with all three", async ({ page, request }) => {
+		await page.goto("/workspace/custom-pricing/overrides");
+		await page.getByTestId("pricing-override-create-btn").first().click();
+
+		await page.getByTestId("pricing-override-name-input").fill(name);
+		await page.getByTestId("pricing-override-pattern-input").fill("gpt-5.4");
+		await page.getByTestId("pricing-override-request-types-btn").click();
+		await page.getByTestId("pricing-override-request-type-checkbox-chat_completion").click();
+		await page.keyboard.press("Escape");
+
+		await page.getByTestId("pricing-field-search").fill("batch");
+		await page.getByTestId("pricing-field-activate-cache_read_input_token_cost_batches").click();
+		await page.getByTestId("pricing-override-field-input-cache_read_input_token_cost_batches").fill("0.0000013");
+		await page.getByTestId("pricing-field-activate-cache_creation_input_token_cost_above_12hr_above_272k_tokens_batches").click();
+		await page.getByTestId("pricing-override-field-input-cache_creation_input_token_cost_above_12hr_above_272k_tokens_batches").fill("0.000005");
+		await page.getByTestId("pricing-field-activate-output_cost_per_image_token_batches").click();
+		await page.getByTestId("pricing-override-field-input-output_cost_per_image_token_batches").fill("0");
+
+		await page.getByTestId("pricing-override-save-btn").click();
+		await expect(page.getByTestId("pricing-override-save-btn")).toBeHidden();
+
+		const res = await request.get("/api/governance/pricing-overrides");
+		expect(res.ok()).toBeTruthy();
+		const saved = ((await res.json()).pricing_overrides ?? []).find((o: { name: string }) => o.name === name);
+		expect(saved, "the override was saved").toBeTruthy();
+		const patch = JSON.parse(saved.pricing_patch);
+		expect(patch.cache_read_input_token_cost_batches).toBe(0.0000013);
+		expect(patch.cache_creation_input_token_cost_above_12hr_above_272k_tokens_batches).toBe(0.000005);
+		expect(patch.output_cost_per_image_token_batches).toBe(0);
+
+		await page.reload();
+		await page.getByTestId(`pricing-override-actions-btn-${saved.id}`).click();
+		await page.getByTestId(`pricing-override-edit-btn-${saved.id}`).click();
+		await page.getByTestId("pricing-field-search").fill("batch");
+		await expect(page.getByTestId("pricing-override-field-input-cache_read_input_token_cost_batches")).toHaveValue("0.0000013");
+		await expect(page.getByTestId("pricing-override-field-input-cache_creation_input_token_cost_above_12hr_above_272k_tokens_batches")).toHaveValue("0.000005");
+		await expect(page.getByTestId("pricing-override-field-input-output_cost_per_image_token_batches")).toHaveValue("0");
 	});
 });
 
