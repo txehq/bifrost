@@ -138,13 +138,11 @@ func ToXAISpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) (*XAISpeechReq
 	req.Speed = params.Speed
 	req.WithTimestamps = params.WithTimestamps
 
-	if len(params.ExtraParams) > 0 {
-		req.ExtraParams = make(map[string]interface{}, len(params.ExtraParams))
-		maps.Copy(req.ExtraParams, params.ExtraParams)
-		// The handlers keep these typed fields in the extra params too; they were converted
-		// above and must not also reach xAI under their unified names.
-		delete(req.ExtraParams, "language_code")
-		delete(req.ExtraParams, "with_timestamps")
+	// language_code is language and with_timestamps is with_timestamps here; the speech
+	// route's copy of either among the extra params is not forwarded again (TXE-7077).
+	if unmapped := params.UnmappedExtraParams("language_code", "with_timestamps"); len(unmapped) > 0 {
+		req.ExtraParams = make(map[string]interface{}, len(unmapped))
+		maps.Copy(req.ExtraParams, unmapped)
 	}
 
 	sampleRate, err := xaiSpeechIntParam(req.ExtraParams, xaiSpeechSampleRateParam)

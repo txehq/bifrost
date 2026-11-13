@@ -14001,8 +14001,13 @@ var speechFieldsMappedBy = map[schemas.ModelProvider][]string{
 	schemas.Azure:      {"max_output_tokens"},
 	schemas.Groq:       {"max_output_tokens"},
 	schemas.OpenRouter: {"max_output_tokens"},
-	// generationConfig.maxOutputTokens.
+	// generationConfig.maxOutputTokens; Vertex sends the Gemini converter's body.
 	schemas.Gemini: {"max_output_tokens"},
+	schemas.Vertex: {"max_output_tokens"},
+	// language and with_timestamps of /v1/tts.
+	schemas.XAI: {"language_code", "with_timestamps"},
+	// input.language_type.
+	schemas.DashScope: {"language_code"},
 	// Body fields, query parameters and the with-timestamps endpoint.
 	schemas.Elevenlabs: {"enable_logging", "language_code", "optimize_streaming_latency", "pronunciation_dictionary_locators", "with_timestamps"},
 	// target_language_code.

@@ -23,11 +23,6 @@ var speechFields = []string{"voice", "language_code"}
 // timestamp_granularities and every other field are refused.
 var transcriptionFields = []string{"language", "prompt", "response_format"}
 
-// speechConvertedExtraParams are names that may sit in ExtraParams as well as in the typed
-// Params (the HTTP route keeps unknown JSON keys there). Bifrost has already converted
-// them into the vendor's own field, so they never also reach the body's top level.
-var speechConvertedExtraParams = []string{"language_code"}
-
 // ToDashScopeTTSRequest converts a unified speech request into a Qwen3-TTS body. A
 // multi-speaker voice config cannot be delivered and is refused naming voice.
 func ToDashScopeTTSRequest(request *schemas.BifrostSpeechRequest) (*DashScopeTTSRequest, error) {
@@ -46,7 +41,9 @@ func ToDashScopeTTSRequest(request *schemas.BifrostSpeechRequest) (*DashScopeTTS
 	if params.LanguageCode != nil {
 		body.Input.LanguageType = *params.LanguageCode
 	}
-	body.ExtraParams = withoutKeys(params.ExtraParams, speechConvertedExtraParams...)
+	// language_code is input.language_type here; the speech route's copy of it among the
+	// extra params is not forwarded again (TXE-7077).
+	body.ExtraParams = withoutKeys(params.UnmappedExtraParams("language_code"))
 	return body, nil
 }
 
