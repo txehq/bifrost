@@ -89,6 +89,11 @@ func TestCalculateCost_RealtimeTextMessagesAreBilledPerMessage(t *testing.T) {
 
 	assert.InDelta(t, 100*0.000001, s.CalculateCost(turn(&schemas.ResponsesResponseUsage{InputTokens: 100, TotalTokens: 100}), nil), 1e-12,
 		"a turn with no text messages is charged no message fee")
+
+	// A turn that failed, or a session that closed, carries the messages on the error's
+	// BilledUsage; governance and logging price it here at the same rate.
+	assert.InDelta(t, 2*0.004, s.CalculateCostForUsage(&schemas.BifrostLLMUsage{TextMessages: bifrost.Ptr(2)}, schemas.XAI, "grok-voice-3.0", schemas.RealtimeRequest, nil), 1e-12,
+		"the text messages of a failed turn are charged")
 }
 
 func TestCalculateCost_RealtimeTranscriptionDurationPricing(t *testing.T) {

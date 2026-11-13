@@ -682,6 +682,47 @@ func TestFinalizeRealtimeTurnCarriesTheTextMessagesSent(t *testing.T) {
 	}
 }
 
+// TestFinalizeRealtimeTurnWithErrorBillsTheTextMessagesSent (TXE-7363): text messages sent before
+// a turn that fails, or a session that closes, were billed by the vendor when sent. They land on
+// the error's BilledUsage, which governance and logging charge, and are consumed so no later turn
+// is charged them again. A BilledUsage the provider already set is kept and not written through.
+func TestFinalizeRealtimeTurnWithErrorBillsTheTextMessagesSent(t *testing.T) {
+	t.Parallel()
+
+	session := bfws.NewSession(nil)
+	var captured *schemas.BifrostError
+	session.SetRealtimeTurnHooks(&bfws.RealtimeTurnPluginState{
+		RequestID: "req_realtime_text_err", StartedAt: time.Now().Add(-time.Second),
+		PostHookRunner: func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			captured = err
+			return result, err
+		},
+	})
+	session.CountRealtimeTextMessage()
+	session.CountRealtimeTextMessage()
+
+	providerUsage := &schemas.BifrostLLMUsage{PromptTokens: 7}
+	upstreamErr := newRealtimeWireBifrostError(499, "client_closed_request", "client realtime websocket disconnected before turn completed")
+	upstreamErr.ExtraFields.BilledUsage = providerUsage
+	_ = finalizeRealtimeTurnHooksWithError(&bifrost.Bifrost{}, nil, session, schemas.XAI, "grok-voice-3.0", nil, schemas.RTEventError, nil, upstreamErr)
+
+	if captured == nil || captured.ExtraFields.BilledUsage == nil || captured.ExtraFields.BilledUsage.TextMessages == nil {
+		t.Fatalf("the failed turn's billed usage carries no text messages: %#v", captured)
+	}
+	if got := *captured.ExtraFields.BilledUsage.TextMessages; got != 2 {
+		t.Fatalf("billed text messages = %d, want 2", got)
+	}
+	if got := captured.ExtraFields.BilledUsage.PromptTokens; got != 7 {
+		t.Fatalf("billed prompt tokens = %d, want the provider's 7 kept", got)
+	}
+	if providerUsage.TextMessages != nil {
+		t.Fatal("the caller's BilledUsage was written through")
+	}
+	if got := session.ConsumeRealtimeTurnTextMessages(); got != 0 {
+		t.Fatalf("text messages left on the session = %d, want 0", got)
+	}
+}
+
 func TestNewBifrostErrorFromRealtimeErrorCarriesRealtimeMetadata(t *testing.T) {
 	t.Parallel()
 
