@@ -29,6 +29,10 @@ set -euo pipefail
 #       nothing runs rots unseen, as validate-go-config-fields.sh did.
 #   test-migration-fixtures.py                 the v2.0.0 migration seed SQL; needs no service.
 #       It ran in no job until the check above found it.
+#   test-plugin-release-dependencies.py        release-single-plugin.sh pins core, framework and
+#       sibling plugins, under the module root read from core/go.mod, before go mod tidy
+#       (TXE-7113). Stubbed go; nothing is downloaded or pushed. It ran in no job before and
+#       had fallen behind the script.
 #   every other tests/e2e/api/**/*.test.mjs     found, not listed (TXE-7067): the runners/lib
 #       script tests and any test added later. A test under tests/e2e/api runs here by
 #       existing; none was run by any job before, so a renamed harness row the smoke manifest
@@ -74,6 +78,10 @@ python3 "$SCRIPT_DIR/check-check-scripts-are-run.py"
 echo ""
 echo "🧪 test-migration-fixtures.py (migration seed SQL; ran in no job before TXE-7111)"
 python3 "$SCRIPT_DIR/test-migration-fixtures.py"
+
+echo ""
+echo "🧪 test-plugin-release-dependencies.py (plugin release pins its internal modules, TXE-7113)"
+python3 "$SCRIPT_DIR/test-plugin-release-dependencies.py"
 
 # Every other *.test.mjs under tests/e2e/api, found rather than listed, one at a time (some
 # start a loopback server on a fixed port). Each runs with plain node, which also runs a

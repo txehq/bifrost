@@ -33,7 +33,6 @@ SELF = SCRIPTS + "/" + Path(__file__).name
 NOT_RUN = {
     "check-dependency-flow.sh": "not a check: a release helper a person runs to see the next step",
     "test-e2e-api.sh": "not a check: a local runner for the live API collections, which CI starts through the Makefile targets",
-    "test-plugin-release-dependencies.py": "TXE-7113: fails 3 of its cases on main; wire it in once it passes",
     "validate-go-config-fields.sh": "kept for its name only: it runs validate-schema-sync.sh, which every pull request runs",
 }
 
