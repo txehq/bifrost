@@ -252,6 +252,18 @@ non-streamed response and on the final frame of a stream on `/v1/chat/completion
 `sonar-invalid-model` gets Perplexity's 400, whose `error.code` is a number; rows 6-7 assert the status is
 kept, streamed or not, with `extra_fields.error_type` `caller_invalid_request`.
 
+Folder 548 pins TXE-6987 (contract C5, C10) for Perplexity's native `/v1/responses` (the Agent API), which
+serves every model outside the Sonar family. The fixture answers `/v1/responses` for `agent-usage` in the
+published `ResponsesUsage` shape: `tool_calls_details.<tool>.invocation` and a `cost` object in US dollars.
+Rows 1-3 assert `tool_usage.per_tool`, `tool_usage.web_search`, the cost total and
+`vendor_cost {amount: total_cost, unit: usd}` on the non-streamed response and on `response.completed` of a
+stream on `/v1/responses` and `/openai/v1/responses`. Rows 4-6 assert `vendor_cost` on the chat routes for
+`sonar-search-usage`. The usage shape is from Perplexity's published schema; no recorded reply was available.
+
+```bash
+make run-provider-harness-test PROVIDER=perplexity FEATURE="perplexity vendor cost" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
+```
+
 Start the fixture and the isolated gateway as for content-length truncation above, then:
 
 ```bash

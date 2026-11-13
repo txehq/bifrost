@@ -1,6 +1,10 @@
 package perplexity
 
-import "github.com/capsohq/bifrost/core/schemas"
+import (
+	"strings"
+
+	"github.com/capsohq/bifrost/core/schemas"
+)
 
 // PerplexityChatRequest represents a Perplexity chat completion request
 type PerplexityChatRequest struct {
@@ -118,6 +122,7 @@ func (u *Usage) toBifrostUsage() *schemas.BifrostLLMUsage {
 		TotalTokens:       u.TotalTokens,
 		SearchContextSize: u.SearchContextSize,
 		Cost:              u.Cost.toBifrostCost(),
+		VendorCost:        u.Cost.toVendorCost(),
 	}
 
 	if u.CitationTokens != nil || u.NumSearchQueries != nil || u.ReasoningTokens != nil {
@@ -162,13 +167,22 @@ type PerplexityStreamFrame struct {
 // deserialized into it directly, keeping the provider wire format out of the
 // core schema.
 type perplexityCost struct {
-	InputTokensCost     float64 `json:"input_tokens_cost"`
-	OutputTokensCost    float64 `json:"output_tokens_cost"`
-	ReasoningTokensCost float64 `json:"reasoning_tokens_cost"`
-	CitationTokensCost  float64 `json:"citation_tokens_cost"`
-	SearchQueriesCost   float64 `json:"search_queries_cost"`
-	RequestCost         float64 `json:"request_cost"`
-	TotalCost           float64 `json:"total_cost"`
+	InputTokensCost     float64  `json:"input_tokens_cost"`
+	OutputTokensCost    float64  `json:"output_tokens_cost"`
+	ReasoningTokensCost float64  `json:"reasoning_tokens_cost"`
+	CitationTokensCost  float64  `json:"citation_tokens_cost"`
+	SearchQueriesCost   float64  `json:"search_queries_cost"`
+	RequestCost         float64  `json:"request_cost"`
+	TotalCost           *float64 `json:"total_cost"` // Pointer so a reported zero is told apart from no total
+}
+
+// toVendorCost is the total Perplexity says it charged, in US dollars, copied and never summed
+// from the categories (fork, TXE-6987, contract C5): nil when Perplexity sent no total_cost.
+func (c *perplexityCost) toVendorCost() *schemas.VendorCost {
+	if c == nil || c.TotalCost == nil {
+		return nil
+	}
+	return &schemas.VendorCost{Amount: *c.TotalCost, Unit: schemas.VendorCostUnitUSD}
 }
 
 // toBifrostCost maps Perplexity's flat cost onto the nested BifrostCost: the flat
@@ -180,9 +194,9 @@ func (c *perplexityCost) toBifrostCost() *schemas.BifrostCost {
 	}
 	inputCost := c.InputTokensCost + c.RequestCost
 	outputCost := c.OutputTokensCost + c.ReasoningTokensCost + c.CitationTokensCost + c.SearchQueriesCost
-	total := c.TotalCost
-	if total == 0 {
-		total = inputCost + outputCost
+	total := inputCost + outputCost
+	if c.TotalCost != nil && *c.TotalCost != 0 {
+		total = *c.TotalCost
 	}
 	bc := &schemas.BifrostCost{InputCost: inputCost, OutputCost: outputCost, TotalCost: total}
 	if inputCost != 0 {
@@ -200,4 +214,45 @@ func (c *perplexityCost) toBifrostCost() *schemas.BifrostCost {
 		}
 	}
 	return bc
+}
+
+// PerplexityResponsesUsage holds the parts of the Agent API's ResponsesUsage the shared Responses decode has no field for.
+type PerplexityResponsesUsage struct {
+	ToolCallsDetails map[string]PerplexityToolCallDetails `json:"tool_calls_details,omitempty"` // Per-tool call report, keyed by Perplexity's tool name
+	Cost             *PerplexityResponsesCost             `json:"cost,omitempty"`
+}
+
+// PerplexityResponsesCost holds the parts of the Agent API's ResponsesCost read for vendor_cost.
+type PerplexityResponsesCost struct {
+	Currency  string   `json:"currency"`
+	TotalCost *float64 `json:"total_cost"`
+}
+
+// perplexityWebSearchTool is the key Perplexity reports its web search tool under in tool_calls_details.
+const perplexityWebSearchTool = "web_search"
+
+// applyTo adds what Perplexity reported to the usage the shared decode produced (fork, TXE-6987, contract
+// C5 and C10): the per-tool call counts, the web search count, and the vendor's own total as vendor_cost.
+// The shared decode already reads tokens and cost.input_cost, output_cost and total_cost. A field
+// Perplexity did not report stays unset, and a total in a currency other than US dollars is not copied,
+// because vendor_cost has no unit for it.
+func (u *PerplexityResponsesUsage) applyTo(usage *schemas.ResponsesResponseUsage) {
+	if u == nil || usage == nil {
+		return
+	}
+	if len(u.ToolCallsDetails) > 0 {
+		if usage.ToolUsage == nil {
+			usage.ToolUsage = &schemas.ToolUsage{}
+		}
+		usage.ToolUsage.PerTool = make(map[string]schemas.ToolRequestUsage, len(u.ToolCallsDetails))
+		for tool, details := range u.ToolCallsDetails {
+			usage.ToolUsage.PerTool[tool] = schemas.ToolRequestUsage{NumRequests: details.Invocation}
+		}
+		if webSearch, ok := u.ToolCallsDetails[perplexityWebSearchTool]; ok {
+			usage.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: webSearch.Invocation}
+		}
+	}
+	if c := u.Cost; c != nil && c.TotalCost != nil && (c.Currency == "" || strings.EqualFold(c.Currency, "USD")) {
+		usage.VendorCost = &schemas.VendorCost{Amount: *c.TotalCost, Unit: schemas.VendorCostUnitUSD}
+	}
 }

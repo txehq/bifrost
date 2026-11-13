@@ -14,6 +14,7 @@ import (
 	"github.com/capsohq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -293,11 +294,58 @@ func (provider *PerplexityProvider) Responses(ctx *schemas.BifrostContext, key s
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		schemas.Perplexity,
-		nil,
+		parseResponsesResponse,
 		nil,
 		nil,
 		provider.logger,
 	)
+}
+
+// parseResponsesResponse decodes a native /v1/responses reply as the shared handler does, then adds the
+// usage Perplexity reports in its own shape (fork, TXE-6987).
+func parseResponsesResponse(responseBody []byte, response *schemas.BifrostResponsesResponse, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (interface{}, interface{}, *schemas.BifrostError) {
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, requestBody, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return rawRequest, rawResponse, bifrostErr
+	}
+	if response.Usage != nil {
+		applyPerplexityResponsesUsage(responseBody, "usage", response.Usage)
+	}
+	return rawRequest, rawResponse, nil
+}
+
+// parseResponsesStreamEvent decodes one native /v1/responses stream event as the shared stream does, then
+// adds the usage Perplexity reports in its own shape, so response.completed carries what the
+// non-streamed reply does (fork, TXE-6987, contract C10).
+//
+// An event that does not parse is skipped with a warning, as the shared stream does: the handler hands
+// back a ping, which the stream converters drop, instead of an error, which would end the stream.
+func (provider *PerplexityProvider) parseResponsesStreamEvent(eventBody []byte, response *schemas.BifrostResponsesStreamResponse, _ []byte, _ bool, _ bool) (interface{}, interface{}, *schemas.BifrostError) {
+	if err := sonic.Unmarshal(eventBody, response); err != nil {
+		*response = schemas.BifrostResponsesStreamResponse{}
+		if err = schemas.UnmarshalResponsesStreamObjectDelta(eventBody, response); err != nil {
+			provider.logger.Warn("Failed to parse stream response: %v", err)
+			*response = schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypePing}
+			return nil, nil, nil
+		}
+	}
+	if response.Response != nil && response.Response.Usage != nil {
+		applyPerplexityResponsesUsage(eventBody, "response.usage", response.Response.Usage)
+	}
+	return nil, nil, nil
+}
+
+// applyPerplexityResponsesUsage reads the usage object at path in body in Perplexity's own shape and adds
+// it to usage. Only that object is decoded a second time, not the reply around it.
+func applyPerplexityResponsesUsage(body []byte, path string, usage *schemas.ResponsesResponseUsage) {
+	raw := gjson.GetBytes(body, path)
+	if !raw.IsObject() {
+		return
+	}
+	var reported PerplexityResponsesUsage
+	if err := sonic.UnmarshalString(raw.Raw, &reported); err == nil {
+		reported.applyTo(usage)
+	}
 }
 
 // ResponsesStream performs a streaming responses request to the Perplexity API.
@@ -327,7 +375,7 @@ func (provider *PerplexityProvider) ResponsesStream(ctx *schemas.BifrostContext,
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		schemas.Perplexity,
 		postHookRunner,
-		nil,
+		provider.parseResponsesStreamEvent,
 		nil,
 		nil,
 		nil,
