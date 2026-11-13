@@ -633,3 +633,193 @@ func (l *fileLint) eval(e ast.Expr, depth int) (value, bool) {
 	}
 	return value{}, false
 }
+
+// sleepLintDirs are the packages, from the repository root, whose tests must wait for an
+// asynchronous write on a signal or on Eventually, never on time alone. Add a package
+// here once its sleeps are converted or marked: TXE-7315 framework/logstore, and
+// plugins/logging when TXE-7299 lands.
+var sleepLintDirs = []string{"framework/logstore"}
+
+// sleepOKMarker marks a sleep that does not wait for an asynchronous write: injected
+// latency in a fake, an absence window (a correct implementation passes however long it
+// lasts), a gap the code under test measures, or the interval of a retry loop with its
+// own deadline. The reason after the colon is required.
+const sleepOKMarker = "sleep-ok:"
+
+var sleepOK = regexp.MustCompile(regexp.QuoteMeta(sleepOKMarker) + `\s*\S`)
+
+// TestNoTestSleepsWaitingForAWrite is the class check for TXE-7315 and TXE-7299. A test
+// that sleeps until a write "should have" landed passes on a fast machine and fails on a
+// loaded CI runner. A time.Sleep, or a bare <-time.After statement, in a _test.go file of
+// a listed package fails here unless `// sleep-ok: <reason>` is on its line or the line
+// above.
+func TestNoTestSleepsWaitingForAWrite(t *testing.T) {
+	root := repoRoot(t)
+	var all []string
+	for _, dir := range sleepLintDirs {
+		entries, err := os.ReadDir(filepath.Join(root, dir))
+		if err != nil {
+			t.Fatalf("sleep lint directory %s: %v", dir, err)
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), "_test.go") {
+				continue
+			}
+			found, err := unmarkedSleeps(filepath.Join(root, dir, e.Name()), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range found {
+				rel, _ := filepath.Rel(root, f)
+				all = append(all, rel)
+			}
+		}
+	}
+	if len(all) > 0 {
+		t.Errorf("%d sleep(s) in tests that must wait on a signal (TXE-7315). Wait on a channel, a WaitGroup, or "+
+			"testtime.Eventually on a condition; a sleep that waits for no write needs `// %s <reason>` on its line "+
+			"or the line above:\n  %s", len(all), sleepOKMarker, strings.Join(all, "\n  "))
+	}
+}
+
+// TestSleepLintFindsUnmarkedSleeps checks the lint on a fixture: an unmarked sleep (also
+// under an import alias) and a bare receive from time.After are reported; a marked sleep,
+// a marker without a reason, and time.After as a select timeout behave as documented.
+func TestSleepLintFindsUnmarkedSleeps(t *testing.T) {
+	src := `package fixture
+
+import (
+	"time"
+	tm "time"
+)
+
+func waits(done chan struct{}) {
+	time.Sleep(time.Millisecond)
+	tm.Sleep(time.Millisecond)
+	<-time.After(time.Millisecond)
+	time.Sleep(time.Millisecond) // sleep-ok: injected latency
+	// sleep-ok: absence window
+	time.Sleep(time.Millisecond)
+	time.Sleep(time.Millisecond) // sleep-ok:
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+	}
+}
+`
+	got, err := unmarkedSleeps("fixture_test.go", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"fixture_test.go:9: time.Sleep",
+		"fixture_test.go:10: time.Sleep",
+		"fixture_test.go:11: <-time.After",
+		"fixture_test.go:15: time.Sleep",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unmarkedSleeps() =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// unmarkedSleeps parses one Go file (src, or the file at path when src is nil) and returns
+// "path:line: call" for each time.Sleep call and each bare <-time.After statement with no
+// sleep-ok reason on its line or the line above. Adapted from cc6's TXE-7299 lint for
+// plugins/logging, so both packages share one check.
+func unmarkedSleeps(path string, src []byte) ([]string, error) {
+	fset := token.NewFileSet()
+	var source any
+	if src != nil {
+		source = src
+	}
+	file, err := parser.ParseFile(fset, path, source, parser.ParseComments)
+	if err != nil {
+		return nil, err
+	}
+	timeNames := map[string]bool{}
+	for _, imp := range file.Imports {
+		if p, err := strconv.Unquote(imp.Path.Value); err != nil || p != "time" {
+			continue
+		}
+		name := "time"
+		if imp.Name != nil {
+			name = imp.Name.Name
+		}
+		timeNames[name] = true
+	}
+	if len(timeNames) == 0 {
+		return nil, nil
+	}
+	marked := map[int]bool{}
+	for _, group := range file.Comments {
+		for _, c := range group.List {
+			if sleepOK.MatchString(c.Text) {
+				line := fset.Position(c.Slash).Line
+				marked[line] = true
+				marked[line+1] = true
+			}
+		}
+	}
+	isTimeCall := func(e ast.Expr, fn string) bool {
+		call, ok := e.(*ast.CallExpr)
+		if !ok {
+			return false
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != fn {
+			return false
+		}
+		pkg, ok := sel.X.(*ast.Ident)
+		return ok && timeNames[pkg.Name]
+	}
+	var found []string
+	report := func(pos token.Pos, what string) {
+		if line := fset.Position(pos).Line; !marked[line] {
+			found = append(found, fmt.Sprintf("%s:%d: %s", path, line, what))
+		}
+	}
+	selectCases := map[ast.Stmt]bool{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.CommClause:
+			selectCases[node.Comm] = true
+		case *ast.CallExpr:
+			if isTimeCall(node, "Sleep") {
+				report(node.Pos(), "time.Sleep")
+			}
+		case *ast.ExprStmt:
+			// As a statement the receive waits out the whole duration; as a select case
+			// it is a timeout racing a signal, which is fine.
+			if selectCases[node] {
+				return true
+			}
+			if recv, ok := node.X.(*ast.UnaryExpr); ok && recv.Op == token.ARROW && isTimeCall(recv.X, "After") {
+				report(node.Pos(), "<-time.After")
+			}
+		}
+		return true
+	})
+	return found, nil
+}
+
+// TestEventually checks that Eventually returns once the condition holds and fails,
+// naming what it waited for, when the budget passes first.
+func TestEventually(t *testing.T) {
+	calls := 0
+	Eventually(t, 2*time.Second, "the third call", func() bool { calls++; return calls == 3 })
+	if calls != 3 {
+		t.Fatalf("Eventually returned after %d calls, want 3", calls)
+	}
+	rec := &recordingTB{}
+	Eventually(rec, Scale(20*time.Millisecond), "nothing", func() bool { return false })
+	if !strings.Contains(rec.failure, "waiting for nothing") {
+		t.Fatalf("Eventually failure = %q, want it to name what it waited for", rec.failure)
+	}
+}
+
+type recordingTB struct{ failure string }
+
+func (r *recordingTB) Helper() {}
+func (r *recordingTB) Fatalf(format string, args ...any) {
+	r.failure = fmt.Sprintf(format, args...)
+}

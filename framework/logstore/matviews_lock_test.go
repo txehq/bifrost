@@ -246,7 +246,7 @@ func awaitTestAdvisoryLock(t *testing.T, db *gorm.DB, key int64, wait time.Durat
 			require.Failf(t, "advisory lock never released",
 				"key %d still held after %s; holders: %s (lastErr=%v)", key, wait, holders, err)
 		}
-		time.Sleep(25 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond) // sleep-ok: retry interval of a loop with its own deadline
 	}
 }
 

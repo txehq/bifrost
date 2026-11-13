@@ -68,6 +68,9 @@ type HybridLogStore struct {
 	closed         atomic.Bool
 	droppedUploads atomic.Int64
 	pendingBytes   atomic.Int64
+	// outstanding counts uploads accepted onto a queue and not yet finished: queued,
+	// or taken by a worker and still uploading or setting has_object.
+	outstanding atomic.Int64
 
 	// pendingAgent holds each Agent log's latest queued upload until it settles. Until
 	// then the row carries only previews, so an update builds on this full payload
@@ -168,13 +171,12 @@ func (h *HybridLogStore) uploadShard(logID string) chan *uploadWork {
 	return h.uploadQueues[int(hash.Sum32()%uint32(len(h.uploadQueues)))]
 }
 
-// queuedUploads reports how many uploads are waiting across all shards.
-func (h *HybridLogStore) queuedUploads() int {
-	n := 0
-	for _, q := range h.uploadQueues {
-		n += len(q)
-	}
-	return n
+// outstandingUploads reports how many accepted uploads have not finished. It is zero
+// only once every enqueued upload has run to the end of processUpload, including the
+// one a worker has already taken off its queue. The queues' lengths alone read zero
+// while that upload is still in progress (TXE-7315).
+func (h *HybridLogStore) outstandingUploads() int64 {
+	return h.outstanding.Load()
 }
 
 // processUpload uploads a single payload to object storage.
@@ -184,6 +186,8 @@ func (h *HybridLogStore) queuedUploads() int {
 // to keep S3 latency from cascading into the write path.
 func (h *HybridLogStore) processUpload(work *uploadWork) {
 	payloadSize := int64(len(work.payload))
+	// Deferred first, so it runs last: the upload counts as outstanding until it is settled.
+	defer h.outstanding.Add(-1)
 	defer h.pendingBytes.Add(-payloadSize)
 	// Settled last, after has_object is set: from then on an update reads the object.
 	defer h.settlePendingAgentUpload(work)
@@ -492,9 +496,12 @@ func (h *HybridLogStore) enqueueReplacingUpload(logID string, timestamp time.Tim
 	}
 	// Recorded before the send, so a worker that settles it at once cannot run first.
 	h.trackPendingAgentUpload(work)
+	// Counted before the send for the same reason; processUpload releases it.
+	h.outstanding.Add(1)
 	sent := false
 	defer func() {
 		if !sent {
+			h.outstanding.Add(-1)
 			h.settlePendingAgentUpload(work)
 		}
 	}()

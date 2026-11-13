@@ -51,16 +51,12 @@ func newTestHybrid(t *testing.T) (*HybridLogStore, LogStore, *objectstore.InMemo
 	return hybrid, inner, objStore
 }
 
+// waitForUploads waits until done reports the upload state the test needs. A test that
+// needs every upload finished checks outstandingUploads, which counts the upload a
+// worker has taken off its queue; the queues' lengths alone do not (TXE-7315).
 func waitForUploads(t *testing.T, done func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if done() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("timed out waiting for upload state")
+	testtime.Eventually(t, testtime.Scale(5*time.Second), "upload state", done)
 }
 
 // waitForOffload waits until the offload is fully complete for id: the payload is in
@@ -311,7 +307,7 @@ func TestHybrid_EmptyPayloadSkipsUpload(t *testing.T) {
 	err := hybrid.CreateIfNotExists(ctx, entry)
 	require.NoError(t, err)
 
-	waitForUploads(t, func() bool { return hybrid.queuedUploads() == 0 })
+	waitForUploads(t, func() bool { return hybrid.outstandingUploads() == 0 })
 
 	// No upload when all payload fields are empty (e.g. initial "processing" entries).
 	assert.Equal(t, 0, objStore.Len(), "empty-payload entries should not be uploaded")
@@ -1974,7 +1970,7 @@ type slowInsertObjectStore struct {
 
 func (s *slowInsertObjectStore) Put(ctx context.Context, key string, data []byte, tags map[string]string) error {
 	if strings.Contains(string(data), `"output_message":""`) {
-		time.Sleep(s.delay)
+		time.Sleep(s.delay) // sleep-ok: injected object-store latency
 	}
 	return s.ObjectStore.Put(ctx, key, data, tags)
 }
@@ -2596,7 +2592,7 @@ func TestHybrid_UpdateAgentLogBeforeInitialUploadKeepsFullPayload(t *testing.T) 
 	close(gate.release)
 	waitForUploads(t, func() bool {
 		row, err := inner.FindAgentLog(ctx, entry.ID)
-		return err == nil && row.HasObject && hybrid.queuedUploads() == 0
+		return err == nil && row.HasObject && hybrid.outstandingUploads() == 0
 	})
 
 	found, err := hybrid.FindAgentLog(ctx, entry.ID)
@@ -2636,7 +2632,7 @@ func TestHybrid_UpdateAgentLogBodyBeforeInitialUploadKeepsFullPayload(t *testing
 	close(gate.release)
 	waitForUploads(t, func() bool {
 		row, err := inner.FindAgentLog(ctx, entry.ID)
-		return err == nil && row.HasObject && hybrid.queuedUploads() == 0
+		return err == nil && row.HasObject && hybrid.outstandingUploads() == 0
 	})
 
 	found, err := hybrid.FindAgentLog(ctx, entry.ID)
@@ -2647,6 +2643,79 @@ func TestHybrid_UpdateAgentLogBodyBeforeInitialUploadKeepsFullPayload(t *testing
 	assert.Equal(t, rawRequest, *found.RawRequest)
 	require.NotNil(t, found.ResponseBody)
 	assert.Equal(t, `{"response":"partial"}`, *found.ResponseBody)
+}
+
+// steppedObjectStore holds each Put until the test releases it, and reports on
+// entered each time a Put starts waiting, so a test can stop an upload at any step.
+type steppedObjectStore struct {
+	objectstore.ObjectStore
+	entered chan string
+	release chan struct{}
+}
+
+func newSteppedObjectStore() *steppedObjectStore {
+	return &steppedObjectStore{ObjectStore: objectstore.NewInMemoryObjectStore(), entered: make(chan string, 8), release: make(chan struct{})}
+}
+
+func (s *steppedObjectStore) Put(ctx context.Context, key string, data []byte, tags map[string]string) error {
+	s.entered <- key
+	<-s.release
+	return s.ObjectStore.Put(ctx, key, data, tags)
+}
+
+func (s *steppedObjectStore) waitEntered(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.entered:
+	case <-time.After(testtime.Scale(5 * time.Second)):
+		t.Fatal("no upload reached the object store")
+	}
+}
+
+// TestHybrid_OutstandingUploadsCountsTheUploadInProgress pins the signal the tests
+// above wait on (TXE-7315). Once the initial upload lands, the row has its object
+// and every queue is empty while a worker is still uploading the replacement. A
+// wait on "has_object and nothing queued" returned here and read the initial
+// object, which has no response body. outstandingUploads stays above zero until
+// the replacement has finished.
+func TestHybrid_OutstandingUploadsCountsTheUploadInProgress(t *testing.T) {
+	objects := newSteppedObjectStore()
+	hybrid, inner := newTestHybridWithObjects(t, objects)
+	ctx := context.Background()
+	defer func() {
+		close(objects.release)
+		hybrid.Close(ctx)
+	}()
+	requestBody := `{"request":"` + strings.Repeat("x", 3*maxA2APayloadPreviewRunes) + `"}`
+	entry := &AgentLog{
+		ID: "agent-outstanding", Timestamp: time.Now().UTC(), RecordKind: "request",
+		Operation: "SendMessage", Status: "processing", AgentName: "fixture", RequestID: "req-agent-outstanding",
+		RequestBody: &requestBody,
+	}
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	objects.waitEntered(t)
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{"response_body": `{"response":"partial"}`}))
+	assert.Equal(t, int64(2), hybrid.outstandingUploads(), "the initial upload and its queued replacement")
+
+	objects.release <- struct{}{} // the initial upload lands and sets has_object
+	objects.waitEntered(t)        // the worker has taken the replacement off its queue
+	row, err := inner.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	queued := 0
+	for _, q := range hybrid.uploadQueues {
+		queued += len(q)
+	}
+	require.True(t, row.HasObject, "the initial upload set has_object")
+	require.Zero(t, queued, "nothing is left on a queue")
+	assert.Equal(t, int64(1), hybrid.outstandingUploads(), "the replacement is still uploading")
+
+	objects.release <- struct{}{}
+	waitForUploads(t, func() bool { return hybrid.outstandingUploads() == 0 })
+	found, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.ResponseBody, "the replacement's response body")
+	assert.Equal(t, `{"response":"partial"}`, *found.ResponseBody)
+	assert.Equal(t, len(requestBody), len(*found.RequestBody))
 }
 
 // BenchmarkPendingAgentUploadTracking measures what the queued-upload record adds

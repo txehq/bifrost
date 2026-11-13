@@ -128,12 +128,19 @@ func TestPauseMatViewMaintenanceNeverCancelsOtherWork(t *testing.T) {
 	db := pauseTestDB(t)
 	holder := dedicatedConn(t, db)
 	takeRefreshLock(t, holder)
+	var holderPID int
+	require.NoError(t, holder.QueryRowContext(context.Background(), "SELECT pg_backend_pid()").Scan(&holderPID))
 	holderErr := make(chan error, 1)
 	go func() {
 		_, err := holder.ExecContext(context.Background(), "SELECT pg_sleep(3)")
 		holderErr <- err
 	}()
-	time.Sleep(testtime.Scale(200 * time.Millisecond))
+	testtime.Eventually(t, 10*time.Second, "the holder's pg_sleep to start", func() bool {
+		var running bool
+		err := db.Raw(`SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+			WHERE pid = ? AND state = 'active' AND query LIKE 'SELECT pg_sleep%')`, holderPID).Scan(&running).Error
+		return err == nil && running
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), testtime.Scale(1500*time.Millisecond))
 	defer cancel()

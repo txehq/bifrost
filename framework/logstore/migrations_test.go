@@ -1846,6 +1846,7 @@ func TestPgDropIndexConcurrentlyWaitsForLiveBuild(t *testing.T) {
 
 	db := trySetupPostgresDB(t)
 	var drops int64
+	// sleep-ok: absence window polled for 3 s; pod 2 must issue no DROP however long it lasts
 	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline) && drops == 0; time.Sleep(20 * time.Millisecond) {
 		require.NoError(t, db.Raw(`SELECT COUNT(*) FROM pg_stat_activity
 			WHERE query ILIKE 'DROP INDEX CONCURRENTLY%idx_race_logs_v%'`).Scan(&drops).Error)
@@ -1872,6 +1873,7 @@ func TestPgDropIndexConcurrentlyRebuildsAfterPeerBuildFails(t *testing.T) {
 	build := parkLogIndexBuild(t)
 	pod2Done := make(chan error, 1)
 	go func() { pod2Done <- rebuildRaceLogIndex(ctx, build.pod2) }()
+	// sleep-ok: aims the cancel after pod 2 starts waiting; the rebuild it asserts holds in either order
 	time.Sleep(500 * time.Millisecond)
 	db := trySetupPostgresDB(t)
 	require.NoError(t, db.Exec("SELECT pg_cancel_backend(?)", build.pid).Error)
