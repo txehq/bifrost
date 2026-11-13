@@ -20,6 +20,7 @@ import (
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	cstables "github.com/capsohq/bifrost/framework/configstore/tables"
+	"github.com/capsohq/bifrost/framework/internal/testtime"
 	"github.com/capsohq/bifrost/framework/logstore"
 	"github.com/capsohq/bifrost/framework/modelcatalog"
 	"github.com/capsohq/bifrost/framework/modelcatalog/datasheet"
@@ -1220,7 +1221,7 @@ func TestVideoPoll_TransientDownloadFailureRetriesThenSettlesAtTheFloor(t *testi
 // would hold it on every poll. A sweeper shutting down mid-read is retried as before.
 func TestVideoPoll_SlowDownloadIsFinalNotRetried(t *testing.T) {
 	saved := renderedVideoTimeout
-	renderedVideoTimeout = 50 * time.Millisecond
+	renderedVideoTimeout = testtime.Scale(50 * time.Millisecond)
 	t.Cleanup(func() { renderedVideoTimeout = saved })
 
 	retriever := &stallingDownload{resp: silentReplicateResponse("pred_slow")}

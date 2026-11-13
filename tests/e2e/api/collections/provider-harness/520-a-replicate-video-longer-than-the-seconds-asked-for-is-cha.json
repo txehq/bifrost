@@ -1,6 +1,6 @@
 {
   "name": "520. A Replicate video longer than the seconds asked for is charged for the seconds it rendered (rendered video duration)",
-  "description": "Local fixture regression for TXE-7329, no live provider calls. fixture-folders.mjs's video-settlement group starts tests/e2e/api/runners/provider-error-fixture.mjs and a gateway on tests/e2e/api/provider_config/video-settlement.config.json: replicate at the fixture, provider job accounting and request logging on, and the fixture's pricing sheet, which prices fixture/rendered-longer at $0.10 a second. Run with videoSettlementFixture=1 and videoSettlementFixtureUrl; every case is skipped otherwise. 520.2 creates a video asking for 5 seconds. The fixture's prediction succeeds with an output on the provider's own origin that is TXE-6774's 12-second ffmpeg MP4, as a hosted model does when a model-defined input (num_frames, length) overrides the duration, and like Replicate it reports neither the rendered duration nor a cost. 520.3 reads the finished task: the retrieve path leaves the job to the sweeper, which downloads the video. 520.4 waits up to two minutes (the video sweeper ticks every 30 seconds) for the settlement row, read by its id (UUIDv5 of the video namespace and replicate:<video id>), and asserts it cost $1.20 for 12 seconds, not $0.50 for the 5 asked for, with accounting.seconds 12 and not marked incomplete. 520.5 shows the create sent input.duration 5 and the sweeper downloaded the video once. Red before TXE-7329: the row cost $0.50 and the video was never downloaded.",
+  "description": "Local fixture regression for TXE-7329, no live provider calls. fixture-folders.mjs's video-settlement group starts tests/e2e/api/runners/provider-error-fixture.mjs and a gateway on tests/e2e/api/provider_config/video-settlement.config.json: replicate at the fixture, provider job accounting and request logging on, and the fixture's pricing sheet, which prices fixture/rendered-longer at $0.10 a second. Run with videoSettlementFixture=1 and videoSettlementFixtureUrl; every case is skipped otherwise. 520.2 creates a video asking for 5 seconds. The fixture's prediction succeeds with an output on the provider's own origin that is TXE-6774's 12-second ffmpeg MP4, as a hosted model does when a model-defined input (num_frames, length) overrides the duration, and like Replicate it reports neither the rendered duration nor a cost. 520.3 reads the finished task: the retrieve path leaves the job to the sweeper, which downloads the video. 520.4 waits up to two minutes (the video sweeper ticks every 30 seconds) for the settlement row, read by its id (UUIDv5 of the video namespace and replicate:<video id>), and asserts it cost $1.20 for 12 seconds, not $0.50 for the 5 asked for, with accounting.seconds 12 and not marked incomplete. 520.5 shows the create sent input.duration 5 and the sweeper downloaded the video once. Red before TXE-7329: the row cost $0.50 and the video was never downloaded. TXE-7334: the config sets client.max_response_body_size_mb to 1. 520.6 and 520.7 settle fixture/rendered-oversized, the same 12-second clip with 2 MiB more media, past that limit: streamed, it is charged $1.20 for 12 seconds (red before TXE-7334: held whole, it was past the limit and charged the $0.50 floor, marked incomplete). 520.8 and 520.9 settle fixture/rendered-reordered, a 12-second clip whose second sample presents 2 s late: $1.20 for 12 seconds (red before TXE-7334: the largest offset added to the decode end read 14 s, $1.40).",
   "event": [
     {
       "listen": "prerequest",
@@ -229,6 +229,242 @@
               "    pm.expect(JSON.parse(creates[0].body).input.duration, creates[0].body).to.eql(5);",
               "  });",
               "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "520.6 replicate/fixture/rendered-oversized POST /v1/videos asking for 5 seconds; its 12-second output is past the gateway's 1 MB body limit (rendered video duration)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"replicate/fixture/rendered-oversized\",\n  \"prompt\": \"a paper boat drifting down a rain gutter\",\n  \"seconds\": \"5\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create is a queued task for the fixture prediction', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.include('pred_rendered_oversized');",
+              "  pm.variables.set('renderedVideoId', j.id);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "520.7 the sweeper streams the oversized video and settles it at the 12 seconds it rendered, $1.20, not the $0.50 floor (rendered video duration)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "{{setupToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs?providers=replicate&limit=1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "providers",
+              "value": "replicate"
+            },
+            {
+              "key": "limit",
+              "value": "1"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// TXE-7334: held whole, the file is past client.max_response_body_size_mb (1 here) and was charged its",
+              "// $0.50 floor, marked incomplete. Streamed, its header is read and the 12 seconds are charged.",
+              "var CryptoJS = require('crypto-js');",
+              "function uuidv5(namespace, name) {",
+              "  var hash = CryptoJS.SHA1(CryptoJS.enc.Hex.parse(namespace.replace(/-/g, '')).concat(CryptoJS.enc.Utf8.parse(name))).toString();",
+              "  var b = hash.slice(0, 32).split('');",
+              "  b[12] = '5';",
+              "  b[16] = ((parseInt(b[16], 16) & 0x3) | 0x8).toString(16);",
+              "  var s = b.join('');",
+              "  return s.slice(0, 8) + '-' + s.slice(8, 12) + '-' + s.slice(12, 16) + '-' + s.slice(16, 20) + '-' + s.slice(20, 32);",
+              "}",
+              "var videoId = pm.variables.get('renderedVideoId');",
+              "var logId = uuidv5('b1e0f7c4-2a63-4d18-9f5b-6c0a3d8e41d7', 'replicate:' + videoId);",
+              "var token = pm.variables.get('setupToken');",
+              "var last = '';",
+              "function check(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + logId, method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    if (!err && res.code === 200 && res.json().cost !== undefined) {",
+              "      var j = res.json();",
+              "      pm.test('the oversized video is charged for the 12 seconds it rendered', function () {",
+              "        pm.expect(j.cost, JSON.stringify(j)).to.be.closeTo(1.2, 1e-9);",
+              "        var accounting = j.video_debug && j.video_debug.accounting;",
+              "        pm.expect(accounting, JSON.stringify(j.video_debug)).to.be.ok;",
+              "        pm.expect(accounting.seconds, JSON.stringify(accounting)).to.eql(12);",
+              "        pm.expect(accounting.incomplete, JSON.stringify(accounting)).to.not.be.ok;",
+              "      });",
+              "      return;",
+              "    }",
+              "    last = err ? String(err) : (res.code + ' ' + res.text().slice(0, 300));",
+              "    if (attempt < 120) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+              "    pm.test('the settlement row appeared', function () { pm.expect.fail('settlement row ' + logId + ' for ' + videoId + ' never appeared: ' + last); });",
+              "  });",
+              "}",
+              "check(0);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "520.8 replicate/fixture/rendered-reordered POST /v1/videos asking for 5 seconds; its 12-second output has reordered frames (rendered video duration)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"replicate/fixture/rendered-reordered\",\n  \"prompt\": \"a paper boat drifting down a rain gutter\",\n  \"seconds\": \"5\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create is a queued task for the fixture prediction', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.include('pred_rendered_reordered');",
+              "  pm.variables.set('renderedVideoId', j.id);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "520.9 the sweeper settles the reordered video at the 12 seconds it presents, $1.20, not 14 seconds (rendered video duration)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "{{setupToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs?providers=replicate&limit=1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "providers",
+              "value": "replicate"
+            },
+            {
+              "key": "limit",
+              "value": "1"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// TXE-7334: the clip's second sample presents 2 s late. Adding that offset to the decode end read 14 s",
+              "// ($1.40); the latest any sample presents is 12 s.",
+              "var CryptoJS = require('crypto-js');",
+              "function uuidv5(namespace, name) {",
+              "  var hash = CryptoJS.SHA1(CryptoJS.enc.Hex.parse(namespace.replace(/-/g, '')).concat(CryptoJS.enc.Utf8.parse(name))).toString();",
+              "  var b = hash.slice(0, 32).split('');",
+              "  b[12] = '5';",
+              "  b[16] = ((parseInt(b[16], 16) & 0x3) | 0x8).toString(16);",
+              "  var s = b.join('');",
+              "  return s.slice(0, 8) + '-' + s.slice(8, 12) + '-' + s.slice(12, 16) + '-' + s.slice(16, 20) + '-' + s.slice(20, 32);",
+              "}",
+              "var videoId = pm.variables.get('renderedVideoId');",
+              "var logId = uuidv5('b1e0f7c4-2a63-4d18-9f5b-6c0a3d8e41d7', 'replicate:' + videoId);",
+              "var token = pm.variables.get('setupToken');",
+              "var last = '';",
+              "function check(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + logId, method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    if (!err && res.code === 200 && res.json().cost !== undefined) {",
+              "      var j = res.json();",
+              "      pm.test('the reordered video is charged for the 12 seconds it presents', function () {",
+              "        pm.expect(j.cost, JSON.stringify(j)).to.be.closeTo(1.2, 1e-9);",
+              "        var accounting = j.video_debug && j.video_debug.accounting;",
+              "        pm.expect(accounting, JSON.stringify(j.video_debug)).to.be.ok;",
+              "        pm.expect(accounting.seconds, JSON.stringify(accounting)).to.eql(12);",
+              "        pm.expect(accounting.incomplete, JSON.stringify(accounting)).to.not.be.ok;",
+              "      });",
+              "      return;",
+              "    }",
+              "    last = err ? String(err) : (res.code + ' ' + res.text().slice(0, 300));",
+              "    if (attempt < 120) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+              "    pm.test('the settlement row appeared', function () { pm.expect.fail('settlement row ' + logId + ' for ' + videoId + ' never appeared: ' + last); });",
+              "  });",
+              "}",
+              "check(0);"
             ]
           }
         }
