@@ -180,6 +180,34 @@ export function writeFixtureGatewayConfig(appDir, { datasheetOrigin, providers }
 	return configPath;
 }
 
+// remapLoopbackPorts rewrites 127.0.0.1:<from> and localhost:<from> to <to> for each [from, to]
+// pair, and never a longer port that starts with <from>.
+export function remapLoopbackPorts(text, mapping) {
+	let out = text;
+	for (const [from, to] of mapping) out = out.replace(new RegExp(`(127\\.0\\.0\\.1|localhost):${from}(?!\\d)`, "g"), `$1:${to}`);
+	return out;
+}
+
+// writeCheckedInFixtureConfig copies a checked-in fixture gateway config (tests/e2e/api/provider_config)
+// to <appDir>/config.json with the fixture's default ports rewritten, for runners that move a fixture
+// off its default ports (fixture-folders.mjs, TXE-7285). It holds such a config to the same settings
+// fixtureGatewayConfig writes: inference auth must be off in the file itself (a config that leaves
+// it on is refused, naming the file, since every case would get 401), and a config that names no
+// datasheet gets datasheetOrigin's, so a fresh gateway does not download them.
+export function writeCheckedInFixtureConfig(appDir, { source, mapping = [], datasheetOrigin }) {
+	const config = JSON.parse(remapLoopbackPorts(fs.readFileSync(source, "utf8"), mapping));
+	if (config.client?.enforce_auth_on_inference !== false) {
+		throw new Error(`${source} must set client.enforce_auth_on_inference: false; fixture cases send no virtual key, so every one would get 401`);
+	}
+	const pricing = ((config.framework ||= {}).pricing ||= {});
+	pricing.pricing_url ||= `${datasheetOrigin}/pricing.json`;
+	pricing.model_parameters_url ||= `${datasheetOrigin}/model-parameters.json`;
+	fs.mkdirSync(appDir, { recursive: true });
+	const configPath = path.join(appDir, "config.json");
+	fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+	return configPath;
+}
+
 export const argValue = (args, name, fallback) => {
 	const i = args.indexOf(name);
 	return i >= 0 && args[i + 1] ? args[i + 1] : fallback;

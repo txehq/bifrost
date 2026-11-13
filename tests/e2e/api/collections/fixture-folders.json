@@ -1,0 +1,64 @@
+{
+  "$comment": "tests/e2e/api/runners/fixture-folders.mjs reads this file. notRun: harness folder files that use a fixture and that no runner group runs yet, each with its reason and ticket. quarantine: rows that a runner group runs and that fail on main, each with its ticket; the check fails when a quarantined row passes, so the entry must be removed in the PR that fixes the row. Both lists only shrink.",
+  "notRun": [
+    {
+      "file": "186-streamed-retry-after-an-in-stream-error-logs-the-served-atte.json",
+      "ticket": "TXE-7290",
+      "reason": "needs a gateway whose OpenAI base_url points at the Azure stream preamble fixture with max_retries >= 1 and logging on; no config for it is checked in"
+    },
+    {
+      "file": "208-databricks-oauth-m2m-token-mint-failures-and-fallback-gating.json",
+      "ticket": "TXE-7290",
+      "reason": "needs INCLUDE_PREVIEW and a Databricks key whose workspace host is 127.0.0.1:9 beside the token fixture"
+    },
+    {
+      "file": "266-agent-gateway-push-configurations-are-tenant-scoped-and-stre.json",
+      "ticket": "TXE-7290",
+      "reason": "runs against the python-profile gateway with the A2A push fixture that test-provider-harness.sh starts; no fixture config of its own"
+    },
+    {
+      "file": "267-agent-gateway-push-deliveries-identical-appends-are-at-least.json",
+      "ticket": "TXE-7290",
+      "reason": "runs against the python-profile gateway with the A2A push fixture that test-provider-harness.sh starts; no fixture config of its own"
+    },
+    {
+      "file": "276-warp-keeps-embedding-spaces-apart-and-counts-what-a-turn-emb.json",
+      "ticket": "TXE-7290",
+      "reason": "needs warp-wire.config.json with a logs store and a vector store"
+    }
+  ],
+  "quarantine": [
+    {
+      "row": "openai the catalog's pick that answers 500 is tried three times before the catalog fallback serves, and the session's next turn starts on the fallback - routing-error-fixture",
+      "ticket": "TXE-7289"
+    },
+    {
+      "row": "openai a rule target answering 500 is tried three times, a fallback whose budget is spent is skipped without an upstream call, and the next fallback serves on one attempt - routing-error-fixture",
+      "ticket": "TXE-7289"
+    },
+    {
+      "row": "openai a direct key on a bare model goes to whichever provider the virtual key picks: a provider that refuses it hands over to the other's own keys - routing-error-fixture",
+      "ticket": "TXE-7289"
+    },
+    {
+      "row": "335.13 gemini /genai/v1beta/models/pp-tts-ok:generateContent the native route keeps generationConfig.maxOutputTokens, answers the bare PCM and returns the output token details as usageMetadata (gemini speech contract)",
+      "ticket": "TXE-7289"
+    },
+    {
+      "row": "335.16 gemini /genai/v1beta/models/pp-tts-ok:streamGenerateContent the native stream sends the bare PCM and ends on finishReason STOP with the output token details, from one upstream call (gemini speech contract)",
+      "ticket": "TXE-7289"
+    },
+    {
+      "row": "[EXPECT-400] 335.17 gemini /genai/v1beta/models/pp-tts-blocked:streamGenerateContent a blocked prompt on the native stream returns 400 with the vendor's message, no stream (gemini speech contract)",
+      "ticket": "TXE-7289"
+    },
+    {
+      "row": "335.18 gemini /genai/v1beta/models/pp-tts-truncated:streamGenerateContent a native stream that ends without finishReason ends on an error frame, never on finishReason STOP (gemini speech contract)",
+      "ticket": "TXE-7289"
+    },
+    {
+      "row": "423.26 dashscope wire capture: each download queried its task once without the async header, and the file left through the proxy to the address the task named (dashscope wan video)",
+      "ticket": "TXE-7289"
+    }
+  ]
+}

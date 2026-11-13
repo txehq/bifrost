@@ -33,6 +33,7 @@ GATED_JOBS = {
     ("codspeed.yml", "benchmarks"),
     ("dependency-review.yml", "dependency-review"),
     ("go-unit-tests.yml", "shard"),
+    ("go-unit-tests.yml", "fixture-folders"),
     ("workflow-lint.yml", "check-egress-allowlist"),
 }
 
