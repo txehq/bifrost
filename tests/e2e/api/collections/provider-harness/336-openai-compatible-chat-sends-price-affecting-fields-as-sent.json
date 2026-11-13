@@ -484,8 +484,6 @@
               "  var saved = pm.collectionVariables.get('h336ClientConfig');",
               "  if (!saved) { throw new Error('336.9 must run first: it stores the client config this save sends back'); }",
               "  var clientConfig = JSON.parse(saved);",
-              "  // The fixture gateway never set log_retention_days, so the read returns 0, and a save refuses anything below 1.",
-              "  if (!(clientConfig.log_retention_days >= 1)) { clientConfig.log_retention_days = 365; }",
               "  clientConfig.disable_encrypted_reasoning_retry = true;",
               "  pm.request.body.raw = JSON.stringify({ client_config: clientConfig });",
               "}"
@@ -605,8 +603,6 @@
               "  var saved = pm.collectionVariables.get('h336ClientConfig');",
               "  if (!saved) { throw new Error('336.9 must run first: it stores the client config this save sends back'); }",
               "  var clientConfig = JSON.parse(saved);",
-              "  // The fixture gateway never set log_retention_days, so the read returns 0, and a save refuses anything below 1.",
-              "  if (!(clientConfig.log_retention_days >= 1)) { clientConfig.log_retention_days = 365; }",
               "  clientConfig.disable_encrypted_reasoning_retry = false;",
               "  pm.request.body.raw = JSON.stringify({ client_config: clientConfig });",
               "}"
