@@ -6969,6 +6969,12 @@ func TestCalculateCost_ImageGeneration_TXE7356Variants(t *testing.T) {
 		{"nano-banana-2 4K", "replicate", "google/nano-banana-2", "", "", "4K", nil, 0.151},
 		{"nano-banana-2 2K", "replicate", "google/nano-banana-2", "", "", "2K", nil, 0.101},
 		{"nano-banana-2 no tier", "replicate", "google/nano-banana-2", "", "", "", nil, 0.067},
+		// A size and no tier: the tier Replicate sends for that size (4096x4096 is 4K), not the flat rate.
+		{"nano-banana-2 size 4096x4096", "replicate", "google/nano-banana-2", "4096x4096", "", "", nil, 0.151},
+		{"nano-banana-2 size 2048x1152", "replicate", "google/nano-banana-2", "2048x1152", "", "", nil, 0.101},
+		{"nano-banana-2 size 1024x1024", "replicate", "google/nano-banana-2", "1024x1024", "", "", nil, 0.067},
+		// A named tier wins over the size's tier.
+		{"nano-banana-2 size 4096x4096 tier 1K", "replicate", "google/nano-banana-2", "4096x4096", "", "1K", nil, 0.067},
 		{"trellis-2 1536", "fal_ai", "fal-ai/trellis-2", "", "", "1536", nil, 0.35},
 		{"trellis-2 512", "fal_ai", "fal-ai/trellis-2", "", "", "512", nil, 0.25},
 		{"trellis-2 0.5K", "fal_ai", "fal-ai/trellis-2", "", "", "0.5k", nil, 0.2},
@@ -8730,6 +8736,56 @@ func TestCalculateCost_VideoResponsePricesUnstatedAudioWithAudio(t *testing.T) {
 
 // BenchmarkVideoOutputPerSecondRate is the request-path cost TXE-7306 adds: one more nil check
 // for an audio band before the silent band lookup.
+// TXE-7356: the request-path cost of pricing a per-image response, the common cases (a joint
+// size and quality rate, a flat rate) and the rates TXE-7356 adds (a resolution tier, steps).
+func BenchmarkCalculateCostImagePerImage(b *testing.B) {
+	flat := configstoreTables.TableModelPricing{Model: "flat-image", Provider: "openai", Mode: "image_generation", OutputCostPerImage: bifrost.Ptr(0.04)}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-image-1", "openai", "image_generation"): sizeQualityImagePricing(),
+		makeKey("flat-image", "openai", "image_generation"):  flat,
+	})
+	joint := makeSizedImageResponse("openai", "gpt-image-1", "1024x1536", "high", 1)
+	flatResp := makeSizedImageResponse("openai", "flat-image", "1024x1024", "", 1)
+	b.Run("joint size and quality", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = s.CalculateCost(joint, nil)
+		}
+	})
+	b.Run("flat per image", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = s.CalculateCost(flatResp, nil)
+		}
+	})
+}
+
+// BenchmarkCalculateCostImageVariants is BenchmarkCalculateCostImagePerImage for the TXE-7356 rates.
+func BenchmarkCalculateCostImageVariants(b *testing.B) {
+	tier := configstoreTables.TableModelPricing{Model: "grok-imagine-image-quality", Provider: "xai", Mode: "image_generation",
+		OutputCostPerImage1K: bifrost.Ptr(0.04), OutputCostPerImage2K: bifrost.Ptr(0.06)}
+	steps := configstoreTables.TableModelPricing{Model: "stability.stable-diffusion-xl-v1", Provider: "bedrock", Mode: "image_generation",
+		OutputCostPerImageAbove1024x1024Pixels50Steps: bifrost.Ptr(0.04), OutputCostPerImageAbove1024x1024PixelsMaxSteps: bifrost.Ptr(0.08)}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(tier.Model, tier.Provider, tier.Mode):    tier,
+		makeKey(steps.Model, steps.Provider, steps.Mode): steps,
+	})
+	tierResp := variantImageResponse("xai", tier.Model, "", "", "2k", nil)
+	stepsResp := variantImageResponse("bedrock", steps.Model, "1024x1024", "", "", bifrost.Ptr(60))
+	b.Run("resolution tier", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = s.CalculateCost(tierResp, nil)
+		}
+	})
+	b.Run("steps", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = s.CalculateCost(stepsResp, nil)
+		}
+	})
+}
+
 func BenchmarkVideoOutputPerSecondRate(b *testing.B) {
 	p := pixverseV6Pricing()
 	b.ReportAllocs()

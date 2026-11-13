@@ -3,6 +3,7 @@ package schemas
 import (
 	"bytes"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -358,6 +359,32 @@ var imageResolutionTiers = map[string]struct {
 	"0.5K": {ImageResolutionTierK, 0.5}, "1K": {ImageResolutionTierK, 1}, "1.5K": {ImageResolutionTierK, 1.5},
 	"2K": {ImageResolutionTierK, 2}, "4K": {ImageResolutionTierK, 4},
 	"512": {ImageResolutionTierPixels, 512}, "1024": {ImageResolutionTierPixels, 1024}, "1536": {ImageResolutionTierPixels, 1536},
+}
+
+// ImageResolutionTierForSize returns the K tier a "WxH" size falls in: "1K" up to 1024 on both
+// edges, "2K" up to 2048, "4K" up to 4096, and "" for a larger or malformed size. Providers that
+// take a tier send this one for a size (Gemini, Replicate's nano-banana, through
+// utils.ConvertSizeToAspectRatioAndResolution), and the cost path prices a size by it when the
+// request named no tier (fork, TXE-7356), so the two cannot drift apart.
+func ImageResolutionTierForSize(size string) string {
+	w, h, ok := strings.Cut(strings.TrimSpace(size), "x")
+	if !ok {
+		return ""
+	}
+	width, err1 := strconv.Atoi(w)
+	height, err2 := strconv.Atoi(h)
+	if err1 != nil || err2 != nil || width <= 0 || height <= 0 {
+		return ""
+	}
+	switch {
+	case width <= 1024 && height <= 1024:
+		return "1K"
+	case width <= 2048 && height <= 2048:
+		return "2K"
+	case width <= 4096 && height <= 4096:
+		return "4K"
+	}
+	return ""
 }
 
 // ImageResolutionTier returns the family and order of a resolution tier label, matched

@@ -356,6 +356,26 @@ func BenchmarkImageResponseBackfillParams(b *testing.B) {
 			resp.BackfillParams(req)
 		}
 	})
+	// TXE-7356: the common priced request (size and quality), and one that also names a
+	// resolution tier and inference steps, which BackfillParams now echoes for pricing.
+	sized := &BifrostRequest{ImageGenerationRequest: &BifrostImageGenerationRequest{Model: "dall-e-3",
+		Params: &ImageGenerationParameters{Size: new("1024x1024"), Quality: new("hd")}}}
+	b.Run("size and quality", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			resp := &BifrostImageGenerationResponse{Data: data}
+			resp.BackfillParams(sized)
+		}
+	})
+	tiered := &BifrostRequest{ImageGenerationRequest: &BifrostImageGenerationRequest{Model: "stability.stable-diffusion-xl-v1",
+		Params: &ImageGenerationParameters{Size: new("1024x1024"), Resolution: "2K", NumInferenceSteps: new(60)}}}
+	b.Run("resolution and steps", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			resp := &BifrostImageGenerationResponse{Data: data}
+			resp.BackfillParams(tiered)
+		}
+	})
 }
 
 // TXE-7051 (contract C9): a sync image response of a vendor with a documented link lifetime

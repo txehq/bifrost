@@ -1759,6 +1759,11 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 	if perImageRate == nil {
 		perImageRate = baseImageSizeRates(pricing).rateForSize(width, height, pixels)
 	}
+	// A request that named a size and no tier, on a row priced by tier and not by size: the
+	// tier that size falls in, which is the tier Gemini and Replicate send for it.
+	if perImageRate == nil && !namedImageResolutionTier(shape.resolution) {
+		perImageRate = imageResolutionRate(pricing, schemas.ImageResolutionTierForSize(shape.size))
+	}
 	if perImageRate == nil {
 		perImageRate = pricing.OutputCostPerImage
 	}
