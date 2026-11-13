@@ -13,6 +13,7 @@ import (
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
 
 // The bodies below are Gemini generateContent shapes for a TTS model. geminiPromptBlockedBody
@@ -596,5 +597,65 @@ func TestToBifrostSpeechResponseRecordsContentType(t *testing.T) {
 		if out.Usage == nil || out.Usage.InputTokens != 5 || out.Usage.OutputTokens != 30 {
 			t.Errorf("format %q: usage = %+v, want Gemini's usageMetadata", tc.format, out.Usage)
 		}
+	}
+}
+
+// TXE-6540 moved the speech stream reader into HandleGeminiSpeechStream, which takes the
+// request headers as a map so Vertex can pass its own. This measures the one piece of work
+// that changed on the Gemini API path: setting the three headers directly (before) against
+// building the map and applying it (after).
+func BenchmarkGeminiSpeechStreamHeaders(b *testing.B) {
+	req := fasthttp.AcquireRequest()
+	defer fasthttp.ReleaseRequest(req)
+	const apiKey = "dummy-key"
+	b.Run("before: set directly", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			req.Header.Reset()
+			setGeminiAuthHeader(req, apiKey)
+			req.Header.Set("Accept", "text/event-stream")
+			req.Header.Set("Cache-Control", "no-cache")
+		}
+	})
+	b.Run("after: header map", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			req.Header.Reset()
+			headers := map[string]string{"Accept": "text/event-stream", "Cache-Control": "no-cache"}
+			headers["x-goog-api-key"] = apiKey
+			applySpeechStreamHeadersForBenchmark(req, headers)
+		}
+	})
+}
+
+// applySpeechStreamHeadersForBenchmark applies headers the way HandleGeminiSpeechStream does.
+// It is not inlined, so the map escapes to the heap as it does on the real call.
+//
+//go:noinline
+func applySpeechStreamHeadersForBenchmark(req *fasthttp.Request, headers map[string]string) {
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	setGeminiAuthHeader(req, "")
+}
+
+// The buffered step both providers share after decoding the answer: the block check and the
+// conversion of the audio to the requested format.
+func BenchmarkSpeechResponseFromGenerateContent(b *testing.B) {
+	var answer GenerateContentResponse
+	if err := sonic.Unmarshal([]byte(geminiSpeechFinalChunk), &answer); err != nil {
+		b.Fatal(err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for name, format := range map[string]string{"wav": "", "pcm": SpeechResponseFormatPCM} {
+		req := geminiSpeechTestRequest(&schemas.SpeechParameters{ResponseFormat: format})
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, bErr := SpeechResponseFromGenerateContent(ctx, req, &answer); bErr != nil {
+					b.Fatal(bErr.Error.Message)
+				}
+			}
+		})
 	}
 }
