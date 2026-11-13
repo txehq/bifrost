@@ -27,44 +27,7 @@
       "reason": "needs warp-wire.config.json with a logs store and a vector store"
     }
   ],
-  "quarantine": [
-    {
-      "row": "openai the catalog's pick that answers 500 is tried three times before the catalog fallback serves, and the session's next turn starts on the fallback - routing-error-fixture",
-      "ticket": "TXE-7289"
-    },
-    {
-      "row": "openai a rule target answering 500 is tried three times, a fallback whose budget is spent is skipped without an upstream call, and the next fallback serves on one attempt - routing-error-fixture",
-      "ticket": "TXE-7289"
-    },
-    {
-      "row": "openai a direct key on a bare model goes to whichever provider the virtual key picks: a provider that refuses it hands over to the other's own keys - routing-error-fixture",
-      "ticket": "TXE-7289"
-    },
-    {
-      "row": "335.13 gemini /genai/v1beta/models/pp-tts-ok:generateContent the native route keeps generationConfig.maxOutputTokens, answers the bare PCM and returns the output token details as usageMetadata (gemini speech contract)",
-      "ticket": "TXE-7289"
-    },
-    {
-      "row": "335.16 gemini /genai/v1beta/models/pp-tts-ok:streamGenerateContent the native stream sends the bare PCM and ends on finishReason STOP with the output token details, from one upstream call (gemini speech contract)",
-      "ticket": "TXE-7289"
-    },
-    {
-      "row": "[EXPECT-400] 335.17 gemini /genai/v1beta/models/pp-tts-blocked:streamGenerateContent a blocked prompt on the native stream returns 400 with the vendor's message, no stream (gemini speech contract)",
-      "ticket": "TXE-7289"
-    },
-    {
-      "row": "335.18 gemini /genai/v1beta/models/pp-tts-truncated:streamGenerateContent a native stream that ends without finishReason ends on an error frame, never on finishReason STOP (gemini speech contract)",
-      "ticket": "TXE-7289"
-    },
-    {
-      "row": "423.26 dashscope wire capture: each download queried its task once without the async header, and the file left through the proxy to the address the task named (dashscope wan video)",
-      "ticket": "TXE-7289"
-    },
-    {
-      "row": "422.15 bfl downloads: each queried its task once, the file left through the proxy to the address the task named, the loopback file and the bare id reached nothing (bfl flux 3 video)",
-      "ticket": "TXE-7289"
-    }
-  ],
+  "quarantine": [],
   "skippedRows": [
     {
       "row": "vertex/gemini-3-pro-image /v1/images/generations resolution 1K reaches Vertex as imageConfig.imageSize and usage.output_images is the delivered count (gemini image contract)",

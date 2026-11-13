@@ -1,0 +1,15 @@
+{
+  "setup_token": "bifrost-e2e-setup-token",
+  "client": {
+    "enforce_auth_on_inference": false,
+    "allow_direct_keys": true
+  },
+  "framework": {
+    "pricing": {
+      "pricing_url": "http://127.0.0.1:8791/pricing.json",
+      "model_parameters_url": "http://127.0.0.1:8791/model-parameters.json",
+      "mcp_library_sync_interval": 0
+    }
+  },
+  "providers": {}
+}

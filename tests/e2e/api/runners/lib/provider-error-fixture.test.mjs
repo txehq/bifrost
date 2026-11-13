@@ -131,6 +131,50 @@ test("the media tunnel joins a CONNECT for any address to the fixture and counts
   assert.match(answered, /^HTTP\/1\.1 200 /);
 });
 
+// TXE-7289: a gateway keeps the tunnel it opened for one download and reuses it for the next download to
+// the same address, so a case that resets and then asserts its own CONNECT failed whenever an earlier case
+// had downloaded from that address. /__reset closes every open tunnel with the hit counts.
+test("POST /__reset closes the open media tunnels, so the next download opens its own", async (t) => {
+  const post = await startFixture(t);
+  const socket = net.connect(post.mediaTunnelPort, "127.0.0.1");
+  t.after(() => socket.destroy());
+  await new Promise((resolve, reject) => {
+    socket.once("connect", resolve);
+    socket.once("error", reject);
+  });
+  let answered = "";
+  socket.on("data", (c) => (answered += c.toString("latin1")));
+  const closed = new Promise((resolve) => socket.once("close", resolve));
+  socket.write("CONNECT 203.0.113.10:80 HTTP/1.1\r\nHost: 203.0.113.10:80\r\n\r\n");
+  for (let i = 0; i < 100 && !answered.includes("200 Connection established"); i++) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(answered.includes("200 Connection established"), answered);
+  const reset = await post({}, "/__reset");
+  assert.equal(reset.status, 200);
+  const outcome = await Promise.race([closed.then(() => "closed"), new Promise((resolve) => setTimeout(() => resolve("still open"), 2000))]);
+  assert.equal(outcome, "closed", "the tunnel opened before the reset is closed by it");
+});
+
+// TXE-7289: /any-key/<path> stands for a provider that serves a caller's own key (folder 185 row 8). It accepts
+// any key, answers any model as upstream-ok and counts the hit as any-key:<model>; the fixture's own routes
+// still refuse every key but test-key.
+test("/any-key accepts any key and counts its hits apart; the ordinary route refuses that key", async (t) => {
+  const post = await startFixture(t);
+  const chat = (path) =>
+    fetch(`http://127.0.0.1:${post.port}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer caller-direct-key" },
+      body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: "hi" }] }),
+    });
+  const anyKey = await chat("/any-key/v1/chat/completions");
+  assert.equal(anyKey.status, 200);
+  assert.equal((await anyKey.json()).choices[0].message.content, "hello");
+  const strict = await chat("/v1/chat/completions");
+  assert.equal(strict.status, 401);
+  const hits = (await (await fetch(`http://127.0.0.1:${post.port}/__hits`)).json()).data[0].hits;
+  assert.equal(hits["any-key:gpt-4o-mini"], 1);
+  assert.equal(hits["gpt-4o-mini"], 1);
+});
+
 // Folder 482: a finished BytePlus or MiniMax task names its file by URL. The gapped file is named at a
 // public-looking address the gateway can only reach through the media tunnel; the loopback task names the
 // fixture's own address, which the gateway's SSRF check must refuse.
