@@ -1869,6 +1869,10 @@ func TestVideoPoll_NeverFetchesARenderedVideoFromAHostTheCallerChose(t *testing.
 		{"a host the caller chose", "https://videos.attacker.example/out.mp4", "", false, false},
 		{"a look-alike suffix", "https://evilreplicate.delivery/out.mp4", "", false, false},
 		{"the configured host on another port", "http://127.0.0.1:9999/out.mp4", "http://127.0.0.1:8791", false, false},
+		{"the configured origin with its default port spelled out", "https://proxy.example:443/out.mp4", "https://proxy.example", false, true},
+		{"the configured origin, default port in the config only", "http://proxy.example/out.mp4", "http://proxy.example:80", false, true},
+		{"the configured origin, in another case", "https://PROXY.example/out.mp4", "https://proxy.example", false, true},
+		{"the configured host over another scheme", "http://proxy.example/out.mp4", "https://proxy.example", false, false},
 		{"a custom provider over Replicate, foreign host", "https://videos.attacker.example/out.mp4", "", true, false},
 		{"not an http URL", "ftp://replicate.delivery/out.mp4", "", false, false},
 	}

@@ -160,7 +160,7 @@ func (s *VideoSettler) untrustedRenderedVideoHost(job *cstables.TableProviderJob
 		return "the rendered video is not fetched: its URL is not an http(s) URL"
 	}
 	if resolver, isResolver := s.retriever.(ProviderOriginResolver); isResolver {
-		if origin := resolver.ProviderOrigin(provider); origin != "" && strings.EqualFold(origin, u.Scheme+"://"+u.Host) {
+		if origin := resolver.ProviderOrigin(provider); origin != "" && sameOrigin(origin, u) {
 			return ""
 		}
 	}
@@ -171,6 +171,30 @@ func (s *VideoSettler) untrustedRenderedVideoHost(job *cstables.TableProviderJob
 		}
 	}
 	return fmt.Sprintf("the rendered video is not fetched: %s is not a host %s serves its videos from", host, provider)
+}
+
+// sameOrigin reports whether u is on origin (scheme://host[:port]): the same scheme, host and
+// port, with a scheme's default port (80, 443) filled in where either leaves it out, as the
+// provider's download does (sameParsedOrigin in core/providers/utils). A different port is a
+// different origin.
+func sameOrigin(origin string, u *url.URL) bool {
+	o, err := url.Parse(origin)
+	if err != nil || o.Host == "" || !strings.EqualFold(o.Scheme, u.Scheme) {
+		return false
+	}
+	hostPort := func(v *url.URL) string {
+		port := v.Port()
+		if port == "" {
+			switch strings.ToLower(v.Scheme) {
+			case "http":
+				port = "80"
+			case "https":
+				port = "443"
+			}
+		}
+		return strings.ToLower(v.Hostname()) + ":" + port
+	}
+	return hostPort(o) == hostPort(u)
 }
 
 // VideoRetriever is the provider call the video settler needs: given a job row,
