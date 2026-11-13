@@ -102,10 +102,14 @@ type VideoDownloader interface {
 	DownloadVideo(ctx context.Context, job *cstables.TableProviderJob) (io.ReadCloser, error)
 }
 
-// maxRenderedVideoBytes bounds what the settler reads of one rendered video, media included. The
-// media is read past, never held, so this bounds the time and bandwidth one measurement takes; a
-// file past it is unmeasurable and charged its floor.
-const maxRenderedVideoBytes int64 = 16 << 30
+// maxRenderedVideoBytes and renderedVideoTimeout bound one measurement, media included: the media is
+// read past, never held, but the sweeper settles one job at a time, so a measurement must end
+// quickly whatever the file. A file past either is unmeasurable, final, and charged its floor; it is
+// not retried, or one oversized output would hold the sweeper on every poll until the cap. 2 GiB is
+// many times any generated clip and reachable in the time at tens of MB/s.
+const maxRenderedVideoBytes int64 = 2 << 30
+
+var renderedVideoTimeout = 2 * time.Minute
 
 // ErrVideoDurationUnmeasurable marks a VideoDownloader error that no retry can change, such as a
 // buffered file past the response body limit.
@@ -270,9 +274,15 @@ func (s *VideoSettler) measureRenderedVideo(ctx context.Context, job *cstables.T
 	if modelcatalog.VideoDimensionsFromResponse(resp).OutputCount == 0 {
 		return 0, errors.New("the job returned no video clip")
 	}
-	callCtx, cancel := context.WithTimeout(ctx, defaultProviderPollTimeout)
+	callCtx, cancel := context.WithTimeout(ctx, renderedVideoTimeout)
 	defer cancel()
+	// The measurement's own deadline running out is final; the sweeper's context ending (a
+	// shutdown) is not.
+	outOfTime := func() bool { return ctx.Err() == nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) }
 	body, err := downloader.DownloadVideo(callCtx, job)
+	if err != nil && outOfTime() {
+		return 0, fmt.Errorf("download video: no answer within %v: %w", renderedVideoTimeout, err)
+	}
 	if err != nil {
 		// A file past the size limit, or a download the vendor refuses (the output expired, the
 		// key was revoked), is final; anything else may pass on a later poll.
@@ -286,6 +296,9 @@ func (s *VideoSettler) measureRenderedVideo(ctx context.Context, job *cstables.T
 	if err != nil {
 		if errors.Is(err, videoduration.ErrUnmeasurable) {
 			return 0, err
+		}
+		if outOfTime() {
+			return 0, fmt.Errorf("read video: not read within %v: %w", renderedVideoTimeout, err)
 		}
 		return 0, fmt.Errorf("%w: read video duration for job %s: %w", errRenderedDurationRetry, job.ID, err)
 	}
