@@ -751,6 +751,9 @@
         "cloudflare": {
           "$ref": "#/$defs/provider_with_cloudflare_config"
         },
+        "voyage": {
+          "$ref": "#/$defs/provider"
+        },
         "typesafe": {
           "$ref": "#/$defs/provider"
         },
@@ -12967,6 +12970,7 @@
             "cloudflare",
             "tencent",
             "typesafe",
+            "voyage",
             "dashscope",
             "bfl",
             "google-cloud-tts",

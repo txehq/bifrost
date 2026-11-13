@@ -26,6 +26,7 @@ export const BaseProviderNames = [
 	"tencent",
 	"kling",
 	"typesafe",
+	"voyage",
 ] as const;
 
 export type BaseProvider = (typeof BaseProviderNames)[number];

@@ -95,6 +95,7 @@ const (
 	Databricks    ModelProvider = "databricks"
 	Cloudflare    ModelProvider = "cloudflare"
 	Typesafe      ModelProvider = "typesafe"
+	Voyage        ModelProvider = "voyage"
 	MiniMax       ModelProvider = "minimax"
 	BytePlus      ModelProvider = "byteplus"
 	Tencent       ModelProvider = "tencent" // Tencent Cloud TokenHub: Hy image generation (fork)
@@ -130,6 +131,7 @@ var SupportedBaseProviders = []ModelProvider{
 	Tencent,
 	Kling,
 	Typesafe,
+	Voyage,
 }
 
 // StandardProviders is the list of all built-in (non-custom) providers.
@@ -174,6 +176,7 @@ var StandardProviders = []ModelProvider{
 	Databricks,
 	Cloudflare,
 	Typesafe,
+	Voyage,
 	MiniMax,
 	BytePlus,
 	Tencent,

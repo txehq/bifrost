@@ -1,0 +1,948 @@
+{
+  "name": "338. Voyage text embeddings",
+  "description": "TXE-6436: unified text embeddings, usage and unsupported parameters. Fixture rows use providerErrorFixture=1 with provider-error-fixture.config.json and provider-error-fixture.mjs; providerErrorFixtureUrl overrides the fixture URL when remapped to a free local port. The fixture counts the entire multi-input batch on both 200 and 500. Live rows cover all three price tiers. The neutral embeddings route preserves explicit extra_params as a nested vendor field; the OpenAI-compatible route promotes it and rejects model overrides. No rerank, multimodal or native Voyage route.",
+  "item": [
+    {
+      "name": "Voyage embeddings /v1/embeddings voyage-4",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Voyage vectors and vendor usage', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(b.data.length).to.equal(2); pm.expect(b.data[0].embedding.length).to.equal(256); pm.expect(b.usage.prompt_tokens).to.equal(b.usage.total_tokens); pm.expect(b.usage.total_tokens).to.be.above(0); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "Voyage API Key"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"voyage/voyage-4\",\n  \"input\": [\n    \"hello\",\n    \"world\"\n  ],\n  \"dimensions\": 256,\n  \"encoding_format\": \"float\",\n  \"task_type\": \"document\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Voyage embeddings /v1/embeddings voyage-4-large",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Voyage vectors and vendor usage', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(b.data.length).to.equal(2); pm.expect(b.data[0].embedding.length).to.equal(256); pm.expect(b.usage.prompt_tokens).to.equal(b.usage.total_tokens); pm.expect(b.usage.total_tokens).to.be.above(0); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "Voyage API Key"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"voyage/voyage-4-large\",\n  \"input\": [\n    \"hello\",\n    \"world\"\n  ],\n  \"dimensions\": 256,\n  \"encoding_format\": \"float\",\n  \"task_type\": \"document\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Voyage embeddings /v1/embeddings voyage-4-lite",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Voyage vectors and vendor usage', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(b.data.length).to.equal(2); pm.expect(b.data[0].embedding.length).to.equal(256); pm.expect(b.usage.prompt_tokens).to.equal(b.usage.total_tokens); pm.expect(b.usage.total_tokens).to.be.above(0); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "Voyage API Key"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"voyage/voyage-4-lite\",\n  \"input\": [\n    \"hello\",\n    \"world\"\n  ],\n  \"dimensions\": 256,\n  \"encoding_format\": \"float\",\n  \"task_type\": \"document\"\n}"
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] Voyage embeddings unsupported title /v1/embeddings voyage-4",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('unsupported parameter classified before upstream', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(400); pm.expect(b.error.param).to.equal('title'); pm.expect(b.extra_fields.error_type).to.equal('caller_unsupported_parameter'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "Voyage API Key"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"voyage/voyage-4\",\n  \"input\": [\n    \"hello\"\n  ],\n  \"title\": \"unsupported\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Voyage embeddings fixture batch success voyage-4",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }",
+              "pm.variables.set('voyageBatchTag', 'voyage-batch-' + pm.variables.replaceIn('{{$guid}}')); "
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var b = pm.response.json();",
+              "pm.test('Voyage fixture status', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.test('vendor usage preserved', function () { pm.expect(b.usage.prompt_tokens).to.equal(7); pm.expect(b.usage.total_tokens).to.equal(7); pm.expect(b.data.length).to.equal(3); });",
+              "pm.sendRequest(pm.variables.get('providerErrorFixtureUrl') + '/__wire', function (err, response) {",
+              "  pm.test('one complete batch call, including on failure', function () { pm.expect(err).to.equal(null); var calls = response.json().data[0].calls.filter(function (c) { return c.path === '/v1/embeddings' && c.body.indexOf(pm.variables.get('voyageBatchTag')) !== -1; }); pm.expect(calls.length).to.equal(1); var wire = JSON.parse(calls[0].body); pm.expect(wire.input.length).to.equal(3); pm.expect(wire.output_dimension).to.equal(256); pm.expect(wire.input_type).to.equal('document'); pm.expect(wire.output_dtype).to.equal('float'); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "voyage-fixture"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"voyage/voyage-4\",\n  \"input\": [\n    \"hello\",\n    \"world\",\n    \"{{voyageBatchTag}}\"\n  ],\n  \"dimensions\": 256,\n  \"encoding_format\": \"float\",\n  \"task_type\": \"document\"\n}"
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-500] Voyage embeddings fixture batch failure voyage-4",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }",
+              "pm.variables.set('voyageBatchTag', 'voyage-batch-' + pm.variables.replaceIn('{{$guid}}')); "
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var b = pm.response.json();",
+              "pm.test('Voyage fixture status', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); });",
+              "pm.test('vendor failure category preserved', function () { pm.expect(b.extra_fields.error_type).to.equal('provider_server_error'); });",
+              "pm.sendRequest(pm.variables.get('providerErrorFixtureUrl') + '/__wire', function (err, response) {",
+              "  pm.test('one complete batch call, including on failure', function () { pm.expect(err).to.equal(null); var calls = response.json().data[0].calls.filter(function (c) { return c.path === '/v1/embeddings' && c.body.indexOf(pm.variables.get('voyageBatchTag')) !== -1; }); pm.expect(calls.length).to.equal(1); var wire = JSON.parse(calls[0].body); pm.expect(wire.input.length).to.equal(3); pm.expect(wire.output_dimension).to.equal(256); pm.expect(wire.input_type).to.equal('document'); pm.expect(wire.output_dtype).to.equal('float'); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "voyage-fixture"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"voyage/voyage-4\",\n  \"input\": [\n    \"hello\",\n    \"voyage-fixture-fail\",\n    \"{{voyageBatchTag}}\"\n  ],\n  \"dimensions\": 256,\n  \"encoding_format\": \"float\",\n  \"task_type\": \"document\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Voyage embeddings /openai/v1/embeddings voyage-4",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Voyage vectors and vendor usage', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(b.data.length).to.equal(2); pm.expect(b.data[0].embedding.length).to.equal(256); pm.expect(b.usage.prompt_tokens).to.equal(b.usage.total_tokens); pm.expect(b.usage.total_tokens).to.be.above(0); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "Voyage API Key"
+          }
+        ],
+        "url": "{{baseUrl}}/openai/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"voyage/voyage-4\",\n  \"input\": [\n    \"hello\",\n    \"world\"\n  ],\n  \"dimensions\": 256,\n  \"encoding_format\": \"float\",\n  \"task_type\": \"document\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Voyage embeddings /openai/v1/embeddings voyage-4-large",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Voyage vectors and vendor usage', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(b.data.length).to.equal(2); pm.expect(b.data[0].embedding.length).to.equal(256); pm.expect(b.usage.prompt_tokens).to.equal(b.usage.total_tokens); pm.expect(b.usage.total_tokens).to.be.above(0); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "Voyage API Key"
+          }
+        ],
+        "url": "{{baseUrl}}/openai/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"voyage/voyage-4-large\",\n  \"input\": [\n    \"hello\",\n    \"world\"\n  ],\n  \"dimensions\": 256,\n  \"encoding_format\": \"float\",\n  \"task_type\": \"document\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Voyage embeddings /openai/v1/embeddings voyage-4-lite",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Voyage vectors and vendor usage', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(b.data.length).to.equal(2); pm.expect(b.data[0].embedding.length).to.equal(256); pm.expect(b.usage.prompt_tokens).to.equal(b.usage.total_tokens); pm.expect(b.usage.total_tokens).to.be.above(0); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "Voyage API Key"
+          }
+        ],
+        "url": "{{baseUrl}}/openai/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"voyage/voyage-4-lite\",\n  \"input\": [\n    \"hello\",\n    \"world\"\n  ],\n  \"dimensions\": 256,\n  \"encoding_format\": \"float\",\n  \"task_type\": \"document\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Voyage embeddings native nested extra_params preserve authorized model fixture /v1/embeddings voyage-4-lite",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('native route does not promote a nested model override', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); var raw = b.extra_fields.raw_request; if (typeof raw === 'string') { raw = JSON.parse(raw); } pm.expect(raw.model).to.equal('voyage-4-lite'); pm.expect(raw.extra_params.model).to.equal('voyage-4-large'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "Voyage API Key"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"voyage/voyage-4-lite\",\n  \"input\": [\n    \"hello\"\n  ],\n  \"extra_params\": {\n    \"model\": \"voyage-4-large\"\n  }\n}"
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] Voyage embeddings structural extra_params rejected /openai/v1/embeddings voyage-4-lite",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('extras cannot override the authorized Voyage model', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(400); pm.expect(b.error.param).to.equal('model'); pm.expect(b.extra_fields.error_type).to.equal('caller_invalid_request'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "Voyage API Key"
+          }
+        ],
+        "url": "{{baseUrl}}/openai/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"voyage/voyage-4-lite\",\n  \"input\": [\n    \"hello\"\n  ],\n  \"extra_params\": {\n    \"model\": \"voyage-4-large\"\n  }\n}"
+        }
+      }
+    },
+    {
+      "name": "Voyage embeddings int8 representation fixture /v1/embeddings voyage-4",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('requested representation survives the gateway', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(b.data[0].encoding_format).to.equal('int8'); pm.expect(b.data[0].embedding).to.deep.equal([-128,0,127]); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "voyage-fixture"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"voyage/voyage-4\", \"input\": [\"hello\"], \"encoding_format\": \"int8\"}"
+        }
+      }
+    },
+    {
+      "name": "Voyage embeddings binary representation fixture /v1/embeddings voyage-4",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('requested representation survives the gateway', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(b.data[0].encoding_format).to.equal('binary'); pm.expect(b.data[0].embedding).to.deep.equal([-128,0,127]); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "voyage-fixture"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"voyage/voyage-4\", \"input\": [\"hello\"], \"encoding_format\": \"binary\"}"
+        }
+      }
+    },
+    {
+      "name": "Voyage embeddings uint8 representation fixture /v1/embeddings voyage-4",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('requested representation survives the gateway', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(b.data[0].encoding_format).to.equal('uint8'); pm.expect(b.data[0].embedding).to.deep.equal([0,128,255]); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "voyage-fixture"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"voyage/voyage-4\", \"input\": [\"hello\"], \"encoding_format\": \"uint8\"}"
+        }
+      }
+    },
+    {
+      "name": "Voyage embeddings ubinary representation fixture /v1/embeddings voyage-4",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('requested representation survives the gateway', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(b.data[0].encoding_format).to.equal('ubinary'); pm.expect(b.data[0].embedding).to.deep.equal([0,128,255]); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "voyage-fixture"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"voyage/voyage-4\", \"input\": [\"hello\"], \"encoding_format\": \"ubinary\"}"
+        }
+      }
+    },
+    {
+      "name": "Voyage embeddings base64 representation fixture /v1/embeddings voyage-4",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('requested representation survives the gateway', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(b.data[0].encoding_format).to.equal('base64'); pm.expect(b.data[0].embedding).to.deep.equal(\"AACAPw==\"); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "voyage-fixture"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"voyage/voyage-4\", \"input\": [\"hello\"], \"encoding_format\": \"base64\"}"
+        }
+      }
+    },
+    {
+      "name": "Voyage embeddings int8 representation fixture /openai/v1/embeddings voyage-4",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('requested representation survives the gateway', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(b.data[0].encoding_format).to.equal('int8'); pm.expect(b.data[0].embedding).to.deep.equal([-128,0,127]); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "voyage-fixture"
+          }
+        ],
+        "url": "{{baseUrl}}/openai/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"voyage/voyage-4\", \"input\": [\"hello\"], \"encoding_format\": \"int8\"}"
+        }
+      }
+    },
+    {
+      "name": "Voyage embeddings binary representation fixture /openai/v1/embeddings voyage-4",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('requested representation survives the gateway', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(b.data[0].encoding_format).to.equal('binary'); pm.expect(b.data[0].embedding).to.deep.equal([-128,0,127]); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "voyage-fixture"
+          }
+        ],
+        "url": "{{baseUrl}}/openai/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"voyage/voyage-4\", \"input\": [\"hello\"], \"encoding_format\": \"binary\"}"
+        }
+      }
+    },
+    {
+      "name": "Voyage embeddings uint8 representation fixture /openai/v1/embeddings voyage-4",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('requested representation survives the gateway', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(b.data[0].encoding_format).to.equal('uint8'); pm.expect(b.data[0].embedding).to.deep.equal([0,128,255]); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "voyage-fixture"
+          }
+        ],
+        "url": "{{baseUrl}}/openai/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"voyage/voyage-4\", \"input\": [\"hello\"], \"encoding_format\": \"uint8\"}"
+        }
+      }
+    },
+    {
+      "name": "Voyage embeddings ubinary representation fixture /openai/v1/embeddings voyage-4",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('requested representation survives the gateway', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(b.data[0].encoding_format).to.equal('ubinary'); pm.expect(b.data[0].embedding).to.deep.equal([0,128,255]); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "voyage-fixture"
+          }
+        ],
+        "url": "{{baseUrl}}/openai/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"voyage/voyage-4\", \"input\": [\"hello\"], \"encoding_format\": \"ubinary\"}"
+        }
+      }
+    },
+    {
+      "name": "Voyage embeddings base64 representation fixture /openai/v1/embeddings voyage-4",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('requested representation survives the gateway', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(b.data[0].encoding_format).to.equal('base64'); pm.expect(b.data[0].embedding).to.deep.equal(\"AACAPw==\"); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "voyage-fixture"
+          }
+        ],
+        "url": "{{baseUrl}}/openai/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"voyage/voyage-4\", \"input\": [\"hello\"], \"encoding_format\": \"base64\"}"
+        }
+      }
+    },
+    {
+      "name": "Voyage embeddings missing token quantity stays absent fixture /v1/embeddings voyage-4",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('missing vendor tokens are not fabricated as zero', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(b.data.length).to.equal(1); pm.expect(b.usage).to.equal(null); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "voyage-fixture"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"voyage/voyage-4\", \"input\": [\"voyage-fixture-no-usage\"]}"
+        }
+      }
+    },
+    {
+      "name": "Voyage embeddings missing token quantity stays absent fixture /openai/v1/embeddings voyage-4",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('missing vendor tokens are not fabricated as zero', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(b.data.length).to.equal(1); pm.expect(b.usage).to.equal(null); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "voyage-fixture"
+          }
+        ],
+        "url": "{{baseUrl}}/openai/v1/embeddings",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"voyage/voyage-4\", \"input\": [\"voyage-fixture-no-usage\"]}"
+        }
+      }
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (pm.variables.get('providerErrorFixture') === '1') { pm.request.headers.upsert({ key: 'x-bf-api-key', value: 'voyage-fixture' }); }"
+        ]
+      }
+    }
+  ]
+}

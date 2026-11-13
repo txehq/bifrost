@@ -161,6 +161,7 @@ const PROVIDER_KEYWORDS = {
   xai: ["xai", "grok"],
   replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
   runware: ["runware", "runware/"],
+  voyage: ["voyage", "voyage-"],
   typesafe: ["typesafe", "/typesafe", "jev-"],
 };
 

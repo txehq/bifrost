@@ -67,6 +67,7 @@ import (
 	"github.com/capsohq/bifrost/core/providers/vertex"
 	"github.com/capsohq/bifrost/core/providers/vllm"
 	"github.com/capsohq/bifrost/core/providers/volcengine"
+	"github.com/capsohq/bifrost/core/providers/voyage"
 	"github.com/capsohq/bifrost/core/providers/wafer"
 	"github.com/capsohq/bifrost/core/providers/xai"
 	schemas "github.com/capsohq/bifrost/core/schemas"
@@ -5305,6 +5306,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return sarvam.NewSarvamProvider(config, bifrost.logger)
 	case schemas.Databricks:
 		return databricks.NewDatabricksProvider(config, bifrost.logger)
+	case schemas.Voyage:
+		return voyage.NewVoyageProvider(config, bifrost.logger)
 	case schemas.Typesafe:
 		return typesafe.NewTypesafeProvider(config, bifrost.logger)
 	default:

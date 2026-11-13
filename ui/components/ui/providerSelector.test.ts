@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { normalizeValueOption } from "./providerSelector.utils";
 
 describe("normalizeValueOption", () => {
+	it("recognizes Voyage in the standard provider catalog", () => {
+		expect(normalizeValueOption("voyage")).toEqual({ value: "voyage", label: "Voyage AI", iconKey: "voyage" });
+	});
 	it("gives a bare name the standard provider label and mark", () => {
 		expect(normalizeValueOption("openai")).toEqual({ value: "openai", label: "OpenAI", iconKey: "openai" });
 	});

@@ -362,6 +362,7 @@ jobs:
             api.cerebras.ai:443
             api.cloudflare.com:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepinfra.com:443
             api.deepseek.com:443
             api.deepgram.com:443
@@ -508,6 +509,7 @@ jobs:
           AZURE_SPEECH_ENDPOINT: ${{ secrets.AZURE_SPEECH_ENDPOINT }}
           ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
           DEEPINFRA_API_KEY: ${{ secrets.DEEPINFRA_API_KEY }}
           VERCEL_AI_GATEWAY_API_KEY: ${{ secrets.VERCEL_AI_GATEWAY_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -615,6 +617,7 @@ jobs:
             api.cerebras.ai:443
             api.cloudflare.com:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
@@ -759,6 +762,7 @@ jobs:
           AZURE_SPEECH_ENDPOINT: ${{ secrets.AZURE_SPEECH_ENDPOINT }}
           ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1128,6 +1132,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
@@ -1382,6 +1387,7 @@ jobs:
             _grpc_config.localhost:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
@@ -1478,6 +1484,7 @@ jobs:
           AZURE_SPEECH_ENDPOINT: ${{ secrets.AZURE_SPEECH_ENDPOINT }}
           ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1529,6 +1536,7 @@ jobs:
             _https._tcp.packages.microsoft.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
@@ -1635,6 +1643,7 @@ jobs:
           AZURE_SPEECH_ENDPOINT: ${{ secrets.AZURE_SPEECH_ENDPOINT }}
           ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1678,6 +1687,7 @@ jobs:
           allowed-endpoints: >
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
@@ -1848,6 +1858,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
@@ -2039,6 +2050,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
@@ -2175,6 +2187,7 @@ jobs:
           AZURE_SPEECH_ENDPOINT: ${{ secrets.AZURE_SPEECH_ENDPOINT }}
           ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -2239,6 +2252,7 @@ jobs:
             172.38.0.11:5432
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
@@ -2338,6 +2352,7 @@ jobs:
             127.0.0.1:8080
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
@@ -2444,6 +2459,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
@@ -2546,6 +2562,7 @@ jobs:
           AZURE_SPEECH_ENDPOINT: ${{ secrets.AZURE_SPEECH_ENDPOINT }}
           ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -2611,6 +2628,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
@@ -2713,6 +2731,7 @@ jobs:
           AZURE_SPEECH_ENDPOINT: ${{ secrets.AZURE_SPEECH_ENDPOINT }}
           ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -2862,6 +2881,7 @@ jobs:
           AZURE_SPEECH_ENDPOINT: ${{ secrets.AZURE_SPEECH_ENDPOINT }}
           ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -3006,6 +3026,7 @@ jobs:
           AZURE_SPEECH_ENDPOINT: ${{ secrets.AZURE_SPEECH_ENDPOINT }}
           ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -3162,6 +3183,7 @@ jobs:
           AZURE_SPEECH_ENDPOINT: ${{ secrets.AZURE_SPEECH_ENDPOINT }}
           ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

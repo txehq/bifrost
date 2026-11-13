@@ -40,6 +40,23 @@
     ]
   },
   "providers": {
+    "voyage": {
+      "keys": [
+        {
+          "name": "voyage-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791",
+        "max_retries": 0,
+        "allow_private_network": true
+      }
+    },
     "storage_uri_files": {
       "keys": [
         {
