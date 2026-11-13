@@ -331,6 +331,19 @@ func applyRealtimeTurnTextMessages(resp *schemas.BifrostResponse, textMessages i
 	resp.ResponsesResponse.Usage.TextMessages = &textMessages
 }
 
+// setRealtimeIncurredTextMessages hands the text messages a settlement carries to
+// RunRealtimeTurnPreHooks (fork, TXE-7383). The settlement reruns admission, and when admission
+// refuses (a budget or rate limit spent elsewhere), core puts them on the rejection's
+// BilledUsage: the vendor billed them when they were sent, whatever a new turn may do.
+func setRealtimeIncurredTextMessages(ctx *schemas.BifrostContext, textMessages int) {
+	if ctx == nil || textMessages <= 0 {
+		return
+	}
+	// A copy, so the parameter does not escape on the common path that returns above.
+	n := textMessages
+	ctx.SetValue(schemas.BifrostContextKeyRealtimeIncurredUsage, &schemas.BifrostLLMUsage{TextMessages: &n})
+}
+
 // applyRealtimeTurnErrorTextMessages puts the text messages sent before a turn that failed, or
 // a session that closed, on the error's BilledUsage (fork, TXE-7363). The vendor billed them when
 // they were sent, and governance and logging charge an error's BilledUsage, so they are charged
@@ -795,6 +808,7 @@ func finalizeRealtimeTurnHooks(
 	preCtx := newRealtimeTurnContext(baseCtx, "", session.ID(), session.ProviderSessionID(), realtimeTurnSourceEI, "", key)
 	applyRealtimeRawStorageContext(preCtx, storeRaw)
 	setRealtimeTurnStreamContext(preCtx, startedAt, false)
+	setRealtimeIncurredTextMessages(preCtx, textMessages)
 	preReq := buildRealtimeTurnPreRequest(provider, model, turnInputs, session.RealtimeSessionTools(), nil)
 	hooks, bifrostErr := client.RunRealtimeTurnPreHooks(preCtx, preReq)
 	if bifrostErr != nil {
@@ -885,6 +899,7 @@ func finalizeRealtimeTurnHooksWithError(
 	preCtx := newRealtimeTurnContext(baseCtx, "", session.ID(), session.ProviderSessionID(), realtimeTurnSourceEI, "", key)
 	applyRealtimeRawStorageContext(preCtx, storeRaw)
 	setRealtimeTurnStreamContext(preCtx, startedAt, false)
+	setRealtimeIncurredTextMessages(preCtx, textMessages)
 	preReq := buildRealtimeTurnPreRequest(provider, model, turnInputs, session.RealtimeSessionTools(), nil)
 	hooks, hookPreErr := client.RunRealtimeTurnPreHooks(preCtx, preReq)
 	if hookPreErr != nil {

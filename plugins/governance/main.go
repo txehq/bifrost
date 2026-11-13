@@ -1445,6 +1445,23 @@ func BatchCreateModels(req *schemas.BifrostRequest, model string) []string {
 	return models
 }
 
+// settlesIncurredUsage reports a refusal that must still be charged (fork, TXE-7383). A realtime
+// session settling usage the vendor already billed, such as xAI text messages sent before it
+// closed, reruns admission, and a budget or rate limit spent elsewhere refuses it. The refusal
+// stops a new turn; it cannot undo the charge, which core puts on the refusal's BilledUsage. Such a
+// refusal is accounted against the limits evaluation settled on the grant before it refused. A
+// refusal of identity or access is not: nothing it named may be charged.
+func settlesIncurredUsage(ctx *schemas.BifrostContext, err *schemas.BifrostError) bool {
+	if err == nil || err.ExtraFields.BilledUsage == nil || err.Type == nil {
+		return false
+	}
+	if incurred, ok := ctx.Value(schemas.BifrostContextKeyRealtimeIncurredUsage).(*schemas.BifrostLLMUsage); !ok || incurred == nil {
+		return false
+	}
+	decision := Decision(*err.Type)
+	return isBudgetViolation(decision) || isRateLimitViolation(decision)
+}
+
 // PostLLMHook processes the response and updates usage tracking (business logic execution)
 // Parameters:
 //   - ctx: The Bifrost context
@@ -1456,7 +1473,7 @@ func BatchCreateModels(req *schemas.BifrostRequest, model string) []string {
 //   - *schemas.BifrostError: The processed error
 //   - error: Any error that occurred during processing
 func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	if _, ok := ctx.Value(governanceRejectedContextKey).(bool); ok {
+	if _, ok := ctx.Value(governanceRejectedContextKey).(bool); ok && !settlesIncurredUsage(ctx, err) {
 		return result, err, nil
 	}
 

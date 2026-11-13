@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/capsohq/bifrost/core/providers/xai"
 	"github.com/capsohq/bifrost/core/schemas"
 	bfws "github.com/capsohq/bifrost/transports/v2/bifrost-http/websocket"
+	ws "github.com/fasthttp/websocket"
 )
 
 func TestRealtimeTurnFinalEventUsesTranscriptionCompletionOnlyForTranscriptionSessions(t *testing.T) {
@@ -757,6 +759,117 @@ func TestFinalizeRealtimeTurnWithErrorBillsTheTextMessagesSent(t *testing.T) {
 	}
 	if providerUsage.TextMessages != nil {
 		t.Fatal("the caller's BilledUsage was written through")
+	}
+	if got := session.ConsumeRealtimeTurnTextMessages(); got != 0 {
+		t.Fatalf("text messages left on the session = %d, want 0", got)
+	}
+}
+
+// TestRealtimeTextMessageCountedOnlyOnceSentUpstream (TXE-7383): an xAI text item is counted
+// only after its upstream write succeeds. When the write fails, the error settlement that follows
+// bills no message the vendor never received; when it succeeds, the message is counted.
+func TestRealtimeTextMessageCountedOnlyOnceSentUpstream(t *testing.T) {
+	frame := []byte(`{"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}`)
+	for _, upstreamOpen := range []bool{true, false} {
+		bifrostSide, _, cleanup := dialRealtimeTestConn(t)
+		upstream, _ := dialLiveTestUpstream(t)
+		session := bfws.NewSession(nil)
+		var settled *schemas.BifrostError
+		session.SetRealtimeTurnHooks(&bfws.RealtimeTurnPluginState{
+			RequestID: "req_write", StartedAt: time.Now(),
+			PostHookRunner: func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				settled = err
+				return result, err
+			},
+		})
+		if !upstreamOpen {
+			_ = upstream.Close()
+		}
+		h := &WSRealtimeHandler{}
+		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+		_, err := h.processRealtimeClientMessage(newRealtimeClientConn(bifrostSide), session, upstream, &xai.XAIProvider{}, ctx, schemas.XAI, "grok-voice-3.0", schemas.Key{}, false, ws.TextMessage, frame)
+		if upstreamOpen {
+			if err != nil {
+				t.Fatalf("open upstream: %v", err)
+			}
+			if got := session.ConsumeRealtimeTurnTextMessages(); got != 1 {
+				t.Fatalf("open upstream: counted %d text messages, want 1", got)
+			}
+		} else {
+			if err == nil || settled == nil {
+				t.Fatalf("closed upstream: write error %v, settlement %#v; want both", err, settled)
+			}
+			if u := settled.ExtraFields.BilledUsage; u != nil && u.TextMessages != nil {
+				t.Fatalf("closed upstream: billed %d text messages the vendor never received", *u.TextMessages)
+			}
+		}
+		_ = upstream.Close()
+		cleanup()
+	}
+}
+
+// BenchmarkSetRealtimeIncurredTextMessages is what TXE-7383 adds to a realtime settlement that
+// reruns admission: nothing when no text message is pending (every non-xAI session), and one
+// small usage plus a context write when some are.
+func BenchmarkSetRealtimeIncurredTextMessages(b *testing.B) {
+	for _, tc := range []struct {
+		name    string
+		pending int
+	}{{"none_pending", 0}, {"two_pending", 2}} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			b.ReportAllocs()
+			for b.Loop() {
+				setRealtimeIncurredTextMessages(ctx, tc.pending)
+			}
+		})
+	}
+}
+
+// refusingRealtimePlugin refuses admission, as governance does once a budget is spent, and
+// records the error its own post-hook sees.
+type refusingRealtimePlugin struct{ seen *schemas.BifrostError }
+
+func (p *refusingRealtimePlugin) GetName() string { return "refusing-realtime" }
+func (p *refusingRealtimePlugin) Cleanup() error  { return nil }
+func (p *refusingRealtimePlugin) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *refusingRealtimePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	msg := "budget exhausted"
+	return req, &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{Error: &schemas.ErrorField{Message: msg}}}, nil
+}
+func (p *refusingRealtimePlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	p.seen = err
+	return resp, err, nil
+}
+
+// TestRealtimeSettlementBillsTextMessagesWhenAdmissionRefuses (TXE-7383): an xAI session that
+// sent text messages and then closes, with no turn in flight, settles them through admission.
+// When admission refuses (a budget spent elsewhere), the refusal still carries the messages on
+// its BilledUsage, which the refusing plugin's post-hook charges.
+func TestRealtimeSettlementBillsTextMessagesWhenAdmissionRefuses(t *testing.T) {
+	plugin := &refusingRealtimePlugin{}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: audioUpstreamAccount{baseURLs: map[schemas.ModelProvider]string{}}, Logger: bifrost.NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	session := bfws.NewSession(nil)
+	session.CountRealtimeTextMessage()
+	session.CountRealtimeTextMessage()
+	baseCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_ = finalizeRealtimeTurnHooksOnTransportError(client, baseCtx, session, schemas.XAI, "grok-voice-3.0", &schemas.Key{}, 499, "client_closed_request", "client realtime websocket disconnected before turn completed")
+
+	if plugin.seen == nil || plugin.seen.ExtraFields.BilledUsage == nil || plugin.seen.ExtraFields.BilledUsage.TextMessages == nil {
+		t.Fatalf("the refused settlement billed no text messages: %#v", plugin.seen)
+	}
+	if got := *plugin.seen.ExtraFields.BilledUsage.TextMessages; got != 2 {
+		t.Fatalf("billed text messages = %d, want 2", got)
 	}
 	if got := session.ConsumeRealtimeTurnTextMessages(); got != 0 {
 		t.Fatalf("text messages left on the session = %d, want 0", got)
