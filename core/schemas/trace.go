@@ -1060,6 +1060,7 @@ const (
 	AttrBifrostCostInputText        = "bifrost.cost.input.text"
 	AttrBifrostCostInputAudio       = "bifrost.cost.input.audio"
 	AttrBifrostCostInputImage       = "bifrost.cost.input.image"
+	AttrBifrostCostInputVideo       = "bifrost.cost.input.video"
 	AttrBifrostCostInputCachedRead  = "bifrost.cost.input.cached_read"
 	AttrBifrostCostInputCachedWrite = "bifrost.cost.input.cached_write"
 	AttrBifrostCostInputRequest     = "bifrost.cost.input.request"

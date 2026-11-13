@@ -571,6 +571,7 @@ func appendCostAttributes(attrs map[string]any, cost *BifrostCost) {
 		setIfNonZero(attrs, AttrBifrostCostInputText, d.TextCost)
 		setIfNonZero(attrs, AttrBifrostCostInputAudio, d.AudioCost)
 		setIfNonZero(attrs, AttrBifrostCostInputImage, d.ImageCost)
+		setIfNonZero(attrs, AttrBifrostCostInputVideo, d.VideoCost)
 		setIfNonZero(attrs, AttrBifrostCostInputCachedRead, d.CachedReadCost)
 		setIfNonZero(attrs, AttrBifrostCostInputCachedWrite, d.CachedWriteCost)
 		setIfNonZero(attrs, AttrBifrostCostInputRequest, d.RequestCost)

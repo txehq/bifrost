@@ -941,7 +941,7 @@ func (bc *BifrostContext) CalculateCost(resp *BifrostResponse) float64 {
 // the difference is that the input, output and additional sides come back
 // split by category instead of collapsed into one number:
 //
-//   - InputCostDetails: TextCost, AudioCost, ImageCost, CachedReadCost,
+//   - InputCostDetails: TextCost, AudioCost, ImageCost, VideoCost, CachedReadCost,
 //     CachedWriteCost, RequestCost (flat per-request surcharge)
 //   - OutputCostDetails: TextCost, AudioCost, ImageCost, ReasoningCost,
 //     CitationCost, SearchQueriesCost

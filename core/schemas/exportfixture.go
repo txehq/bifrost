@@ -58,7 +58,7 @@ func ExportFixtureCost() *BifrostCost {
 		OutputCost:     0.50,
 		AdditionalCost: 0.20,
 		InputCostDetails: &InputCostDetails{
-			TextCost: 0.10, AudioCost: 0.05, ImageCost: 0.05,
+			TextCost: 0.10, AudioCost: 0.05, ImageCost: 0.03, VideoCost: 0.02,
 			CachedReadCost: 0.04, CachedWriteCost: 0.03, RequestCost: 0.03,
 		},
 		OutputCostDetails: &OutputCostDetails{
@@ -311,6 +311,7 @@ const (
 	CostInputText        CostCategory = "input.text"
 	CostInputAudio       CostCategory = "input.audio"
 	CostInputImage       CostCategory = "input.image"
+	CostInputVideo       CostCategory = "input.video"
 	CostInputCachedRead  CostCategory = "input.cached_read"
 	CostInputCachedWrite CostCategory = "input.cached_write"
 	CostInputRequest     CostCategory = "input.request"
@@ -330,7 +331,7 @@ const (
 
 // costSides maps each side to the categories that must sum to it.
 var costSides = map[CostCategory][]CostCategory{
-	CostInput: {CostInputText, CostInputAudio, CostInputImage,
+	CostInput: {CostInputText, CostInputAudio, CostInputImage, CostInputVideo,
 		CostInputCachedRead, CostInputCachedWrite, CostInputRequest},
 	CostOutput: {CostOutputText, CostOutputAudio, CostOutputImage,
 		CostOutputReasoning, CostOutputCitation, CostOutputSearch},
@@ -356,7 +357,7 @@ func AssertCostBreakdown(lookup CostLookup) []string {
 
 	want := map[CostCategory]float64{
 		CostTotal: 1.00, CostInput: 0.30, CostOutput: 0.50, CostAdditional: 0.20,
-		CostInputText: 0.10, CostInputAudio: 0.05, CostInputImage: 0.05,
+		CostInputText: 0.10, CostInputAudio: 0.05, CostInputImage: 0.03, CostInputVideo: 0.02,
 		CostInputCachedRead: 0.04, CostInputCachedWrite: 0.03, CostInputRequest: 0.03,
 		CostOutputText: 0.20, CostOutputAudio: 0.10, CostOutputImage: 0.05,
 		CostOutputReasoning: 0.10, CostOutputCitation: 0.03, CostOutputSearch: 0.02,
@@ -421,6 +422,7 @@ func CostAttributeLookup(attrs map[string]any) CostLookup {
 		CostOutput: AttrBifrostCostOutput, CostAdditional: AttrBifrostCostAdditional,
 		CostInputText: AttrBifrostCostInputText, CostInputAudio: AttrBifrostCostInputAudio,
 		CostInputImage:       AttrBifrostCostInputImage,
+		CostInputVideo:       AttrBifrostCostInputVideo,
 		CostInputCachedRead:  AttrBifrostCostInputCachedRead,
 		CostInputCachedWrite: AttrBifrostCostInputCachedWrite,
 		CostInputRequest:     AttrBifrostCostInputRequest,

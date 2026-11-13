@@ -4122,6 +4122,7 @@ func scaleUsageCost(cost *schemas.BifrostCost, m float64) {
 		d.TextCost *= m
 		d.AudioCost *= m
 		d.ImageCost *= m
+		d.VideoCost *= m
 		d.CachedReadCost *= m
 		d.CachedWriteCost *= m
 		cost.InputCost *= m
