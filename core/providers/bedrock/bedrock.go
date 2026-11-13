@@ -2171,6 +2171,8 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					// Bedrock Guardrails units (TXE-7365): billed per unit apart from tokens.
 					if units := bedrockGuardrailUnits(streamEvent.Trace); units != nil {
 						usage.GuardrailUnits = units
+						// The cancel/timeout path bills billedUsage, so the units go there too.
+						billedUsage.GuardrailUnits = units.Add(nil)
 					}
 				}
 

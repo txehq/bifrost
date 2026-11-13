@@ -5033,30 +5033,17 @@ func attachBilledUsageFromContext(ctx *schemas.BifrostContext, bifrostErr *schem
 		usage.TotalTokens == 0 &&
 		usage.PromptTokensDetails == nil &&
 		usage.CompletionTokensDetails == nil &&
-		usage.Cost == nil {
+		usage.Cost == nil &&
+		// Bedrock Guardrails units are billed apart from tokens, so a stream cut
+		// after the guardrail assessed its input owes them on their own (TXE-7365).
+		usage.GuardrailUnits == nil {
 		return
 	}
 	// Snapshot the handle so the billed usage is fully decoupled from the
 	// in-context accumulator, which may still be mutated by the provider
-	// goroutine. A shallow copy leaves nested pointers aliased, so clone them too.
-	usageCopy := *usage
-	if usage.PromptTokensDetails != nil {
-		promptDetailsCopy := *usage.PromptTokensDetails
-		if usage.PromptTokensDetails.CachedWriteTokenDetails != nil {
-			cachedWriteDetailsCopy := *usage.PromptTokensDetails.CachedWriteTokenDetails
-			promptDetailsCopy.CachedWriteTokenDetails = &cachedWriteDetailsCopy
-		}
-		usageCopy.PromptTokensDetails = &promptDetailsCopy
-	}
-	if usage.CompletionTokensDetails != nil {
-		completionDetailsCopy := *usage.CompletionTokensDetails
-		usageCopy.CompletionTokensDetails = &completionDetailsCopy
-	}
-	if usage.Cost != nil {
-		costCopy := *usage.Cost
-		usageCopy.Cost = &costCopy
-	}
-	bifrostErr.ExtraFields.BilledUsage = &usageCopy
+	// goroutine. DeepCopy clones every nested pointer, and
+	// TestToolUsageAddDeepCopyCoverEveryField holds it to each new field.
+	bifrostErr.ExtraFields.BilledUsage = usage.DeepCopy()
 }
 
 // HandleStreamTimeout should be called when a streaming goroutine exits

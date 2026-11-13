@@ -1,0 +1,1079 @@
+{
+  "name": "581. A Bedrock chat or Responses request, streamed or not, whose guardrail consumed policy units reports them and is charged them at the guardrail unit rates (bedrock guardrail units)",
+  "item": [
+    {
+      "name": "581.1 bedrock/amazon.nova-lite-v1:0 POST /v1/chat/completions with a guardrailConfig reports the guardrail's policy units in usage.guardrail_units (bedrock guardrail units)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/amazon.nova-lite-v1:0\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Summarise our refund policy.\"\n    }\n  ],\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"fixture-guardrail\",\n    \"guardrailVersion\": \"1\",\n    \"trace\": \"enabled\"\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.unset('guardrailUnitsRetry');"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200);",
+              "});",
+              "var g = (pm.response.json().usage || {}).guardrail_units;",
+              "pm.test('usage.guardrail_units sums the input and output assessments: 4 content, 1 topic, 1 sensitive-information', function () {",
+              "  pm.expect(g, 'usage: ' + JSON.stringify(pm.response.json().usage)).to.be.an('object');",
+              "  pm.expect(g.content_policy_units, JSON.stringify(g)).to.eql(4);",
+              "  pm.expect(g.topic_policy_units, JSON.stringify(g)).to.eql(1);",
+              "  pm.expect(g.sensitive_information_policy_units, JSON.stringify(g)).to.eql(1);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "581.2 the log row is charged the tokens plus the guardrail units at the bedrock/guardrails rates, where a build that drops guardrail_cost_per_unit charges the tokens only (bedrock guardrail units)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs?providers=bedrock&models=amazon.nova-lite-v1:0&limit=5",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "providers",
+              "value": "bedrock"
+            },
+            {
+              "key": "models",
+              "value": "amazon.nova-lite-v1:0"
+            },
+            {
+              "key": "limit",
+              "value": "5"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var retry = Number(pm.collectionVariables.get('guardrailUnitsRetry') || 0);",
+              "if (retry > 0) {",
+              "  // The log row is written after the response; newman drains pending timers before it sends.",
+              "  var until = Date.now() + 500;",
+              "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 50); } })();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('logs query responds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "});",
+              "var row = (pm.response.code === 200 ? (pm.response.json().logs || []) : []).find(function (l) { return typeof l.cost === 'number' && l.cost > 0.0005; });",
+              "var retry = Number(pm.collectionVariables.get('guardrailUnitsRetry') || 0);",
+              "if (!row && retry < 20) {",
+              "  pm.collectionVariables.set('guardrailUnitsRetry', retry + 1);",
+              "  postman.setNextRequest(pm.info.requestName);",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('guardrailUnitsRetry');",
+              "pm.test('the guardrailed chat was logged with its guardrail charge', function () {",
+              "  pm.expect(row, 'no row charged the guardrail: ' + pm.response.text().slice(0, 1200)).to.not.equal(undefined);",
+              "});",
+              "if (!row) { return; }",
+              "pm.test('cost is the tokens (0.00000186) plus 4 x $0.00015 + 1 x $0.00015 + 1 x $0.0001 of guardrail units', function () {",
+              "  pm.expect(row.cost, JSON.stringify(row).slice(0, 1200)).to.be.closeTo(0.0008518600, 1e-9);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "581.3 bedrock/amazon.nova-lite-v1:0 POST /v1/responses with a guardrailConfig reports the guardrail's policy units in usage.guardrail_units (bedrock guardrail units)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/amazon.nova-lite-v1:0\",\n  \"input\": \"Summarise our refund policy.\",\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"fixture-guardrail\",\n    \"guardrailVersion\": \"1\",\n    \"trace\": \"enabled\"\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.unset('guardrailUnitsRetry');"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200);",
+              "});",
+              "pm.test('the guardrail_units sum the input and output assessments: 4 content, 1 topic, 1 sensitive-information', function () {",
+              "  var g = (pm.response.json().usage || {}).guardrail_units;",
+              "  pm.expect(g, 'no guardrail_units: ' + pm.response.text().slice(-1500)).to.be.an('object');",
+              "  pm.expect(g.content_policy_units, JSON.stringify(g)).to.eql(4);",
+              "  pm.expect(g.topic_policy_units, JSON.stringify(g)).to.eql(1);",
+              "  pm.expect(g.sensitive_information_policy_units, JSON.stringify(g)).to.eql(1);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "581.4 the Responses log row is charged the tokens plus the guardrail units at the bedrock/guardrails rates (bedrock guardrail units)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs?providers=bedrock&models=amazon.nova-lite-v1:0&objects=responses&limit=5",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "providers",
+              "value": "bedrock"
+            },
+            {
+              "key": "models",
+              "value": "amazon.nova-lite-v1:0"
+            },
+            {
+              "key": "objects",
+              "value": "responses"
+            },
+            {
+              "key": "limit",
+              "value": "5"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var retry = Number(pm.collectionVariables.get('guardrailUnitsRetry') || 0);",
+              "if (retry > 0) {",
+              "  var until = Date.now() + 500;",
+              "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 50); } })();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var row = (pm.response.code === 200 ? (pm.response.json().logs || []) : []).find(function (l) { return typeof l.cost === 'number' && l.cost > 0.0005; });",
+              "var retry = Number(pm.collectionVariables.get('guardrailUnitsRetry') || 0);",
+              "if (!row && retry < 20) {",
+              "  pm.collectionVariables.set('guardrailUnitsRetry', retry + 1);",
+              "  postman.setNextRequest(pm.info.requestName);",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('guardrailUnitsRetry');",
+              "pm.test('the responses row was logged with its guardrail charge', function () {",
+              "  pm.expect(row, 'no row charged the guardrail: ' + pm.response.text().slice(0, 1200)).to.not.equal(undefined);",
+              "});",
+              "if (!row) { return; }",
+              "pm.test('cost is the tokens (0.00000186) plus $0.00085 of guardrail units', function () {",
+              "  pm.expect(row.cost, JSON.stringify(row).slice(0, 1200)).to.be.closeTo(0.0008518600, 1e-9);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "581.5 a streamed POST /v1/chat/completions with a guardrailConfig reports the guardrail's policy units on the usage chunk (bedrock guardrail units)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/amazon.nova-lite-v1:0\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Summarise our refund policy.\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"fixture-guardrail\",\n    \"guardrailVersion\": \"1\",\n    \"trace\": \"enabled\"\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.unset('guardrailUnitsRetry');"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200);",
+              "});",
+              "var events = pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { try { return JSON.parse(l.slice(6)); } catch (e) { return null; } }).filter(Boolean);",
+              "pm.test('the guardrail_units sum the input and output assessments: 4 content, 1 topic, 1 sensitive-information', function () {",
+              "  var g = (events.filter(function (e) { return e.usage && e.usage.guardrail_units; }).pop() || { usage: {} }).usage.guardrail_units;",
+              "  pm.expect(g, 'no guardrail_units: ' + pm.response.text().slice(-1500)).to.be.an('object');",
+              "  pm.expect(g.content_policy_units, JSON.stringify(g)).to.eql(4);",
+              "  pm.expect(g.topic_policy_units, JSON.stringify(g)).to.eql(1);",
+              "  pm.expect(g.sensitive_information_policy_units, JSON.stringify(g)).to.eql(1);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "581.6 the streamed chat's log row is charged the tokens plus the guardrail units (bedrock guardrail units)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs?providers=bedrock&models=amazon.nova-lite-v1:0&objects=chat_completion_stream&limit=5",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "providers",
+              "value": "bedrock"
+            },
+            {
+              "key": "models",
+              "value": "amazon.nova-lite-v1:0"
+            },
+            {
+              "key": "objects",
+              "value": "chat_completion_stream"
+            },
+            {
+              "key": "limit",
+              "value": "5"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var retry = Number(pm.collectionVariables.get('guardrailUnitsRetry') || 0);",
+              "if (retry > 0) {",
+              "  var until = Date.now() + 500;",
+              "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 50); } })();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var row = (pm.response.code === 200 ? (pm.response.json().logs || []) : []).find(function (l) { return typeof l.cost === 'number' && l.cost > 0.0005; });",
+              "var retry = Number(pm.collectionVariables.get('guardrailUnitsRetry') || 0);",
+              "if (!row && retry < 20) {",
+              "  pm.collectionVariables.set('guardrailUnitsRetry', retry + 1);",
+              "  postman.setNextRequest(pm.info.requestName);",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('guardrailUnitsRetry');",
+              "pm.test('the chat_completion_stream row was logged with its guardrail charge', function () {",
+              "  pm.expect(row, 'no row charged the guardrail: ' + pm.response.text().slice(0, 1200)).to.not.equal(undefined);",
+              "});",
+              "if (!row) { return; }",
+              "pm.test('cost is the tokens (0.00000186) plus $0.00085 of guardrail units', function () {",
+              "  pm.expect(row.cost, JSON.stringify(row).slice(0, 1200)).to.be.closeTo(0.0008518600, 1e-9);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "581.7 a streamed POST /v1/responses with a guardrailConfig reports the guardrail's policy units on response.completed (bedrock guardrail units)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/amazon.nova-lite-v1:0\",\n  \"input\": \"Summarise our refund policy.\",\n  \"stream\": true,\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"fixture-guardrail\",\n    \"guardrailVersion\": \"1\",\n    \"trace\": \"enabled\"\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.unset('guardrailUnitsRetry');"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200);",
+              "});",
+              "var events = pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { try { return JSON.parse(l.slice(6)); } catch (e) { return null; } }).filter(Boolean);",
+              "pm.test('the guardrail_units sum the input and output assessments: 4 content, 1 topic, 1 sensitive-information', function () {",
+              "  var g = ((events.filter(function (e) { return e.type === 'response.completed'; }).pop() || {}).response || { usage: {} }).usage.guardrail_units;",
+              "  pm.expect(g, 'no guardrail_units: ' + pm.response.text().slice(-1500)).to.be.an('object');",
+              "  pm.expect(g.content_policy_units, JSON.stringify(g)).to.eql(4);",
+              "  pm.expect(g.topic_policy_units, JSON.stringify(g)).to.eql(1);",
+              "  pm.expect(g.sensitive_information_policy_units, JSON.stringify(g)).to.eql(1);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "581.8 the streamed Responses log row is charged the tokens plus the guardrail units (bedrock guardrail units)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs?providers=bedrock&models=amazon.nova-lite-v1:0&objects=responses_stream&limit=5",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "providers",
+              "value": "bedrock"
+            },
+            {
+              "key": "models",
+              "value": "amazon.nova-lite-v1:0"
+            },
+            {
+              "key": "objects",
+              "value": "responses_stream"
+            },
+            {
+              "key": "limit",
+              "value": "5"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var retry = Number(pm.collectionVariables.get('guardrailUnitsRetry') || 0);",
+              "if (retry > 0) {",
+              "  var until = Date.now() + 500;",
+              "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 50); } })();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var row = (pm.response.code === 200 ? (pm.response.json().logs || []) : []).find(function (l) { return typeof l.cost === 'number' && l.cost > 0.0005; });",
+              "var retry = Number(pm.collectionVariables.get('guardrailUnitsRetry') || 0);",
+              "if (!row && retry < 20) {",
+              "  pm.collectionVariables.set('guardrailUnitsRetry', retry + 1);",
+              "  postman.setNextRequest(pm.info.requestName);",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('guardrailUnitsRetry');",
+              "pm.test('the responses_stream row was logged with its guardrail charge', function () {",
+              "  pm.expect(row, 'no row charged the guardrail: ' + pm.response.text().slice(0, 1200)).to.not.equal(undefined);",
+              "});",
+              "if (!row) { return; }",
+              "pm.test('cost is the tokens (0.00000186) plus $0.00085 of guardrail units', function () {",
+              "  pm.expect(row.cost, JSON.stringify(row).slice(0, 1200)).to.be.closeTo(0.0008518600, 1e-9);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "581.9 the native route POST /bedrock/model/amazon.nova-lite-v1:0/converse with a guardrailConfig answers with the guardrail trace (bedrock guardrail units)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/amazon.nova-lite-v1:0/converse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "amazon.nova-lite-v1:0",
+            "converse"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Summarise our refund policy.\"\n        }\n      ]\n    }\n  ],\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"fixture-guardrail\",\n    \"guardrailVersion\": \"1\",\n    \"trace\": \"enabled\"\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.unset('guardrailUnitsRetry');"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200);",
+              "});",
+              "pm.test('the Converse answer carries the guardrail trace', function () {",
+              "  pm.expect((pm.response.json().trace || {}).guardrail, pm.response.text().slice(0, 800)).to.be.an('object');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "581.10 the native Converse call's log row is charged the tokens plus the guardrail units (bedrock guardrail units)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs?providers=bedrock&models=amazon.nova-lite-v1:0&objects=responses&limit=10",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "providers",
+              "value": "bedrock"
+            },
+            {
+              "key": "models",
+              "value": "amazon.nova-lite-v1:0"
+            },
+            {
+              "key": "objects",
+              "value": "responses"
+            },
+            {
+              "key": "limit",
+              "value": "10"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var retry = Number(pm.collectionVariables.get('guardrailUnitsRetry') || 0);",
+              "if (retry > 0) {",
+              "  var until = Date.now() + 500;",
+              "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 50); } })();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var rows = (pm.response.code === 200 ? (pm.response.json().logs || []) : []);",
+              "var charged = rows.filter(function (l) { return typeof l.cost === 'number' && Math.abs(l.cost - 0.00085186) < 1e-9; });",
+              "var retry = Number(pm.collectionVariables.get('guardrailUnitsRetry') || 0);",
+              "if (charged.length < 2 && retry < 20) {",
+              "  pm.collectionVariables.set('guardrailUnitsRetry', retry + 1);",
+              "  postman.setNextRequest(pm.info.requestName);",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('guardrailUnitsRetry');",
+              "pm.test('two responses rows are charged the tokens plus $0.00085 of guardrail units: 581.3 and this native call (the native route runs Converse as a Responses request)', function () {",
+              "  pm.expect(charged.length, JSON.stringify(rows.map(function (l) { return { object: l.object, cost: l.cost, status: l.status }; }))).to.eql(2);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "581.11 the native route POST /bedrock/model/amazon.nova-lite-v1:0/converse-stream with a guardrailConfig answers 200 (bedrock guardrail units)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/bedrock/model/amazon.nova-lite-v1:0/converse-stream",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "bedrock",
+            "model",
+            "amazon.nova-lite-v1:0",
+            "converse-stream"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Summarise our refund policy.\"\n        }\n      ]\n    }\n  ],\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"fixture-guardrail\",\n    \"guardrailVersion\": \"1\",\n    \"trace\": \"enabled\"\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.unset('guardrailUnitsRetry');"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "581.12 the native ConverseStream call's log row is charged the tokens plus the guardrail units (bedrock guardrail units)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs?providers=bedrock&models=amazon.nova-lite-v1:0&objects=responses_stream&limit=10",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "providers",
+              "value": "bedrock"
+            },
+            {
+              "key": "models",
+              "value": "amazon.nova-lite-v1:0"
+            },
+            {
+              "key": "objects",
+              "value": "responses_stream"
+            },
+            {
+              "key": "limit",
+              "value": "10"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var retry = Number(pm.collectionVariables.get('guardrailUnitsRetry') || 0);",
+              "if (retry > 0) {",
+              "  var until = Date.now() + 500;",
+              "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 50); } })();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var rows = (pm.response.code === 200 ? (pm.response.json().logs || []) : []);",
+              "var charged = rows.filter(function (l) { return typeof l.cost === 'number' && Math.abs(l.cost - 0.00085186) < 1e-9; });",
+              "var retry = Number(pm.collectionVariables.get('guardrailUnitsRetry') || 0);",
+              "if (charged.length < 2 && retry < 20) {",
+              "  pm.collectionVariables.set('guardrailUnitsRetry', retry + 1);",
+              "  postman.setNextRequest(pm.info.requestName);",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('guardrailUnitsRetry');",
+              "pm.test('two responses_stream rows are charged the tokens plus $0.00085 of guardrail units: 581.7 and this native call (the native route runs ConverseStream as a Responses stream)', function () {",
+              "  pm.expect(charged.length, JSON.stringify(rows.map(function (l) { return { object: l.object, cost: l.cost, status: l.status }; }))).to.eql(2);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "581.13 [EXPECT-201] POST /api/governance/pricing-overrides sets the guardrail unit rates on amazon.nova-lite-v1:0's own row (bedrock guardrail units)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.unset('guardrailOverrideId');",
+              "pm.request.body.raw = JSON.stringify({",
+              "  name: 'e2e-guardrail-units-' + Date.now(), scope_kind: 'global', match_type: 'exact',",
+              "  pattern: 'amazon.nova-lite-v1:0', request_types: ['chat_completion'],",
+              "  patch: { guardrail_cost_per_content_policy_unit: 0.001, guardrail_cost_per_topic_policy_unit: 0.001, guardrail_cost_per_sensitive_information_policy_unit: 0.001 }",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the override is created', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 400)).to.eql(201);",
+              "});",
+              "var body = null; try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var ov = body && body.pricing_override;",
+              "if (ov && ov.id) { pm.collectionVariables.set('guardrailOverrideId', ov.id); }",
+              "var patch = ov && (typeof ov.pricing_patch === 'string' ? JSON.parse(ov.pricing_patch) : ov.pricing_patch);",
+              "pm.test('the stored patch carries the guardrail unit rates', function () {",
+              "  pm.expect(patch && patch.guardrail_cost_per_content_policy_unit, JSON.stringify(ov)).to.eql(0.001);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "581.14 the same guardrailed chat again, now under the override (bedrock guardrail units)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/amazon.nova-lite-v1:0\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Summarise our refund policy.\"\n    }\n  ],\n  \"guardrailConfig\": {\n    \"guardrailIdentifier\": \"fixture-guardrail\",\n    \"guardrailVersion\": \"1\",\n    \"trace\": \"enabled\"\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "if (!pm.collectionVariables.get('guardrailOverrideId')) { pm.execution.skipRequest(); }",
+              "pm.collectionVariables.unset('guardrailUnitsRetry');"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "581.15 the second chat's log row is charged the guardrail units at the override's rates (bedrock guardrail units)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs?providers=bedrock&models=amazon.nova-lite-v1:0&limit=5",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "providers",
+              "value": "bedrock"
+            },
+            {
+              "key": "models",
+              "value": "amazon.nova-lite-v1:0"
+            },
+            {
+              "key": "limit",
+              "value": "5"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "if (!pm.collectionVariables.get('guardrailOverrideId')) { pm.execution.skipRequest(); }",
+              "var retry = Number(pm.collectionVariables.get('guardrailUnitsRetry') || 0);",
+              "if (retry > 0) {",
+              "  var until = Date.now() + 500;",
+              "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 50); } })();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var row = (pm.response.code === 200 ? (pm.response.json().logs || []) : []).find(function (l) { return typeof l.cost === 'number' && l.cost > 0.005; });",
+              "var retry = Number(pm.collectionVariables.get('guardrailUnitsRetry') || 0);",
+              "if (!row && retry < 20) {",
+              "  pm.collectionVariables.set('guardrailUnitsRetry', retry + 1);",
+              "  postman.setNextRequest(pm.info.requestName);",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('guardrailUnitsRetry');",
+              "pm.test('a row is charged at the override rates', function () {",
+              "  pm.expect(row, 'no row at the override rates: ' + pm.response.text().slice(0, 1200)).to.not.equal(undefined);",
+              "});",
+              "if (!row) { return; }",
+              "pm.test('cost is the tokens plus 4 x $0.001 + 1 x $0.001 + 1 x $0.001 of guardrail units', function () {",
+              "  pm.expect(row.cost, JSON.stringify(row).slice(0, 1200)).to.be.closeTo(0.0060018600, 1e-9);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "581.16 [EXPECT-200] teardown: DELETE /api/governance/pricing-overrides/{id} removes the override (bedrock guardrail units)",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{guardrailOverrideId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides",
+            "{{guardrailOverrideId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "if (!pm.collectionVariables.get('guardrailOverrideId')) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the override is removed', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "});",
+              "pm.collectionVariables.unset('guardrailOverrideId');"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
