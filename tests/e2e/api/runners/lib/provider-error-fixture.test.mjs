@@ -6,6 +6,7 @@ import net from "node:net";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { randomLoopbackPort } from "./loopback-port.mjs";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "..", "provider-error-fixture.mjs");
 
@@ -15,7 +16,7 @@ const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "..", "provider-er
 // running on the host, and the fixture then exits before it listens. The returned post sends one chat completion and, when the fixture does not answer, fails with
 // what it printed on its way out; post.port and post.stallPort name the two listeners.
 async function startFixture(t) {
-  const port = 20000 + Math.floor(Math.random() * 20000);
+  const port = randomLoopbackPort(3);
   const child = spawn(process.execPath, [FIXTURE], {
     env: { ...process.env, PROVIDER_ERROR_FIXTURE_PORT: String(port), PROVIDER_ERROR_FIXTURE_STALL_PORT: String(port + 1), PROVIDER_ERROR_FIXTURE_MEDIA_TUNNEL_PORT: String(port + 2), PROVIDER_ERROR_FIXTURE_TLS_PORT: String(port + 3) },
     stdio: ["ignore", "pipe", "pipe"],

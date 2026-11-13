@@ -12,6 +12,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
+import { PORT_RANGE } from "./lib/loopback-port.mjs";
 import { GROUPS, fixtureVariables, loadData, plan, readFolders, requestNames, rowsFromReport, verdict } from "./fixture-folders.mjs";
 import { remapLoopbackPorts, writeCheckedInFixtureConfig } from "./lib/tls-intercept-proxy.mjs";
 
@@ -39,6 +40,36 @@ check("the real harness: every folder that reads a fixture variable is run by a 
 		assert.ok(members.get("provider-error-preview").some((f) => f.name.startsWith(n)), `${n} is in provider-error-preview`);
 		assert.ok(!members.get("provider-error").some((f) => f.name.startsWith(n)), `${n} is not in provider-error`);
 	}
+});
+
+check("ports are picked below the ephemeral ranges, so a gateway's own startup connections cannot take its listen port", () => {
+	// The widest span a group asks for must fit under the ceiling too.
+	const widest = Math.max(0, ...GROUPS.flatMap((g) => g.span || [0]));
+	assert.ok(PORT_RANGE.high + widest < 32768, `PORT_RANGE ${JSON.stringify(PORT_RANGE)} reaches Linux's default ephemeral range (32768-60999)`);
+	// Where the kernel says what its range is (Linux, the CI runner), hold the range to that.
+	try {
+		const [low] = fs.readFileSync("/proc/sys/net/ipv4/ip_local_port_range", "utf8").trim().split(/\s+/).map(Number);
+		assert.ok(PORT_RANGE.high + widest < low, `PORT_RANGE reaches this kernel's ephemeral range, which starts at ${low}`);
+	} catch (e) {
+		if (e.code !== "ENOENT") throw e;
+	}
+	// Every runner and runner test takes its port from lib/loopback-port.mjs, not a hand-rolled random one.
+	const runners = path.join(REPO, "tests/e2e/api/runners");
+	const handRolled = [];
+	const walk = (dir) => {
+		for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+			const p = path.join(dir, e.name);
+			if (e.isDirectory()) {
+				if (e.name !== "node_modules") walk(p);
+			} else if (e.name.endsWith(".mjs") && !p.endsWith(path.join("lib", "loopback-port.mjs"))) {
+				fs.readFileSync(p, "utf8").split("\n").forEach((line, i) => {
+					if (/\b\d{4,5}\s*\+\s*Math\.floor\(\s*Math\.random\(\)/.test(line)) handRolled.push(`${path.relative(REPO, p)}:${i + 1}`);
+				});
+			}
+		}
+	};
+	walk(runners);
+	assert.deepStrictEqual(handRolled, [], "pick ports with randomLoopbackPort or freeLoopbackPort from lib/loopback-port.mjs");
 });
 
 check("a folder reading a fixture variable no group starts fails plan, naming the folder and the variable", () => {

@@ -43,6 +43,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { listFolderFiles, PROVIDER_HARNESS_DIR } from "./lib/provider-harness-source.mjs";
+import { freeLoopbackPort } from "./lib/loopback-port.mjs";
 import { S3_BUCKET } from "./lib/s3-object-fixture.mjs";
 import { remapLoopbackPorts, writeCheckedInFixtureConfig } from "./lib/tls-intercept-proxy.mjs";
 
@@ -324,15 +325,8 @@ const canBind = (port) =>
 		s.listen(port, "127.0.0.1", () => s.close(() => ok(true)));
 	});
 
-async function freePort(span = [0]) {
-	for (let i = 0; i < 200; i++) {
-		const base = 20000 + Math.floor(Math.random() * 40000);
-		let ok = true;
-		for (const d of span) if (!(await canBind(base + d))) ok = false;
-		if (ok) return base;
-	}
-	throw new Error("no free loopback port found");
-}
+// Ports come from lib/loopback-port.mjs, below the ephemeral ranges (TXE-7326).
+const freePort = freeLoopbackPort;
 
 const until = async (what, probe, seconds) => {
 	for (let i = 0; i < seconds * 4; i++) {
