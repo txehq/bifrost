@@ -293,99 +293,60 @@ func TestResolveBedrockSurfaceBackCompat(t *testing.T) {
 	}
 }
 
-// ---- max_output_tokens floor ----
+// ---- output cap goes out as sent ----
 
-func capsFor(t *testing.T, model string, min *int) schemas.ModelCaps {
-	t.Helper()
-	if min != nil {
-		schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, m string) *schemas.ModelCapabilities {
-			if m != model {
-				return nil
-			}
-			return &schemas.ModelCapabilities{MinOutputTokens: min}
-		})
-		t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
-	}
-	return schemas.ResolveModelCaps(schemas.Bedrock, model)
-}
-
-// Bedrock serves the OpenAI family and Grok from an OpenAI-compatible backend
-// that rejects max_output_tokens below 16; Claude and Nova return a single token
-// happily, so clamping them would silently inflate a legitimate request.
-func TestClampMaxTokensFamilyFallback(t *testing.T) {
-	cases := []struct {
-		model string
-		given int
-		want  int
-	}{
-		// Raised to the floor.
-		{"openai.gpt-5.6-luna", 1, 16},
-		{"global.openai.gpt-5.6-luna", 1, 16},
-		{"xai.grok-4.6", 1, 16},
-		{"us.xai.grok-4.6", 15, 16},
-		// Already at or above the floor — untouched.
-		{"openai.gpt-5.6-luna", 16, 16},
-		{"openai.gpt-5.6-luna", 4096, 4096},
-		// No floor: a 1-token request is valid and must survive.
-		{"anthropic.claude-sonnet-4-5-20250929-v1:0", 1, 1},
-		{"us.anthropic.claude-opus-4-8", 1, 1},
-		{"amazon.nova-pro-v1:0", 1, 1},
-		{"meta.llama3-70b-instruct-v1:0", 1, 1},
-	}
-	for _, tc := range cases {
-		caps := capsFor(t, tc.model, nil)
-		got := clampMaxTokens(surfaceTestCtx(), &tc.given, caps)
-		if got == nil || *got != tc.want {
-			t.Errorf("clampMaxTokens(%d, %q) = %v, want %d", tc.given, tc.model, got, tc.want)
+// Converse sends the caller's output cap unchanged for every family, on chat and on
+// Responses. It used to raise a cap below 16 to 16 for the OpenAI family and Grok (and to
+// the datasheet's min_output_tokens for any model), which bills the caller for output it
+// capped (contract C4). A cap the backend refuses now comes back as the backend's error.
+func TestConverseSendsTheOutputCapAsSent(t *testing.T) {
+	floor := 32
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if m == "amazon.nova-pro-v1:0" {
+			return &schemas.ModelCapabilities{MinOutputTokens: &floor}
 		}
-	}
-}
-
-// The datasheet is authoritative over the family guess, in both directions.
-func TestClampMaxTokensDatasheetOverridesFamily(t *testing.T) {
-	t.Run("raises a model the family guess would not", func(t *testing.T) {
-		floor := 32
-		caps := capsFor(t, "amazon.nova-pro-v1:0", &floor)
-		given := 1
-		if got := clampMaxTokens(surfaceTestCtx(), &given, caps); got == nil || *got != 32 {
-			t.Errorf("got %v, want 32", got)
-		}
+		return nil
 	})
-	t.Run("clears the floor the family guess would apply", func(t *testing.T) {
-		floor := 0
-		caps := capsFor(t, "openai.gpt-5.6-luna", &floor)
-		given := 1
-		if got := clampMaxTokens(surfaceTestCtx(), &given, caps); got == nil || *got != 1 {
-			t.Errorf("got %v, want 1 (datasheet says no floor)", got)
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	for _, model := range []string{
+		"openai.gpt-5.6-luna",
+		"global.openai.gpt-5.6-luna",
+		"xai.grok-4.6",
+		"anthropic.claude-sonnet-4-5-20250929-v1:0",
+		"amazon.nova-pro-v1:0",
+	} {
+		for _, sent := range []int{1, 5, 15, 16, 4096} {
+			t.Run(model, func(t *testing.T) {
+				chat, err := ToBedrockChatCompletionRequest(surfaceTestCtx(), &schemas.BifrostChatRequest{
+					Provider: schemas.Bedrock,
+					Model:    model,
+					Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}}},
+					Params:   &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(sent)},
+				})
+				if err != nil || chat == nil || chat.InferenceConfig == nil || chat.InferenceConfig.MaxTokens == nil {
+					t.Fatalf("chat conversion: err=%v request=%+v", err, chat)
+				}
+				if got := *chat.InferenceConfig.MaxTokens; got != sent {
+					t.Fatalf("chat maxTokens = %d, want %d as sent", got, sent)
+				}
+				responses, err := ToBedrockResponsesRequest(surfaceTestCtx(), &schemas.BifrostResponsesRequest{
+					Provider: schemas.Bedrock,
+					Model:    model,
+					Input: []schemas.ResponsesMessage{{
+						Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+					}},
+					Params: &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(sent)},
+				})
+				if err != nil || responses == nil || responses.InferenceConfig == nil || responses.InferenceConfig.MaxTokens == nil {
+					t.Fatalf("responses conversion: err=%v request=%+v", err, responses)
+				}
+				if got := *responses.InferenceConfig.MaxTokens; got != sent {
+					t.Fatalf("responses maxTokens = %d, want %d as sent", got, sent)
+				}
+			})
 		}
-	})
-}
-
-func TestClampMaxTokensNil(t *testing.T) {
-	if got := clampMaxTokens(surfaceTestCtx(), nil, capsFor(t, "openai.gpt-5.6-luna", nil)); got != nil {
-		t.Errorf("nil max tokens should stay nil, got %v", got)
 	}
-}
-
-// An application inference profile alias carries an opaque resource id as its
-// model_id, so the floor has to be recognised from the alias chain rather than
-// the wire id alone — this is the reported Claude Code configuration.
-func TestClampMaxTokensRecognisesAliasedProfile(t *testing.T) {
-	given := 1
-	t.Run("alias key names the model", func(t *testing.T) {
-		ctx := withAlias("gpt-5.6-luna", "3dnkdwuaalc7", appProfileARN)
-		caps := schemas.ResolveModelCaps(schemas.Bedrock, schemas.ResolveCanonicalModel(ctx, "3dnkdwuaalc7"))
-		if got := clampMaxTokens(ctx, &given, caps); got == nil || *got != 16 {
-			t.Errorf("got %v, want 16", got)
-		}
-	})
-	t.Run("opaque id with no alias has no floor to find", func(t *testing.T) {
-		ctx := surfaceTestCtx()
-		caps := schemas.ResolveModelCaps(schemas.Bedrock, "3dnkdwuaalc7")
-		if got := clampMaxTokens(ctx, &given, caps); got == nil || *got != 1 {
-			t.Errorf("got %v, want 1 (nothing identifies the model)", got)
-		}
-	})
 }
 
 // ---- Converse reasoning shape ----
@@ -831,4 +792,41 @@ func TestSupportsResponsesNamespaceToolsDatasheetRow(t *testing.T) {
 	if provider.SupportsResponsesNamespaceTools(surfaceTestCtx(), schemas.Key{}, "global.openai.gpt-5.6-luna") {
 		t.Error("a Converse-routed attempt must answer false regardless of rows")
 	}
+}
+
+// BenchmarkConverseOutputCap measures the Converse chat and Responses conversions for an
+// OpenAI-family model with a small output cap, the case the removed floor applied to.
+func BenchmarkConverseOutputCap(b *testing.B) {
+	ctx := surfaceTestCtx()
+	chat := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "openai.gpt-5.6-luna",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}}},
+		Params:   &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(5)},
+	}
+	responses := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "openai.gpt-5.6-luna",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(5)},
+	}
+	b.Run("chat", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := ToBedrockChatCompletionRequest(ctx, chat); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("responses", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := ToBedrockResponsesRequest(ctx, responses); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }

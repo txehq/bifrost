@@ -67,6 +67,11 @@ const endpoints = createTlsEndpoints({
 		if (/\/guardrail\/[^/]+\/version\/[^/]+\/apply$/.test(url)) {
 			return { status: 200, headers: { "X-Amzn-Requestid": "req-guardrail" }, body: JSON.stringify({ action: "NONE", outputs: [], assessments: [] }) };
 		}
+		// TXE-6994: a Converse call answers with a minimal completion, so a case can read the inferenceConfig the
+		// gateway sent from GET /__connects.
+		if (/\/model\/[^/]+\/converse$/.test(url)) {
+			return { status: 200, headers: { "Content-Type": "application/json", "X-Amzn-Requestid": "req-converse" }, body: JSON.stringify({ output: { message: { role: "assistant", content: [{ text: "hi" }] } }, stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, metrics: { latencyMs: 1 } }) };
+		}
 		return { status: 404, body: JSON.stringify({ message: "fixture does not serve " + url }) };
 	},
 });

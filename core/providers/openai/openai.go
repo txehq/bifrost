@@ -2068,6 +2068,10 @@ func HandleOpenAIResponsesRequest(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			// Refused here, before anything is sent: see ResponsesServiceTierError.
+			if tierErr := ResponsesServiceTierError(ctx, request); tierErr != nil {
+				return nil, providerUtils.ConverterBifrostError(tierErr)
+			}
 			return ToOpenAIResponsesRequest(ctx, request), nil
 		})
 	if bifrostErr != nil {
@@ -2244,6 +2248,10 @@ func HandleOpenAIResponsesStreaming(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			// Refused here, before the stream is opened: see ResponsesServiceTierError.
+			if tierErr := ResponsesServiceTierError(ctx, request); tierErr != nil {
+				return nil, providerUtils.ConverterBifrostError(tierErr)
+			}
 			reqBody := ToOpenAIResponsesRequest(ctx, request)
 			if reqBody != nil {
 				reqBody.Stream = schemas.Ptr(true)
@@ -5433,6 +5441,10 @@ func HandleOpenAICountTokensRequest(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			// Refused here, before anything is sent: see ResponsesServiceTierError.
+			if tierErr := ResponsesServiceTierError(ctx, request); tierErr != nil {
+				return nil, providerUtils.ConverterBifrostError(tierErr)
+			}
 			return ToOpenAIResponsesRequest(ctx, request), nil
 		})
 	if bifrostErr != nil {

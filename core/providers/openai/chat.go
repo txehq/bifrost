@@ -286,14 +286,6 @@ func serviceTierOnWire(caps schemas.ModelCaps, tier *schemas.BifrostServiceTier)
 	return tier, true
 }
 
-// serviceTierForModel filters a requested tier against the final target model's
-// capabilities, omitting an unsupported tier. Only the Responses conversion still drops
-// a tier this way; chat refuses it (ChatServiceTierError).
-func serviceTierForModel(caps schemas.ModelCaps, tier *schemas.BifrostServiceTier) *schemas.BifrostServiceTier {
-	wire, _ := serviceTierOnWire(caps, tier)
-	return wire
-}
-
 // ChatServiceTierError is the refusal for a chat request whose service_tier the target
 // model cannot take: 400 caller_unsupported_parameter with error.param "service_tier",
 // and nil when the request has no tier or the model takes it. The tier sets the price,
@@ -314,16 +306,31 @@ func ChatServiceTierError(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifro
 	if bifrostReq == nil || bifrostReq.Params == nil || bifrostReq.Params.ServiceTier == nil {
 		return nil
 	}
-	tier := bifrostReq.Params.ServiceTier
+	return serviceTierError(ctx, bifrostReq.Provider, bifrostReq.Model, bifrostReq.Params.ServiceTier)
+}
+
+// ResponsesServiceTierError is ChatServiceTierError for a Responses request: the same
+// rule, the same error. Every path that sends a ToOpenAIResponsesRequest body calls it
+// first, inside its request converter, so a refused request makes no upstream call.
+func ResponsesServiceTierError(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) *schemas.BifrostError {
+	if bifrostReq == nil || bifrostReq.Params == nil || bifrostReq.Params.ServiceTier == nil {
+		return nil
+	}
+	return serviceTierError(ctx, bifrostReq.Provider, bifrostReq.Model, bifrostReq.Params.ServiceTier)
+}
+
+// serviceTierError is the one tier rule behind ChatServiceTierError and
+// ResponsesServiceTierError. tier is not nil.
+func serviceTierError(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, tier *schemas.BifrostServiceTier) *schemas.BifrostError {
 	if *tier == schemas.BifrostServiceTierDefault {
 		return nil
 	}
-	caps := schemas.ResolveModelCaps(bifrostReq.Provider, schemas.ResolveCanonicalModel(ctx, bifrostReq.Model))
+	caps := schemas.ResolveModelCaps(provider, schemas.ResolveCanonicalModel(ctx, model))
 	if _, supported := serviceTierOnWire(caps, tier); supported {
 		return nil
 	}
 	return schemas.NewUnsupportedParameterError("service_tier",
-		"service_tier \""+string(*tier)+"\" is not supported by model "+bifrostReq.Model+" on provider "+string(bifrostReq.Provider))
+		"service_tier \""+string(*tier)+"\" is not supported by model "+model+" on provider "+string(provider))
 }
 
 // Filter OpenAI Specific Parameters

@@ -979,7 +979,8 @@ const wireAnswer = (path, body, bytes) => {
 	// OpenAI-compatible chat as the vendor sees it, TXE-6527 (contract C4): moonshot posts to /v1/chat/completions and
 	// deepseek to /chat/completions under the same base. The recorded body is the assertion; the answer is a plain
 	// completion that echoes the tier it was asked for.
-	if (path === "/pp/oc/v1/chat/completions" || path === "/pp/oc/chat/completions") {
+	// TXE-6994: /pp/hf is the huggingface provider's base; its chat body has no service_tier field.
+	if (path === "/pp/oc/v1/chat/completions" || path === "/pp/oc/chat/completions" || path === "/pp/hf/v1/chat/completions") {
 		return { status: 200, body: JSON.stringify({ id: "chatcmpl_oc", object: "chat.completion", created: 1, model: body.model, service_tier: body.service_tier, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) };
 	}
 	if (path === "/pp/cp/v1/chat/completions") return cpChatAnswerFor(body);
@@ -1557,6 +1558,8 @@ const handleRequest = (req, res) => {
 			"pp-custom-legacy": { provider: "openai", mode: "responses", supported_endpoints: ["/v1/responses"], supports_custom_tools: false, supports_function_calling: true },
 			// TXE-6527: a model whose capability record lists its service tiers, so a tier outside the list is refused.
 			"oc-tiered": { provider: "moonshot", mode: "chat", service_tiers: ["default", "priority"] },
+			// TXE-6994: the same for the openai-based custom provider cp_plain, whose Responses requests the fixture records.
+			"cp-tiered": { provider: "cp_plain", mode: "chat", service_tiers: ["default", "priority"], supported_endpoints: ["/v1/chat/completions", "/v1/responses"] },
 			// TXE-7026: two models with a record that lists no parameters and a low output limit, so anything the compat
 			// plugin would drop or lower for them shows in the request the fixture records.
 			"cp-capped": { provider: "cp_plain", mode: "chat", max_output_tokens: 64, supported_endpoints: ["/v1/chat/completions", "/v1/responses"] },

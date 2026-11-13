@@ -1042,10 +1042,16 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	if params != nil {
 		req.ResponsesParameters = *params
-		req.ServiceTier = serviceTierForModel(caps, req.ServiceTier)
-		if req.ResponsesParameters.MaxOutputTokens != nil && *req.ResponsesParameters.MaxOutputTokens < MinMaxCompletionTokens {
-			req.ResponsesParameters.MaxOutputTokens = schemas.Ptr(MinMaxCompletionTokens)
+		// A tier the target cannot take is refused by ResponsesServiceTierError before
+		// this runs, on every path that sends the request (contract C4: a price-affecting
+		// field is never dropped). Here the tier is only put in its wire form; a tier
+		// that would have been refused is left as sent, so a caller that skipped the
+		// check gets the vendor's own refusal instead of a silently different tier.
+		if wireTier, supported := serviceTierOnWire(caps, req.ServiceTier); supported {
+			req.ServiceTier = wireTier
 		}
+		// max_output_tokens goes out as sent. A value below the vendor's minimum is the
+		// vendor's to refuse; raising it here would bill the caller for output it capped.
 		// Drop user field if it exceeds OpenAI's 64 character limit
 		req.ResponsesParameters.User = SanitizeUserField(req.ResponsesParameters.User)
 		// Fable 5.1+ rejects forced tool use outright. Drop the choice so the model

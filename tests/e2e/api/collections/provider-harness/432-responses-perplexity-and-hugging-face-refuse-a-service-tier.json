@@ -1,0 +1,713 @@
+{
+  "name": "432. Responses, Perplexity and Hugging Face refuse a service_tier they cannot deliver; Responses and Bedrock Converse send the output cap as sent (responses price fields)",
+  "description": "Local fixture regression for TXE-6994 (Bifrost–Tokun contract C4), no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, and run with providerErrorFixture=1; every case is skipped otherwise. cp_plain is an openai-based custom provider whose base_url is the fixture's /pp/cp, which records every request body, and the fixture's capability sheet lists the tiers default and priority for cp-tiered. 432.2 and 432.4 send service_tier flex on /v1/responses, non-streamed and streamed: 400 caller_unsupported_parameter naming service_tier, with no request at the fixture (before TXE-6994 the tier was dropped and the request was served at the standard tier). 432.3 sends the listed tier priority with max_output_tokens 5 and reads both back from the body the vendor received (the cap used to be raised to 16). 432.5 sends default, which is never refused and reaches the vendor as sent. 432.6 to 432.11 are Perplexity and Hugging Face chat, whose request bodies have no service_tier field: priority is refused with the same 400 before any upstream call, non-streamed and streamed, and default is served (Hugging Face's recorded body has no service_tier). 432.12 and 432.13 run on the other local fixture, tests/e2e/api/runners/bedrock-endpoint-fixture.mjs with its own gateway and bedrockEndpointFixture=1 (skipped otherwise): a chat and a Responses request with an output cap of 5 to an OpenAI-family model on Bedrock Converse, whose recorded request carries inferenceConfig.maxTokens 5 (it used to be raised to 16).",
+  "item": [
+    {
+      "name": "432.1 fixture counters and recorded requests reset",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('counters cleared', function () { pm.expect(j.data[0].reset, pm.response.text()).to.equal(true); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "http://127.0.0.1:8791/__reset"
+      }
+    },
+    {
+      "name": "432.2 [EXPECT-400] openai-based custom provider responses with a service_tier the model does not list is refused before any upstream call (responses price fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('status is 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(j.extra_fields && j.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names service_tier', function () { pm.expect(j.error && j.error.param, pm.response.text()).to.equal('service_tier'); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8791/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/cp/v1/responses' && JSON.parse(c.body).model === 'cp-tiered'; });",
+              "  pm.test('no request reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"cp_plain/cp-tiered\",\n  \"input\": \"hi\",\n  \"service_tier\": \"flex\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "432.3 openai-based custom provider responses reaches the vendor with its listed service_tier and max_output_tokens 5 (responses price fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8791/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/cp/v1/responses' && JSON.parse(c.body).model === 'cp-tiered'; });",
+              "  pm.test('one request reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(1); });",
+              "  var sent = JSON.parse(calls[0].body);",
+              "  pm.test('service_tier is the tier the caller sent', function () { pm.expect(sent.service_tier, calls[0].body).to.equal('priority'); });",
+              "  pm.test('max_output_tokens is the 5 the caller sent, not 16', function () { pm.expect(sent.max_output_tokens, calls[0].body).to.equal(5); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"cp_plain/cp-tiered\",\n  \"input\": \"hi\",\n  \"service_tier\": \"priority\",\n  \"max_output_tokens\": 5\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "432.4 [EXPECT-400] openai-based custom provider responses stream with an unlisted service_tier is refused before the stream opens (responses price fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('status is 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(j.extra_fields && j.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names service_tier', function () { pm.expect(j.error && j.error.param, pm.response.text()).to.equal('service_tier'); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8791/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/cp/v1/responses' && JSON.parse(c.body).model === 'cp-tiered'; });",
+              "  pm.test('only the listed-tier request of 432.3 reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(1); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"cp_plain/cp-tiered\",\n  \"input\": \"hi\",\n  \"service_tier\": \"flex\",\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "432.5 openai-based custom provider responses with the default service_tier reaches the vendor with it (responses price fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8791/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/cp/v1/responses' && JSON.parse(c.body).model === 'cp-tiered'; });",
+              "  pm.test('two requests reached the vendor: 432.3 and this one', function () { pm.expect(calls.length, res.text()).to.equal(2); });",
+              "  pm.test('service_tier default reached the vendor as sent', function () { pm.expect(JSON.parse(calls[1].body).service_tier, calls[1].body).to.equal('default'); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"cp_plain/cp-tiered\",\n  \"input\": \"hi\",\n  \"service_tier\": \"default\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "432.6 [EXPECT-400] perplexity chat with a service_tier is refused before any upstream call (responses price fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8791/__reset', method: 'POST' }, function (err) { if (err) { throw err; } });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('status is 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(j.extra_fields && j.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names service_tier', function () { pm.expect(j.error && j.error.param, pm.response.text()).to.equal('service_tier'); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8791/__hits', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports its hit counts', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var h = res.json().data[0].hits;",
+              "  pm.test('no request reached Perplexity', function () { pm.expect(h['sonar-search-usage'] || 0, res.text()).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"perplexity/sonar-search-usage\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"service_tier\": \"priority\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "432.7 [EXPECT-400] perplexity chat stream with a service_tier is refused before the stream opens (responses price fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('status is 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(j.extra_fields && j.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names service_tier', function () { pm.expect(j.error && j.error.param, pm.response.text()).to.equal('service_tier'); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8791/__hits', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports its hit counts', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var h = res.json().data[0].hits;",
+              "  pm.test('no request reached Perplexity', function () { pm.expect(h['sonar-search-usage'] || 0, res.text()).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"perplexity/sonar-search-usage\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"service_tier\": \"priority\",\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "432.8 perplexity chat with the default service_tier is served (responses price fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8791/__hits', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports its hit counts', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var h = res.json().data[0].hits;",
+              "  pm.test('one request reached Perplexity', function () { pm.expect(h['sonar-search-usage'] || 0, res.text()).to.equal(1); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"perplexity/sonar-search-usage\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"service_tier\": \"default\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "432.9 [EXPECT-400] huggingface chat with a service_tier is refused before any upstream call (responses price fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('status is 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(j.extra_fields && j.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names service_tier', function () { pm.expect(j.error && j.error.param, pm.response.text()).to.equal('service_tier'); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8791/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/hf/v1/chat/completions' && JSON.parse(c.body).model === 'openai/gpt-oss-120b:groq'; });",
+              "  pm.test('no request reached Hugging Face', function () { pm.expect(calls.length, res.text()).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"huggingface/groq/openai/gpt-oss-120b\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"service_tier\": \"priority\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "432.10 [EXPECT-400] huggingface chat stream with a service_tier is refused before the stream opens (responses price fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('status is 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(j.extra_fields && j.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names service_tier', function () { pm.expect(j.error && j.error.param, pm.response.text()).to.equal('service_tier'); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8791/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/hf/v1/chat/completions' && JSON.parse(c.body).model === 'openai/gpt-oss-120b:groq'; });",
+              "  pm.test('no request reached Hugging Face', function () { pm.expect(calls.length, res.text()).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"huggingface/groq/openai/gpt-oss-120b\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"service_tier\": \"priority\",\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "432.11 huggingface chat with the default service_tier is served without the field (responses price fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8791/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/hf/v1/chat/completions' && JSON.parse(c.body).model === 'openai/gpt-oss-120b:groq'; });",
+              "  pm.test('one request reached Hugging Face', function () { pm.expect(calls.length, res.text()).to.equal(1); });",
+              "  pm.test('the body has no service_tier: Hugging Face has no such field', function () { pm.expect(JSON.parse(calls[0].body), calls[0].body).to.not.have.property('service_tier'); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"huggingface/groq/openai/gpt-oss-120b\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"service_tier\": \"default\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "432.12 bedrock converse chat for an openai-family model reaches Bedrock with max_tokens 5 (responses price fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST' && /\\/converse$/.test(q.path); });",
+              "  pm.test('exactly one Converse request reached Bedrock', function () { pm.expect(calls.length, res.text().slice(0, 600)).to.equal(1); });",
+              "  var sent = JSON.parse((calls[0] || { body: '{}' }).body || '{}');",
+              "  pm.test('chat inferenceConfig.maxTokens is the 5 the caller sent, not 16', function () { pm.expect(sent.inferenceConfig && sent.inferenceConfig.maxTokens, JSON.stringify(sent)).to.equal(5); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/global.openai.gpt-5.6-luna\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 5\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "432.13 bedrock converse responses for an openai-family model reaches Bedrock with max_output_tokens 5 (responses price fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('bedrockEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8794/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.sendRequest({ url: 'http://127.0.0.1:8794/__connects', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = res.json().data[0].requests.filter(function (q) { return q.method === 'POST' && /\\/converse$/.test(q.path); });",
+              "  pm.test('exactly one Converse request reached Bedrock', function () { pm.expect(calls.length, res.text().slice(0, 600)).to.equal(1); });",
+              "  var sent = JSON.parse((calls[0] || { body: '{}' }).body || '{}');",
+              "  pm.test('responses inferenceConfig.maxTokens is the 5 the caller sent, not 16', function () { pm.expect(sent.inferenceConfig && sent.inferenceConfig.maxTokens, JSON.stringify(sent)).to.equal(5); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bedrock/global.openai.gpt-5.6-luna\",\n  \"input\": \"hi\",\n  \"max_output_tokens\": 5\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    }
+  ]
+}

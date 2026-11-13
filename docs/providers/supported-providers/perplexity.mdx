@@ -101,7 +101,8 @@ Perplexity supports most OpenAI chat completion parameters. For standard paramet
 ### Perplexity-Specific Constraints
 
 - **No function calling**: `tools` and `tool_choice` are silently dropped
-- **Dropped parameters**: `stop`, `logit_bias`, `logprobs`, `top_logprobs`, `seed`, `parallel_tool_calls`, `service_tier`
+- **Dropped parameters**: `stop`, `logit_bias`, `logprobs`, `top_logprobs`, `seed`, `parallel_tool_calls`
+- **Refused parameter**: `service_tier` other than `default` returns 400 `caller_unsupported_parameter` before any upstream call: Perplexity's chat request has no such field, and a tier is never left out silently
 - **Reasoning**: Uses `reasoning_effort` instead of `reasoning` object (see [Reasoning & Effort](#reasoning--effort))
 
 ### Perplexity-Specific Parameters

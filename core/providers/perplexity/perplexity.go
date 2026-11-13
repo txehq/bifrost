@@ -166,6 +166,12 @@ func (provider *PerplexityProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			// Perplexity's request has no service_tier: refused, never left out.
+			if request != nil && request.Params != nil {
+				if tierErr := providerUtils.UndeliverableServiceTierError(request.Params.ServiceTier, schemas.Perplexity); tierErr != nil {
+					return nil, providerUtils.ConverterBifrostError(tierErr)
+				}
+			}
 			return ToPerplexityChatCompletionRequest(request), nil
 		})
 	if err != nil {
@@ -212,6 +218,12 @@ func (provider *PerplexityProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 // Returns a channel containing BifrostStreamChunk objects representing the stream or an error if the request fails.
 func (provider *PerplexityProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	customRequestConverter := func(request *schemas.BifrostChatRequest) (providerUtils.RequestBodyWithExtraParams, error) {
+		// Perplexity's request has no service_tier: refused, never left out.
+		if request != nil && request.Params != nil {
+			if tierErr := providerUtils.UndeliverableServiceTierError(request.Params.ServiceTier, schemas.Perplexity); tierErr != nil {
+				return nil, providerUtils.ConverterBifrostError(tierErr)
+			}
+		}
 		reqBody := ToPerplexityChatCompletionRequest(request)
 		reqBody.Stream = schemas.Ptr(true)
 		return reqBody, nil

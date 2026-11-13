@@ -3983,6 +3983,21 @@ func ConverterBifrostError(bifrostErr *schemas.BifrostError) error {
 	return &converterBifrostError{err: bifrostErr}
 }
 
+// UndeliverableServiceTierError is the refusal for a provider whose request body has no
+// service_tier field at all: 400 caller_unsupported_parameter with error.param
+// "service_tier" for any tier but "default", and nil for no tier or "default". The tier
+// sets the price, so it is never left out silently (contract C4). "default" is the
+// standard tier the vendor serves when the field is absent, so omitting it sends the
+// request the caller asked for. A provider that can send the field checks the model's
+// tier list instead (openai.ChatServiceTierError).
+func UndeliverableServiceTierError(tier *schemas.BifrostServiceTier, provider schemas.ModelProvider) *schemas.BifrostError {
+	if tier == nil || *tier == schemas.BifrostServiceTierDefault {
+		return nil
+	}
+	return schemas.NewUnsupportedParameterError("service_tier",
+		"service_tier \""+string(*tier)+"\" is not supported by provider "+string(provider))
+}
+
 // AsBifrostBadRequestError converts a converter error into a 400 when it (or anything it
 // wraps) was built by InvalidRequestErrorf. The BifrostError carries the converter's own
 // message rather than the wrapped chain, because the outer "failed to convert messages:"

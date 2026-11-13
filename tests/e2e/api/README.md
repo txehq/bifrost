@@ -395,6 +395,25 @@ the vendor; the eighth sends a nested field that is not a price field and reads 
 Bedrock, ElevenLabs, Vertex and Google Cloud Text-to-Speech have no row: core's
 `TestNestedPriceFieldsAreDeclaredAndRefused` covers every provider.
 
+Folder 432 (service tier and output cap on Responses, Perplexity, Hugging Face and Bedrock Converse,
+TXE-6994) runs on the same fixture and gateway, except its last two rows:
+
+```bash
+newman run tmp/provider-harness.json \
+  --folder "432. Responses, Perplexity and Hugging Face refuse a service_tier they cannot deliver; Responses and Bedrock Converse send the output cap as sent (responses price fields)" \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1
+```
+
+`cp-tiered` on the openai-based custom provider `cp_plain` has a capability record listing `default` and
+`priority`, so `flex` is refused before any upstream call, streamed and non-streamed, and a row reads back
+the `service_tier` and `max_output_tokens: 5` the vendor received on `/pp/cp/v1/responses`. Rows 432.6 to
+432.11 send `service_tier` on Perplexity and Hugging Face chat (`huggingface` points at the fixture's
+`/pp/hf`): `priority` is refused before any upstream call and `default` is served. Rows 432.12 and 432.13
+run on the Bedrock endpoint fixture and its gateway instead (see below, `--env-var bedrockEndpointFixture=1`
+and `baseUrl` on that gateway): the fixture answers Converse, and its `GET /__connects` shows
+`inferenceConfig.maxTokens: 5` as sent for an OpenAI-family model.
+
 The fixture answers by model name: `upstream-500` returns HTTP 500, `upstream-503` returns HTTP 503,
 `upstream-429` returns 429 with `Retry-After: 7`, `upstream-429-ms` returns 429 with
 `retry-after-ms: 2500`, `upstream-ok` returns a chat completion, and `upstream-slow` returns the
