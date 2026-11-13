@@ -396,7 +396,7 @@ func videoDebugFor(videoID string, status schemas.VideoStatus, dims modelcatalog
 				Seconds:      dims.Seconds,
 				Size:         dims.Size,
 				Audio:        dims.Audio,
-				Resolution:   dims.BandResolution(),
+				Resolution:   dims.PricedResolution(),
 				OutputCount:  dims.OutputCount,
 				Incomplete:   incomplete,
 				RequestType:  videoRequestTypeFor(dims.RequestType),

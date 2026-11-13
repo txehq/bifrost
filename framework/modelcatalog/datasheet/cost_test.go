@@ -8868,6 +8868,8 @@ func TestCalculateVideoCostDetails_UpstreamResolutionBands(t *testing.T) {
 		{name: "gemini veo 3.1 4k by tier", modelKey: "gemini/veo-3.1-generate-001", seconds: 8, resolution: "4k", wantRate: 0.6},
 		{name: "vertex veo 3.1 4k by tier", modelKey: "vertex_ai/veo-3.1-generate-001", seconds: 8, resolution: "4k", wantRate: 0.6},
 		{name: "veo 3.1 4k by size", modelKey: "gemini/veo-3.1-generate-001", seconds: 8, size: "3840x2160", wantRate: 0.6},
+		// Veo reads a requested size for the aspect ratio only and renders the requested tier.
+		{name: "veo 3.1 requested 4k size with resolution 1080p renders 1080p", modelKey: "gemini/veo-3.1-generate-001", seconds: 8, size: "3840x2160", resolution: "1080p", wantRate: 0.4},
 		// A job row written before Resolution existed holds the tier only in Extra.
 		{name: "veo 3.1 4k from extra on an older job row", modelKey: "gemini/veo-3.1-generate-001", seconds: 8, extra: map[string]any{"resolution": "4k"}, wantRate: 0.6},
 		{name: "veo 3.1 1080p has no band, unbanded rate", modelKey: "gemini/veo-3.1-generate-001", seconds: 8, resolution: "1080p", wantRate: 0.4},
@@ -8910,14 +8912,24 @@ func TestCalculateVideoCostDetails_UpstreamResolutionBands(t *testing.T) {
 	}
 }
 
-// A size that names a band wins over the tier label, since it is what the provider
-// reported; a size that names none leaves the tier to decide.
-func TestVideoPricingDimensions_BandSizePrefersSize(t *testing.T) {
-	assert.Equal(t, "1920x1080", VideoPricingDimensions{Size: "1920x1080", Resolution: "4k"}.bandSize())
+// Only a size the provider reported outranks the requested tier. A requested size can be read
+// for the aspect ratio alone (Veo renders the requested tier), so the tier wins over it, and a
+// size decides only when no tier was asked for.
+func TestVideoPricingDimensions_BandSizePrecedence(t *testing.T) {
+	assert.Equal(t, "1920x1080", VideoPricingDimensions{Size: "1920x1080", SizeReported: true, Resolution: "4k"}.bandSize())
+	assert.Equal(t, "4k", VideoPricingDimensions{Size: "1920x1080", Resolution: "4k"}.bandSize())
+	assert.Equal(t, "1920x1080", VideoPricingDimensions{Size: "1920x1080"}.bandSize())
 	assert.Equal(t, "4k", VideoPricingDimensions{Size: "auto", Resolution: "4k"}.bandSize())
 	assert.Equal(t, "2K", VideoPricingDimensions{Extra: map[string]any{"resolution": "2K"}}.bandSize())
 	assert.Equal(t, "", VideoPricingDimensions{Extra: map[string]any{"resolution": 1080}}.BandResolution(),
 		"a numeric resolution (Runware 3D) names no band")
+
+	// A reported size survives the merge over captured request dimensions.
+	captured := VideoPricingDimensions{Size: "3840x2160", Resolution: "4k"}
+	merged := captured.MergedWith(VideoDimensionsFromResponse(&schemas.BifrostVideoGenerationResponse{Size: "1280x720"}))
+	assert.Equal(t, "1280x720", merged.bandSize())
+	assert.Equal(t, "", merged.PricedResolution(), "the settlement records no tier when a size set the band")
+	assert.Equal(t, "4k", captured.PricedResolution())
 }
 
 func TestVideoResolutionBand_TierLabels(t *testing.T) {

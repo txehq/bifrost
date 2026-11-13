@@ -37,6 +37,11 @@ type VideoPricingDimensions struct {
 	// Veo, Wan 2.7+ and MiniMax take one; it selects the rate band when Size names none
 	// (TXE-7349).
 	Resolution string `json:"resolution,omitempty"`
+	// SizeReported is true when Size came from the provider's response rather than the
+	// request. A requested size is not always what was rendered: Veo reads it only for the
+	// aspect ratio and renders at the requested tier, so only a reported size outranks the
+	// tier. It is set by VideoDimensionsFromResponse and MergedWith and never persisted.
+	SizeReported bool `json:"-"`
 
 	// Type is the operation selector ("upscale", "3d"). These do not bill per
 	// second of output at all, so a rate keyed only on duration is wrong for them.
@@ -88,6 +93,7 @@ func (d VideoPricingDimensions) MergedWith(observed VideoPricingDimensions) Vide
 	}
 	if observed.Size != "" {
 		out.Size = observed.Size
+		out.SizeReported = observed.SizeReported
 	}
 	if observed.Resolution != "" {
 		out.Resolution = observed.Resolution
@@ -188,16 +194,28 @@ func (d VideoPricingDimensions) BandResolution() string {
 	return ""
 }
 
-// bandSize returns what the rate band is read from: Size when it names a band, else the
-// resolution tier. Size wins because it is what the provider reports back.
+// bandSize returns what the rate band is read from: a size the provider reported, else the
+// requested resolution tier, else the requested size. A requested size loses to the tier
+// because a provider may read it for the aspect ratio alone: a Veo request with size
+// 3840x2160 and resolution 1080p renders 1080p.
 func (d VideoPricingDimensions) bandSize() string {
-	if videoResolutionBand(d.Size) > 0 {
+	if d.SizeReported && videoResolutionBand(d.Size) > 0 {
 		return d.Size
 	}
 	if resolution := d.BandResolution(); resolution != "" {
 		return resolution
 	}
 	return d.Size
+}
+
+// PricedResolution returns the resolution tier when it is what selects the rate band, and ""
+// when a size does. The settlement records it, so a reprice, which has no SizeReported, picks
+// the same band: a recorded tier was the band, and an empty one leaves the size to decide.
+func (d VideoPricingDimensions) PricedResolution() string {
+	if band := d.bandSize(); band != d.Size {
+		return band
+	}
+	return ""
 }
 
 // videoClipCount counts the billable clips in outputs, skipping image outputs such as a task's last frame.
@@ -240,9 +258,10 @@ func VideoDimensionsFromResponse(resp *schemas.BifrostVideoGenerationResponse) V
 		return VideoPricingDimensions{}
 	}
 	dims := VideoPricingDimensions{
-		Model:       resp.Model,
-		Size:        resp.Size,
-		OutputCount: videoClipCount(resp.Videos),
+		Model:        resp.Model,
+		Size:         resp.Size,
+		SizeReported: resp.Size != "",
+		OutputCount:  videoClipCount(resp.Videos),
 	}
 	if resp.Seconds != nil {
 		if seconds, ok := VideoSeconds(*resp.Seconds); ok {
