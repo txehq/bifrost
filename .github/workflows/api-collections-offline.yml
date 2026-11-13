@@ -22,6 +22,12 @@ name: API collections offline
 # schemasync with "schema missing Go consts [bfl dashscope]" (run 42894713908). Here it
 # fails the PR that adds the const. It is in this job because this job is the required
 # check; test-api-collections-offline-callers.py keeps the step here.
+#
+# And check-api-artifacts.sh (TXE-7296): openapi.json, the CLI operation catalog and docs.json's
+# API navigation must be what their generators produce from the OpenAPI sources, and the spec
+# invariants must hold. Only openapi.json was checked, after the merge (openapi-bundle.yml); the
+# catalog fell 86 operations behind and the navigation sync and invariants failed on main while
+# every PR passed. Same job, same reason.
 
 on:
   pull_request:
@@ -57,12 +63,16 @@ jobs:
           # release-assets.githubusercontent.com, nodejs.org); npm ci fetches the pinned
           # tools (registry.npmjs.org). setup-go downloads Go, and schemasync loads the
           # workspace's modules (proxy.golang.org, sum.golang.org, storage.googleapis.com),
-          # the hosts the chart release's schemasync step uses. Nothing else leaves the runner.
+          # the hosts the chart release's schemasync step uses. The API-artifact check installs
+          # the hash-pinned PyYAML (pypi.org, files.pythonhosted.org), as workflow-lint does.
+          # Nothing else leaves the runner.
           allowed-endpoints: >
             api.github.com:443
+            files.pythonhosted.org:443
             github.com:443
             nodejs.org:443
             proxy.golang.org:443
+            pypi.org:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
@@ -102,3 +112,16 @@ jobs:
       # agree, every Go enum const included (TXE-7064). The chart release runs it too.
       - name: Validate Go ↔ config.schema.json ↔ helm-chart sync (schemasync)
         run: bash .github/workflows/scripts/validate-schema-sync.sh
+
+      # bundle.py needs PyYAML. --require-hashes against the pin workflow-lint and
+      # openapi-bundle share, so an unverified install never runs here.
+      - name: Install PyYAML (hash-pinned)
+        run: |
+          python3 -m pip install --user --disable-pip-version-check \
+            --require-hashes -r .github/workflows/requirements/pyyaml.txt
+
+      # openapi.json, the CLI operation catalog and docs.json's API navigation are regenerated
+      # and compared with what is committed, and the spec invariants run (TXE-7296). None of
+      # them ran on a PR, and the catalog, the navigation and the invariants drifted on main.
+      - name: Check the API artifacts agree with the OpenAPI spec
+        run: bash .github/workflows/scripts/check-api-artifacts.sh
