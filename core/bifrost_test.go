@@ -14151,36 +14151,153 @@ func TestSpeechProvidersNeverForwardTheCopyOfAMappedUnifiedField(t *testing.T) {
 	}
 }
 
-// resourceOverrideID is the resource id every probe sends. It needs no escaping, so the
-// override path that reaches the wire carries it verbatim.
-const resourceOverrideID = "rid-7"
+// resourceOverrideIDs are the resource ids every probe sends, in placeholder order: a call
+// that names one resource sends the first, one that names a file inside a container sends
+// both. They need no escaping, so the override path that reaches the wire carries them
+// verbatim.
+var resourceOverrideIDs = []string{"rid-7", "rid-8"}
+
+// resourceOverrideCall sends one call that names a resource by id, ids in the order of its
+// request type's placeholders in providerUtils.ResourcePathPlaceholders.
+type resourceOverrideCall func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, ids []string) *schemas.BifrostError
+
+// resourceOverrideLifecycle returns p's stored-response calls, or the unsupported-operation
+// error a base without them gives, which the test reads as a call the base does not serve.
+func resourceOverrideLifecycle(p schemas.Provider) (schemas.ResponsesLifecycleProvider, *schemas.BifrostError) {
+	if lifecycle, ok := p.(schemas.ResponsesLifecycleProvider); ok {
+		return lifecycle, nil
+	}
+	code := "unsupported_operation"
+	return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Code: &code, Message: "stored-response calls are not supported"}}
+}
 
 // resourceOverrideCalls sends, for each request type listed in
 // providerUtils.ResourcePathPlaceholders, the call that names a resource by id. A request
 // type added to the table without a call here fails TestCustomProviderResourcePathOverrides.
-var resourceOverrideCalls = map[schemas.RequestType]func(ctx *schemas.BifrostContext, provider schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, id string) *schemas.BifrostError{
-	schemas.BatchRetrieveRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, id string) *schemas.BifrostError {
-		_, err := p.BatchRetrieve(ctx, keys, &schemas.BifrostBatchRetrieveRequest{Provider: base, BatchID: id})
+var resourceOverrideCalls = map[schemas.RequestType]resourceOverrideCall{
+	schemas.BatchRetrieveRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		_, err := p.BatchRetrieve(ctx, keys, &schemas.BifrostBatchRetrieveRequest{Provider: base, BatchID: ids[0]})
 		return err
 	},
-	schemas.BatchCancelRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, id string) *schemas.BifrostError {
-		_, err := p.BatchCancel(ctx, keys, &schemas.BifrostBatchCancelRequest{Provider: base, BatchID: id})
+	schemas.BatchCancelRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		_, err := p.BatchCancel(ctx, keys, &schemas.BifrostBatchCancelRequest{Provider: base, BatchID: ids[0]})
 		return err
 	},
-	schemas.BatchResultsRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, id string) *schemas.BifrostError {
-		_, err := p.BatchResults(ctx, keys, &schemas.BifrostBatchResultsRequest{Provider: base, BatchID: id})
+	schemas.BatchResultsRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		_, err := p.BatchResults(ctx, keys, &schemas.BifrostBatchResultsRequest{Provider: base, BatchID: ids[0]})
 		return err
 	},
-	schemas.FileRetrieveRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, id string) *schemas.BifrostError {
-		_, err := p.FileRetrieve(ctx, keys, &schemas.BifrostFileRetrieveRequest{Provider: base, FileID: id})
+	schemas.FileRetrieveRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		_, err := p.FileRetrieve(ctx, keys, &schemas.BifrostFileRetrieveRequest{Provider: base, FileID: ids[0]})
 		return err
 	},
-	schemas.FileDeleteRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, id string) *schemas.BifrostError {
-		_, err := p.FileDelete(ctx, keys, &schemas.BifrostFileDeleteRequest{Provider: base, FileID: id})
+	schemas.FileDeleteRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		_, err := p.FileDelete(ctx, keys, &schemas.BifrostFileDeleteRequest{Provider: base, FileID: ids[0]})
 		return err
 	},
-	schemas.FileContentRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, id string) *schemas.BifrostError {
-		_, err := p.FileContent(ctx, keys, &schemas.BifrostFileContentRequest{Provider: base, FileID: id})
+	schemas.FileContentRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		_, err := p.FileContent(ctx, keys, &schemas.BifrostFileContentRequest{Provider: base, FileID: ids[0]})
+		return err
+	},
+	schemas.ModelRetrieveRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, _ schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		_, err := p.ModelRetrieve(ctx, keys[0], &schemas.BifrostModelRetrieveRequest{Model: ids[0]})
+		return err
+	},
+	schemas.VideoRetrieveRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, _ schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		_, err := p.VideoRetrieve(ctx, keys[0], &schemas.BifrostVideoRetrieveRequest{ID: ids[0]})
+		return err
+	},
+	schemas.VideoDownloadRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, _ schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		_, err := p.VideoDownload(ctx, keys[0], &schemas.BifrostVideoDownloadRequest{ID: ids[0]})
+		return err
+	},
+	schemas.VideoDeleteRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, _ schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		_, err := p.VideoDelete(ctx, keys[0], &schemas.BifrostVideoDeleteRequest{ID: ids[0]})
+		return err
+	},
+	schemas.VideoRemixRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, _ schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		_, err := p.VideoRemix(ctx, keys[0], &schemas.BifrostVideoRemixRequest{ID: ids[0], Input: &schemas.VideoGenerationInput{Prompt: "again"}})
+		return err
+	},
+	schemas.ContainerRetrieveRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, _ schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		_, err := p.ContainerRetrieve(ctx, keys, &schemas.BifrostContainerRetrieveRequest{ContainerID: ids[0]})
+		return err
+	},
+	schemas.ContainerDeleteRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, _ schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		_, err := p.ContainerDelete(ctx, keys, &schemas.BifrostContainerDeleteRequest{ContainerID: ids[0]})
+		return err
+	},
+	schemas.ContainerFileCreateRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, _ schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		_, err := p.ContainerFileCreate(ctx, keys[0], &schemas.BifrostContainerFileCreateRequest{ContainerID: ids[0], File: []byte("bytes")})
+		return err
+	},
+	schemas.ContainerFileListRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, _ schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		_, err := p.ContainerFileList(ctx, keys, &schemas.BifrostContainerFileListRequest{ContainerID: ids[0]})
+		return err
+	},
+	schemas.ContainerFileRetrieveRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, _ schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		_, err := p.ContainerFileRetrieve(ctx, keys, &schemas.BifrostContainerFileRetrieveRequest{ContainerID: ids[0], FileID: ids[1]})
+		return err
+	},
+	schemas.ContainerFileContentRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, _ schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		_, err := p.ContainerFileContent(ctx, keys, &schemas.BifrostContainerFileContentRequest{ContainerID: ids[0], FileID: ids[1]})
+		return err
+	},
+	schemas.ContainerFileDeleteRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, _ schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		_, err := p.ContainerFileDelete(ctx, keys, &schemas.BifrostContainerFileDeleteRequest{ContainerID: ids[0], FileID: ids[1]})
+		return err
+	},
+	schemas.ResponsesRetrieveRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, _ schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		lifecycle, err := resourceOverrideLifecycle(p)
+		if err != nil {
+			return err
+		}
+		_, err = lifecycle.ResponsesRetrieve(ctx, keys[0], &schemas.BifrostResponsesRetrieveRequest{ResponseID: ids[0]})
+		return err
+	},
+	schemas.ResponsesRetrieveStreamRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, _ schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		lifecycle, err := resourceOverrideLifecycle(p)
+		if err != nil {
+			return err
+		}
+		runner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			return result, err
+		}
+		stream, err := lifecycle.ResponsesRetrieveStream(ctx, runner, func(context.Context) {}, keys[0], &schemas.BifrostResponsesRetrieveRequest{ResponseID: ids[0]})
+		if stream != nil {
+			deadline := time.After(5 * time.Second)
+			for open := true; open; {
+				select {
+				case _, open = <-stream:
+				case <-deadline:
+					open = false
+				}
+			}
+		}
+		return err
+	},
+	schemas.ResponsesDeleteRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, _ schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		lifecycle, err := resourceOverrideLifecycle(p)
+		if err != nil {
+			return err
+		}
+		_, err = lifecycle.ResponsesDelete(ctx, keys[0], &schemas.BifrostResponsesDeleteRequest{ResponseID: ids[0]})
+		return err
+	},
+	schemas.ResponsesCancelRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, _ schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		lifecycle, err := resourceOverrideLifecycle(p)
+		if err != nil {
+			return err
+		}
+		_, err = lifecycle.ResponsesCancel(ctx, keys[0], &schemas.BifrostResponsesCancelRequest{ResponseID: ids[0]})
+		return err
+	},
+	schemas.ResponsesInputItemsRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, _ schemas.ModelProvider, ids []string) *schemas.BifrostError {
+		lifecycle, err := resourceOverrideLifecycle(p)
+		if err != nil {
+			return err
+		}
+		_, err = lifecycle.ResponsesInputItems(ctx, keys[0], &schemas.BifrostResponsesInputItemsRequest{ResponseID: ids[0]})
 		return err
 	},
 }
@@ -14188,20 +14305,37 @@ var resourceOverrideCalls = map[schemas.RequestType]func(ctx *schemas.BifrostCon
 // resourceOverrideGaps are the calls a base serves without honouring their override: it
 // sends xAI's or the vendor's own path, or the override with the placeholder still in it.
 // Each entry names the ticket that fixes it. An entry is removed when its base honours the
-// override (the test fails on a stale entry), and nothing else may be added here: a base
-// that templates these calls belongs in providerUtils.ResourcePathOverrideBases instead.
+// override (the test fails on a stale entry), and nothing else may be added here: a pair
+// that templates its call belongs in providerUtils.ResourcePathOverrideBases instead.
+// TXE-7085: batch and file calls. TXE-7346: model, video and container calls, which the
+// openai base templates since TXE-7020.
 var resourceOverrideGaps = map[schemas.ModelProvider]map[schemas.RequestType]string{
 	schemas.Anthropic: {
 		schemas.BatchRetrieveRequest: "TXE-7085", schemas.BatchCancelRequest: "TXE-7085", schemas.BatchResultsRequest: "TXE-7085",
 		schemas.FileRetrieveRequest: "TXE-7085", schemas.FileDeleteRequest: "TXE-7085", schemas.FileContentRequest: "TXE-7085",
+		schemas.ModelRetrieveRequest: "TXE-7346",
 	},
 	schemas.Gemini: {
 		schemas.BatchRetrieveRequest: "TXE-7085", schemas.BatchCancelRequest: "TXE-7085", schemas.BatchResultsRequest: "TXE-7085",
 		schemas.FileRetrieveRequest: "TXE-7085", schemas.FileDeleteRequest: "TXE-7085",
+		schemas.ModelRetrieveRequest: "TXE-7346", schemas.VideoRetrieveRequest: "TXE-7346", schemas.VideoDownloadRequest: "TXE-7346",
 	},
-	schemas.ModelArk:   {schemas.FileRetrieveRequest: "TXE-7085", schemas.FileDeleteRequest: "TXE-7085", schemas.FileContentRequest: "TXE-7085"},
-	schemas.Volcengine: {schemas.FileRetrieveRequest: "TXE-7085", schemas.FileDeleteRequest: "TXE-7085", schemas.FileContentRequest: "TXE-7085"},
-	schemas.Replicate:  {schemas.FileRetrieveRequest: "TXE-7085", schemas.FileDeleteRequest: "TXE-7085"},
+	schemas.XAI:    {schemas.ModelRetrieveRequest: "TXE-7346", schemas.VideoRetrieveRequest: "TXE-7346", schemas.VideoDownloadRequest: "TXE-7346"},
+	schemas.Cohere: {schemas.ModelRetrieveRequest: "TXE-7346"},
+	schemas.ModelArk: {
+		schemas.FileRetrieveRequest: "TXE-7085", schemas.FileDeleteRequest: "TXE-7085", schemas.FileContentRequest: "TXE-7085",
+		schemas.VideoRetrieveRequest: "TXE-7346", schemas.VideoDownloadRequest: "TXE-7346", schemas.VideoDeleteRequest: "TXE-7346",
+	},
+	schemas.Volcengine: {
+		schemas.FileRetrieveRequest: "TXE-7085", schemas.FileDeleteRequest: "TXE-7085", schemas.FileContentRequest: "TXE-7085",
+		schemas.VideoRetrieveRequest: "TXE-7346", schemas.VideoDownloadRequest: "TXE-7346", schemas.VideoDeleteRequest: "TXE-7346",
+	},
+	schemas.Replicate: {
+		schemas.FileRetrieveRequest: "TXE-7085", schemas.FileDeleteRequest: "TXE-7085",
+		schemas.VideoRetrieveRequest: "TXE-7346", schemas.VideoDownloadRequest: "TXE-7346",
+	},
+	schemas.Minimax: {schemas.VideoRetrieveRequest: "TXE-7346", schemas.VideoDownloadRequest: "TXE-7346", schemas.VideoDeleteRequest: "TXE-7346"},
+	schemas.Kling:   {schemas.VideoRetrieveRequest: "TXE-7346", schemas.VideoDownloadRequest: "TXE-7346"},
 	// Bedrock's ids are job ARNs and S3 URIs and its calls go to AWS endpoints; the probe's
 	// id is refused before any call, so these never reach the wire here.
 	schemas.Bedrock: {
@@ -14210,10 +14344,11 @@ var resourceOverrideGaps = map[schemas.ModelProvider]map[schemas.RequestType]str
 	},
 }
 
-// resourceOverridePath is the override every probe configures for requestType, and the
-// path the call must reach with the id in place of the placeholder.
-func resourceOverridePath(requestType schemas.RequestType, id string) string {
-	return "/ovr/" + string(requestType) + "/" + id + "/tail"
+// resourceOverridePath is the override every probe configures for requestType (given its
+// placeholders), and the path the call must reach (given its ids, each in its placeholder's
+// place).
+func resourceOverridePath(requestType schemas.RequestType, segments []string) string {
+	return "/ovr/" + string(requestType) + "/" + strings.Join(segments, "/") + "/tail"
 }
 
 // TestCustomProviderResourcePathOverrides runs every call that names a resource by id
@@ -14256,15 +14391,15 @@ func TestCustomProviderResourcePathOverrides(t *testing.T) {
 				t.Fatalf("construct: %v", err)
 			}
 			keys := []schemas.Key{guardKey(base)}
-			listed := slices.Contains(providerUtils.ResourcePathOverrideBases, base)
-			honoursAny := false
 			for _, requestType := range requestTypes {
+				listed := providerUtils.TemplatesResourcePath(base, requestType)
+				ids := resourceOverrideIDs[:len(providerUtils.ResourcePathPlaceholders[requestType])]
 				upstream.take()
 				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 				var bifrostErr *schemas.BifrostError
 				func() {
 					defer func() { _ = recover() }()
-					bifrostErr = resourceOverrideCalls[requestType](ctx, provider, keys, base, resourceOverrideID)
+					bifrostErr = resourceOverrideCalls[requestType](ctx, provider, keys, base, ids)
 				}()
 				requests := upstream.take()
 				targets := make([]string, 0, len(requests))
@@ -14276,26 +14411,24 @@ func TestCustomProviderResourcePathOverrides(t *testing.T) {
 					code = *bifrostErr.Error.Code
 				}
 				served := code != "unsupported_operation" || len(targets) > 0
-				want := resourceOverridePath(requestType, resourceOverrideID)
+				want := resourceOverridePath(requestType, ids)
 				honoured := false
 				for _, target := range targets {
 					if strings.Contains(target, want) {
 						honoured = true
 					}
 				}
-				honoursAny = honoursAny || honoured
 				ticket, gap := resourceOverrideGaps[base][requestType]
 				switch {
 				case gap && listed:
-					t.Errorf("%s is in ResourcePathOverrideBases but carries a gap for %s (%s)", base, requestType, ticket)
+					t.Errorf("%s %s is in ResourcePathOverrideBases but carries a gap (%s)", base, requestType, ticket)
 				case gap && (honoured || !served):
 					t.Errorf("%s %s: the gap entry (%s) is stale: the call now honours the override or is no longer served; remove it", base, requestType, ticket)
 				case served && !honoured && !gap:
 					t.Errorf("%s %s ignores its request_path_overrides template or loses the id: want a call to %s, sent %s", base, requestType, want, fmt.Sprint(targets))
+				case honoured && !listed:
+					t.Errorf("%s honours the %s override but the pair is not in providerUtils.ResourcePathOverrideBases, so it is not checked when the provider is written", base, requestType)
 				}
-			}
-			if honoursAny && !listed {
-				t.Errorf("%s honours resource path overrides but is not in providerUtils.ResourcePathOverrideBases, so they are not checked when the provider is written", base)
 			}
 		})
 	}

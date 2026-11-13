@@ -2230,14 +2230,40 @@ func GetResourceRequestPathForIDs(defaultPath string, customProviderConfig *sche
 	return path.String(), isCompleteURL, nil
 }
 
-// ResourcePathOverrideBases are the custom-provider base types whose calls that name a
-// resource by id (ResourcePathPlaceholders) read request_path_overrides as templates, through
-// GetResourceRequestPath. A custom provider on one of these bases has its overrides for those
-// calls checked when it is written (ValidateResourcePathOverride). The cross-base test
-// (core TestCustomProviderResourcePathOverrides) runs every such call on every base and fails
-// when a base listed here ignores an override or loses the id, and when a base that honours
-// them is missing here.
-var ResourcePathOverrideBases = []schemas.ModelProvider{schemas.OpenAI, schemas.XAI}
+// ResourcePathOverrideBases maps each custom-provider base type to the request types of
+// ResourcePathPlaceholders whose calls read request_path_overrides as templates on that base,
+// through GetResourceRequestPath or GetResourceRequestPathForIDs. A custom provider on such a
+// base has its overrides for those request types checked when it is written
+// (TemplatesResourcePath, ValidateResourcePathOverride). The openai base templates every
+// listed request type; xai its batch and file calls (TXE-7084).
+//
+// The cross-base test (core TestCustomProviderResourcePathOverrides) runs every listed call
+// on every base. It fails when a pair listed here ignores an override or loses the id, and
+// when a base honours a request type that is missing here. A pair a base serves without
+// honouring the override is a recorded gap there, with its ticket.
+var ResourcePathOverrideBases = map[schemas.ModelProvider][]schemas.RequestType{
+	schemas.OpenAI: resourceRequestTypes(),
+	schemas.XAI: {
+		schemas.BatchRetrieveRequest, schemas.BatchCancelRequest, schemas.BatchResultsRequest,
+		schemas.FileRetrieveRequest, schemas.FileDeleteRequest, schemas.FileContentRequest,
+	},
+}
+
+// resourceRequestTypes lists every request type of ResourcePathPlaceholders, sorted.
+func resourceRequestTypes() []schemas.RequestType {
+	types := make([]schemas.RequestType, 0, len(ResourcePathPlaceholders))
+	for requestType := range ResourcePathPlaceholders {
+		types = append(types, requestType)
+	}
+	slices.Sort(types)
+	return types
+}
+
+// TemplatesResourcePath reports whether a custom provider on base reads its
+// request_path_overrides entry for requestType as a template (ResourcePathOverrideBases).
+func TemplatesResourcePath(base schemas.ModelProvider, requestType schemas.RequestType) bool {
+	return slices.Contains(ResourcePathOverrideBases[base], requestType)
+}
 
 type RequestBodyGetter interface {
 	GetRawRequestBody() []byte

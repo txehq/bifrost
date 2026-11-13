@@ -25103,8 +25103,13 @@ func TestValidateCustomProvider_ResourcePathOverrides(t *testing.T) {
 		assert.Contains(t, err.Error(), "request_path_overrides."+string(requestType), "%s", requestType)
 		assert.Contains(t, err.Error(), providerUtils.ResourcePathPlaceholders[requestType][0], "%s", requestType)
 
-		for _, base := range providerUtils.ResourcePathOverrideBases {
+		for base := range providerUtils.ResourcePathOverrideBases {
 			err := ValidateCustomProvider(withOverrides(base, map[schemas.RequestType]string{requestType: "/api/v2/batches"}), schemas.ModelProvider("my-"+string(base)))
+			if !providerUtils.TemplatesResourcePath(base, requestType) {
+				// A base that does not template this call does not read the override as one.
+				require.NoError(t, err, "%s on %s, which does not template it", requestType, base)
+				continue
+			}
 			require.Error(t, err, "%s on %s", requestType, base)
 			assert.Contains(t, err.Error(), "request_path_overrides."+string(requestType), "%s on %s", requestType, base)
 		}
