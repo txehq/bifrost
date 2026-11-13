@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -1399,6 +1400,41 @@ func TestUsageFromValue_CacheTokenConventions(t *testing.T) {
 		assert.Equal(t, 400, usage.PromptTokensDetails.CachedReadTokens)
 	})
 
+	// TXE-7354: an OpenAI batch line reports its cache writes, by lifetime, inside prompt_tokens,
+	// and a Gemini line its audio tokens. Both are kept, so the batch rates for 12h writes and
+	// audio input apply, and the writes are not added to the prompt count again.
+	t.Run("openai cache writes and audio tokens are kept inside prompt_tokens", func(t *testing.T) {
+		usage, err := usageFromValue(map[string]interface{}{
+			"prompt_tokens":     10000,
+			"completion_tokens": 50,
+			"prompt_tokens_details": map[string]interface{}{
+				"cached_tokens":              1000,
+				"audio_tokens":               300,
+				"cache_write_tokens":         8000,
+				"cache_write_tokens_details": map[string]interface{}{"ttl_30m_tokens": 6000, "ttl_12h_tokens": 2000},
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 10000, usage.PromptTokens, "cache writes must not be added again")
+		require.NotNil(t, usage.PromptTokensDetails)
+		assert.Equal(t, 1000, usage.PromptTokensDetails.CachedReadTokens)
+		assert.Equal(t, 8000, usage.PromptTokensDetails.CachedWriteTokens)
+		assert.Equal(t, 300, usage.PromptTokensDetails.AudioTokens)
+		require.NotNil(t, usage.PromptTokensDetails.CachedWriteTokenDetails)
+		assert.Equal(t, 6000, usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens30m)
+		assert.Equal(t, 2000, usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens12h)
+
+		// A split without a total still counts the writes.
+		split, err := usageFromValue(map[string]interface{}{
+			"prompt_tokens":         10000,
+			"prompt_tokens_details": map[string]interface{}{"cache_write_tokens_details": map[string]interface{}{"ttl_12h_tokens": 2000}},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, split.PromptTokensDetails)
+		assert.Equal(t, 2000, split.PromptTokensDetails.CachedWriteTokens)
+		assert.Equal(t, 10000, split.PromptTokens)
+	})
+
 	t.Run("anthropic cache_read_input_tokens is exclusive of input_tokens", func(t *testing.T) {
 		usage, err := usageFromValue(map[string]interface{}{
 			"input_tokens":            600, // excludes the 400 cached
@@ -2469,6 +2505,85 @@ func TestSummarizeResultsDoesNotPriceImageLinesAsText(t *testing.T) {
 
 // textOnlyBatchPricing prices text request types at a flat per-token rate and nothing else,
 // as the catalog does for batches.
+// TXE-7354: a batch whose lines ran different operations (a native-route caller can create
+// one) is reported as schemas.BatchEndpointMixed, and settlement prices each line by its own
+// result: an image line (it carries data) at image rates, a chat line at chat rates. Leaving it
+// unpriced would park it before its spend reached budgets.
+func TestSummarizeResultsPricesAMixedBatchPerLine(t *testing.T) {
+	if got := BatchRequestType(schemas.BatchEndpointMixed); got != batchRequestTypeMixed {
+		t.Fatalf("BatchRequestType(mixed) = %s, want %s", got, batchRequestTypeMixed)
+	}
+	chatLine := schemas.BatchResultItem{CustomID: "c-1", Status: schemas.BatchResultStatusSucceeded, Response: &schemas.BatchResultResponse{StatusCode: 200, Body: map[string]interface{}{
+		"object": "chat.completion",
+		"model":  "gemini-2.5-flash-image",
+		"usage":  map[string]interface{}{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+	}}}
+	imageLine := schemas.BatchResultItem{CustomID: "img-1", Status: schemas.BatchResultStatusSucceeded, Response: &schemas.BatchResultResponse{StatusCode: 200, Body: map[string]interface{}{
+		"model": "gemini-2.5-flash-image",
+		"data":  []interface{}{map[string]interface{}{"b64_json": "aW1hZ2U="}},
+		"usage": map[string]interface{}{"input_tokens": 8, "output_tokens": 1290, "total_tokens": 1298},
+	}}}
+	settlement, err := summarizeResults(chatAndImageBatchPricing{}, batchInput{
+		Provider:     schemas.Gemini,
+		BatchID:      "batches/mixed",
+		BatchPayload: BatchPayload{Endpoint: schemas.BatchEndpointMixed, Results: []schemas.BatchResultItem{chatLine, imageLine}},
+	})
+	if err != nil {
+		t.Fatalf("summarizeResults: %v", err)
+	}
+	if settlement.PricedCount != 2 || !settlement.Complete {
+		t.Fatalf("a mixed batch was not priced line by line: %+v", settlement)
+	}
+	// chatAndImageBatchPricing charges 1e-06 a token on a chat line and 1e-05 on an image line.
+	if want := 15*1e-06 + 1298*1e-05; math.Abs(settlement.Cost-want) > 1e-12 {
+		t.Fatalf("Cost = %v, want %v (each line at its own operation's rate)", settlement.Cost, want)
+	}
+}
+
+// TXE-7354: an image batch's lines are summed per model for repricing. A line with no modality
+// breakdown counts its output as image tokens, and that count is fixed on the line before the sum:
+// summed beside a line that reports 1290 image tokens, it would otherwise reprice at the text rate.
+func TestSummarizeResultsKeepsFallbackImageTokensInTheModelSum(t *testing.T) {
+	line := func(id string, details map[string]interface{}) schemas.BatchResultItem {
+		usage := map[string]interface{}{"input_tokens": 8, "output_tokens": 1300, "total_tokens": 1308}
+		if details != nil {
+			usage["output_tokens_details"] = details
+		}
+		return schemas.BatchResultItem{CustomID: id, Status: schemas.BatchResultStatusSucceeded, Response: &schemas.BatchResultResponse{StatusCode: 200, Body: map[string]interface{}{
+			"model": "gemini-2.5-flash-image",
+			"data":  []interface{}{map[string]interface{}{"b64_json": "aW1hZ2U="}},
+			"usage": usage,
+		}}}
+	}
+	settlement, err := summarizeResults(chatAndImageBatchPricing{}, batchInput{
+		Provider: schemas.Gemini,
+		BatchID:  "batches/img",
+		BatchPayload: BatchPayload{Endpoint: schemas.BatchEndpointImageGeneration, Results: []schemas.BatchResultItem{
+			line("with-details", map[string]interface{}{"image_tokens": 1290, "text_tokens": 10}),
+			line("no-details", nil),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("summarizeResults: %v", err)
+	}
+	usage := settlement.ModelBreakdowns["gemini-2.5-flash-image"].Usage
+	if usage.CompletionTokensDetails == nil || usage.CompletionTokensDetails.ImageTokens == nil || *usage.CompletionTokensDetails.ImageTokens != 1290+1300 {
+		t.Fatalf("summed image tokens = %+v, want 2590 (1290 reported + 1300 counted on the line without a breakdown)", usage.CompletionTokensDetails)
+	}
+}
+
+type chatAndImageBatchPricing struct{ fakePricing }
+
+func (chatAndImageBatchPricing) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.BatchCostDetails {
+	switch requestType {
+	case schemas.BatchResultsRequest, schemas.ChatCompletionRequest:
+		return modelcatalog.BatchCostDetails{Cost: float64(usage.TotalTokens) * 1e-06, Priced: true}
+	case schemas.ImageGenerationRequest, schemas.ImageEditRequest:
+		return modelcatalog.BatchCostDetails{Cost: float64(usage.TotalTokens) * 1e-05, Priced: true}
+	}
+	return modelcatalog.BatchCostDetails{}
+}
+
 type textOnlyBatchPricing struct{ fakePricing }
 
 func (textOnlyBatchPricing) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.BatchCostDetails {

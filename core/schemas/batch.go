@@ -30,6 +30,12 @@ const (
 	BatchEndpointMessages        BatchEndpoint = "/v1/messages" // Anthropic
 	BatchEndpointImageGeneration BatchEndpoint = "/v1/images/generations"
 	BatchEndpointImageEdit       BatchEndpoint = "/v1/images/edits"
+
+	// BatchEndpointMixed is reported only on a batch's results, never accepted on a create: the
+	// lines ran different operations (a batch created outside this gateway, which refuses a
+	// mixed create). Settlement prices a batch as one operation, so it leaves a mixed batch
+	// unpriced rather than price one operation's lines at another's rates (fork, TXE-7354).
+	BatchEndpointMixed BatchEndpoint = "mixed"
 )
 
 // BatchRequestItem represents a single request in a batch (for inline requests).

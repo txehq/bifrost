@@ -139910,6 +139910,101 @@
             "type": "number",
             "minimum": 0
           },
+          "input_cost_per_token_above_100k_tokens_batches": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Batch input token cost above 100k context. Without it, the synchronous 100k rate scaled by the batch ratio applies; the same holds for every explicit batch rate below."
+          },
+          "output_cost_per_token_above_100k_tokens_batches": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Batch output token cost above 100k context."
+          },
+          "input_cost_per_token_above_200k_tokens_batches": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Batch input token cost above 200k context."
+          },
+          "output_cost_per_token_above_200k_tokens_batches": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Batch output token cost above 200k context."
+          },
+          "input_cost_per_token_above_272k_tokens_batches": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Batch input token cost above 272k context."
+          },
+          "output_cost_per_token_above_272k_tokens_batches": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Batch output token cost above 272k context."
+          },
+          "cache_read_input_token_cost_batches": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Batch cache-read token cost."
+          },
+          "cache_read_input_token_cost_above_100k_tokens_batches": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Batch cache-read token cost above 100k context."
+          },
+          "cache_read_input_token_cost_above_200k_tokens_batches": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Batch cache-read token cost above 200k context."
+          },
+          "cache_read_input_token_cost_above_272k_tokens_batches": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Batch cache-read token cost above 272k context."
+          },
+          "cache_creation_input_token_cost_batches": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Batch cache-write token cost."
+          },
+          "cache_creation_input_token_cost_above_100k_tokens_batches": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Batch cache-write token cost above 100k context."
+          },
+          "cache_creation_input_token_cost_above_272k_tokens_batches": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Batch cache-write token cost above 272k context."
+          },
+          "cache_creation_input_token_cost_batches_1h": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Batch cost of a 1-hour cache write."
+          },
+          "cache_creation_input_token_cost_above_12hr_batches": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Batch cost of an OpenAI 12-hour cache write."
+          },
+          "cache_creation_input_token_cost_above_12hr_above_272k_tokens_batches": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Batch cost of an OpenAI 12-hour cache write above 272k context."
+          },
+          "input_cost_per_audio_token_batches": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Batch audio input token cost."
+          },
+          "input_cost_per_image_token_batches": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Batch image input token cost, applied to the image lines of a batch."
+          },
+          "output_cost_per_image_token_batches": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Batch image output token cost, applied to the image lines of a batch. A batch image line on a row with no image token rate stays unpriced."
+          },
           "input_cost_per_token_priority": {
             "type": "number",
             "minimum": 0

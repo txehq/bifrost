@@ -551,6 +551,26 @@ export interface PricingOverridePatch {
 	output_cost_per_token?: number;
 	input_cost_per_token_batches?: number;
 	output_cost_per_token_batches?: number;
+	// Explicit batch rates by token category and context tier
+	input_cost_per_token_above_100k_tokens_batches?: number;
+	output_cost_per_token_above_100k_tokens_batches?: number;
+	input_cost_per_token_above_200k_tokens_batches?: number;
+	output_cost_per_token_above_200k_tokens_batches?: number;
+	input_cost_per_token_above_272k_tokens_batches?: number;
+	output_cost_per_token_above_272k_tokens_batches?: number;
+	cache_read_input_token_cost_batches?: number;
+	cache_read_input_token_cost_above_100k_tokens_batches?: number;
+	cache_read_input_token_cost_above_200k_tokens_batches?: number;
+	cache_read_input_token_cost_above_272k_tokens_batches?: number;
+	cache_creation_input_token_cost_batches?: number;
+	cache_creation_input_token_cost_above_100k_tokens_batches?: number;
+	cache_creation_input_token_cost_above_272k_tokens_batches?: number;
+	cache_creation_input_token_cost_batches_1h?: number;
+	cache_creation_input_token_cost_above_12hr_batches?: number;
+	cache_creation_input_token_cost_above_12hr_above_272k_tokens_batches?: number;
+	input_cost_per_audio_token_batches?: number;
+	input_cost_per_image_token_batches?: number;
+	output_cost_per_image_token_batches?: number;
 	input_cost_per_token_priority?: number;
 	output_cost_per_token_priority?: number;
 	input_cost_per_token_ultrafast?: number;

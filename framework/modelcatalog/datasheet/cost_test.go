@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -9424,4 +9425,130 @@ func BenchmarkAddProviderGuardrailCost(b *testing.B) {
 			_ = s.addProviderGuardrailCost(nil, &model, "bedrock", withoutUnits)
 		}
 	})
+}
+
+// =========================================================================
+// TXE-7354: explicit batch rates. Values are the live datasheet's (14 Nov 2026).
+// =========================================================================
+
+// batchStore holds one decoded datasheet row under the given provider, model and mode.
+func batchStore(t *testing.T, provider, model, mode, row string) *Store {
+	t.Helper()
+	p := decodeEntry(t, row)
+	p.Model, p.Provider, p.Mode = model, provider, mode
+	return testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey(model, provider, mode): p})
+}
+
+// azure/gpt-5.4 publishes its batch cache read at 1.3e-07. The fork derived 1.25e-07 from the
+// synchronous rate and the batch ratio.
+func TestBatchCost_ExplicitCacheReadBatchRate(t *testing.T) {
+	s := batchStore(t, "azure", "gpt-5.4", "chat", `{
+		"provider": "azure", "mode": "chat",
+		"input_cost_per_token": 2.5e-06, "output_cost_per_token": 1.5e-05,
+		"input_cost_per_token_batches": 1.25e-06, "output_cost_per_token_batches": 7.5e-06,
+		"cache_read_input_token_cost": 2.5e-07, "cache_read_input_token_cost_batches": 1.3e-07
+	}`)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 10000, CompletionTokens: 100, TotalTokens: 10100,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 6000}}
+	got := s.CalculateBatchCostDetailsForUsage(usage, schemas.Azure, "gpt-5.4", schemas.ChatCompletionRequest, nil)
+	require.True(t, got.Priced)
+	assert.InDelta(t, 4000*1.25e-06+6000*1.3e-07+100*7.5e-06, got.Cost, 1e-12)
+}
+
+// gpt-6-sol publishes its 272k batch rates under both spellings; a row with only the second
+// (input_cost_per_token_batches_above_272k_tokens) is read too. Batch 12h writes take the
+// explicit batch 12h rate.
+func TestBatchCost_ExplicitTierAnd12hBatchRates(t *testing.T) {
+	s := batchStore(t, "openai", "gpt-6-sol", "chat", `{
+		"provider": "openai", "mode": "chat",
+		"input_cost_per_token": 2e-06, "output_cost_per_token": 1e-05,
+		"input_cost_per_token_batches": 1e-06, "output_cost_per_token_batches": 5e-06,
+		"input_cost_per_token_above_272k_tokens": 4e-06, "output_cost_per_token_above_272k_tokens": 1.5e-05,
+		"input_cost_per_token_batches_above_272k_tokens": 1.9e-06,
+		"output_cost_per_token_above_272k_tokens_batches": 7e-06,
+		"cache_creation_input_token_cost": 2.5e-06,
+		"cache_creation_input_token_cost_above_12hr": 5e-06,
+		"cache_creation_input_token_cost_above_12hr_batches": 2.4e-06,
+		"cache_creation_input_token_cost_above_12hr_above_272k_tokens_batches": 4.9e-06
+	}`)
+	usage := func(prompt int) *schemas.BifrostLLMUsage {
+		return &schemas.BifrostLLMUsage{PromptTokens: prompt, CompletionTokens: 100, TotalTokens: prompt + 100,
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedWriteTokens: 2000,
+				CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{CachedWriteTokens12h: 2000}}}
+	}
+	short := s.CalculateBatchCostDetailsForUsage(usage(10000), schemas.OpenAI, "gpt-6-sol", schemas.ChatCompletionRequest, nil)
+	require.True(t, short.Priced)
+	assert.InDelta(t, 8000*1e-06+2000*2.4e-06+100*5e-06, short.Cost, 1e-12)
+	long := s.CalculateBatchCostDetailsForUsage(usage(300000), schemas.OpenAI, "gpt-6-sol", schemas.ChatCompletionRequest, nil)
+	require.True(t, long.Priced)
+	assert.InDelta(t, 298000*1.9e-06+2000*4.9e-06+100*7e-06, long.Cost, 1e-9)
+}
+
+// gemini-2.5-flash publishes batch audio input at 5e-07 against batch text input 1.5e-07. Without
+// an explicit audio batch rate, audio takes the synchronous audio rate at the batch ratio.
+func TestBatchCost_AudioInputTokens(t *testing.T) {
+	row := `{
+		"provider": "vertex_ai", "mode": "chat",
+		"input_cost_per_token": 3e-07, "output_cost_per_token": 2.5e-06,
+		"input_cost_per_token_batches": 1.5e-07, "output_cost_per_token_batches": 1.25e-06,
+		"input_cost_per_audio_token": 1e-06%s
+	}`
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, TotalTokens: 1000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{AudioTokens: 400}}
+	explicit := batchStore(t, "vertex", "gemini-2.5-flash", "chat", fmt.Sprintf(row, `, "input_cost_per_audio_token_batches": 5e-07`))
+	got := explicit.CalculateBatchCostDetailsForUsage(usage, schemas.Vertex, "gemini-2.5-flash", schemas.ChatCompletionRequest, nil)
+	require.True(t, got.Priced)
+	assert.InDelta(t, 600*1.5e-07+400*5e-07, got.Cost, 1e-12)
+
+	derived := batchStore(t, "vertex", "gemini-2.5-flash", "chat", fmt.Sprintf(row, ""))
+	got = derived.CalculateBatchCostDetailsForUsage(usage, schemas.Vertex, "gemini-2.5-flash", schemas.ChatCompletionRequest, nil)
+	assert.InDelta(t, 600*1.5e-07+400*1e-06*0.5, got.Cost, 1e-12)
+}
+
+// gemini/gemini-2.5-flash-image publishes batch image output tokens at 1.5e-05. An image line was
+// left unpriced (the job parked) for want of an image batch rate; it is now priced, and a chat
+// line's image tokens stay at the text rate, as the synchronous chat path prices them.
+func TestBatchCost_ImageLinesTakeTheImageBatchRates(t *testing.T) {
+	row := `{
+		"provider": "gemini", "mode": "image_generation",
+		"input_cost_per_token": 3e-07, "output_cost_per_token": 2.5e-06,
+		"input_cost_per_token_batches": 1.5e-07, "output_cost_per_token_batches": 1.25e-06,
+		"output_cost_per_image_token": 3e-05, "output_cost_per_image_token_batches": 1.5e-05
+	}`
+	s := batchStore(t, "gemini", "gemini-2.5-flash-image", "image_generation", row)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 1300, TotalTokens: 1400,
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{TextTokens: 10, ImageTokens: schemas.Ptr(1290)}}
+	got := s.CalculateBatchCostDetailsForUsage(usage, schemas.Gemini, "gemini-2.5-flash-image", schemas.ImageGenerationRequest, nil)
+	require.True(t, got.Priced)
+	assert.InDelta(t, 100*1.5e-07+10*1.25e-06+1290*1.5e-05, got.Cost, 1e-12)
+
+	// A result with no modality breakdown (usageMetadata without candidatesTokensDetails) prices
+	// its aggregate output tokens as image tokens, as the synchronous image path does; reasoning
+	// tokens alone are no breakdown. A breakdown with text and no image tokens prices them as text.
+	for _, tc := range []struct {
+		name    string
+		details *schemas.ChatCompletionTokensDetails
+		want    float64
+	}{
+		{"no details", nil, 100*1.5e-07 + 1300*1.5e-05},
+		{"reasoning only", &schemas.ChatCompletionTokensDetails{ReasoningTokens: 200}, 100*1.5e-07 + 1300*1.5e-05},
+		{"text only", &schemas.ChatCompletionTokensDetails{TextTokens: 1300}, 100*1.5e-07 + 1300*1.25e-06},
+	} {
+		aggregate := &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 1300, TotalTokens: 1400, CompletionTokensDetails: tc.details}
+		got := s.CalculateBatchCostDetailsForUsage(aggregate, schemas.Gemini, "gemini-2.5-flash-image", schemas.ImageGenerationRequest, nil)
+		require.True(t, got.Priced, tc.name)
+		assert.InDelta(t, tc.want, got.Cost, 1e-12, tc.name)
+	}
+
+	// A batch of mixed operations reaches pricing under jobaccounting's mixed request type,
+	// which no pricing path handles: unpriced, never priced as image or chat lines.
+	assert.False(t, s.CalculateBatchCostDetailsForUsage(usage, schemas.Gemini, "gemini-2.5-flash-image", schemas.RequestType("batch_results_mixed"), nil).Priced)
+
+	// A row priced per image has no token rate for the image tokens: still unpriced.
+	perImage := batchStore(t, "openai", "dall-e-3", "image_generation", `{"provider": "openai", "mode": "image_generation", "output_cost_per_image": 0.04}`)
+	assert.False(t, perImage.CalculateBatchCostDetailsForUsage(usage, schemas.OpenAI, "dall-e-3", schemas.ImageGenerationRequest, nil).Priced)
+
+	chat := computeBatchTextCost(func() *configstoreTables.TableModelPricing { p := decodeEntry(t, row); return &p }(), usage, serviceTier{})
+	require.NotNil(t, chat)
+	assert.InDelta(t, 100*1.5e-07+1300*1.25e-06, chat.TotalCost, 1e-12)
 }

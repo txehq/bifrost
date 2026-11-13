@@ -837,12 +837,17 @@ func TestGeminiBatchResultsReturnOpenAIShapeLines(t *testing.T) {
 	resp, bifrostErr := provider.BatchResults(ctx, keys, &schemas.BifrostBatchResultsRequest{Provider: schemas.Gemini, BatchID: "batches/abc123"})
 	require.Nil(t, bifrostErr, "a JOB_STATE_SUCCEEDED batch is finished")
 	require.Len(t, resp.Results, 3)
-	// This batch mixes chat and image lines, which a create through this gateway refuses. Its
-	// results are reported as image generation, which has no batch text rates, so settlement
-	// leaves it unpriced rather than price image lines as text.
-	assert.Equal(t, schemas.BatchEndpointImageGeneration, resp.Endpoint)
+	// This batch mixes chat and image lines, which the OpenAI-shaped create refuses. Its results
+	// are reported as mixed, and settlement prices each line by its own result (TXE-7354).
+	assert.Equal(t, schemas.BatchEndpointMixed, resp.Endpoint)
 	assert.Equal(t, schemas.BatchEndpointChatCompletions, AccumulateBatchResultsEndpoint(AccumulateBatchResultsEndpoint("", ""), schemas.BatchEndpointChatCompletions))
 	assert.Equal(t, schemas.BatchEndpointImageGeneration, AccumulateBatchResultsEndpoint("", schemas.BatchEndpointImageGeneration))
+	assert.Equal(t, schemas.BatchEndpointMixed, AccumulateBatchResultsEndpoint(schemas.BatchEndpointMixed, schemas.BatchEndpointChatCompletions), "once mixed, a batch stays mixed")
+	// The echoed endpoint is caller-controlled metadata on the native route: a line cannot name
+	// the mixed sentinel or an operation a generateContent batch does not run.
+	assert.Equal(t, schemas.BatchEndpointChatCompletions, AccumulateBatchResultsEndpoint("", schemas.BatchEndpointMixed))
+	assert.Equal(t, schemas.BatchEndpointChatCompletions, AccumulateBatchResultsEndpoint("", schemas.BatchEndpointEmbeddings))
+	assert.Equal(t, schemas.BatchEndpointChatCompletions, AccumulateBatchResultsEndpoint(AccumulateBatchResultsEndpoint("", schemas.BatchEndpointChatCompletions), "mixed"))
 	assert.False(t, resp.HasMore)
 	assert.Equal(t, []string{"GET /v1beta/batches/abc123"}, vendor.calls, "results are one upstream call")
 

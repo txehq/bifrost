@@ -514,6 +514,12 @@ func summarizeResults(pricing PricingManager, in batchInput) (*Settlement, error
 			continue
 		}
 		usageSeen = true
+		requestType := lineRequestType(in.Endpoint, item)
+		if requestType == schemas.ImageGenerationRequest || requestType == schemas.ImageEditRequest {
+			// Fixed per line before the per-model sums: a line with no modality breakdown counts
+			// its output as image tokens, and a sum beside a line that has one would drop that.
+			extracted.usage.MaterializeImageLineOutputTokens()
+		}
 		if merged := schemas.MergeBifrostLLMUsage(&totalUsage, extracted.usage); merged != nil {
 			totalUsage = *merged
 		}
@@ -535,7 +541,7 @@ func summarizeResults(pricing PricingManager, in batchInput) (*Settlement, error
 		}
 		breakdowns[extracted.model] = breakdown
 
-		costDetails := pricing.CalculateBatchCostDetailsForUsage(extracted.usage, in.Provider, extracted.model, BatchRequestType(in.Endpoint), in.Scopes)
+		costDetails := pricing.CalculateBatchCostDetailsForUsage(extracted.usage, in.Provider, extracted.model, requestType, in.Scopes)
 		if !costDetails.Priced {
 			missingPricingSeen = true
 			unpricedCount++
@@ -617,6 +623,28 @@ func summarizeResults(pricing PricingManager, in batchInput) (*Settlement, error
 	return settlement, nil
 }
 
+// batchRequestTypeMixed is the request type of a batch whose lines ran different operations,
+// read from its aggregate row. No pricing path handles it: the aggregate cannot say which
+// usage was which operation.
+const batchRequestTypeMixed schemas.RequestType = "batch_results_mixed"
+
+// lineRequestType is the request type one result line prices under. A batch of one operation
+// prices every line as that operation. A mixed batch (schemas.BatchEndpointMixed: lines of
+// different operations, which a native-route caller can create) prices each line by the shape
+// of its own result: an image line carries data, and any other line is a chat line. Leaving a
+// mixed batch unpriced would park it before its spend reached budgets (TXE-7354).
+func lineRequestType(endpoint schemas.BatchEndpoint, item schemas.BatchResultItem) schemas.RequestType {
+	if endpoint != schemas.BatchEndpointMixed {
+		return BatchRequestType(endpoint)
+	}
+	if item.Response != nil {
+		if _, ok := item.Response.Body["data"]; ok {
+			return schemas.ImageGenerationRequest
+		}
+	}
+	return schemas.ChatCompletionRequest
+}
+
 // BatchRequestType maps a batch endpoint to the request type its results price
 // under. Exported because the aggregate row records only the endpoint (its Object
 // column is always "batch_results"), so a later repricing pass outside this package
@@ -633,12 +661,18 @@ func BatchRequestType(endpoint schemas.BatchEndpoint) schemas.RequestType {
 		return schemas.ChatCompletionRequest
 	case schemas.BatchEndpointImageGeneration:
 		// Image lines are named as what they are, so they are never priced at text-token
-		// rates. The catalog has no batch rates for image output yet, so pricing reports
-		// them unpriced and the job is parked as missing batch pricing with its usage
-		// kept, per-modality detail included, for a later repricing pass.
+		// rates. A row that prices image tokens prices them at its image batch rate
+		// (TXE-7354); one priced per image or per pixel reports them unpriced, and the job
+		// is parked as missing batch pricing with its usage kept, per-modality detail
+		// included, for a later repricing pass.
 		return schemas.ImageGenerationRequest
 	case schemas.BatchEndpointImageEdit:
 		return schemas.ImageEditRequest
+	case schemas.BatchEndpointMixed:
+		// Lines of different operations (TXE-7354). Settlement prices each line by its own
+		// result (lineRequestType). Repricing reads only the per-model aggregate, which
+		// cannot split them, so it reports the row unpriceable and the settled cost stands.
+		return batchRequestTypeMixed
 	default:
 		return schemas.BatchResultsRequest
 	}
@@ -798,6 +832,15 @@ func usageFromValue(value interface{}) (*schemas.BifrostLLMUsage, error) {
 		// bucket — see the inclusive/exclusive note below.
 		PromptTokensDetails struct {
 			CachedTokens int `json:"cached_tokens"`
+			// Audio input tokens and OpenAI's cache writes, which are part of prompt_tokens like
+			// cached_tokens, split by lifetime (fork, TXE-7354): kept so a batch line prices them
+			// at their own batch rates.
+			AudioTokens             int `json:"audio_tokens"`
+			CacheWriteTokens        int `json:"cache_write_tokens"`
+			CacheWriteTokensDetails struct {
+				TTL30mTokens int `json:"ttl_30m_tokens"`
+				TTL12hTokens int `json:"ttl_12h_tokens"`
+			} `json:"cache_write_tokens_details"`
 		} `json:"prompt_tokens_details"`
 		// An image line reports its tokens per modality (the unified image usage). They
 		// are kept on the usage so a repricing pass can apply image rates to them.
@@ -856,17 +899,33 @@ func usageFromValue(value interface{}) (*schemas.BifrostLLMUsage, error) {
 		Cost:             usage.Cost,
 	}
 	totalCacheReadTokens := cacheReadTokens + inclusiveCacheReadTokens
-	if totalCacheReadTokens > 0 || cacheWriteTokens > 0 {
+	// OpenAI's cache writes are a breakdown of prompt_tokens, like cached_tokens, so they are
+	// not added to the prompt count (TXE-7354).
+	inclusiveCacheWrite := usage.PromptTokensDetails.CacheWriteTokens
+	split := usage.PromptTokensDetails.CacheWriteTokensDetails
+	if inclusiveCacheWrite == 0 {
+		inclusiveCacheWrite = split.TTL30mTokens + split.TTL12hTokens
+	}
+	totalCacheWriteTokens := cacheWriteTokens + inclusiveCacheWrite
+	if totalCacheReadTokens > 0 || totalCacheWriteTokens > 0 {
 		out.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
 			CachedReadTokens:  totalCacheReadTokens,
-			CachedWriteTokens: cacheWriteTokens,
+			CachedWriteTokens: totalCacheWriteTokens,
 		}
-		if cacheWrite5m > 0 || cacheWrite1h > 0 {
+		if cacheWrite5m > 0 || cacheWrite1h > 0 || split.TTL30mTokens > 0 || split.TTL12hTokens > 0 {
 			out.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
-				CachedWriteTokens5m: cacheWrite5m,
-				CachedWriteTokens1h: cacheWrite1h,
+				CachedWriteTokens5m:  cacheWrite5m,
+				CachedWriteTokens1h:  cacheWrite1h,
+				CachedWriteTokens30m: split.TTL30mTokens,
+				CachedWriteTokens12h: split.TTL12hTokens,
 			}
 		}
+	}
+	if audio := usage.PromptTokensDetails.AudioTokens; audio > 0 {
+		if out.PromptTokensDetails == nil {
+			out.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
+		}
+		out.PromptTokensDetails.AudioTokens = audio
 	}
 	if d := usage.InputTokensDetails; d != nil && (d.TextTokens > 0 || d.ImageTokens > 0) {
 		if out.PromptTokensDetails == nil {
