@@ -626,8 +626,12 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 
 	// Check for HTTP errors — use parseBedrockHTTPError to preserve upstream error details
 	if resp.StatusCode != http.StatusOK {
-		body, _ := network.ReadAllBounded(resp.Body)
+		body, readErr := network.ReadAllBounded(resp.Body)
 		resp.Body.Close()
+		if readErr != nil {
+			// An error body past the response limit is the gateway's refusal, not an empty vendor error.
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("error reading response", readErr), latency)
+		}
 		return nil, providerUtils.SetErrorLatency(parseBedrockHTTPError(resp.StatusCode, resp.Header, body), latency)
 	}
 
@@ -2933,8 +2937,11 @@ func (provider *BedrockProvider) FileUpload(ctx *schemas.BifrostContext, key sch
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		body, _ := network.ReadAllBounded(resp.Body)
+		body, readErr := network.ReadAllBounded(resp.Body)
 		provider.logger.Error("s3 upload failed: %d", resp.StatusCode)
+		if readErr != nil {
+			return nil, providerUtils.NewBifrostOperationError("error reading S3 upload response", readErr)
+		}
 		return nil, providerUtils.NewProviderAPIError(fmt.Sprintf("S3 upload failed: %s", string(body)), nil, resp.StatusCode, nil, nil)
 	}
 
@@ -3282,8 +3289,12 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 
 		// S3 DELETE returns 204 No Content on success
 		if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-			body, _ := network.ReadAllBounded(resp.Body)
+			body, readErr := network.ReadAllBounded(resp.Body)
 			resp.Body.Close()
+			if readErr != nil {
+				lastErr = providerUtils.NewBifrostOperationError("error reading S3 DELETE response", readErr)
+				continue
+			}
 			lastErr = providerUtils.NewProviderAPIError(fmt.Sprintf("S3 DELETE failed: %s", string(body)), nil, resp.StatusCode, nil, nil)
 			continue
 		}
@@ -3365,8 +3376,12 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			body, _ := network.ReadAllBounded(resp.Body)
+			body, readErr := network.ReadAllBounded(resp.Body)
 			resp.Body.Close()
+			if readErr != nil {
+				lastErr = providerUtils.NewBifrostOperationError("error reading S3 GET response", readErr)
+				continue
+			}
 			lastErr = providerUtils.NewProviderAPIError(fmt.Sprintf("S3 GET failed: %s", string(body)), nil, resp.StatusCode, nil, nil)
 			continue
 		}

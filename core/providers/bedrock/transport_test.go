@@ -1051,3 +1051,25 @@ func TestCompleteRequest_ResponseOverTheLimitFails(t *testing.T) {
 	require.Nil(t, bifrostErr, "an answer under the limit is read")
 	assert.Len(t, body, size+len(`{"output":""}`))
 }
+
+// TXE-7148: a streaming request's error status whose body exceeds the limit is the gateway's
+// refusal. Before, the read error was dropped and the empty body parsed as the vendor's 500, which
+// core may retry or send to a fallback.
+func TestMakeStreamingRequest_ErrorBodyOverTheLimitIsBifrostsRefusal(t *testing.T) {
+	network.SetMaxResponseBodySizeMB(1)
+	t.Cleanup(func() { network.SetMaxResponseBodySizeMB(0) })
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"` + strings.Repeat("x", 2<<20) + `"}`))
+	}))
+	defer ts.Close()
+
+	provider := newTestProviderWithServer(t, ts)
+	_, bifrostErr := provider.makeStreamingRequest(testBedrockCtx(), []byte(`{}`), testBedrockKey(), "anthropic.claude-sonnet-4-5", "converse-stream")
+	require.NotNil(t, bifrostErr)
+	assert.True(t, bifrostErr.IsBifrostError, "the gateway refused the body: %+v", bifrostErr)
+	assert.Equal(t, schemas.ErrorTypeBifrostInternal, bifrostErr.ExtraFields.ErrorType)
+	require.NotNil(t, bifrostErr.AllowFallbacks)
+	assert.False(t, *bifrostErr.AllowFallbacks, "an over-limit answer must not go to a fallback")
+}

@@ -13350,6 +13350,18 @@ func TestNoUnboundedUpstreamBodyReads(t *testing.T) {
 				}
 				key := filepath.ToSlash(path) + " " + funcName(fd)
 				ast.Inspect(fd.Body, func(n ast.Node) bool {
+					// A bounded read whose error is dropped turns an over-limit body into an empty
+					// one: the caller then reports the vendor's status, which core may retry or
+					// send to a fallback, instead of the gateway's refusal.
+					if assign, ok := n.(*ast.AssignStmt); ok && len(assign.Lhs) == 2 && len(assign.Rhs) == 1 {
+						if blank, ok := assign.Lhs[1].(*ast.Ident); ok && blank.Name == "_" {
+							if rc, ok := assign.Rhs[0].(*ast.CallExpr); ok {
+								if rsel, ok := rc.Fun.(*ast.SelectorExpr); ok && (rsel.Sel.Name == "ReadAllBounded" || rsel.Sel.Name == "ReadAllLimit") {
+									violations = append(violations, fmt.Sprintf("%s: the error of %s is discarded in %s; an over-limit body must fail the request (wrap it with providerUtils.NewBifrostOperationError)", fset.Position(assign.Pos()), rsel.Sel.Name, funcName(fd)))
+								}
+							}
+						}
+					}
 					call, ok := n.(*ast.CallExpr)
 					if !ok {
 						return true
