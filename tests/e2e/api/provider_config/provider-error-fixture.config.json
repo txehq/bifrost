@@ -1375,7 +1375,8 @@
         {
           "name": "local-error-fixture",
           "models": [
-            "amazon.nova-lite-v1:0"
+            "amazon.nova-lite-v1:0",
+            "amazon.nova-micro-v1:0"
           ],
           "weight": 1,
           "bedrock_key_config": {

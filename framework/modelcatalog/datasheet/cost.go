@@ -706,7 +706,10 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 
 	pricing := s.resolvePricing(routingInfo, requestType, scopes)
 	if pricing == nil {
-		return nil
+		// A model with no pricing row prices nothing of its own, but a provider-side guardrail is
+		// priced on the provider's guardrails row, apart from the model (fork, TXE-7390): its units
+		// are still charged, and nil is returned when there are none to charge.
+		return s.addProviderGuardrailCost(nil, nil, string(routingInfo.Provider), input.usage)
 	}
 
 	// Route to the appropriate compute function. Each returns a per-category
