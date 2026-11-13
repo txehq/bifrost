@@ -462,6 +462,9 @@ legacy-users-access-profile-virtual-keys:
   post:
     $ref: './accessprofiles.yaml#/users-access-profile-virtual-keys/post'
     operationId: addUserAccessProfileVirtualKeyLegacy
+    # Its successor operation is itself deprecated, so both would be "... (deprecated path)" and
+    # collide on one Mintlify page route; the legacy path gets a summary of its own.
+    summary: Add an extra virtual key under a user's access profile (legacy /api/users path)
     x-bifrost-successor: '/api/governance/users/{user_id}/virtual-keys'
     x-bifrost-removal: following-major-release
 

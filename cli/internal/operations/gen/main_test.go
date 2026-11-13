@@ -22,6 +22,9 @@ func TestCollectOperationsClassifiesDestructiveOperations(t *testing.T) {
 		"/items/{id}":          {"delete": {OperationID: "deleteItem"}},
 		"/batches/{id}/cancel": {"post": {OperationID: "cancelBatch"}},
 		"/items":               {"post": {OperationID: "createItem"}},
+		"/jobs/{id}/cancel":    {"post": {OperationID: "cancelJob"}},
+		"/tasks/{id}:cancel":   {"post": {OperationID: "taskCancel"}},
+		"/cancel/status":       {"get": {OperationID: "cancelStatus"}},
 	}}
 	operations, err := collectOperations(document)
 	if err != nil {
@@ -31,10 +34,10 @@ func TestCollectOperationsClassifiesDestructiveOperations(t *testing.T) {
 	for _, operation := range operations {
 		destructive[operation.ID] = operation.Destructive
 	}
-	if !destructive["deleteItem"] || !destructive["cancelBatch"] {
+	if !destructive["deleteItem"] || !destructive["cancelBatch"] || !destructive["cancelJob"] || !destructive["taskCancel"] {
 		t.Fatalf("destructive classifications = %#v", destructive)
 	}
-	if destructive["createItem"] {
-		t.Fatalf("createItem was classified as destructive: %#v", destructive)
+	if destructive["createItem"] || destructive["cancelStatus"] {
+		t.Fatalf("a non-destructive operation was classified as destructive: %#v", destructive)
 	}
 }

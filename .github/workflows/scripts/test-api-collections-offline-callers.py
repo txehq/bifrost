@@ -12,7 +12,9 @@ filtered required check never reports on a PR outside its paths, which blocks it
 The job that runs the script, which is the required check, also runs schemasync
 (validate-schema-sync.sh). A provider const registered without its config.schema.json enum
 entry otherwise passed every PR check and failed the chart release on main (TXE-7064, run
-42894713908), so this checks that the step stays in that job.
+42894713908), so this checks that the step stays in that job. The same holds for check-api-artifacts.sh
+(TXE-7296): the CLI catalog, the docs navigation and the OpenAPI invariants drifted on main
+while no PR check ran them.
 
 Usage: test-api-collections-offline-callers.py
 """
@@ -29,6 +31,7 @@ SCRIPT = "test-api-collections-offline.sh"
 WORKFLOW = "api-collections-offline.yml"
 RELEASE_CALLER = "test-api-integrations.sh"
 SCHEMA_SYNC = "validate-schema-sync.sh"
+API_ARTIFACTS = "check-api-artifacts.sh"
 SUITES = ("collections/collection-scripts.test.mjs", "runners/newman-exit-when-done.test.mjs")
 REPO = os.path.abspath(os.path.join(WORKFLOWS, "..", ".."))
 # The loop that finds every *.test.mjs under tests/e2e/api, and its exclusion list.
@@ -95,6 +98,8 @@ def main():
         failures.append(f"no job in {WORKFLOW} runs {SCRIPT}")
     elif not any(runs(job, SCHEMA_SYNC) for job in suite_jobs):
         failures.append(f"the job in {WORKFLOW} that runs {SCRIPT} no longer runs {SCHEMA_SYNC}")
+    if suite_jobs and not any(runs(job, API_ARTIFACTS) for job in suite_jobs):
+        failures.append(f"the job in {WORKFLOW} that runs {SCRIPT} no longer runs {API_ARTIFACTS}")
 
     for f in failures:
         print(f"FAIL {f}")

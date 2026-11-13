@@ -872,13 +872,6 @@
                 ]
               },
               {
-                "group": "Decisions",
-                "expanded": false,
-                "pages": [
-                  "POST /v1/decisions"
-                ]
-              },
-              {
                 "group": "Embeddings",
                 "expanded": false,
                 "pages": [
@@ -899,7 +892,11 @@
                 "pages": [
                   "POST /v1/images/generations",
                   "POST /v1/images/edits",
-                  "POST /v1/images/variations"
+                  "POST /v1/images/variations",
+                  "POST /v1/images/generations/tasks",
+                  "POST /v1/images/edits/tasks",
+                  "GET /v1/images/tasks/{task_id}",
+                  "POST /v1/images/tasks/{task_id}/cancel"
                 ]
               },
               {
@@ -911,7 +908,9 @@
                   "GET /v1/videos/{video_id}",
                   "DELETE /v1/videos/{video_id}",
                   "GET /v1/videos/{video_id}/content",
-                  "POST /v1/videos/{video_id}/remix"
+                  "POST /v1/videos/{video_id}/remix",
+                  "POST /v1/videos/{video_id}/cancel",
+                  "POST /v1/videos/edits"
                 ]
               },
               {
@@ -1002,6 +1001,13 @@
                   "POST /v1/realtime/client_secrets",
                   "POST /v1/realtime/sessions"
                 ]
+              },
+              {
+                "group": "Decisions",
+                "expanded": false,
+                "pages": [
+                  "POST /v1/decisions"
+                ]
               }
             ]
           },
@@ -1025,9 +1031,9 @@
                   "POST /openai/v1/responses/{response_id}/cancel",
                   "GET /openai/v1/responses/{response_id}/input_items",
                   "POST /openai/v1/responses/compact",
+                  "POST /openai/v1/decisions",
                   "POST /openai/v1/embeddings",
                   "POST /openai/openai/deployments/{deployment-id}/embeddings",
-                  "POST /openai/v1/decisions",
                   "POST /openai/v1/audio/speech",
                   "POST /openai/openai/deployments/{deployment-id}/audio/speech",
                   "POST /openai/v1/audio/transcriptions",
@@ -1144,14 +1150,6 @@
                 ]
               },
               {
-                "group": "Typesafe Integration",
-                "expanded": false,
-                "pages": [
-                  "POST /typesafe/v1/systemone",
-                  "GET /typesafe/v1/models"
-                ]
-              },
-              {
                 "group": "Cursor Integration",
                 "expanded": false,
                 "pages": [
@@ -1246,6 +1244,14 @@
                   "POST /pydanticai/cohere/v2/embed",
                   "POST /pydanticai/cohere/v1/tokenize"
                 ]
+              },
+              {
+                "group": "Typesafe Integration",
+                "expanded": false,
+                "pages": [
+                  "POST /typesafe/v1/systemone",
+                  "GET /typesafe/v1/models"
+                ]
               }
             ]
           },
@@ -1278,7 +1284,8 @@
                   "POST /api/session/login",
                   "POST /api/session/logout",
                   "GET /api/session/is-auth-enabled",
-                  "POST /api/session/ws-ticket"
+                  "POST /api/session/ws-ticket",
+                  "POST /api/session/setup"
                 ]
               },
               {
@@ -1300,6 +1307,32 @@
                   "GET /api/models/details",
                   "GET /api/models/parameters",
                   "GET /api/models/base"
+                ]
+              },
+              {
+                "group": "Routing",
+                "expanded": false,
+                "pages": [
+                  "GET /api/routing/rules",
+                  "POST /api/routing/rules",
+                  "GET /api/routing/rules/{rule_id}",
+                  "PUT /api/routing/rules/{rule_id}",
+                  "DELETE /api/routing/rules/{rule_id}",
+                  "GET /api/routing/complexity-analyzer-config",
+                  "PUT /api/routing/complexity-analyzer-config",
+                  "POST /api/routing/complexity-analyzer-config/reset",
+                  "GET /api/routing/complexity-analyzer-status",
+                  "POST /api/routing/complexity-analyzer-status/retry",
+                  "GET /api/routing/complexity-analyzer-generations",
+                  "DELETE /api/routing/complexity-analyzer-generations/{namespace}"
+                ]
+              },
+              {
+                "group": "Adaptive Routing",
+                "expanded": false,
+                "pages": [
+                  "GET /api/adaptive-routing/config",
+                  "PUT /api/adaptive-routing/config"
                 ]
               },
               {
@@ -1331,18 +1364,14 @@
                   "POST /api/mcp/client/{id}/reregister",
                   "POST /api/mcp/client/{id}/verify-headers",
                   "POST /api/mcp/client/{id}/verify-exchange",
+                  "POST /api/mcp/openapi/preview",
+                  "GET /api/mcp/client/{id}/openapi-spec",
                   "GET /api/mcp/sessions",
                   "DELETE /api/mcp/sessions/{id}",
                   "POST /api/mcp/sessions/{id}/reauth",
                   "GET /api/mcp/per-user-headers/flows/{id}",
                   "PUT /api/mcp/per-user-headers/flows/{id}",
-                  "DELETE /api/mcp/per-user-headers/credential/{id}"
-                ]
-              },
-              {
-                "group": "Virtual MCPs",
-                "expanded": false,
-                "pages": [
+                  "DELETE /api/mcp/per-user-headers/credential/{id}",
                   "GET /api/mcp/virtual-mcps",
                   "POST /api/mcp/virtual-mcps",
                   "GET /api/mcp/virtual-mcps/{id}",
@@ -1353,7 +1382,7 @@
                 ]
               },
               {
-                "group": "MCP Tool Groups (deprecated)",
+                "group": "MCP Tool Groups",
                 "expanded": false,
                 "pages": [
                   "GET /api/mcp/tool-groups",
@@ -1367,8 +1396,8 @@
                 "group": "Agent Gateway",
                 "expanded": false,
                 "pages": [
-                  "POST /api/agents",
                   "GET /api/agents",
+                  "POST /api/agents",
                   "GET /api/agents/{name}",
                   "PUT /api/agents/{name}",
                   "DELETE /api/agents/{name}",
@@ -1390,8 +1419,8 @@
                   "GET /agents/a2a/{name}/rest/tasks/{taskId}",
                   "POST /agents/a2a/{name}/rest/tasks/{taskId}:cancel",
                   "POST /agents/a2a/{name}/rest/tasks/{taskId}:subscribe",
-                  "POST /agents/a2a/{name}/rest/tasks/{taskId}/pushNotificationConfigs",
                   "GET /agents/a2a/{name}/rest/tasks/{taskId}/pushNotificationConfigs",
+                  "POST /agents/a2a/{name}/rest/tasks/{taskId}/pushNotificationConfigs",
                   "GET /agents/a2a/{name}/rest/tasks/{taskId}/pushNotificationConfigs/{configId}",
                   "DELETE /agents/a2a/{name}/rest/tasks/{taskId}/pushNotificationConfigs/{configId}",
                   "GET /agents/a2a/{name}/rest/extendedAgentCard",
@@ -1407,6 +1436,17 @@
                   "GET /api/oauth/callback",
                   "GET /api/oauth/config/{id}/status",
                   "DELETE /api/oauth/config/{id}"
+                ]
+              },
+              {
+                "group": "Circuit Breaker",
+                "expanded": false,
+                "pages": [
+                  "GET /api/circuit-breaker/policies",
+                  "POST /api/circuit-breaker/policies",
+                  "PUT /api/circuit-breaker/policies/{name}",
+                  "DELETE /api/circuit-breaker/policies/{name}",
+                  "GET /api/circuit-breaker/state"
                 ]
               },
               {
@@ -1427,13 +1467,13 @@
                   "GET /api/logs/histogram/cost/by-provider",
                   "GET /api/logs/histogram/tokens/by-provider",
                   "GET /api/logs/histogram/latency/by-provider",
-                  "GET /api/logs/histogram/throughput",
-                  "GET /api/logs/histogram/throughput/by-provider",
                   "GET /api/logs/histogram/cost/by-dimension",
                   "GET /api/logs/histogram/tokens/by-dimension",
                   "GET /api/logs/histogram/latency/by-dimension",
                   "GET /api/logs/dropped",
                   "GET /api/logs/filterdata",
+                  "GET /api/logs/histogram/throughput",
+                  "GET /api/logs/histogram/throughput/by-provider",
                   "GET /api/logs/rankings",
                   "GET /api/logs/rankings/by-dimension",
                   "GET /api/logs/rankings/users",
@@ -1516,17 +1556,6 @@
                 ]
               },
               {
-                "group": "Infrastructure",
-                "expanded": false,
-                "pages": [
-                  "GET /ws",
-                  "GET /mcp",
-                  "POST /mcp",
-                  "GET /metrics",
-                  "POST /inspect"
-                ]
-              },
-              {
                 "group": "API Keys",
                 "expanded": false,
                 "pages": [
@@ -1535,6 +1564,25 @@
                   "GET /api/api-keys/{id}",
                   "PUT /api/api-keys/{id}",
                   "DELETE /api/api-keys/{id}"
+                ]
+              },
+              {
+                "group": "Background Jobs",
+                "expanded": false,
+                "pages": [
+                  "GET /api/sidekiq/jobs",
+                  "POST /api/sidekiq/jobs/{id}/cancel"
+                ]
+              },
+              {
+                "group": "Infrastructure",
+                "expanded": false,
+                "pages": [
+                  "GET /ws",
+                  "GET /mcp",
+                  "POST /mcp",
+                  "GET /metrics",
+                  "POST /inspect"
                 ]
               },
               {
@@ -1774,6 +1822,26 @@
                 ]
               },
               {
+                "group": "Routing Rules",
+                "expanded": false,
+                "pages": [
+                  "GET /api/governance/routing-rules",
+                  "POST /api/governance/routing-rules",
+                  "GET /api/governance/routing-rules/{rule_id}",
+                  "PUT /api/governance/routing-rules/{rule_id}",
+                  "DELETE /api/governance/routing-rules/{rule_id}"
+                ]
+              },
+              {
+                "group": "Complexity Analyzer",
+                "expanded": false,
+                "pages": [
+                  "GET /api/governance/complexity-analyzer-config",
+                  "PUT /api/governance/complexity-analyzer-config",
+                  "POST /api/governance/complexity-analyzer-config/reset"
+                ]
+              },
+              {
                 "group": "Model Configs",
                 "expanded": false,
                 "pages": [
@@ -1801,52 +1869,6 @@
                   "POST /api/governance/pricing-overrides",
                   "PUT /api/governance/pricing-overrides/{id}",
                   "DELETE /api/governance/pricing-overrides/{id}"
-                ]
-              }
-            ]
-          },
-          {
-            "group": "Routing",
-            "pages": [
-              {
-                "group": "Routing Rules",
-                "expanded": false,
-                "pages": [
-                  "GET /api/routing/rules",
-                  "POST /api/routing/rules",
-                  "GET /api/routing/rules/{rule_id}",
-                  "PUT /api/routing/rules/{rule_id}",
-                  "DELETE /api/routing/rules/{rule_id}"
-                ]
-              },
-              {
-                "group": "Complexity Analyzer",
-                "expanded": false,
-                "pages": [
-                  "GET /api/routing/complexity-analyzer-config",
-                  "PUT /api/routing/complexity-analyzer-config",
-                  "POST /api/routing/complexity-analyzer-config/reset",
-                  "GET /api/routing/complexity-analyzer-status",
-                  "POST /api/routing/complexity-analyzer-status/retry"
-                ]
-              },
-              {
-                "group": "Adaptive Routing",
-                "expanded": false,
-                "pages": [
-                  "GET /api/adaptive-routing/config",
-                  "PUT /api/adaptive-routing/config"
-                ]
-              },
-              {
-                "group": "Circuit Breaker",
-                "expanded": false,
-                "pages": [
-                  "GET /api/circuit-breaker/policies",
-                  "POST /api/circuit-breaker/policies",
-                  "PUT /api/circuit-breaker/policies/{name}",
-                  "DELETE /api/circuit-breaker/policies/{name}",
-                  "GET /api/circuit-breaker/state"
                 ]
               }
             ]
@@ -1912,7 +1934,8 @@
                   "PUT /api/users/{user_id}/teams",
                   "GET /api/users/email/{email}/virtual-keys",
                   "GET /api/users/email/{email}",
-                  "GET /api/users/{user_id}/virtual-keys"
+                  "GET /api/users/{user_id}/virtual-keys",
+                  "POST /api/users/{user_id}/virtual-keys"
                 ]
               },
               {

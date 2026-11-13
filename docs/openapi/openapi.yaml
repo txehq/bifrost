@@ -897,8 +897,6 @@ paths:
     $ref: "./paths/management/governance.yaml#/virtual-keys-quota"
   /api/governance/virtual-keys/{vk_id}:
     $ref: "./paths/management/governance.yaml#/virtual-keys-by-id"
-  /api/governance/virtual-keys/{vk_id}/rotate:
-    $ref: "./paths/management/governance.yaml#/virtual-keys-rotate-by-id"
   /api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override:
     $ref: "./paths/management/governance.yaml#/virtual-keys-budget-override"
   /api/governance/virtual-keys/{vk_id}/users:
