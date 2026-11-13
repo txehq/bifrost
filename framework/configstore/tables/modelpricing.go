@@ -266,6 +266,10 @@ type TableModelPricing struct {
 	OutputCostPerVideoPerSecond720pAudio  *float64 `gorm:"default:null;column:output_cost_per_video_per_second_720p_audio" json:"output_cost_per_video_per_second_720p_audio,omitempty"`
 	OutputCostPerVideoPerSecond1080pAudio *float64 `gorm:"default:null;column:output_cost_per_video_per_second_1080p_audio" json:"output_cost_per_video_per_second_1080p_audio,omitempty"`
 	OutputCostPerVideoPerSecond4kAudio    *float64 `gorm:"default:null;column:output_cost_per_video_per_second_4k_audio" json:"output_cost_per_video_per_second_4k_audio,omitempty"`
+	// UnmeasuredVideoSeconds is the length an unmeasurable rendered video is charged for when it is
+	// more than the create asked for (fork, TXE-7401). Set by pricing overrides; upstream does not
+	// publish it.
+	UnmeasuredVideoSeconds *float64 `gorm:"default:null;column:unmeasured_video_seconds" json:"unmeasured_video_seconds,omitempty"`
 	// Upstream's resolution-banded output rates (TXE-7349). Read after the video-specific band
 	// of the same resolution and before either unbanded rate.
 	OutputCostPerSecond480p  *float64 `gorm:"default:null;column:output_cost_per_second_480p" json:"output_cost_per_second_480p,omitempty"`

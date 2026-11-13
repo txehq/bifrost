@@ -513,7 +513,7 @@
       ]
     },
     {
-      "name": "520.11 the sweeper never fetches a video on a host the caller chose: it charges the $0.50 floor for the 5 seconds asked for, marked incomplete (rendered video duration)",
+      "name": "520.11 the sweeper never fetches a video on a host the caller chose: it charges $3.00, up to the 30-second bound, not the 5 seconds asked for, marked incomplete (rendered video duration)",
       "request": {
         "method": "GET",
         "header": [
@@ -550,7 +550,7 @@
             "type": "text/javascript",
             "exec": [
               "// TXE-7386: the output is on localhost, not the provider's configured 127.0.0.1 origin nor replicate.delivery,",
-              "// so the settler never downloads it and charges the 5 seconds the create asked for as a floor.",
+              "// so the settler never downloads it and charges it as unmeasurable: up to Replicate's 30-second bound (TXE-7401).",
               "var CryptoJS = require('crypto-js');",
               "function uuidv5(namespace, name) {",
               "  var hash = CryptoJS.SHA1(CryptoJS.enc.Hex.parse(namespace.replace(/-/g, '')).concat(CryptoJS.enc.Utf8.parse(name))).toString();",
@@ -568,11 +568,13 @@
               "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + logId, method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
               "    if (!err && res.code === 200 && res.json().cost !== undefined) {",
               "      var j = res.json();",
-              "      pm.test('the video on a foreign host is charged its $0.50 floor, marked incomplete', function () {",
-              "        pm.expect(j.cost, JSON.stringify(j)).to.be.closeTo(0.5, 1e-9);",
+              "      pm.test('the video on a foreign host is charged $3.00 up to the 30-second bound, marked incomplete', function () {",
+              "        pm.expect(j.cost, JSON.stringify(j)).to.be.closeTo(3, 1e-9);",
               "        var accounting = j.video_debug && j.video_debug.accounting;",
               "        pm.expect(accounting, JSON.stringify(j.video_debug)).to.be.ok;",
-              "        pm.expect(accounting.seconds, JSON.stringify(accounting)).to.eql(5);",
+              "        pm.expect(accounting.seconds, JSON.stringify(accounting)).to.eql(30);",
+              "        pm.expect(accounting.unmeasured_bound_seconds, JSON.stringify(accounting)).to.eql(30);",
+              "        pm.expect(accounting.requested_seconds, JSON.stringify(accounting)).to.eql(5);",
               "        pm.expect(accounting.incomplete, JSON.stringify(accounting)).to.eql(true);",
               "      });",
               "      return;",

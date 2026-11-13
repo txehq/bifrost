@@ -2975,6 +2975,14 @@ PricingPatch:
         request asks for audio, or does not say and its provider defaults to
         audio; falls back to the 4K rate when
         unset.
+    unmeasured_video_seconds:
+      type: number
+      minimum: 0
+      description: >-
+        Seconds a rendered video is charged for when provider job accounting
+        cannot measure its length and this is more than the request asked for
+        (fork). Replaces the provider's default bound (30 seconds) for this
+        model. Rounded up to whole seconds.
     output_cost_per_second_480p:
       type: number
       minimum: 0

@@ -59,6 +59,11 @@ type VideoPricingDimensions struct {
 	// for a custom one, so it takes the recorded answer. Only RepriceFromLog sets it; it is never
 	// persisted here.
 	InputVideoRateExempt bool `json:"-"`
+	// UnmeasuredDefaultSeconds is set by the settler when the rendered length of a job that
+	// needed measuring could not be measured (fork, TXE-7401): the provider's default bound.
+	// Pricing charges the larger of Seconds and the bound, where the model's own
+	// unmeasured_video_seconds replaces the default. It is never persisted.
+	UnmeasuredDefaultSeconds int `json:"-"`
 
 	// Type is the operation selector ("upscale", "3d"). These do not bill per
 	// second of output at all, so a rate keyed only on duration is wrong for them.
@@ -181,6 +186,31 @@ type VideoCostDetails struct {
 	// the tier alone, or the size alone, exactly as settlement chose (TXE-7349): a reprice
 	// cannot resolve a custom provider's base, so it must not rerun that choice.
 	PricedResolution string
+	// UnmeasuredBoundSeconds is the bound an unmeasurable rendered video was charged up to (fork,
+	// TXE-7401): the model's unmeasured_video_seconds, or the provider's default. Zero when the job
+	// was measured. The settlement records it, so a later reprice can correct an honest output that
+	// merely could not be read.
+	UnmeasuredBoundSeconds int
+}
+
+// unmeasuredVideoSeconds returns the seconds a job is priced on, and the bound applied (fork,
+// TXE-7401). A job whose rendered length could not be measured (UnmeasuredDefaultSeconds set) is
+// priced on the larger of the seconds its create named and a bound the caller cannot choose: the
+// model's unmeasured_video_seconds where its pricing row (or an override) sets one, else the
+// provider's default. A job that was measured, or never needed measuring, keeps its seconds and
+// reports no bound.
+func unmeasuredVideoSeconds(dims VideoPricingDimensions, pricing *configstoreTables.TableModelPricing) (*int, int) {
+	if dims.UnmeasuredDefaultSeconds <= 0 {
+		return dims.Seconds, 0
+	}
+	bound := dims.UnmeasuredDefaultSeconds
+	if pricing != nil && pricing.UnmeasuredVideoSeconds != nil && *pricing.UnmeasuredVideoSeconds > 0 {
+		bound = int(math.Ceil(*pricing.UnmeasuredVideoSeconds))
+	}
+	if dims.Seconds != nil && *dims.Seconds >= bound {
+		return dims.Seconds, bound
+	}
+	return &bound, bound
 }
 
 // CalculateVideoCostDetails prices a video job from its merged dimensions.
@@ -222,11 +252,12 @@ func (s *Store) CalculateVideoCostDetails(dims VideoPricingDimensions, provider 
 	band := dims.bandSize(provider, pricing, audio)
 	job := dims.job()
 	job.inputVideoRateExempt = dims.InputVideoRateExemptFor(provider)
-	breakdown := computeVideoCost(pricing, nil, dims.Seconds, band, dims.OutputCount, audio, job, serviceTier{})
+	seconds, bound := unmeasuredVideoSeconds(dims, pricing)
+	breakdown := computeVideoCost(pricing, nil, seconds, band, dims.OutputCount, audio, job, serviceTier{})
 	if breakdown == nil || breakdown.TotalCost <= 0 {
 		return VideoCostDetails{}
 	}
-	details := VideoCostDetails{Cost: breakdown.TotalCost, Priced: true, Breakdown: breakdown}
+	details := VideoCostDetails{Cost: breakdown.TotalCost, Priced: true, Breakdown: breakdown, UnmeasuredBoundSeconds: bound}
 	if band != dims.Size {
 		details.PricedResolution = band
 	}

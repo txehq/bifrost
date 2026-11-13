@@ -530,6 +530,7 @@ least 1536) is billed at the 1536×1024 rate, which is checked first.
 | `output_cost_per_video_per_second_720p_audio` | Cost per second of 720p video output with generated audio |
 | `output_cost_per_video_per_second_1080p_audio` | Cost per second of 1080p video output with generated audio |
 | `output_cost_per_video_per_second_4k_audio` | Cost per second of 4K video output with generated audio |
+| `unmeasured_video_seconds` | Seconds a rendered video is charged for when its length cannot be measured and this is more than the request asked for. Replaces the provider's 30-second default for this model; rounded up to whole seconds |
 | `output_cost_per_second_480p` | Upstream's cost per second of 480p video output |
 | `output_cost_per_second_720p` | Upstream's cost per second of 720p video output |
 | `output_cost_per_second_768p` | Upstream's cost per second of 768p video output |

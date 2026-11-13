@@ -182,13 +182,13 @@ export const GROUPS = [
 		vars: (p) => ({ databricksTokenFixtureUrl: `http://127.0.0.1:${p.main}`, include_preview: "1", setupToken: SETUP_TOKEN }),
 	},
 	{
-		// Folder 520 (TXE-7329): the provider error fixture behind replicate, with provider job accounting on
+		// Folders 520 (TXE-7329) and 582 (TXE-7401): the provider error fixture behind replicate, with provider job accounting on
 		// (provider-error-fixture.config.json turns it off) and request logging on, since the rows wait for the
 		// video sweeper to settle a job and read its cost row back.
 		id: "video-settlement",
 		...providerError,
 		variables: ["videoSettlementFixture", "videoSettlementFixtureUrl"],
-		files: ["520-a-replicate-video-longer-than-the-seconds-asked-for-is-cha.json"],
+		files: ["520-a-replicate-video-longer-than-the-seconds-asked-for-is-cha.json", "582-a-rendered-video-whose-length-cannot-be-measured-is-charged.json"],
 		config: "tests/e2e/api/provider_config/video-settlement.config.json",
 		vars: (p) => ({ videoSettlementFixture: "1", videoSettlementFixtureUrl: `http://127.0.0.1:${p.main}`, setupToken: SETUP_TOKEN }),
 	},

@@ -1367,6 +1367,12 @@ export const PRICING_FIELDS = [
 		requestTypeGroups: ["video"],
 	},
 	{
+		key: "unmeasured_video_seconds",
+		label: "Seconds charged for an unmeasurable video",
+		group: "video",
+		requestTypeGroups: ["video"],
+	},
+	{
 		key: "output_cost_per_second_480p",
 		label: "Output / second (480p, upstream)",
 		group: "video",

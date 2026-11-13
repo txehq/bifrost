@@ -7403,6 +7403,46 @@ func TestCalculateVideoCostDetails_ProviderCostWinsOverCatalogRate(t *testing.T)
 		"a provider that reports its own figure is never overridden by an estimate")
 }
 
+// TestCalculateVideoCostDetails_UnmeasuredVideoIsPricedUpToItsBound (TXE-7401): a job whose
+// rendered length could not be measured is priced on the larger of the seconds asked for and a
+// bound the caller cannot choose. The model's unmeasured_video_seconds (an override) replaces the
+// provider's default, and the bound used is reported. A measured job reports none.
+func TestCalculateVideoCostDetails_UnmeasuredVideoIsPricedUpToItsBound(t *testing.T) {
+	store := newVideoDimensionTestStore(t)
+	dims := func(seconds *int, bound int) VideoPricingDimensions {
+		return VideoPricingDimensions{
+			Model: "sora-2-pro", RequestType: schemas.VideoGenerationRequest, Seconds: seconds,
+			Size: "1920x1080", OutputCount: 1, UnmeasuredDefaultSeconds: bound,
+		}
+	}
+	five, forty := 5, 40
+
+	details := store.CalculateVideoCostDetails(dims(&five, 30), schemas.OpenAI, nil)
+	require.True(t, details.Priced)
+	assert.InDelta(t, 30*0.70, details.Cost, 1e-12, "up to the provider's 30-second default")
+	assert.Equal(t, 30, details.UnmeasuredBoundSeconds)
+
+	details = store.CalculateVideoCostDetails(dims(&forty, 30), schemas.OpenAI, nil)
+	assert.InDelta(t, 40*0.70, details.Cost, 1e-12, "a longer request is charged what it asked for")
+	assert.Equal(t, 30, details.UnmeasuredBoundSeconds)
+
+	details = store.CalculateVideoCostDetails(dims(nil, 30), schemas.OpenAI, nil)
+	assert.InDelta(t, 30*0.70, details.Cost, 1e-12, "a request that named no seconds is charged the bound")
+
+	details = store.CalculateVideoCostDetails(dims(&five, 0), schemas.OpenAI, nil)
+	assert.InDelta(t, 5*0.70, details.Cost, 1e-12, "a measured job keeps its seconds")
+	assert.Zero(t, details.UnmeasuredBoundSeconds)
+
+	// The model's own unmeasured_video_seconds replaces the default, rounded up to whole seconds.
+	banded := sizedVideoPricing()
+	banded.Model, banded.Provider, banded.Mode = "sora-2-pro", "openai", "video_generation"
+	banded.UnmeasuredVideoSeconds = bifrost.Ptr(11.5)
+	store = testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey("sora-2-pro", "openai", "video_generation"): banded})
+	details = store.CalculateVideoCostDetails(dims(&five, 30), schemas.OpenAI, nil)
+	assert.InDelta(t, 12*0.70, details.Cost, 1e-12, "the model's 11.5-second bound, as 12 whole seconds")
+	assert.Equal(t, 12, details.UnmeasuredBoundSeconds)
+}
+
 func TestCalculateVideoCostDetails_UsesResolutionBandedRate(t *testing.T) {
 	store := newVideoDimensionTestStore(t)
 	seconds := 8
@@ -10298,4 +10338,25 @@ func TestComputeTextCost_Above32kTier(t *testing.T) {
 	assert.InDelta(t, 30000*1.1e-06+10000*2.2e-07+100*4.4e-06, computeTextCostTotal(&p, usage, serviceTier{}), 1e-9)
 	short := &schemas.BifrostLLMUsage{PromptTokens: 30000, TotalTokens: 30000}
 	assert.InDelta(t, 30000*8.25e-07, computeTextCostTotal(&p, short, serviceTier{}), 1e-9)
+}
+
+// BenchmarkUnmeasuredVideoSeconds is what TXE-7401 adds to pricing one video job: nothing for a
+// measured job (the common one), and a compare and a pointer for an unmeasurable one.
+func BenchmarkUnmeasuredVideoSeconds(b *testing.B) {
+	five := 5
+	pricing := &configstoreTables.TableModelPricing{UnmeasuredVideoSeconds: bifrost.Ptr(12.0)}
+	for _, tc := range []struct {
+		name string
+		dims VideoPricingDimensions
+	}{
+		{"measured", VideoPricingDimensions{Seconds: &five}},
+		{"unmeasured_with_override", VideoPricingDimensions{Seconds: &five, UnmeasuredDefaultSeconds: 30}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = unmeasuredVideoSeconds(tc.dims, pricing)
+			}
+		})
+	}
 }

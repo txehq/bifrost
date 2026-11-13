@@ -835,7 +835,7 @@ A Replicate prediction reports neither the length of the video it rendered nor a
 
 Bifrost fetches the video only from `replicate.delivery` (or a subdomain of it), where Replicate stores prediction files, or from the origin of the provider's configured `base_url`. A model can answer with any URL, so a video anywhere else is never fetched.
 
-When the length cannot be read, the job is charged the `seconds` its create named, and its log row's `video_debug.accounting.incomplete` is `true`. That happens when the output is not an MP4, the file is past 2 GiB or does not arrive within two minutes, the output has expired, or it is on another host. The same applies to every video provider whose task reports neither a duration nor a cost.
+When the length cannot be read, the job is charged for the larger of the `seconds` its create named and a bound the caller cannot choose: the model's `unmeasured_video_seconds` pricing override, or 30 seconds. That happens when the output is not an MP4, the file is past 2 GiB or does not arrive within two minutes, the output has expired, or it is on another host. A model that sets its own length could otherwise make its output unreadable and pay only for the seconds asked for. The log row records `video_debug.accounting.incomplete` as `true`, the bound as `unmeasured_bound_seconds`, and the `requested_seconds`, so a reprice after the bound is lowered can correct an honest output that merely could not be read. The same applies to every video provider whose task reports neither a duration nor a cost.
 
 ---
 

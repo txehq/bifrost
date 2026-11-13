@@ -1165,10 +1165,12 @@ func TestVideoPoll_MeasuresAnFFmpegMP4(t *testing.T) {
 }
 
 // A job whose rendered length cannot be measured rendered a video all the same, so it is never
-// left uncharged: the seconds its create named are charged as a floor, and the row is marked
-// incomplete, since a model-defined input may have made the video longer. Leaving it unpriced
-// would let a caller pick an output the settler cannot read and pay nothing.
-func TestVideoSweeper_UnmeasurableVideoIsChargedTheRequestedSecondsAsAFloor(t *testing.T) {
+// left uncharged. Leaving it unpriced would let a caller pick an output the settler cannot read and
+// pay nothing. Charging only the seconds the create named would let a caller whose model controls
+// its own length ask for 5 seconds, render more, and make the output unreadable (TXE-7401). It is
+// charged up to Replicate's 30-second bound, which the caller cannot choose, and the row says so:
+// the bound, the seconds charged, the seconds asked for, and incomplete.
+func TestVideoSweeper_UnmeasurableVideoIsChargedUpToTheProvidersBound(t *testing.T) {
 	whole := renderedMP4(t, 12)
 	for name, retriever := range map[string]VideoRetriever{
 		"no downloader":                    &retrieveOnly{resp: silentReplicateResponse("pred_x")},
@@ -1195,8 +1197,15 @@ func TestVideoSweeper_UnmeasurableVideoIsChargedTheRequestedSecondsAsAFloor(t *t
 			entry := store.logs[AccountingLogID(ProviderJobKindVideo, schemas.Replicate, "pred_x")]
 			require.NotNil(t, entry, "the job is charged")
 			require.NotNil(t, entry.Cost)
-			assert.InDelta(t, 5*0.70, *entry.Cost, 1e-12, "at the requested seconds, the floor")
-			assert.True(t, entry.VideoDebugParsed.Accounting.Incomplete, "a length nobody confirmed is marked")
+			assert.InDelta(t, 30*0.70, *entry.Cost, 1e-12, "up to the 30-second bound, not the 5 seconds asked for")
+			accounting := entry.VideoDebugParsed.Accounting
+			assert.True(t, accounting.Incomplete, "a length nobody confirmed is marked")
+			require.NotNil(t, accounting.UnmeasuredBoundSeconds)
+			assert.Equal(t, 30, *accounting.UnmeasuredBoundSeconds, "the row shows the bound it was charged up to")
+			require.NotNil(t, accounting.Seconds)
+			assert.Equal(t, 30, *accounting.Seconds, "the seconds charged")
+			require.NotNil(t, accounting.RequestedSeconds)
+			assert.Equal(t, 5, *accounting.RequestedSeconds, "the seconds asked for, for a reprice")
 			require.Len(t, reporter.reports, 1, "the budget is charged")
 			assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, store.jobs[job.ID].AccountingStatus)
 		})
@@ -1903,7 +1912,8 @@ func TestVideoPoll_NeverFetchesARenderedVideoFromAHostTheCallerChose(t *testing.
 		})
 	}
 
-	// Settled, such a job is charged the 5 seconds asked for, marked incomplete.
+	// Settled, such a job is charged as an unmeasurable one: up to Replicate's 30-second bound, not
+	// the 5 seconds asked for (TXE-7401), marked incomplete.
 	resp := silentReplicateResponse("pred_foreign")
 	resp.Videos[0].URL = bifrost.Ptr("https://videos.attacker.example/out.mp4")
 	fake := &fakeVideoRetriever{resp: resp, video: renderedMP4(t, 12)}
@@ -1913,7 +1923,7 @@ func TestVideoPoll_NeverFetchesARenderedVideoFromAHostTheCallerChose(t *testing.
 	entry := store.logs[AccountingLogID(ProviderJobKindVideo, schemas.Replicate, "pred_foreign")]
 	require.NotNil(t, entry)
 	require.NotNil(t, entry.Cost)
-	assert.InDelta(t, 5*0.70, *entry.Cost, 1e-12, "charged the 5 seconds asked for as a floor")
+	assert.InDelta(t, 30*0.70, *entry.Cost, 1e-12, "charged up to the provider's bound, not the 5 seconds asked for")
 	assert.True(t, entry.VideoDebugParsed.Accounting.Incomplete)
 }
 
@@ -1971,4 +1981,71 @@ func TestVideoSettle_InputVideoRateExemptionSurvivesReprice(t *testing.T) {
 	entry = &logstore.Log{Model: "sora-2-pro", Provider: string(schemas.Runway)}
 	settlement.ApplyDebug(entry)
 	assert.False(t, entry.VideoDebugParsed.Accounting.InputVideoRateExempt)
+}
+
+// TestEverySettledVideoProviderDeclaresAnUnmeasuredBound (TXE-7401): every settled video provider
+// declares the bound an unmeasurable rendered video is charged up to. A provider added to
+// videoProviders without one fails here, so its unreadable outputs cannot fall back to whatever the
+// caller asked for.
+func TestEverySettledVideoProviderDeclaresAnUnmeasuredBound(t *testing.T) {
+	for provider := range videoProviders {
+		bound, ok := unmeasuredVideoBoundSeconds[provider]
+		assert.True(t, ok, "%s is settled but declares no bound for an unmeasurable video", provider)
+		assert.Positive(t, bound, "%s declares a bound that is not positive", provider)
+	}
+	for provider := range unmeasuredVideoBoundSeconds {
+		_, ok := videoProviders[provider]
+		assert.True(t, ok, "%s declares an unmeasured bound but is not settled", provider)
+	}
+}
+
+// A request that already named more seconds than the bound is charged what it asked for, and a
+// custom provider over Replicate takes Replicate's bound (TXE-7401).
+func TestVideoSweeper_UnmeasurableVideoKeepsALongerRequestAndACustomProvidersBaseBound(t *testing.T) {
+	store := newFakeAccountingStore()
+	sweepVideoJob(t, store, replicateVideoJob(t, "pred_long", 40), &retrieveOnly{resp: silentReplicateResponse("pred_long")})
+	entry := store.logs[AccountingLogID(ProviderJobKindVideo, schemas.Replicate, "pred_long")]
+	require.NotNil(t, entry)
+	assert.InDelta(t, 40*0.70, *entry.Cost, 1e-12, "the 40 seconds asked for, above the bound")
+	assert.Equal(t, 40, *entry.VideoDebugParsed.Accounting.Seconds)
+	assert.Equal(t, 30, *entry.VideoDebugParsed.Accounting.UnmeasuredBoundSeconds)
+
+	settler := NewVideoSettler(&originVideoRetrieverForBound{base: schemas.Replicate})
+	assert.Equal(t, 30, settler.unmeasuredBound("my-replicate"))
+	assert.Zero(t, NewVideoSettler(&retrieveOnly{}).unmeasuredBound("unknown"))
+}
+
+// originVideoRetrieverForBound is a retriever that resolves every custom provider to base.
+type originVideoRetrieverForBound struct {
+	retrieveOnly
+	base schemas.ModelProvider
+}
+
+func (r *originVideoRetrieverForBound) BaseProvider(schemas.ModelProvider) schemas.ModelProvider {
+	return r.base
+}
+
+// A settlement charged up to the bound reprices from the seconds asked for and the bound it
+// recorded, not from the seconds charged, so a bound lowered since can lower the bill (TXE-7401).
+func TestVideoRepriceFromLog_UnmeasuredVideoRepricesFromTheRequestAndItsBound(t *testing.T) {
+	entry := func(requested, bound int) *logstore.Log {
+		charged := max(requested, bound)
+		return &logstore.Log{
+			ID: "log_unmeasured", Model: "sora-2-pro", Provider: string(schemas.Replicate),
+			VideoDebugParsed: &schemas.BifrostVideoDebug{Status: schemas.VideoStatusCompleted, Accounting: &schemas.VideoAccountingDebug{
+				Seconds: &charged, Size: "1920x1080", RequestType: schemas.VideoGenerationRequest, Incomplete: true,
+				RequestedSeconds: &requested, UnmeasuredBoundSeconds: &bound,
+			}},
+		}
+	}
+	settler := NewVideoSettler(&retrieveOnly{})
+	repriced, err := settler.RepriceFromLog(entry(5, 30), fakePricing{})
+	require.NoError(t, err)
+	assert.InDelta(t, 30*0.70, repriced.Cost, 1e-12)
+	repriced, err = settler.RepriceFromLog(entry(5, 10), fakePricing{})
+	require.NoError(t, err)
+	assert.InDelta(t, 10*0.70, repriced.Cost, 1e-12, "priced from the 5 asked for and the 10-second bound recorded")
+	repriced, err = settler.RepriceFromLog(entry(40, 30), fakePricing{})
+	require.NoError(t, err)
+	assert.InDelta(t, 40*0.70, repriced.Cost, 1e-12)
 }
