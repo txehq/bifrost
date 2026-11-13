@@ -463,6 +463,32 @@ const fixturePricing = {
 		output_cost_per_image_above_1024_and_1792_pixels_standard_quality: 0.088,
 		output_cost_per_image_above_1792_and_1024_pixels_standard_quality: 0.088,
 	},
+	// TXE-7356: Replicate image models priced by resolution tier (replicate/google/nano-banana-2's live rates) and by
+	// inference steps (Bedrock SDXL 1.0's), on the fixture's poll-origin and stream-origin predictions, so folder 570
+	// can read what a tier and a step count were billed at.
+	"replicate/fixture/poll-origin": {
+		provider: "replicate",
+		mode: "image_generation",
+		output_cost_per_image: 0.067,
+		output_cost_per_image_1K: 0.067,
+		output_cost_per_image_2K: 0.101,
+		output_cost_per_image_4K: 0.151,
+	},
+	"replicate/fixture/stream-origin": {
+		provider: "replicate",
+		mode: "image_generation",
+		output_cost_per_image_above_1024_and_1024_pixels_50_steps: 0.04,
+		output_cost_per_image_above_1024_and_1024_pixels_max_steps: 0.08,
+	},
+	// The same tier rates for an edit, which prices from an image_edit row.
+	"replicate/fixture/poll-public": {
+		provider: "replicate",
+		mode: "image_edit",
+		output_cost_per_image: 0.067,
+		output_cost_per_image_1K: 0.067,
+		output_cost_per_image_2K: 0.101,
+		output_cost_per_image_4K: 0.151,
+	},
 };
 
 // TXE-7349: the fixture-minimax-2k task (folder 521) finishes as a 6 second 2K clip and names no ratio, so the

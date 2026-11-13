@@ -1,5 +1,5 @@
 {
-  "name": "570. An image priced only by its joint size and quality rate is billed at it: dall-e-3 hd and standard, 1024 and 1792, not $0 (image variant pricing)",
+  "name": "570. An image priced only by its joint size and quality rate, its resolution tier or its inference steps is billed at it: dall-e-3 hd and standard, Replicate 4K and 60 steps, not $0 (image variant pricing)",
   "item": [
     {
       "name": "570.1 openai/fixture-dalle-3 POST /v1/images/generations quality hd 1024x1024 is billed $0.088, the hd rate, and the response says hd (image variant pricing)",
@@ -205,6 +205,249 @@
               "    if (tries > 0 && (!row || row.status === 'processing')) { setTimeout(function () { readCost(tries - 1); }, 300); return; }",
               "    pm.test('the log row of this request is readable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(row, 'no log row for ' + requestId).to.be.an('object'); });",
               "    pm.test('the logged cost is the hd 1024x1792 rate, $0.132', function () { pm.expect(row && (row.cost || 0), JSON.stringify(row && { cost: row.cost })).to.be.closeTo(0.132, 1e-9); });",
+              "  });",
+              "}",
+              "readCost(40);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "570.4 replicate/fixture/poll-origin POST /v1/images/generations resolution 4K is sent as 4K and billed $0.151, the 4K tier, and the response says 4K (image variant pricing)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"replicate/fixture/poll-origin\",\n  \"prompt\": \"a lighthouse at dusk\",\n  \"resolution\": \"4K\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the client gets 200 with one image', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.json().data, pm.response.text()).to.be.an('array').with.length(1);",
+              "});",
+              "pm.test('the response carries the resolution the image was priced by', function () {",
+              "  pm.expect(pm.response.json().resolution, pm.response.text()).to.eql(\"4K\");",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('Replicate received resolution 4K', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    var calls = res.json().data[0].calls.filter(function (c) { return /\\/fixture\\/poll-origin\\/predictions$/.test(c.path); });",
+              "    pm.expect(calls.length, JSON.stringify(res.json()).slice(0, 1500)).to.be.above(0);",
+              "    var sent = JSON.parse(calls[calls.length - 1].body);",
+              "    pm.expect(sent.input && sent.input.resolution, calls[calls.length - 1].body).to.eql(\"4K\");",
+              "  });",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var requestId = pm.response.headers.get('x-bifrost-request-id');",
+              "var token = pm.variables.get('setup_token') || 'bifrost-e2e-setup-token';",
+              "function readCost(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?limit=50', method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    var rows = (!err && res.code === 200 && res.json().logs) || [];",
+              "    var row = rows.filter(function (r) { return r.id === requestId; })[0];",
+              "    if (tries > 0 && (!row || row.status === 'processing')) { setTimeout(function () { readCost(tries - 1); }, 300); return; }",
+              "    pm.test('the log row of this request is readable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(row, 'no log row for ' + requestId).to.be.an('object'); });",
+              "    pm.test('the logged cost is the 4K tier rate, $0.151', function () { pm.expect(row && (row.cost || 0), JSON.stringify(row && { cost: row.cost })).to.be.closeTo(0.151, 1e-9); });",
+              "  });",
+              "}",
+              "readCost(40);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "570.5 replicate/fixture/poll-public POST /v1/images/edits JSON resolution 2K is sent as 2K and billed $0.101, the 2K tier (image variant pricing)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"replicate/fixture/poll-public\",\n  \"prompt\": \"make it night\",\n  \"images\": [\n    \"https://media.example/in.png\"\n  ],\n  \"resolution\": \"2K\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the client gets 200 with one image', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.json().data, pm.response.text()).to.be.an('array').with.length(1);",
+              "});",
+              "pm.test('the response carries the resolution the image was priced by', function () {",
+              "  pm.expect(pm.response.json().resolution, pm.response.text()).to.eql(\"2K\");",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('Replicate received resolution 2K', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    var calls = res.json().data[0].calls.filter(function (c) { return /\\/fixture\\/poll-public\\/predictions$/.test(c.path); });",
+              "    pm.expect(calls.length, JSON.stringify(res.json()).slice(0, 1500)).to.be.above(0);",
+              "    var sent = JSON.parse(calls[calls.length - 1].body);",
+              "    pm.expect(sent.input && sent.input.resolution, calls[calls.length - 1].body).to.eql(\"2K\");",
+              "  });",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var requestId = pm.response.headers.get('x-bifrost-request-id');",
+              "var token = pm.variables.get('setup_token') || 'bifrost-e2e-setup-token';",
+              "function readCost(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?limit=50', method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    var rows = (!err && res.code === 200 && res.json().logs) || [];",
+              "    var row = rows.filter(function (r) { return r.id === requestId; })[0];",
+              "    if (tries > 0 && (!row || row.status === 'processing')) { setTimeout(function () { readCost(tries - 1); }, 300); return; }",
+              "    pm.test('the log row of this request is readable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(row, 'no log row for ' + requestId).to.be.an('object'); });",
+              "    pm.test('the logged cost is the 2K tier rate, $0.101', function () { pm.expect(row && (row.cost || 0), JSON.stringify(row && { cost: row.cost })).to.be.closeTo(0.101, 1e-9); });",
+              "  });",
+              "}",
+              "readCost(40);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "570.6 replicate/fixture/stream-origin POST /v1/images/generations 1024x1024 num_inference_steps 60 is billed $0.08, the more-than-50-steps rate (image variant pricing)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"replicate/fixture/stream-origin\",\n  \"prompt\": \"a lighthouse at dusk\",\n  \"size\": \"1024x1024\",\n  \"num_inference_steps\": 60\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the client gets 200 with one image', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.json().data, pm.response.text()).to.be.an('array').with.length(1);",
+              "});",
+              "pm.test('the response carries the num_inference_steps the image was priced by', function () {",
+              "  pm.expect(pm.response.json().num_inference_steps, pm.response.text()).to.eql(60);",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('Replicate received num_inference_steps 60', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    var calls = res.json().data[0].calls.filter(function (c) { return /\\/fixture\\/stream-origin\\/predictions$/.test(c.path); });",
+              "    pm.expect(calls.length, JSON.stringify(res.json()).slice(0, 1500)).to.be.above(0);",
+              "    var sent = JSON.parse(calls[calls.length - 1].body);",
+              "    pm.expect(sent.input && sent.input.num_inference_steps, calls[calls.length - 1].body).to.eql(60);",
+              "  });",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var requestId = pm.response.headers.get('x-bifrost-request-id');",
+              "var token = pm.variables.get('setup_token') || 'bifrost-e2e-setup-token';",
+              "function readCost(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?limit=50', method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    var rows = (!err && res.code === 200 && res.json().logs) || [];",
+              "    var row = rows.filter(function (r) { return r.id === requestId; })[0];",
+              "    if (tries > 0 && (!row || row.status === 'processing')) { setTimeout(function () { readCost(tries - 1); }, 300); return; }",
+              "    pm.test('the log row of this request is readable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(row, 'no log row for ' + requestId).to.be.an('object'); });",
+              "    pm.test('the logged cost is the more-than-50-steps rate, $0.08', function () { pm.expect(row && (row.cost || 0), JSON.stringify(row && { cost: row.cost })).to.be.closeTo(0.08, 1e-9); });",
               "  });",
               "}",
               "readCost(40);"
