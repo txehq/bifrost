@@ -192,6 +192,20 @@ check("every group's checked-in gateway config passes writeCheckedInFixtureConfi
 	fs.rmSync(dir, { recursive: true, force: true });
 });
 
+check("every group's fixtures name an existing script, and a group with several fixtures waits on a distinct port for each", () => {
+	for (const g of GROUPS) {
+		const ports = Object.fromEntries(Object.entries(g.ports).map(([k, v], i) => [k, 30000 + i]));
+		const specs = [g.fixture(ports, "/tmp/app")].flat();
+		assert.ok(specs.length > 0, `${g.id} starts no fixture`);
+		for (const fx of specs) assert.ok(fs.existsSync(path.join(REPO, "tests/e2e/api/runners", fx.script)), `${g.id}: ${fx.script} does not exist`);
+		if (specs.length > 1) {
+			const waited = specs.map((fx) => fx.port);
+			assert.ok(waited.every((p) => Number.isInteger(p)), `${g.id}: a fixture of several names no port to wait on`);
+			assert.strictEqual(new Set(waited).size, waited.length, `${g.id}: two fixtures wait on one port`);
+		}
+	}
+});
+
 check("rowsFromReport: a script that threw outside pm.test fails its row from run.failures; one outside any row is unattributed", () => {
 	const { rows, unattributed } = rowsFromReport({
 		run: {

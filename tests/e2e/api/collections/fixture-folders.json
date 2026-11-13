@@ -2,29 +2,9 @@
   "$comment": "tests/e2e/api/runners/fixture-folders.mjs reads this file. notRun: harness folder files that use a fixture and that no runner group runs yet, each with its reason and ticket. quarantine: rows that a runner group runs and that fail on main, each with its ticket; the check fails when a quarantined row passes, so the entry must be removed in the PR that fixes the row. skippedRows: rows in a folder a group runs that skip themselves there on purpose (a live row in a fixture folder), each with the reason; any other row that no group answers fails the run, since it checked nothing. All three lists only shrink.",
   "notRun": [
     {
-      "file": "186-streamed-retry-after-an-in-stream-error-logs-the-served-atte.json",
-      "ticket": "TXE-7290",
-      "reason": "needs a gateway whose OpenAI base_url points at the Azure stream preamble fixture with max_retries >= 1 and logging on; no config for it is checked in"
-    },
-    {
-      "file": "208-databricks-oauth-m2m-token-mint-failures-and-fallback-gating.json",
-      "ticket": "TXE-7290",
-      "reason": "needs INCLUDE_PREVIEW and a Databricks key whose workspace host is 127.0.0.1:9 beside the token fixture"
-    },
-    {
-      "file": "266-agent-gateway-push-configurations-are-tenant-scoped-and-stre.json",
-      "ticket": "TXE-7290",
-      "reason": "runs against the python-profile gateway with the A2A push fixture that test-provider-harness.sh starts; no fixture config of its own"
-    },
-    {
-      "file": "267-agent-gateway-push-deliveries-identical-appends-are-at-least.json",
-      "ticket": "TXE-7290",
-      "reason": "runs against the python-profile gateway with the A2A push fixture that test-provider-harness.sh starts; no fixture config of its own"
-    },
-    {
       "file": "276-warp-keeps-embedding-spaces-apart-and-counts-what-a-turn-emb.json",
-      "ticket": "TXE-7290",
-      "reason": "needs warp-wire.config.json with a logs store and a vector store"
+      "ticket": "TXE-7322",
+      "reason": "needs a Weaviate vector store (warp-wire.config.json's vector_store, 127.0.0.1:8080, REST and gRPC) beside warp-wire-fixture.mjs; the fixture-folder job is offline and starts no service container, and no loopback stand-in for Weaviate exists. Decision on TXE-7290: kept out of this runner; running it with a Weaviate is TXE-7322"
     }
   ],
   "quarantine": [],

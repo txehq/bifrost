@@ -1,0 +1,35 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "setup_token": "bifrost-e2e-setup-token",
+  "server": {
+    "a2a_allow_private_push_callbacks": true
+  },
+  "client": {
+    "enforce_auth_on_inference": false,
+    "a2a_private_allowlist": [
+      "127.0.0.1"
+    ]
+  },
+  "providers": {
+    "egress_probe": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai"
+      },
+      "network_config": {
+        "base_url": "https://203.0.113.10",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    }
+  }
+}
