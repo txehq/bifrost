@@ -134,9 +134,11 @@ func (provider *VoyageProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	}
 
 	// A prepared reader contains unparsed OpenAI-shaped options. Forwarding it
-	// would bypass dimensions/task/truncation mapping, so fail before any write.
-	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
-		return nil, schemas.NewUnsupportedParameterError("large_payload_optimization", "voyage embeddings require buffered request conversion; request-streaming optimization is not supported")
+	// would bypass dimensions/task/truncation mapping, so fail before any write,
+	// with the large-payload eligibility rule's refusal (TXE-7082): Voyage converts
+	// every request, so a staged body is a 413.
+	if refusal := providerUtils.LargePayloadRequestRefusal(ctx, schemas.Voyage, schemas.EmbeddingRequest); refusal != nil {
+		return nil, refusal
 	}
 
 	var converted *VoyageEmbeddingRequest

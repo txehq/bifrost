@@ -346,6 +346,10 @@ func BenchmarkVoyageQuantizedResponseConversion(b *testing.B) {
 	}
 }
 
+// A staged body above the large-payload threshold holds unparsed OpenAI-shaped options, and
+// forwarding it would bypass the dimensions, task and truncation mapping. Voyage converts every
+// request (its entry in schemas.largePayloadDeclarations, TXE-7082), so the eligibility rule
+// refuses it with a 413 large_payload_not_convertible before any upstream write.
 func TestVoyagePreparedLargePayloadRefused(t *testing.T) {
 	var calls atomic.Int32
 	wireCh := make(chan map[string]interface{}, 1)
@@ -379,9 +383,10 @@ func TestVoyagePreparedLargePayloadRefused(t *testing.T) {
 	got, bfErr := p.Embedding(ctx, schemas.Key{}, &schemas.BifrostEmbeddingRequest{Provider: schemas.Voyage, Model: "voyage-4"})
 	require.Nil(t, got)
 	require.NotNil(t, bfErr)
-	require.Equal(t, 400, *bfErr.StatusCode)
-	require.Equal(t, "large_payload_optimization", bfErr.Error.Param)
-	require.EqualValues(t, "caller_unsupported_parameter", bfErr.ExtraFields.ErrorType)
+	require.Equal(t, 413, *bfErr.StatusCode)
+	require.NotNil(t, bfErr.Error.Code)
+	require.Equal(t, "large_payload_not_convertible", *bfErr.Error.Code)
+	require.Equal(t, schemas.ErrorTypeCallerInvalidRequest, bfErr.ExtraFields.ErrorType)
 	require.EqualValues(t, 0, calls.Load())
 }
 

@@ -401,6 +401,11 @@ before any upstream call. `azure-content-filter` answers with Azure OpenAI's doc
 Rows 336.9 to 336.12 save `client.disable_encrypted_reasoning_retry` through `PUT /api/config` with the
 config's setup token and turn it off again; if the run stops between them, restart the gateway.
 
+Folder 475 (bodies above the 10 MB large-payload threshold are converted like small ones, TXE-7082) uses the
+fixture's `pp_cohere` provider. Its `/pp/cohere/v2/embed` answers with Cohere's `meta.billed_units` and no
+usage object; model `embed-large-response` gets a 13 MB answer. `GET /__wire/summary` is `/__wire` without the
+bodies: each call's path, size and first and last 400 characters, for rows whose request is megabytes long.
+
 Folder 427 (the compat plugin never drops or rewrites a price-affecting field, TXE-7026) runs on the same
 fixture and gateway:
 

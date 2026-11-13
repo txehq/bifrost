@@ -149,7 +149,7 @@ func (provider *XAIProvider) Transcription(ctx *schemas.BifrostContext, key sche
 	if bifrostErr := providerUtils.CheckOperationAllowed(schemas.XAI, provider.customProviderConfig, schemas.TranscriptionRequest); bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	if bifrostErr := refuseLargePayload(ctx, "transcription"); bifrostErr != nil {
+	if bifrostErr := refuseLargePayload(ctx, schemas.TranscriptionRequest); bifrostErr != nil {
 		return nil, bifrostErr
 	}
 	if request == nil {

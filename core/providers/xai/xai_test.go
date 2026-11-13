@@ -530,23 +530,21 @@ func TestXAIImageLargeResponseThreshold(t *testing.T) {
 		Input:    &schemas.ImageGenerationInput{Prompt: "a lighthouse"},
 	}
 
-	t.Run("over the threshold streams xAI's body", func(t *testing.T) {
+	// xAI's image response is converted (its cost becomes usage.vendor_cost), so a body over
+	// the threshold is read and normalised like a small one, never streamed raw (TXE-7082).
+	t.Run("over the threshold is normalised too", func(t *testing.T) {
 		t.Parallel()
 		recorder := &xaiImageRecorder{response: xaiRecordedImageResponse}
 		provider := newXAIImageProvider(t, recorder.serve(t).URL)
 		ctx := xaiImageCtx()
 		ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(64))
+		ctx.SetValue(schemas.BifrostContextKeyLargePayloadEligibility, schemas.DecideLargePayloadEligibility(ctx, schemas.XAI, false, schemas.ImageGenerationRequest, request.Model))
 
 		response, bifrostErr := provider.ImageGeneration(ctx, xaiImageKey, request)
 		require.Nil(t, bifrostErr)
-		require.Nil(t, response.Data, "a large body is streamed, not decoded")
-		require.Equal(t, true, ctx.Value(schemas.BifrostContextKeyLargeResponseMode))
-		reader, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseReader).(io.ReadCloser)
-		require.True(t, ok, "the transport gets a reader over xAI's body")
-		streamed, err := io.ReadAll(reader)
-		require.NoError(t, err)
-		require.NoError(t, reader.Close())
-		require.JSONEq(t, xaiRecordedImageResponse, string(streamed))
+		require.Nil(t, ctx.Value(schemas.BifrostContextKeyLargeResponseReader), "a converted response is not handed to the transport as a raw stream")
+		require.Len(t, response.Data, 2)
+		requireVendorUsage(t, response, 2)
 	})
 
 	t.Run("under the threshold is normalised", func(t *testing.T) {
@@ -652,7 +650,8 @@ func BenchmarkXAIImageEdit(b *testing.B) {
 }
 
 // Large-payload mode streams the caller's multipart body unparsed, which xAI's JSON edit cannot
-// take: the edit is refused with a 400 before any upstream call, not failed on the empty input.
+// take: the edit is refused with the shared 413 before any upstream call, not failed on the
+// empty input.
 func TestXAIImageEditRefusesLargePayloadPassthrough(t *testing.T) {
 	t.Parallel()
 	recorder := &xaiImageRecorder{response: xaiRecordedImageResponse}
@@ -667,8 +666,9 @@ func TestXAIImageEditRefusesLargePayloadPassthrough(t *testing.T) {
 		Model:    "grok-imagine-image-2.0",
 	})
 	require.NotNil(t, bifrostErr)
-	require.Equal(t, schemas.Ptr(http.StatusBadRequest), bifrostErr.StatusCode)
-	require.Contains(t, bifrostErr.Error.Message, "large payload passthrough is not supported for xai image edit")
+	require.Equal(t, schemas.Ptr(http.StatusRequestEntityTooLarge), bifrostErr.StatusCode)
+	require.Equal(t, schemas.ErrorTypeCallerInvalidRequest, bifrostErr.ExtraFields.ErrorType)
+	require.Contains(t, bifrostErr.Error.Message, "image_edit request must be converted")
 	require.Zero(t, recorder.calls())
 }
 

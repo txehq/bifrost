@@ -551,8 +551,10 @@ func TestXAIMediaRefusesModelInExtraParams(t *testing.T) {
 }
 
 // Large-payload mode streams the caller's body upstream unparsed, which no xAI media endpoint
-// can take: each of the three operations is refused with a 400 before any upstream call
-// instead of sending xAI an empty or unconverted body.
+// can take: each of the three operations is refused before any upstream call instead of
+// sending xAI an empty or unconverted body. The refusal is the large-payload eligibility
+// rule's (TXE-7082): xAI converts every request, so a staged body is a 413
+// large_payload_not_convertible at the shared entry point, before xAI's own guard is reached.
 func TestXAIMediaRefusesLargePayloadPassthrough(t *testing.T) {
 	t.Parallel()
 	provider, captured := newMockXAI(t, nil)
@@ -564,9 +566,10 @@ func TestXAIMediaRefusesLargePayloadPassthrough(t *testing.T) {
 	}
 	requireRefused := func(bifrostErr *schemas.BifrostError, operation string) {
 		t.Helper()
-		require.NotNil(t, bifrostErr)
-		require.Equal(t, schemas.Ptr(http.StatusBadRequest), bifrostErr.StatusCode)
-		require.Contains(t, bifrostErr.Error.Message, "large payload passthrough is not supported for xai "+operation)
+		require.NotNil(t, bifrostErr, operation)
+		require.Equal(t, schemas.Ptr(http.StatusRequestEntityTooLarge), bifrostErr.StatusCode, operation)
+		require.NotNil(t, bifrostErr.Error.Code, operation)
+		require.Equal(t, "large_payload_not_convertible", *bifrostErr.Error.Code, operation)
 	}
 
 	// The large-payload hook fills only routing metadata, so the inputs are empty.

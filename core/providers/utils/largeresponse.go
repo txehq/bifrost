@@ -228,6 +228,20 @@ func FinalizeResponseWithLargeDetection(
 		}
 	}
 
+	// A response this attempt must convert is read in full whatever its size: streaming it
+	// raw would hand the caller the vendor's body, with the vendor's usage object, where the
+	// route promises the unified one (schemas.DecideLargePayloadEligibility). The cost is
+	// the body in memory once, as with no threshold configured, and no more than the response
+	// limit (client.max_response_body_size_mb, TXE-7148), as every buffered upstream read.
+	if !schemas.LargePayloadEligibilityFromContext(ctx).RawResponse {
+		bodyBytes, readErr := network.ReadAllBounded(reader)
+		cleanup()
+		if readErr != nil {
+			return nil, false, largeResponseReadError(readErr)
+		}
+		return bodyBytes, false, nil
+	}
+
 	// Known small response — read from stream, return body for normal parsing
 	if contentLength > 0 && int64(contentLength) <= responseThreshold {
 		bodyBytes, readErr := network.ReadAllBounded(reader)
@@ -408,6 +422,11 @@ func wrapStreamingResponseBody(ctx *schemas.BifrostContext, resp *fasthttp.Respo
 func SetupStreamingPassthrough(ctx *schemas.BifrostContext, resp *fasthttp.Response) bool {
 	isLargePayload, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
 	if !isLargePayload {
+		return false
+	}
+	// The vendor's events reach the caller unparsed only when this attempt may skip
+	// conversion; otherwise the provider's own stream handler converts them.
+	if !schemas.LargePayloadEligibilityFromContext(ctx).RawResponse {
 		return false
 	}
 

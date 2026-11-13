@@ -724,6 +724,8 @@ func TestBuildAnthropicResponsesRequestBody_LargePayloadPassthrough(t *testing.T
 	t.Run("returns_nil_when_large_payload_enabled", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(nil, time.Time{})
 		ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+		// The mechanism under test runs only for an attempt the eligibility rule lets skip conversion.
+		ctx.SetValue(schemas.BifrostContextKeyLargePayloadEligibility, schemas.LargePayloadEligibility{RawRequest: true, RawResponse: true})
 		ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, io.NopCloser(strings.NewReader(`{"model":"claude-sonnet-4-5"}`)))
 
 		request := &schemas.BifrostResponsesRequest{

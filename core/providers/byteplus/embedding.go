@@ -128,8 +128,8 @@ func bytePlusMediaURL(media *schemas.EmbeddingMediaPart) string {
 // so each item is sent as its own call (at most bytePlusEmbeddingConcurrency at a time) and the
 // vectors come back in input order with usage summed across calls.
 func (provider *BytePlusProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
-		return nil, providerUtils.NewBifrostBadRequestError("large payload passthrough is not supported for byteplus embeddings")
+	if refusal := providerUtils.LargePayloadRequestRefusal(ctx, schemas.BytePlus, schemas.EmbeddingRequest); refusal != nil {
+		return nil, refusal
 	}
 	// Fork: extra params must not name a model, on the request or on any item. Every
 	// other BytePlus request gets this from the shared extra-params rule where extra

@@ -2135,7 +2135,10 @@ type RequestBodyWithExtraParams interface {
 type RequestBodyConverter func() (RequestBodyWithExtraParams, error)
 
 // IsLargePayloadPassthroughEnabled returns true when large payload mode has already
-// prepared an upstream body reader in context.
+// prepared an upstream body reader in context and this attempt may forward it unparsed.
+// It is false for every attempt the eligibility rule converts, so it cannot detect a staged
+// body that must be refused: a provider that refuses large payloads calls
+// LargePayloadRequestRefusal instead (TXE-7082).
 func IsLargePayloadPassthroughEnabled(ctx context.Context) bool {
 	if ctx == nil {
 		return false
@@ -2145,7 +2148,41 @@ func IsLargePayloadPassthroughEnabled(ctx context.Context) bool {
 		return false
 	}
 	reader, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadReader).(io.Reader)
+	if !ok || reader == nil {
+		return false
+	}
+	// The staged body is streamed as written only for an attempt the eligibility rule
+	// allows (schemas.DecideLargePayloadEligibility): one whose vendor takes the caller's
+	// bytes unchanged. With no stamp, or a stamp that says the request is converted, the
+	// reader is left alone and CheckContextAndGetRequestBody refuses the request.
+	return schemas.LargePayloadEligibilityFromContext(ctx).RawRequest
+}
+
+// largePayloadStaged reports whether a large request body is staged as a stream, whether
+// or not this attempt may forward it.
+func largePayloadStaged(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	if isLargePayload, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); !isLargePayload {
+		return false
+	}
+	reader, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadReader).(io.Reader)
 	return ok && reader != nil
+}
+
+// LargePayloadRequestRefusal returns the error for a staged large request this attempt
+// may not forward unparsed, and nil otherwise. The body was never parsed, so there is no
+// input to convert: the request is refused before anything is written upstream.
+func LargePayloadRequestRefusal(ctx context.Context, provider schemas.ModelProvider, requestType schemas.RequestType) *schemas.BifrostError {
+	if !largePayloadStaged(ctx) {
+		return nil
+	}
+	eligibility := schemas.LargePayloadEligibilityFromContext(ctx)
+	if eligibility.RawRequest {
+		return nil
+	}
+	return schemas.NewLargePayloadNotConvertibleError(provider, requestType, eligibility.Reason)
 }
 
 // ApplyLargePayloadRequestBody applies the request body reader from context to the
@@ -3203,6 +3240,11 @@ func StartScopedPhaseSpan(ctx *schemas.BifrostContext, name string) (schemas.Tra
 func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGetter, requestConverter RequestBodyConverter) ([]byte, *schemas.BifrostError) {
 	if IsLargePayloadPassthroughEnabled(ctx) {
 		return nil, nil
+	}
+	// A staged large body this attempt may not forward: the typed request is empty, so
+	// converting it would send the vendor a body with none of the caller's input.
+	if refusal := LargePayloadRequestRefusal(ctx, "", ""); refusal != nil {
+		return nil, refusal
 	}
 
 	rawBody, ok := CheckAndGetRawRequestBody(ctx, request)
