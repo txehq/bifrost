@@ -8912,23 +8912,46 @@ func TestCalculateVideoCostDetails_UpstreamResolutionBands(t *testing.T) {
 	}
 }
 
-// Only a size the provider reported outranks the requested tier. A requested size can be read
-// for the aspect ratio alone (Veo renders the requested tier), so the tier wins over it, and a
-// size decides only when no tier was asked for.
+// The band is read from a reported size first. When the request named both a size and a tier,
+// the tier decides for a provider that renders the requested tier, and otherwise the dearer of
+// the two bands does, so a cheaper tier the provider never reads cannot lower the price
+// (TXE-7349).
 func TestVideoPricingDimensions_BandSizePrecedence(t *testing.T) {
-	assert.Equal(t, "1920x1080", VideoPricingDimensions{Size: "1920x1080", SizeReported: true, Resolution: "4k"}.bandSize())
-	assert.Equal(t, "4k", VideoPricingDimensions{Size: "1920x1080", Resolution: "4k"}.bandSize())
-	assert.Equal(t, "1920x1080", VideoPricingDimensions{Size: "1920x1080"}.bandSize())
-	assert.Equal(t, "4k", VideoPricingDimensions{Size: "auto", Resolution: "4k"}.bandSize())
-	assert.Equal(t, "2K", VideoPricingDimensions{Extra: map[string]any{"resolution": "2K"}}.bandSize())
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerSecond:      bifrost.Ptr(0.40),
+		OutputCostPerSecond480p:  bifrost.Ptr(0.05),
+		OutputCostPerSecond1080p: bifrost.Ptr(0.20),
+		OutputCostPerSecond4k:    bifrost.Ptr(0.60),
+	}
+	band := func(d VideoPricingDimensions, provider schemas.ModelProvider) string {
+		return d.bandSize(provider, &p, false)
+	}
+
+	// A reported size is what was rendered, whoever the provider.
+	assert.Equal(t, "1920x1080", band(VideoPricingDimensions{Size: "1920x1080", SizeReported: true, Resolution: "4k"}, schemas.Gemini))
+	// Only one of the two named: that one.
+	assert.Equal(t, "1920x1080", band(VideoPricingDimensions{Size: "1920x1080"}, schemas.OpenAI))
+	assert.Equal(t, "4k", band(VideoPricingDimensions{Size: "auto", Resolution: "4k"}, schemas.OpenAI))
+	assert.Equal(t, "2K", band(VideoPricingDimensions{Extra: map[string]any{"resolution": "2K"}}, schemas.OpenAI))
+	// Both named, a provider that renders the requested tier: the tier, cheaper or dearer.
+	assert.Equal(t, "1080p", band(VideoPricingDimensions{Size: "3840x2160", Resolution: "1080p"}, schemas.Gemini))
+	assert.Equal(t, "1080p", band(VideoPricingDimensions{Size: "3840x2160", Resolution: "1080p"}, schemas.Vertex))
+	assert.Equal(t, "4k", band(VideoPricingDimensions{Size: "1920x1080", Resolution: "4k"}, schemas.MiniMax))
+	// Both named, a provider that may ignore the tier: the dearer band. A 480p tier added to a
+	// 1080p request does not buy the 480p rate.
+	assert.Equal(t, "1920x1080", band(VideoPricingDimensions{Size: "1920x1080", Resolution: "480p"}, schemas.OpenAI))
+	assert.Equal(t, "1920x1080", band(VideoPricingDimensions{Size: "1920x1080", Extra: map[string]any{"resolution": "480p"}}, schemas.Runway))
+	assert.Equal(t, "4k", band(VideoPricingDimensions{Size: "854x480", Resolution: "4k"}, schemas.OpenAI))
+
 	assert.Equal(t, "", VideoPricingDimensions{Extra: map[string]any{"resolution": 1080}}.BandResolution(),
 		"a numeric resolution (Runware 3D) names no band")
 
-	// A reported size survives the merge over captured request dimensions.
+	// A reported size survives the merge over captured request dimensions, and the settlement
+	// then records no tier, so a reprice reads the size.
 	captured := VideoPricingDimensions{Size: "3840x2160", Resolution: "4k"}
 	merged := captured.MergedWith(VideoDimensionsFromResponse(&schemas.BifrostVideoGenerationResponse{Size: "1280x720"}))
-	assert.Equal(t, "1280x720", merged.bandSize())
-	assert.Equal(t, "", merged.PricedResolution(), "the settlement records no tier when a size set the band")
+	assert.Equal(t, "1280x720", band(merged, schemas.Gemini))
+	assert.Equal(t, "", merged.PricedResolution())
 	assert.Equal(t, "4k", captured.PricedResolution())
 }
 

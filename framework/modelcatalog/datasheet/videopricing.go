@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/capsohq/bifrost/core/schemas"
+	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
 )
 
 // VideoPricingDimensions is every factor that can move the price of one video job.
@@ -173,7 +174,8 @@ func (s *Store) CalculateVideoCostDetails(dims VideoPricingDimensions, provider 
 	// billed as if they were a per-second generation of the same length.
 	// The audio flag the create captured selects a band's with-audio rate where the model has
 	// one (TXE-7306); an unstated flag takes the provider's audio default.
-	breakdown := computeVideoCost(pricing, nil, dims.Seconds, dims.bandSize(), dims.OutputCount, VideoPricedWithAudio(provider, dims.Audio), serviceTier{})
+	audio := VideoPricedWithAudio(provider, dims.Audio)
+	breakdown := computeVideoCost(pricing, nil, dims.Seconds, dims.bandSize(provider, pricing, audio), dims.OutputCount, audio, serviceTier{})
 	if breakdown == nil || breakdown.TotalCost <= 0 {
 		return VideoCostDetails{}
 	}
@@ -194,28 +196,52 @@ func (d VideoPricingDimensions) BandResolution() string {
 	return ""
 }
 
-// bandSize returns what the rate band is read from: a size the provider reported, else the
-// requested resolution tier, else the requested size. A requested size loses to the tier
-// because a provider may read it for the aspect ratio alone: a Veo request with size
-// 3840x2160 and resolution 1080p renders 1080p.
-func (d VideoPricingDimensions) bandSize() string {
-	if d.SizeReported && videoResolutionBand(d.Size) > 0 {
+// videoProvidersRenderingRequestedTier are the providers whose create converter renders the
+// requested resolution tier even when the request also names a size, with the code that does
+// it. For them the tier is the rendered resolution. A provider is added here only from its
+// converter: a caller-supplied tier that the provider ignores must not choose a cheaper band.
+var videoProvidersRenderingRequestedTier = map[schemas.ModelProvider]string{
+	schemas.Gemini:  "gemini.ToGeminiVideoGenerationRequest reads size only for aspectRatio and sends resolution as parameters.resolution",
+	schemas.Vertex:  "vertex sends Veo through gemini.ToGeminiVideoGenerationRequest",
+	schemas.MiniMax: "minimax video create: a requested resolution replaces the tier derived from size",
+}
+
+// bandSize returns what the rate band is read from (TXE-7349):
+//   - a size the provider reported, which is what it rendered;
+//   - else, when the request named only one of a tier and a size, that one;
+//   - else, when it named both, the tier for a provider that renders the requested tier
+//     (Veo with size 3840x2160 and resolution 1080p renders 1080p), and otherwise whichever
+//     of the two bands costs more. A provider that ignores the tier may render the size, so
+//     a caller cannot lower the price by adding a cheaper tier the provider never reads.
+func (d VideoPricingDimensions) bandSize(provider schemas.ModelProvider, pricing *configstoreTables.TableModelPricing, audio bool) string {
+	sizeBand := videoResolutionBand(d.Size) > 0
+	if d.SizeReported && sizeBand {
 		return d.Size
 	}
-	if resolution := d.BandResolution(); resolution != "" {
-		return resolution
+	tier := d.BandResolution()
+	if tier == "" {
+		return d.Size
+	}
+	if !sizeBand {
+		return tier
+	}
+	if _, ok := videoProvidersRenderingRequestedTier[provider]; ok {
+		return tier
+	}
+	if videoOutputPerSecondRate(pricing, tier, audio) > videoOutputPerSecondRate(pricing, d.Size, audio) {
+		return tier
 	}
 	return d.Size
 }
 
-// PricedResolution returns the resolution tier when it is what selects the rate band, and ""
-// when a size does. The settlement records it, so a reprice, which has no SizeReported, picks
-// the same band: a recorded tier was the band, and an empty one leaves the size to decide.
+// PricedResolution returns the tier the settlement records for a reprice: "" when a reported
+// size set the band, else the requested tier. A reprice has no SizeReported, so recording no
+// tier leaves the size to decide; a recorded tier reruns the same choice bandSize made.
 func (d VideoPricingDimensions) PricedResolution() string {
-	if band := d.bandSize(); band != d.Size {
-		return band
+	if d.SizeReported && videoResolutionBand(d.Size) > 0 {
+		return ""
 	}
-	return ""
+	return d.BandResolution()
 }
 
 // videoClipCount counts the billable clips in outputs, skipping image outputs such as a task's last frame.
