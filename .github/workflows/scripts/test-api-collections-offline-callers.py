@@ -34,8 +34,9 @@ SCHEMA_SYNC = "validate-schema-sync.sh"
 API_ARTIFACTS = "check-api-artifacts.sh"
 SUITES = ("collections/collection-scripts.test.mjs", "runners/newman-exit-when-done.test.mjs")
 REPO = os.path.abspath(os.path.join(WORKFLOWS, "..", ".."))
-# The loop that finds every *.test.mjs under tests/e2e/api, and its exclusion list.
-DISCOVERY = re.compile(r"""find "\$SUITES_DIR" -name '\*\.test\.mjs'""")
+# The loop that finds every *.test.mjs, *.test.js and *.test.cjs under tests/e2e/api (TXE-7371:
+# lib/pricing.test.js ran in no job while it found .mjs only), and its exclusion list.
+DISCOVERY = re.compile(r"""find "\$SUITES_DIR" \\\( -name '\*\.test\.mjs' -o -name '\*\.test\.js' -o -name '\*\.test\.cjs' \\\)""")
 EXCLUDED = re.compile(r"^OFFLINE_EXCLUDED=\(([^)]*)\)", re.M)
 # A direct run of one of the suites, which belongs in SCRIPT alone.
 SUITE_RUN = re.compile(r"\bnode\s+\S*tests/e2e/api/\S+\.test\.mjs")
@@ -58,7 +59,7 @@ def main():
     # a listed set would miss the next one added, which is how 34 runners/lib tests ran in no
     # job. The discovery must stay, and an exclusion must name an existing test and say why.
     if not DISCOVERY.search(script):
-        failures.append(f"{SCRIPT} no longer finds every *.test.mjs under tests/e2e/api; list nothing, find them")
+        failures.append(f"{SCRIPT} no longer finds every *.test.mjs, *.test.js and *.test.cjs under tests/e2e/api; list nothing, find them")
     excluded = EXCLUDED.search(script)
     if not excluded:
         failures.append(f"{SCRIPT} has no OFFLINE_EXCLUDED list")
