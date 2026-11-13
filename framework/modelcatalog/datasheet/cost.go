@@ -1199,6 +1199,13 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 	if pricing.WebSearchCostPerRequest != nil && usage.ToolUsage != nil && usage.ToolUsage.WebSearch != nil {
 		searchCost = float64(usage.ToolUsage.WebSearch.NumRequests) * *pricing.WebSearchCostPerRequest
 	}
+	// Gemini grounding with Google Maps, billed per grounded prompt (fork, TXE-7362); it is a
+	// grounding fee like the search one, so it is reported with it.
+	if pricing.GoogleMapsGroundingCostPerQuery != nil && usage.ToolUsage != nil {
+		if maps, ok := usage.ToolUsage.PerTool[schemas.ToolUsagePerToolGoogleMaps]; ok && maps.NumRequests > 0 {
+			searchCost += float64(maps.NumRequests) * *pricing.GoogleMapsGroundingCostPerQuery
+		}
+	}
 
 	// Data residency (Anthropic inference_geo:"us") scales all token/cache costs
 	// by a flat multiplier; the per-search fee is not a token category, so it is

@@ -520,8 +520,11 @@ type Options struct {
 	// represents it as a tiered object. See Entry.UnmarshalJSON.
 	SearchContextCostPerQuery *float64 `json:"search_context_cost_per_query,omitempty"`
 	// WebSearchCostPerRequest prices each server-side web search call (usage.tool_usage.web_search.num_requests).
-	WebSearchCostPerRequest       *float64 `json:"web_search_cost_per_request,omitempty"`
-	CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
+	WebSearchCostPerRequest *float64 `json:"web_search_cost_per_request,omitempty"`
+	// GoogleMapsGroundingCostPerQuery prices each Gemini prompt grounded with Google Maps
+	// (usage.tool_usage.per_tool.google_maps; fork, TXE-7362).
+	GoogleMapsGroundingCostPerQuery *float64 `json:"google_maps_grounding_cost_per_query,omitempty"`
+	CodeInterpreterCostPerSession   *float64 `json:"code_interpreter_cost_per_session,omitempty"`
 	// Bedrock Guardrails rates, per policy unit (fork, TXE-7365). Upstream publishes them as one
 	// map, guardrail_cost_per_unit, keyed by Bedrock's unit names on bedrock/guardrails;
 	// Entry.UnmarshalJSON spreads it into these fields so each rate syncs, overrides and prices
@@ -1291,9 +1294,11 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		OutputCostPerVideoPerSecondStandard:        entry.OutputCostPerVideoPerSecondStandard,
 		OutputCostPerVideoPerSecondStandardAudio:   entry.OutputCostPerVideoPerSecondStandardAudio,
 
-		SearchContextCostPerQuery:     entry.SearchContextCostPerQuery,
-		WebSearchCostPerRequest:       entry.WebSearchCostPerRequest,
-		CodeInterpreterCostPerSession: entry.CodeInterpreterCostPerSession,
+		SearchContextCostPerQuery: entry.SearchContextCostPerQuery,
+		WebSearchCostPerRequest:   entry.WebSearchCostPerRequest,
+		// Fork, TXE-7362.
+		GoogleMapsGroundingCostPerQuery: entry.GoogleMapsGroundingCostPerQuery,
+		CodeInterpreterCostPerSession:   entry.CodeInterpreterCostPerSession,
 
 		GuardrailCostPerContentPolicyUnit:                  entry.GuardrailCostPerContentPolicyUnit,
 		GuardrailCostPerContentPolicyImageUnit:             entry.GuardrailCostPerContentPolicyImageUnit,
@@ -1569,10 +1574,12 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerVideoPerSecondStandard:        pricing.OutputCostPerVideoPerSecondStandard,
 		OutputCostPerVideoPerSecondStandardAudio:   pricing.OutputCostPerVideoPerSecondStandardAudio,
 
-		SearchContextCostPerQuery:     pricing.SearchContextCostPerQuery,
-		WebSearchCostPerRequest:       pricing.WebSearchCostPerRequest,
-		InputCostPerQuery:             pricing.InputCostPerQuery,
-		CodeInterpreterCostPerSession: pricing.CodeInterpreterCostPerSession,
+		SearchContextCostPerQuery: pricing.SearchContextCostPerQuery,
+		WebSearchCostPerRequest:   pricing.WebSearchCostPerRequest,
+		// Fork, TXE-7362.
+		GoogleMapsGroundingCostPerQuery: pricing.GoogleMapsGroundingCostPerQuery,
+		InputCostPerQuery:               pricing.InputCostPerQuery,
+		CodeInterpreterCostPerSession:   pricing.CodeInterpreterCostPerSession,
 
 		GuardrailCostPerContentPolicyUnit:                  pricing.GuardrailCostPerContentPolicyUnit,
 		GuardrailCostPerContentPolicyImageUnit:             pricing.GuardrailCostPerContentPolicyImageUnit,

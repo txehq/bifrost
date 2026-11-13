@@ -533,6 +533,11 @@ const fixturePricing = {
 		input_cost_per_token: 3e-7, output_cost_per_token: 2.5e-6, input_cost_per_audio_token: 1e-6,
 		cache_read_input_token_cost: 3e-8, cache_read_input_audio_token_cost: 1e-7,
 	},
+	// TXE-7362: gemini-2.5-flash's live token rates and Maps grounding fee, for folder 564's cost row.
+	"pp-maps-grounded": {
+		provider: "gemini", mode: "chat",
+		input_cost_per_token: 3e-7, output_cost_per_token: 2.5e-6, google_maps_grounding_cost_per_query: 0.025,
+	},
 	// TXE-7361: gpt-realtime-mini's live text, audio and cached-audio rates, for folder 563's cost row.
 	"upstream-cached-audio": {
 		provider: "openai", mode: "chat",
@@ -809,8 +814,25 @@ const geminiCachedAudio = {
 	},
 	modelVersion: "pp-cached-audio",
 };
+// A chat answer grounded with Google Maps (folder 564, TXE-7362): the gateway counts one grounded prompt
+// under tool_usage.per_tool.google_maps, however many places it cites.
+const geminiMapsGrounded = {
+	candidates: [
+		{
+			content: { role: "model", parts: [{ text: "Cafe A and Cafe B are open now." }] },
+			finishReason: "STOP",
+			groundingMetadata: {
+				groundingChunks: [{ maps: { placeId: "places/a", text: "Cafe A", title: "Cafe A" } }, { maps: { placeId: "places/b", text: "Cafe B", title: "Cafe B" } }],
+				googleMapsWidgetContextToken: "widgetcontent/fixture",
+			},
+		},
+	],
+	usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 8, totalTokenCount: 20 },
+	modelVersion: "gemini-2.5-flash",
+};
 const geminiAudioFrames = {
 	"pp-cached-audio": [geminiCachedAudio],
+	"pp-maps-grounded": [geminiMapsGrounded],
 	"pp-tts-ok": [geminiSpeechAudioChunk, geminiSpeechFinal],
 	"pp-tts-blocked": [geminiPromptBlocked],
 	"pp-tts-truncated": [geminiSpeechAudioChunk],

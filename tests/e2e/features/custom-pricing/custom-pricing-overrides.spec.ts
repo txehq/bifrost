@@ -579,3 +579,56 @@ test.describe("Custom pricing overrides - cached audio rates", () => {
 		await expect(page.getByTestId("pricing-override-field-input-cache_read_input_audio_token_cost_priority")).toHaveValue("0");
 	});
 });
+
+// TXE-7362: the Google Maps grounding fee is a pricing override field. An override that sets it,
+// with the web search fee as an explicit zero, is saved with both in its patch and reopens with
+// both values.
+test.describe("Custom pricing overrides - Google Maps grounding fee", () => {
+	const name = `e2e-maps-grounding-${Date.now()}`;
+
+	test.afterEach(async ({ request }) => {
+		const res = await request.get("/api/governance/pricing-overrides");
+		if (!res.ok()) return;
+		const body = await res.json();
+		for (const override of body.pricing_overrides ?? []) {
+			if (override.name === name) await request.delete(`/api/governance/pricing-overrides/${override.id}`);
+		}
+	});
+
+	test("saves a Maps grounding fee and an explicit zero web search fee, and reopens with both", async ({ page, request }) => {
+		await page.goto("/workspace/custom-pricing/overrides");
+		await page.getByTestId("pricing-override-create-btn").first().click();
+
+		await page.getByTestId("pricing-override-name-input").fill(name);
+		await page.getByTestId("pricing-override-pattern-input").fill("gemini-2.5-flash");
+		await page.getByTestId("pricing-override-request-types-btn").click();
+		await page.getByTestId("pricing-override-request-type-checkbox-chat_completion").click();
+		await page.keyboard.press("Escape");
+
+		await page.getByTestId("pricing-field-search").fill("Google Maps");
+		await page.getByTestId("pricing-field-activate-google_maps_grounding_cost_per_query").click();
+		await page.getByTestId("pricing-override-field-input-google_maps_grounding_cost_per_query").fill("0.025");
+		await page.getByTestId("pricing-field-search").fill("Web search / request");
+		await page.getByTestId("pricing-field-activate-web_search_cost_per_request").click();
+		await page.getByTestId("pricing-override-field-input-web_search_cost_per_request").fill("0");
+
+		await page.getByTestId("pricing-override-save-btn").click();
+		await expect(page.getByTestId("pricing-override-save-btn")).toBeHidden();
+
+		const res = await request.get("/api/governance/pricing-overrides");
+		expect(res.ok()).toBeTruthy();
+		const saved = ((await res.json()).pricing_overrides ?? []).find((o: { name: string }) => o.name === name);
+		expect(saved, "the override was saved").toBeTruthy();
+		const patch = JSON.parse(saved.pricing_patch);
+		expect(patch.google_maps_grounding_cost_per_query).toBe(0.025);
+		expect(patch.web_search_cost_per_request).toBe(0);
+
+		await page.reload();
+		await page.getByTestId(`pricing-override-actions-btn-${saved.id}`).click();
+		await page.getByTestId(`pricing-override-edit-btn-${saved.id}`).click();
+		await page.getByTestId("pricing-field-search").fill("Google Maps");
+		await expect(page.getByTestId("pricing-override-field-input-google_maps_grounding_cost_per_query")).toHaveValue("0.025");
+		await page.getByTestId("pricing-field-search").fill("Web search / request");
+		await expect(page.getByTestId("pricing-override-field-input-web_search_cost_per_request")).toHaveValue("0");
+	});
+});

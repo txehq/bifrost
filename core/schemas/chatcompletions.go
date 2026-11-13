@@ -2603,6 +2603,10 @@ type ToolUsage struct {
 	PerTool       map[string]ToolRequestUsage `json:"per_tool,omitempty"`       // Call count per vendor tool name, as the vendor reported it
 }
 
+// ToolUsagePerToolGoogleMaps is the ToolUsage.PerTool key for prompts grounded with Google Maps
+// (Gemini), which the cost path bills at google_maps_grounding_cost_per_query (fork, TXE-7362).
+const ToolUsagePerToolGoogleMaps = "google_maps"
+
 // ToolRequestUsage counts billable calls of one server-side tool.
 type ToolRequestUsage struct {
 	NumRequests int `json:"num_requests"`

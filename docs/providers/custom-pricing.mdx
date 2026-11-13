@@ -575,6 +575,7 @@ The seconds a video rate is multiplied by are the ones the provider's finished t
 | Field | Description |
 |-------|-------------|
 | `web_search_cost_per_request` | Cost per server-side web search call, billed from `usage.tool_usage.web_search.num_requests` |
+| `google_maps_grounding_cost_per_query` | Cost per Gemini prompt grounded with Google Maps, billed from `usage.tool_usage.per_tool.google_maps.num_requests` (one per grounded response, as Google bills it) |
 | `input_cost_per_query` | Cost per rerank query. One query covers up to 100 document chunks, so a larger request bills as several. Does not apply to Vertex, which bills content-size-derived ranking units |
 | `code_interpreter_cost_per_session` | Cost per code interpreter session |
 | `guardrail_cost_per_content_policy_unit` | Bedrock Guardrails: cost per content filter policy unit |

@@ -302,10 +302,12 @@ type TableModelPricing struct {
 	OutputCostPerVideoPerSecondStandardAudio   *float64 `gorm:"default:null;column:output_cost_per_video_per_second_standard_audio" json:"output_cost_per_video_per_second_standard_audio,omitempty"`
 
 	// Costs - Other
-	SearchContextCostPerQuery     *float64 `gorm:"default:null;column:search_context_cost_per_query" json:"search_context_cost_per_query,omitempty"`
-	WebSearchCostPerRequest       *float64 `gorm:"default:null;column:web_search_cost_per_request" json:"web_search_cost_per_request,omitempty"`
-	InputCostPerQuery             *float64 `gorm:"default:null;column:input_cost_per_query" json:"input_cost_per_query,omitempty"`
-	CodeInterpreterCostPerSession *float64 `gorm:"default:null;column:code_interpreter_cost_per_session" json:"code_interpreter_cost_per_session,omitempty"`
+	SearchContextCostPerQuery *float64 `gorm:"default:null;column:search_context_cost_per_query" json:"search_context_cost_per_query,omitempty"`
+	WebSearchCostPerRequest   *float64 `gorm:"default:null;column:web_search_cost_per_request" json:"web_search_cost_per_request,omitempty"`
+	// GoogleMapsGroundingCostPerQuery prices each Gemini prompt grounded with Google Maps (fork, TXE-7362).
+	GoogleMapsGroundingCostPerQuery *float64 `gorm:"default:null;column:google_maps_grounding_cost_per_query" json:"google_maps_grounding_cost_per_query,omitempty"`
+	InputCostPerQuery               *float64 `gorm:"default:null;column:input_cost_per_query" json:"input_cost_per_query,omitempty"`
+	CodeInterpreterCostPerSession   *float64 `gorm:"default:null;column:code_interpreter_cost_per_session" json:"code_interpreter_cost_per_session,omitempty"`
 
 	// Bedrock Guardrails rates, per policy unit (fork, TXE-7365).
 	GuardrailCostPerContentPolicyUnit                  *float64 `gorm:"default:null;column:guardrail_cost_per_content_policy_unit" json:"guardrail_cost_per_content_policy_unit,omitempty"`

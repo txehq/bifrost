@@ -3104,6 +3104,10 @@ PricingPatch:
       minimum: 0
       description: Per second of output with generated audio in standard mode.
     # Costs - Other
+    google_maps_grounding_cost_per_query:
+      type: number
+      minimum: 0
+      description: Cost per Gemini prompt grounded with Google Maps, billed from usage.tool_usage.per_tool.google_maps.num_requests.
     web_search_cost_per_request:
       type: number
       minimum: 0

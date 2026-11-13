@@ -675,6 +675,12 @@ export const PRICING_FIELDS = [
 		requestTypeGroups: ["chat", "rerank"],
 	},
 	{
+		key: "google_maps_grounding_cost_per_query",
+		label: "Google Maps grounding / prompt",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
 		key: "input_cost_per_query",
 		label: "Rerank / query",
 		group: "chat",

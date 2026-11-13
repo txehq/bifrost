@@ -1,0 +1,426 @@
+{
+  "name": "564. The override API keeps every google maps grounding rate the datasheet publishes (google maps grounding rate) [SERIAL]",
+  "description": "TXE-7362. Google bills Gemini grounding with Google Maps per grounded prompt, and the datasheet prices it (gemini-2.5-flash: google_maps_grounding_cost_per_query $0.025, on 39 models). The fork counted no Maps-grounded prompts and dropped the rate, so the grounding fee was never billed. 564.0 runs against the fixture only: a Gemini answer grounded with two Maps places reports one grounded prompt under tool_usage.per_tool.google_maps (before the change there was no such count). The remaining rows pin that the override API stores the new rate. The override is VK-scoped and never used for a request.",
+  "item": [
+    {
+      "name": "564.0 a Gemini answer grounded with Google Maps reports one grounded prompt (fixture) - gemini/pp-maps-grounded",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('chat through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var j = pm.response.json();",
+              "var tu = j.tool_usage || (j.usage || {}).tool_usage || {};",
+              "pm.test('tool_usage counts one Maps-grounded prompt for two cited places', function () {",
+              "  pm.expect(((tu.per_tool || {}).google_maps || {}).num_requests, JSON.stringify(j)).to.eql(1);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"gemini/pp-maps-grounded\", \"messages\": [{\"role\": \"user\", \"content\": \"Which cafes are open near me?\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "564.0b the Maps-grounded prompt is billed the grounding fee (fixture) - gemini/pp-maps-grounded",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('mapsCostReq', 'e2e-maps-cost-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('chat through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var reqId = pm.collectionVariables.get('mapsCostReq');",
+              "// 12 prompt x 3e-07 + 8 out x 2.5e-06 + one grounded prompt x 0.025, at gemini-2.5-flash's rates. Before TXE-7362",
+              "// no grounded prompt was counted and the fee was dropped: 0.0000236.",
+              "var want = 0.0250236, old = 0.0000236;",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + reqId + '&limit=1', method: 'GET' }, function (err, res) {",
+              "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+              "    var logRow = rows.filter(function (r) { return r.id === reqId; })[0];",
+              "    if ((!logRow || !(logRow.cost > 0)) && tries > 0) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the call was logged under its request id', function () {",
+              "      pm.expect(logRow, err ? String(err) : res.text()).to.not.equal(undefined);",
+              "    });",
+              "    if (!logRow) { return; }",
+              "    pm.test('the grounded prompt is billed the Maps grounding fee', function () {",
+              "      pm.expect(Math.abs(logRow.cost - want), 'cost ' + logRow.cost + ' vs ' + want + ' (before TXE-7362: ' + old + '); token_usage: ' + JSON.stringify(logRow.token_usage)).to.be.at.most(Math.max(1e-9, want * 1e-6));",
+              "    });",
+              "  });",
+              "}",
+              "read(20);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{mapsCostReq}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"gemini/pp-maps-grounded\", \"messages\": [{\"role\": \"user\", \"content\": \"Which cafes are open near me?\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "564.1 Setup - Create VK for the maps grounding override - openai/override-only",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.unset('mapsRatesVkId');",
+              "pm.request.body.raw = JSON.stringify({",
+              "  name: 'Maps Grounding VK ' + Date.now(),",
+              "  provider_configs: [{ provider: 'openai', weight: 1.0, allowed_models: ['*'], key_ids: ['*'] }]",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Create VK returns 2xx', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "var body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var vk = body && (body.virtual_key || body);",
+              "pm.test('Created VK exposes an id', function () {",
+              "  pm.expect(vk && vk.id, 'id in: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+              "});",
+              "if (vk && vk.id) { pm.collectionVariables.set('mapsRatesVkId', vk.id); }"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "564.2 [EXPECT-201] a VK-scoped override on every google maps grounding rate is stored whole - openai/override-only",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['mapsRatesVkId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "pm.collectionVariables.unset('mapsRatesOverrideId');",
+              "pm.request.body.raw = JSON.stringify({",
+              "  name: 'e2e-maps-grounding-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),",
+              "  // Virtual-key scoped and never used for a request, so nothing in the suite is repriced.",
+              "  scope_kind: 'virtual_key',",
+              "  virtual_key_id: pm.collectionVariables.get('mapsRatesVkId'),",
+              "  match_type: 'exact',",
+              "  pattern: 'gemini-2.5-flash',",
+              "  request_types: ['chat_completion'],",
+              "  patch: {\"google_maps_grounding_cost_per_query\": 1e-06}",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Override on the google maps grounding rate is accepted', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.eql(201);",
+              "});",
+              "var body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var ov = body && (body.pricing_override || body);",
+              "if (ov && ov.id) { pm.collectionVariables.set('mapsRatesOverrideId', ov.id); }",
+              "var expected = {\"google_maps_grounding_cost_per_query\": 1e-06};",
+              "var stored = null;",
+              "try { stored = ov && JSON.parse(ov.pricing_patch); } catch (e) { stored = null; }",
+              "pm.test('the stored patch keeps every google maps grounding rate', function () {",
+              "  pm.expect(stored, 'pricing_patch in: ' + pm.response.text()).to.be.an('object');",
+              "  Object.keys(expected).forEach(function (k) {",
+              "    pm.expect(stored[k], k + ' in ' + JSON.stringify(stored)).to.eql(expected[k]);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides"
+          ]
+        }
+      }
+    },
+    {
+      "name": "564.3 the override reads back with every google maps grounding rate - openai/override-only",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['mapsRatesOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('override read responds', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var id = pm.collectionVariables.get('mapsRatesOverrideId');",
+              "var ov = null;",
+              "((body && body.pricing_overrides) || []).forEach(function (o) { if (o.id === id) { ov = o; } });",
+              "pm.test('the override is listed under its virtual key', function () {",
+              "  pm.expect(ov, 'override ' + id + ' in: ' + pm.response.text()).to.not.equal(null);",
+              "});",
+              "var expected = {\"google_maps_grounding_cost_per_query\": 1e-06};",
+              "var stored = null;",
+              "try { stored = ov && JSON.parse(ov.pricing_patch); } catch (e) { stored = null; }",
+              "pm.test('the stored patch keeps every google maps grounding rate', function () {",
+              "  pm.expect(stored, 'pricing_patch in: ' + pm.response.text()).to.be.an('object');",
+              "  Object.keys(expected).forEach(function (k) {",
+              "    pm.expect(stored[k], k + ' in ' + JSON.stringify(stored)).to.eql(expected[k]);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides?scope_kind=virtual_key&virtual_key_id={{mapsRatesVkId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides"
+          ],
+          "query": [
+            {
+              "key": "scope_kind",
+              "value": "virtual_key"
+            },
+            {
+              "key": "virtual_key_id",
+              "value": "{{mapsRatesVkId}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "564.4 Teardown - Delete the maps grounding override - openai/override-only",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['mapsRatesOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Override deleted', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "pm.collectionVariables.unset('mapsRatesOverrideId');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{mapsRatesOverrideId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides",
+            "{{mapsRatesOverrideId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "564.5 Teardown - Delete VK - openai/override-only",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['mapsRatesVkId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('VK deleted', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "pm.collectionVariables.unset('mapsRatesVkId');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys/{{mapsRatesVkId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{mapsRatesVkId}}"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -497,3 +497,30 @@ func TestGeminiGroundedStreamRoundTripMergesMultiSourceSupports(t *testing.T) {
 			"support %d indices", i)
 	}
 }
+
+// TXE-7362: a response grounded with Google Maps counts one grounded prompt under
+// tool_usage.per_tool.google_maps, which the cost path bills at google_maps_grounding_cost_per_query.
+// Search units, when the same response also ran Google Search, are kept beside it.
+func TestApplyGeminiGroundingUsageCountsMapsGroundedPrompts(t *testing.T) {
+	maps := &GroundingMetadata{GroundingChunks: []*GroundingChunk{
+		{Maps: &GroundingChunkMaps{PlaceID: "places/a", Text: "Cafe A"}},
+		{Maps: &GroundingChunkMaps{PlaceID: "places/b", Text: "Cafe B"}},
+	}}
+	chat := &schemas.BifrostLLMUsage{PromptTokens: 10}
+	applyGeminiSearchQueryChatUsage(chat, maps, "gemini-2.5-flash")
+	require.NotNil(t, chat.ToolUsage)
+	assert.Equal(t, 1, chat.ToolUsage.PerTool[schemas.ToolUsagePerToolGoogleMaps].NumRequests, "billed per grounded prompt, not per place")
+	assert.Nil(t, chat.ToolUsage.WebSearch)
+
+	both := &GroundingMetadata{WebSearchQueries: []string{"coffee near me"}, GoogleMapsWidgetContextToken: "widget/1"}
+	resp := &schemas.ResponsesResponseUsage{InputTokens: 10}
+	applyGeminiSearchQueryResponsesUsage(resp, both, "gemini-2.5-flash")
+	require.NotNil(t, resp.ToolUsage)
+	require.NotNil(t, resp.ToolUsage.WebSearch)
+	assert.Equal(t, 1, resp.ToolUsage.WebSearch.NumRequests)
+	assert.Equal(t, 1, resp.ToolUsage.PerTool[schemas.ToolUsagePerToolGoogleMaps].NumRequests)
+
+	plain := &schemas.BifrostLLMUsage{PromptTokens: 10}
+	applyGeminiSearchQueryChatUsage(plain, &GroundingMetadata{GroundingChunks: []*GroundingChunk{{Web: &GroundingChunkWeb{}}}}, "gemini-2.5-flash")
+	assert.Nil(t, plain.ToolUsage, "a response not grounded with Maps records no Maps prompt")
+}

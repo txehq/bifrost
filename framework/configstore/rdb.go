@@ -3297,6 +3297,7 @@ var pricingSyncUpdateColumns = []string{
 	// Costs - Other
 	"search_context_cost_per_query",
 	"web_search_cost_per_request",
+	"google_maps_grounding_cost_per_query", // fork, TXE-7362
 	"input_cost_per_query",
 	"code_interpreter_cost_per_session",
 	// Bedrock Guardrails, per policy unit (TXE-7365)

@@ -343,7 +343,6 @@ var ignoredUpstreamCostKeys = map[string]string{
 	"citation_cost_per_token":              "TXE-7350: other",
 	"cost_per_second":                      "TXE-7350: other",
 	"explicit_cache_read_input_token_cost": "TXE-7350: other",
-	"google_maps_grounding_cost_per_query": "TXE-7350: other",
 	"input_cost_per_request":               "TXE-7350: other",
 	"input_cost_per_token_cache_hit":       "TXE-7350: other",
 	"ocr_cost_per_credit":                  "TXE-7350: other",

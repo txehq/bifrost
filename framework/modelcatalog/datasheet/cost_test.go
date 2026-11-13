@@ -10397,6 +10397,29 @@ func TestComputeTextCost_CachedAudioTakesTheCachedAudioRate(t *testing.T) {
 	assert.InDelta(t, 100*3e-07+300*5e-06+100*3e-08+500*1.5e-07, batch.TotalCost, 1e-12)
 }
 
+// TXE-7362: gemini-2.5-flash publishes google_maps_grounding_cost_per_query $0.025. A Maps-grounded
+// response was billed its tokens only.
+func TestComputeTextCost_GoogleMapsGroundingFee(t *testing.T) {
+	p := decodeEntry(t, `{
+		"provider": "vertex_ai", "mode": "chat",
+		"input_cost_per_token": 3e-07, "output_cost_per_token": 2.5e-06,
+		"web_search_cost_per_request": 0.035, "google_maps_grounding_cost_per_query": 0.025
+	}`)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100,
+		ToolUsage: &schemas.ToolUsage{
+			WebSearch: &schemas.WebSearchToolUsage{NumRequests: 1},
+			PerTool:   map[string]schemas.ToolRequestUsage{schemas.ToolUsagePerToolGoogleMaps: {NumRequests: 1}},
+		}}
+	got := computeTextCost(&p, usage, serviceTier{})
+	require.NotNil(t, got)
+	assert.InDelta(t, 1000*3e-07+100*2.5e-06+0.035+0.025, got.TotalCost, 1e-12)
+	assert.InDelta(t, 0.06, got.OutputCostDetails.SearchQueriesCost, 1e-12)
+
+	// A row without the Maps rate bills no Maps fee.
+	p.GoogleMapsGroundingCostPerQuery = nil
+	assert.InDelta(t, 1000*3e-07+100*2.5e-06+0.035, computeTextCostTotal(&p, usage, serviceTier{}), 1e-12)
+}
+
 // empiriolabs/glm-5-1 prices above 32k at 1.1e-06 against 8.25e-07.
 func TestComputeTextCost_Above32kTier(t *testing.T) {
 	p := decodeEntry(t, `{
