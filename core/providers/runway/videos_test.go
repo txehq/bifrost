@@ -166,3 +166,35 @@ func TestRunwaySentDurationIsRecorded(t *testing.T) {
 	assert.Equal(t, "2", *got)
 	assert.Nil(t, runwaySentDuration([]byte(`{"model":"x"}`)), "no duration sent, none recorded")
 }
+
+// BenchmarkRunwayVideoCreateBody measures the request-path cost TXE-7297 adds to a Runway
+// video create (AGENTS.md cost rule): "before" builds and encodes the body; "after" also reads
+// back the duration the body sends, which the task records so the job can be priced.
+func BenchmarkRunwayVideoCreateBody(b *testing.B) {
+	req := &schemas.BifrostVideoGenerationRequest{Model: "gen4_turbo", Input: &schemas.VideoGenerationInput{Prompt: "a paper boat drifting down a rain gutter"}}
+	build := func(b *testing.B) []byte {
+		body, err := ToRunwayVideoGenerationRequest(req)
+		if err != nil {
+			b.Fatal(err)
+		}
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			b.Fatal(err)
+		}
+		return encoded
+	}
+	b.Run("before", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = build(b)
+		}
+	})
+	b.Run("after", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if runwaySentDuration(build(b)) == nil {
+				b.Fatal("no duration read back")
+			}
+		}
+	})
+}

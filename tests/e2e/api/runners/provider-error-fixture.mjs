@@ -1100,6 +1100,8 @@ const wireAnswer = (path, body, bytes) => {
 	if (path.startsWith("/pp/storage/")) return storageAnswer(path, body);
 	if (path === "/pp/bfl/v1/flux-3-video") return { status: 200, body: JSON.stringify(bflVideoSubmitAnswer()) };
 	if (path.startsWith("/pp/bfl/v1/")) return { status: 200, body: JSON.stringify(bflSubmitAnswer()) };
+	// Runway's task create (folder 519, TXE-7297): the answer is the task id only, as Runway's is.
+	if (path.startsWith("/pp/runway/v1/") && path.endsWith("_to_video")) return { status: 200, body: JSON.stringify({ id: "runway-fixture-task" }) };
 	if (isOpenAIImagePath(path)) return openAIImageAnswer(body, bytes, path.endsWith("/images/edits"));
 	const geminiImage = geminiImageAnswerFor(path);
 	if (geminiImage) return geminiImage;
