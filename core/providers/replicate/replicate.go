@@ -2741,13 +2741,8 @@ func (provider *ReplicateProvider) VideoRetrieve(ctx *schemas.BifrostContext, ke
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
 	}
 
-	// A custom provider reported the base's name before TXE-7085, so an id it returned then
-	// carries ":replicate"; strip that suffix too rather than send it upstream.
-	suffixOwner := providerName
-	if providerName != schemas.Replicate && strings.HasSuffix(request.ID, ":"+string(schemas.Replicate)) {
-		suffixOwner = schemas.Replicate
-	}
-	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, suffixOwner)
+	// An id a custom provider returned before TXE-7085 carries ":replicate"; that is stripped too.
+	videoID := providerUtils.StripVideoIDProviderSuffixOrBase(request.ID, providerName, schemas.Replicate)
 	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
 	if idErr != nil {
 		return nil, idErr

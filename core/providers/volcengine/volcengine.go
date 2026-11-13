@@ -907,7 +907,7 @@ func (provider *VolcengineProvider) VideoGeneration(ctx *schemas.BifrostContext,
 }
 
 func (provider *VolcengineProvider) VideoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
-	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, provider.GetProviderKey())
+	videoID := providerUtils.StripVideoIDProviderSuffixOrBase(request.ID, provider.GetProviderKey(), provider.providerKey)
 	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
 	if idErr != nil {
 		return nil, idErr
@@ -929,7 +929,7 @@ func (provider *VolcengineProvider) VideoRetrieve(ctx *schemas.BifrostContext, k
 }
 
 func (provider *VolcengineProvider) VideoDownload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
-	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, provider.GetProviderKey())
+	videoID := providerUtils.StripVideoIDProviderSuffixOrBase(request.ID, provider.GetProviderKey(), provider.providerKey)
 	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
 	if idErr != nil {
 		return nil, idErr
@@ -962,7 +962,7 @@ func (provider *VolcengineProvider) VideoDownload(ctx *schemas.BifrostContext, k
 }
 
 func (provider *VolcengineProvider) VideoDelete(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDeleteRequest) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
-	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, provider.GetProviderKey())
+	videoID := providerUtils.StripVideoIDProviderSuffixOrBase(request.ID, provider.GetProviderKey(), provider.providerKey)
 	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
 	if idErr != nil {
 		return nil, idErr

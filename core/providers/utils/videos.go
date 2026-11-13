@@ -20,6 +20,18 @@ func StripVideoIDProviderSuffix(videoID string, provider schemas.ModelProvider) 
 	return stripped
 }
 
+// StripVideoIDProviderSuffixOrBase is StripVideoIDProviderSuffix for a provider whose key may
+// be a custom provider's name on base. Such a provider names itself in the ids it returns
+// since TXE-7085; an id it returned before carries base's suffix, which is stripped instead,
+// so that video stays reachable. For a built-in provider (providerKey == base) it is
+// StripVideoIDProviderSuffix.
+func StripVideoIDProviderSuffixOrBase(videoID string, providerKey, base schemas.ModelProvider) string {
+	if providerKey != base && strings.HasSuffix(videoID, ":"+string(base)) {
+		return StripVideoIDProviderSuffix(videoID, base)
+	}
+	return StripVideoIDProviderSuffix(videoID, providerKey)
+}
+
 // AddVideoIDProviderSuffix ensures a video ID is scoped as "<id>:<provider>".
 func AddVideoIDProviderSuffix(videoID string, provider schemas.ModelProvider) string {
 	if videoID == "" {
