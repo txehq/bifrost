@@ -125,3 +125,8 @@ jobs:
       # them ran on a PR, and the catalog, the navigation and the invariants drifted on main.
       - name: Check the API artifacts agree with the OpenAPI spec
         run: bash .github/workflows/scripts/check-api-artifacts.sh
+
+      # The check itself: a clean tree passes, and each kind of drift fails it by name and
+      # leaves the tree as it was. About a minute; it runs each case's step only.
+      - name: Test the API-artifact check
+        run: bash .github/workflows/scripts/check-api-artifacts.test.sh

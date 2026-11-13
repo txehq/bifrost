@@ -19,7 +19,18 @@
 # with the command that fixes it. It leaves the working tree as it found it.
 #
 # Run from the repository root. Needs python3 with PyYAML (bundle.py) and Go.
+#
+# Usage: check-api-artifacts.sh [--only N[,N...]]   (N: 1-4, the steps above; default all)
 set -uo pipefail
+
+only=",1,2,3,4,"
+if [ "${1:-}" = "--only" ] && [ -n "${2:-}" ]; then
+	only=",$2,"
+elif [ "$#" -gt 0 ]; then
+	echo "usage: $0 [--only N[,N...]]" >&2
+	exit 2
+fi
+step() { [[ "$only" == *",$1,"* ]]; }
 
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
@@ -55,6 +66,7 @@ for path in docs/openapi/openapi.json cli/internal/operations/catalog.gen.go doc
 	fi
 done
 
+if step 1; then
 echo "--- 1. docs/openapi/openapi.json is the bundle of the spec sources"
 if (cd docs/openapi && python3 bundle.py >/dev/null); then
 	regenerated docs/openapi/openapi.json "(cd docs/openapi && python3 bundle.py)" "openapi.json is bundled"
@@ -63,7 +75,9 @@ else
 	failed+=("openapi.json bundle")
 	restore+=(docs/openapi/openapi.json)
 fi
+fi
 
+if step 2; then
 echo "--- 2. the CLI operation catalog is generated from openapi.json"
 if (cd cli/internal/operations && go generate ./...); then
 	regenerated cli/internal/operations/catalog.gen.go "(cd cli/internal/operations && go generate ./...)" "catalog.gen.go is generated"
@@ -72,7 +86,9 @@ else
 	failed+=("catalog generation")
 	restore+=(cli/internal/operations/catalog.gen.go)
 fi
+fi
 
+if step 3; then
 echo "--- 3. docs.json's API navigation lists every documented operation"
 if python3 docs/openapi/sync_mintlify_navigation.py --check; then
 	echo "ok - docs.json navigation"
@@ -80,13 +96,16 @@ else
 	echo "  fix: python3 docs/openapi/sync_mintlify_navigation.py, and commit docs/docs.json"
 	failed+=("docs.json navigation")
 fi
+fi
 
+if step 4; then
 echo "--- 4. the OpenAPI spec's invariants hold"
 if python3 docs/openapi/spec_invariants_test.py; then
 	echo "ok - spec invariants"
 else
 	echo "  fix: the failing invariants above, in docs/openapi"
 	failed+=("spec invariants")
+fi
 fi
 
 if [ "${#failed[@]}" -gt 0 ]; then
