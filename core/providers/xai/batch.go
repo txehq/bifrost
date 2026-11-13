@@ -528,7 +528,9 @@ func (provider *XAIProvider) resourceURL(prefix, escapedID, suffix string, reque
 	}
 	path, isCompleteURL, err := providerUtils.GetResourceRequestPath(prefix+escapedID+suffix, provider.customProviderConfig, escapedID, requestTypes...)
 	if err != nil {
-		return "", providerUtils.NewConfigurationError(err.Error())
+		// The stored override may be a full URL with credentials; name the request type and
+		// the placeholder, not the override (as the openai base does since TXE-7020).
+		return "", providerUtils.NewConfigurationError(providerUtils.ResourcePathErrorForCaller(err))
 	}
 	if isCompleteURL {
 		return path, nil

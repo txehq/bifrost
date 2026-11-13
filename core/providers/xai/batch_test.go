@@ -858,13 +858,19 @@ func TestXAIOverrideWithoutPlaceholderSendsNothing(t *testing.T) {
 	provider := newOverrideTestProvider(stub.serve(t).URL, map[schemas.RequestType]string{
 		schemas.BatchRetrieveRequest: "/api/v2/batches",
 		schemas.FileContentRequest:   "/api/v2/files/content",
+		// A stored full URL may carry credentials; the caller's error must not echo it.
+		schemas.FileDeleteRequest: "https://vendor.example/files?token=s3cret-override",
 	})
 	keys := []schemas.Key{batchKey("k", "sk")}
 	_, retrieveErr := provider.BatchRetrieve(batchTestCtx(), keys, &schemas.BifrostBatchRetrieveRequest{BatchID: "batch_9"})
 	_, contentErr := provider.FileContent(batchTestCtx(), keys, &schemas.BifrostFileContentRequest{FileID: "file_1"})
-	for name, bErr := range map[string]*schemas.BifrostError{"batch_retrieve": retrieveErr, "file_content": contentErr} {
+	_, deleteErr := provider.FileDelete(batchTestCtx(), keys, &schemas.BifrostFileDeleteRequest{FileID: "file_1"})
+	for name, bErr := range map[string]*schemas.BifrostError{"batch_retrieve": retrieveErr, "file_content": contentErr, "file_delete": deleteErr} {
 		if bErr == nil || bErr.Error == nil || !strings.Contains(bErr.Error.Message, "request_path_overrides."+name) {
 			t.Fatalf("%s: error = %+v, want the configuration error naming the override", name, bErr)
+		}
+		if strings.Contains(bErr.Error.Message, "s3cret-override") || strings.Contains(bErr.Error.Message, "/api/v2/") {
+			t.Fatalf("%s: error %q echoes the stored override", name, bErr.Error.Message)
 		}
 	}
 	if n := len(stub.recorded()); n != 0 {
