@@ -60,10 +60,12 @@ export function inspect(executable) {
 
 // candidates lists the newman executables to try, in order.
 export function candidates(root, path, linkDir) {
-  const out = [join(root, TOOLS_DIR, "node_modules", ".bin", "newman")];
+  const out = [resolve(root, TOOLS_DIR, "node_modules", ".bin", "newman")];
   for (const dir of (path || "").split(delimiter).filter(Boolean)) {
     if (linkDir && resolve(dir) === resolve(linkDir)) continue;
-    const exe = join(dir, "newman");
+    // Absolute, so the link made from it resolves from anywhere: a relative PATH entry
+    // (node_modules/.bin) would otherwise be read from the link's own directory, and dangle.
+    const exe = resolve(dir, "newman");
     if (existsSync(exe) && !out.includes(exe)) out.push(exe);
   }
   return out;

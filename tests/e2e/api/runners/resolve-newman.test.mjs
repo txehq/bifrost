@@ -5,7 +5,7 @@
 // run refused itself even with the pinned tools (newman 6.2.2) installed in .github/workflows/tools.
 import assert from "node:assert";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -94,6 +94,16 @@ test("--link-dir links the chosen newman alone and prints the directory", () => 
     assert.strictEqual(out.trim(), linkDir);
     assert.strictEqual(readlinkSync(join(linkDir, "newman")), join(right, "newman"), "a second run replaces the link");
   }
+}));
+
+test("a relative PATH entry is linked by its absolute path, so the link never dangles", () => withRoot((root) => {
+  fakeInstall(join(root, "rel", "lib", "node_modules"), join(root, "rel", "bin"), "6.2.2", "1.23.1");
+  const linkDir = join(root, "tmp", "pinned-newman");
+  const env = { ...process.env, PATH: ["rel/bin", dirname(process.execPath)].join(delimiter) };
+  execFileSync("node", [script, "--root", root, "--link-dir", linkDir], { encoding: "utf8", env, cwd: root });
+  const target = readlinkSync(join(linkDir, "newman"));
+  assert.ok(target.startsWith("/"), `link target ${target} is relative`);
+  assert.ok(existsSync(join(linkDir, "newman")), "the link resolves");
 }));
 
 test("the Makefile takes its pins from the tools package.json and pins newman after nvm", () => {
