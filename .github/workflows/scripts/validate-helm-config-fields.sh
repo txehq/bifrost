@@ -189,6 +189,8 @@ bifrost:
     disableProviderJobAccounting: true
     disablePassthroughSseHeartbeat: true
     disableEncryptedReasoningRetry: true
+    enforceVkObjectOwnership: false
+    a2aStoreRawRequestResponse: true
 VALS
 
 render_config "$TMPDIR/values-client.yaml"
@@ -225,6 +227,9 @@ assert_field_value 'client.hide_deleted_virtual_keys_in_filters' '.client.hide_d
 assert_field_value 'client.disable_provider_job_accounting' '.client.disable_provider_job_accounting' 'true'
 assert_field_value 'client.disable_passthrough_sse_heartbeat' '.client.disable_passthrough_sse_heartbeat' 'true'
 assert_field_value 'client.disable_encrypted_reasoning_retry' '.client.disable_encrypted_reasoning_retry' 'true'
+# enforce_vk_object_ownership defaults to true in the gateway, so false is the value that must reach the file (TXE-7060).
+assert_field_value 'client.enforce_vk_object_ownership' '.client.enforce_vk_object_ownership' 'false'
+assert_field_value 'client.a2a_store_raw_request_response' '.client.a2a_store_raw_request_response' 'true'
 
 # An explicit false renders too, so a values file can state the default (hasKey, not truthiness).
 cat > "$TMPDIR/values-client-switches-off.yaml" << 'VALS'
@@ -235,12 +240,16 @@ bifrost:
     disableProviderJobAccounting: false
     disablePassthroughSseHeartbeat: false
     disableEncryptedReasoningRetry: false
+    enforceVkObjectOwnership: true
+    a2aStoreRawRequestResponse: false
 VALS
 
 render_config "$TMPDIR/values-client-switches-off.yaml"
 assert_field_value 'client.disable_provider_job_accounting (false)' '.client.disable_provider_job_accounting' 'false'
 assert_field_value 'client.disable_passthrough_sse_heartbeat (false)' '.client.disable_passthrough_sse_heartbeat' 'false'
 assert_field_value 'client.disable_encrypted_reasoning_retry (false)' '.client.disable_encrypted_reasoning_retry' 'false'
+assert_field_value 'client.enforce_vk_object_ownership (true)' '.client.enforce_vk_object_ownership' 'true'
+assert_field_value 'client.a2a_store_raw_request_response (false)' '.client.a2a_store_raw_request_response' 'false'
 
 ###############################################################################
 # 1b. Server Config
