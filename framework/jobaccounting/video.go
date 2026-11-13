@@ -1,7 +1,9 @@
 package jobaccounting
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,6 +12,7 @@ import (
 	cstables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/capsohq/bifrost/framework/logstore"
 	"github.com/capsohq/bifrost/framework/modelcatalog"
+	"github.com/capsohq/bifrost/framework/videoduration"
 	"github.com/google/uuid"
 )
 
@@ -90,6 +93,19 @@ type VideoRetriever interface {
 	RetrieveVideo(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostVideoGenerationResponse, error)
 }
 
+// VideoDownloader is implemented by a VideoRetriever that can fetch a finished job's video file:
+// the provider's own buffered download of its first clip, held to the gateway's response body
+// limit (client.max_response_body_size_mb, TXE-7148). An error wrapping
+// ErrVideoDurationUnmeasurable, or a provider call's (NewProviderCallError) that a retrieve would
+// treat as final, is final; any other error is retried a few polls (fork, TXE-7329).
+type VideoDownloader interface {
+	DownloadVideo(ctx context.Context, job *cstables.TableProviderJob) ([]byte, error)
+}
+
+// ErrVideoDurationUnmeasurable marks a VideoDownloader error that no retry can change, such as a
+// file past the response body limit.
+var ErrVideoDurationUnmeasurable = errors.New("rendered video duration is unmeasurable")
+
 // VideoSettler prices provider video jobs. It is the Settler for
 // ProviderJobKindVideo.
 //
@@ -107,6 +123,15 @@ func NewVideoSettler(retriever VideoRetriever) *VideoSettler {
 // from Poll (or an inline caller) into Settle.
 type VideoPayload struct {
 	Response *schemas.BifrostVideoGenerationResponse
+	// RenderedSeconds is the length of the rendered video, measured from its file, for a response
+	// that reports neither a duration nor a cost (RenderedDurationRequired). Settle prices such a
+	// job on it, whatever the create asked for (fork, TXE-7329).
+	RenderedSeconds *int
+	// RenderedUnmeasurable is why the rendered length could not be measured. Settle then charges
+	// the seconds the create named as a floor and marks the row incomplete: the job rendered a
+	// video, so it is never left uncharged, and a cost from an unconfirmed length is known to be
+	// possibly short.
+	RenderedUnmeasurable string
 }
 
 func (s *VideoSettler) Kind() ProviderJobKind { return ProviderJobKindVideo }
@@ -172,12 +197,97 @@ func (s *VideoSettler) Poll(ctx context.Context, job *cstables.TableProviderJob)
 	if !isTerminalVideoStatus(resp.Status) {
 		return &PollResult{Job: latest}, nil
 	}
+	payload := VideoPayload{Response: resp}
+	if RenderedDurationRequired(resp) {
+		seconds, unmeasurable := s.measureRenderedVideo(ctx, job, resp)
+		switch {
+		case unmeasurable == nil:
+			payload.RenderedSeconds = &seconds
+		case errors.Is(unmeasurable, errRenderedDurationRetry) && job.PollAttempts+1 < MaxPollAttempts:
+			return nil, unmeasurable
+		default:
+			payload.RenderedUnmeasurable = unmeasurable.Error()
+		}
+	}
 	return &PollResult{
 		Job:        latest,
 		Terminal:   true,
 		Settleable: true,
-		Payload:    VideoPayload{Response: resp},
+		Payload:    payload,
 	}, nil
+}
+
+// RenderedDurationRequired reports whether a terminal response leaves the job's length to be
+// measured from its file (fork, TXE-7329): the job finished with a video, and the vendor reported
+// neither the video's duration nor a cost. The seconds the create named are then only what was
+// asked for. A vendor's hosted model may define its own length input (Replicate's num_frames or
+// length, sent through extra_params) and render a longer video than that, so the job is priced on
+// the length of the video it rendered.
+func RenderedDurationRequired(resp *schemas.BifrostVideoGenerationResponse) bool {
+	if resp == nil || resp.Status != schemas.VideoStatusCompleted {
+		return false
+	}
+	if resp.ContentFilter != nil && resp.ContentFilter.FilteredCount > 0 {
+		return false
+	}
+	observed := modelcatalog.VideoDimensionsFromResponse(resp)
+	return observed.Seconds == nil && observed.ProviderCost == nil
+}
+
+// errRenderedDurationRetry marks a measurement failure a later poll could get past (a timeout, a
+// reset connection, a vendor 5xx). Poll retries it for as long as the sweeper's poll budget
+// lasts, and on the last attempt settles the job at its floor instead of letting the cap park it
+// uncharged. The budget is the job's whole one: PollAttempts also counts the polls that found it
+// still running, so a smaller budget would be spent before the video was ever finished.
+var errRenderedDurationRetry = errors.New("rendered video duration not measured yet")
+
+// measureRenderedVideo downloads a finished job's video through the provider and reads its
+// length from the MP4 header. It returns the length in whole seconds, or why it could not: an
+// error wrapping errRenderedDurationRetry is worth another poll, any other is final. A response
+// with several clips is measured on its first, the one the provider's download serves: every
+// clip of one job comes from the same input.
+func (s *VideoSettler) measureRenderedVideo(ctx context.Context, job *cstables.TableProviderJob, resp *schemas.BifrostVideoGenerationResponse) (int, error) {
+	downloader, ok := s.retriever.(VideoDownloader)
+	if !ok {
+		return 0, errors.New("the settler cannot download the video")
+	}
+	if modelcatalog.VideoDimensionsFromResponse(resp).OutputCount == 0 {
+		return 0, errors.New("the job returned no video clip")
+	}
+	callCtx, cancel := context.WithTimeout(ctx, defaultProviderPollTimeout)
+	defer cancel()
+	content, err := downloader.DownloadVideo(callCtx, job)
+	if err != nil {
+		// A file past the size limit, or a download the vendor refuses (the output expired, the
+		// key was revoked), is final; anything else may pass on a later poll.
+		if errors.Is(err, ErrVideoDurationUnmeasurable) || videoUnreachableReason(err) != "" {
+			return 0, fmt.Errorf("download video: %w", err)
+		}
+		return 0, fmt.Errorf("%w: download video for job %s: %w", errRenderedDurationRetry, job.ID, err)
+	}
+	duration, err := videoduration.Read(callCtx, bytes.NewReader(content), int64(len(content)))
+	if err != nil {
+		if errors.Is(err, videoduration.ErrUnmeasurable) {
+			return 0, err
+		}
+		return 0, fmt.Errorf("%w: read video duration for job %s: %w", errRenderedDurationRetry, job.ID, err)
+	}
+	if duration.VideoMS <= 0 {
+		return 0, errors.New("the video has no video track")
+	}
+	return RenderedSeconds(duration.VideoMS), nil
+}
+
+// RenderedSeconds is a measured length in milliseconds as the whole seconds a video rate is
+// charged on: rounded to the nearest second, a half second up, and never below one second. A
+// rendered clip runs a frame or two past or short of its nominal length (Wan's 81 frames at 16
+// per second are 5.0625 s), and a rate card's seconds are that nominal length.
+func RenderedSeconds(ms int64) int {
+	seconds := (ms + 500) / 1000
+	if seconds < 1 {
+		return 1
+	}
+	return int(seconds)
 }
 
 // Settle prices one video job from its merged dimensions: what was ordered, as
@@ -195,6 +305,28 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 	dims := captured.MergedWith(modelcatalog.VideoDimensionsFromResponse(resp))
 	if dims.Model == "" && jobReq.FallbackModel != "" {
 		dims.Model = jobReq.FallbackModel
+	}
+	// Fork (TXE-7329): a job whose vendor reported neither a duration nor a cost is priced on the
+	// length of the video it rendered, which Poll measures. When it could not be measured, the
+	// seconds the create named are charged as a floor and the row is marked incomplete. A payload
+	// that never tried settles nothing, so the job is retried.
+	unmeasured := false
+	if RenderedDurationRequired(resp) {
+		switch {
+		case load.RenderedSeconds != nil:
+			// The measured length raises the price and never lowers it below the seconds the
+			// create named. The file is read after the job finished, and some outputs live where
+			// the caller can write (a Veo storageURI in the caller's bucket): a caller who swaps in
+			// a shorter MP4 before the sweeper reads it must not shrink the bill.
+			seconds := *load.RenderedSeconds
+			if dims.Seconds == nil || seconds > *dims.Seconds {
+				dims.Seconds = &seconds
+			}
+		case load.RenderedUnmeasurable != "":
+			unmeasured = true
+		default:
+			return nil, fmt.Errorf("video job %s finished without a reported duration or cost, and its rendered duration was not measured", jobReq.ProviderJobID)
+		}
 	}
 
 	settlement := &Settlement{
@@ -248,7 +380,7 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 	settlement.Priced = true
 	settlement.Complete = true
 	settlement.Cost = details.Cost
-	settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, false)
+	settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, unmeasured)
 	return settlement, nil
 }
 
@@ -420,6 +552,12 @@ func AccountVideoJob(ctx context.Context, stateStore JobStore, logStore Aggregat
 	load, _ := req.Payload.(VideoPayload)
 	if load.Response == nil || !isTerminalVideoStatus(load.Response.Status) {
 		// Still running: nothing to settle, and the sweeper is already scheduled.
+		return nil, nil
+	}
+	if RenderedDurationRequired(load.Response) && load.RenderedSeconds == nil {
+		// Fork (TXE-7329): the job's price waits on its rendered duration, which only the sweeper
+		// measures: the caller's retrieve is not held up by a download of the video, and the job
+		// stays due until the sweeper settles it.
 		return nil, nil
 	}
 

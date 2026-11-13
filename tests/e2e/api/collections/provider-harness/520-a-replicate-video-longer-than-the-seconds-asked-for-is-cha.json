@@ -1,0 +1,238 @@
+{
+  "name": "520. A Replicate video longer than the seconds asked for is charged for the seconds it rendered (rendered video duration)",
+  "description": "Local fixture regression for TXE-7329, no live provider calls. fixture-folders.mjs's video-settlement group starts tests/e2e/api/runners/provider-error-fixture.mjs and a gateway on tests/e2e/api/provider_config/video-settlement.config.json: replicate at the fixture, provider job accounting and request logging on, and the fixture's pricing sheet, which prices fixture/rendered-longer at $0.10 a second. Run with videoSettlementFixture=1 and videoSettlementFixtureUrl; every case is skipped otherwise. 520.2 creates a video asking for 5 seconds. The fixture's prediction succeeds with an output on the provider's own origin that is TXE-6774's 12-second ffmpeg MP4, as a hosted model does when a model-defined input (num_frames, length) overrides the duration, and like Replicate it reports neither the rendered duration nor a cost. 520.3 reads the finished task: the retrieve path leaves the job to the sweeper, which downloads the video. 520.4 waits up to two minutes (the video sweeper ticks every 30 seconds) for the settlement row, read by its id (UUIDv5 of the video namespace and replicate:<video id>), and asserts it cost $1.20 for 12 seconds, not $0.50 for the 5 asked for, with accounting.seconds 12 and not marked incomplete. 520.5 shows the create sent input.duration 5 and the sweeper downloaded the video once. Red before TXE-7329: the row cost $0.50 and the video was never downloaded.",
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (pm.variables.get('videoSettlementFixture') !== '1') {",
+          "  pm.execution.skipRequest();",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "520.1 reset the fixture's record (rendered video duration)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{videoSettlementFixtureUrl}}/__reset",
+          "host": [
+            "{{videoSettlementFixtureUrl}}"
+          ],
+          "path": [
+            "__reset"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture record is reset', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "520.2 replicate/fixture/rendered-longer POST /v1/videos asking for 5 seconds is a queued task (rendered video duration)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"replicate/fixture/rendered-longer\",\n  \"prompt\": \"a paper boat drifting down a rain gutter\",\n  \"seconds\": \"5\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create is a queued task for the fixture prediction', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.include('pred_rendered_longer');",
+              "  pm.variables.set('renderedLongerVideoId', j.id);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "520.3 replicate GET /v1/videos/{id} reads the finished task, which names no duration (rendered video duration)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/{{renderedLongerVideoId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "{{renderedLongerVideoId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the task is completed and reports no seconds of its own', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.status, pm.response.text()).to.eql('completed');",
+              "  pm.expect(j.seconds, pm.response.text()).to.not.be.ok;",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "520.4 the video sweeper settles the job at the 12 seconds it rendered, $1.20, not the 5 asked for (rendered video duration)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "{{setupToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs?providers=replicate&limit=1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "providers",
+              "value": "replicate"
+            },
+            {
+              "key": "limit",
+              "value": "1"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// The settlement row's id is jobaccounting.AccountingLogID: UUIDv5 (SHA-1) of the video namespace and",
+              "// '<provider>:<video id>'.",
+              "var CryptoJS = require('crypto-js');",
+              "function uuidv5(namespace, name) {",
+              "  var hash = CryptoJS.SHA1(CryptoJS.enc.Hex.parse(namespace.replace(/-/g, '')).concat(CryptoJS.enc.Utf8.parse(name))).toString();",
+              "  var b = hash.slice(0, 32).split('');",
+              "  b[12] = '5';",
+              "  b[16] = ((parseInt(b[16], 16) & 0x3) | 0x8).toString(16);",
+              "  var s = b.join('');",
+              "  return s.slice(0, 8) + '-' + s.slice(8, 12) + '-' + s.slice(12, 16) + '-' + s.slice(16, 20) + '-' + s.slice(20, 32);",
+              "}",
+              "var videoId = pm.variables.get('renderedLongerVideoId');",
+              "var logId = uuidv5('b1e0f7c4-2a63-4d18-9f5b-6c0a3d8e41d7', 'replicate:' + videoId);",
+              "var token = pm.variables.get('setupToken');",
+              "var last = '';",
+              "function check(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + logId, method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    if (!err && res.code === 200 && res.json().cost !== undefined) {",
+              "      var j = res.json();",
+              "      pm.test('the job is charged for the 12 seconds it rendered', function () {",
+              "        pm.expect(j.cost, JSON.stringify(j)).to.be.closeTo(1.2, 1e-9);",
+              "        var accounting = j.video_debug && j.video_debug.accounting;",
+              "        pm.expect(accounting, JSON.stringify(j.video_debug)).to.be.ok;",
+              "        pm.expect(accounting.seconds, JSON.stringify(accounting)).to.eql(12);",
+              "        pm.expect(accounting.incomplete, JSON.stringify(accounting)).to.not.be.ok;",
+              "      });",
+              "      return;",
+              "    }",
+              "    last = err ? String(err) : (res.code + ' ' + res.text().slice(0, 300));",
+              "    if (attempt < 120) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+              "    pm.test('the settlement row appeared', function () { pm.expect.fail('settlement row ' + logId + ' for ' + videoId + ' never appeared: ' + last); });",
+              "  });",
+              "}",
+              "check(0);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "520.5 the create sent input.duration 5 and the sweeper downloaded the video once (rendered video duration)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{videoSettlementFixtureUrl}}/__hits",
+          "host": [
+            "{{videoSettlementFixtureUrl}}"
+          ],
+          "path": [
+            "__hits"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var hits = pm.response.json().data[0].hits;",
+              "pm.test('the rendered video was downloaded once', function () {",
+              "  pm.expect(hits['replicate.rendered-longer.download'], JSON.stringify(hits)).to.eql(1);",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('videoSettlementFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the create asked Replicate for 5 seconds', function () {",
+              "    pm.expect(err, String(err)).to.not.be.ok;",
+              "    var creates = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/replicate/v1/models/fixture/rendered-longer/predictions'; });",
+              "    pm.expect(creates.length, JSON.stringify(creates)).to.eql(1);",
+              "    pm.expect(JSON.parse(creates[0].body).input.duration, creates[0].body).to.eql(5);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

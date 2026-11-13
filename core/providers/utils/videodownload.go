@@ -139,7 +139,7 @@ func fetchVendorVideoURL(ctx *schemas.BifrostContext, f VideoContentFetch) (*sch
 				return nil, failed(fmt.Errorf("failed to decode gzip body: %w", readErr), latency)
 			}
 			if int64(len(decoded)) > mediaFetchLimits.maxBytes {
-				return nil, failed(fmt.Errorf("decoded video exceeds %d-byte limit", mediaFetchLimits.maxBytes), latency)
+				return nil, failed(&mediaTooLargeError{message: fmt.Sprintf("decoded video exceeds %d-byte limit", mediaFetchLimits.maxBytes)}, latency)
 			}
 			body = decoded
 		default:

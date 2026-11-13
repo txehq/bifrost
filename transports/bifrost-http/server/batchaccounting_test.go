@@ -2,13 +2,21 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
 	bifrost "github.com/capsohq/bifrost/core"
+	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
+	cstables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/capsohq/bifrost/framework/jobaccounting"
+	"github.com/capsohq/bifrost/framework/modelcatalog"
 	"github.com/capsohq/bifrost/plugins/logging"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/handlers"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
@@ -244,4 +252,96 @@ func newSQLiteConfigStore(t *testing.T) configstore.ConfigStore {
 	}
 	t.Cleanup(func() { _ = store.Close(ctx) })
 	return store
+}
+
+// replicateVideoAccount configures replicate alone, at a loopback stand-in.
+type replicateVideoAccount struct{ baseURL string }
+
+func (a *replicateVideoAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.Replicate}, nil
+}
+
+func (a *replicateVideoAccount) GetKeysForProvider(_ context.Context, _ schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "k", Name: "k", Value: *schemas.NewSecretVar("test-key"), Weight: 1, Models: schemas.WhiteList{"*"}}}, nil
+}
+
+func (a *replicateVideoAccount) GetConfigForProvider(_ schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	return &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{
+		BaseURL: a.baseURL, DefaultRequestTimeoutInSeconds: 5, MaxRetries: 0, AllowPrivateNetwork: true,
+	}}, nil
+}
+
+// TXE-7329: the sweeper's retriever downloads a finished Replicate prediction's video through
+// core, and the settler prices the length it rendered. The prediction was asked for 5 seconds
+// and its output is TXE-6774's 12-second ffmpeg MP4; Replicate's prediction reports neither.
+// A file past client.max_response_body_size_mb (TXE-7148) is final: the job is charged the
+// requested seconds as a floor, and the file is not downloaded again.
+func TestBifrostVideoRetrieverMeasuresTheRenderedReplicateVideo(t *testing.T) {
+	video, err := os.ReadFile("../../../framework/videoduration/testdata/twelve-seconds.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var upstream *httptest.Server
+	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/predictions/pred_long":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"id":"pred_long","status":"succeeded","output":%q}`, upstream.URL+"/files/out.mp4")
+		case "/files/out.mp4":
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write(video)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: &replicateVideoAccount{baseURL: upstream.URL}, Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	retriever := &bifrostVideoRetriever{client: client}
+	var _ jobaccounting.VideoDownloader = retriever
+	seconds := 5
+	params, err := jobaccounting.MarshalVideoDimensions(modelcatalog.VideoPricingDimensions{Model: "wan-video/wan-2.5-t2v", Seconds: &seconds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A job row keeps the video id the create answered, which carries the provider suffix.
+	job := &cstables.TableProviderJob{
+		ID:       cstables.ProviderJobID(cstables.ProviderJobKindVideo, string(schemas.Replicate), "pred_long:replicate"),
+		Kind:     cstables.ProviderJobKindVideo,
+		Provider: string(schemas.Replicate),
+		JobID:    "pred_long:replicate",
+		Params:   params,
+	}
+
+	poll, err := jobaccounting.NewVideoSettler(retriever).Poll(context.Background(), job)
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	payload, _ := poll.Payload.(jobaccounting.VideoPayload)
+	if !poll.Settleable || payload.RenderedSeconds == nil || *payload.RenderedSeconds != 12 {
+		t.Fatalf("poll = %+v, rendered seconds %v; want settleable at the 12 rendered seconds", poll, payload.RenderedSeconds)
+	}
+
+	network.SetMaxResponseBodySizeMB(1)
+	t.Cleanup(func() { network.SetMaxResponseBodySizeMB(0) })
+	video = append(video, make([]byte, 2<<20)...)
+	_, err = retriever.DownloadVideo(context.Background(), job)
+	if !errors.Is(err, jobaccounting.ErrVideoDurationUnmeasurable) {
+		t.Fatalf("a video past the response body limit: got %v, want ErrVideoDurationUnmeasurable", err)
+	}
+	// Final on the first poll: settled at the requested seconds as a floor, not downloaded again.
+	poll, err = jobaccounting.NewVideoSettler(retriever).Poll(context.Background(), job)
+	if err != nil || !poll.Settleable {
+		t.Fatalf("poll past the limit = %+v, %v; want settleable at the floor", poll, err)
+	}
+	if payload, _ := poll.Payload.(jobaccounting.VideoPayload); payload.RenderedSeconds != nil || payload.RenderedUnmeasurable == "" {
+		t.Fatalf("poll past the limit measured %v (%q); want it marked unmeasurable", payload.RenderedSeconds, payload.RenderedUnmeasurable)
+	}
 }

@@ -381,7 +381,7 @@ func openFetch(ctx context.Context, resourceURL string, limits fetchLimits, head
 			if errors.As(err, &tooLarge) && tooLarge.Limit > 0 && tooLarge.Limit < limit {
 				limit = tooLarge.Limit
 			}
-			return nil, redacted, fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, limit)
+			return nil, redacted, mediaTooLarge(redacted, limit)
 		}
 		return nil, redacted, fmt.Errorf("failed to fetch from %q: %w", redacted, sanitizeFetchError(err, redacted))
 	}
@@ -409,7 +409,7 @@ func fetchURLResponse(ctx context.Context, resourceURL string, limits fetchLimit
 	defer resp.Body.Close()
 
 	if n := resp.ContentLength; n > maxBytes {
-		return "", nil, nil, fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, maxBytes)
+		return "", nil, nil, mediaTooLarge(redacted, maxBytes)
 	} else if n >= 0 {
 		// Fork: the body length is known (the fasthttp round tripper always sets it), so read
 		// into one exact-size buffer instead of letting io.ReadAll grow and copy it, which for
@@ -424,11 +424,28 @@ func fetchURLResponse(ctx context.Context, resourceURL string, limits fetchLimit
 			return "", nil, nil, fmt.Errorf("failed to read body from %q: %w", redacted, sanitizeFetchError(err, redacted))
 		}
 		if int64(len(body)) > maxBytes {
-			return "", nil, nil, fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, maxBytes)
+			return "", nil, nil, mediaTooLarge(redacted, maxBytes)
 		}
 	}
 
 	return mediaTypeOf(resp.Header.Get("Content-Type")), body, resp.Header, nil
+}
+
+// ErrMediaTooLarge is what every error for a fetched resource past its size limit matches with
+// errors.Is (fork, TXE-7329): the fetch's own cap or client.max_response_body_size_mb, on the
+// wire or decoded. It tells a final refusal from a fetch worth retrying, such as the video
+// settler's download of a rendered video. It is a sentinel of its own, so no classifier of
+// network.ErrResponseBodyTooLarge sees these errors differently.
+var ErrMediaTooLarge = errors.New("fetched resource exceeds its size limit")
+
+// mediaTooLargeError keeps the message the fetcher has always given and matches ErrMediaTooLarge.
+type mediaTooLargeError struct{ message string }
+
+func (e *mediaTooLargeError) Error() string        { return e.message }
+func (e *mediaTooLargeError) Is(target error) bool { return target == ErrMediaTooLarge }
+
+func mediaTooLarge(redactedURL string, limit int64) error {
+	return &mediaTooLargeError{message: fmt.Sprintf("resource at %q exceeds %d-byte limit", redactedURL, limit)}
 }
 
 // maxFetchBytes caps a fetched resource at 25 MiB.
