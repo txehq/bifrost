@@ -984,6 +984,7 @@ func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.Bi
 			AudioTokens:             u.InputTokensDetails.AudioTokens,
 			ImageTokens:             u.InputTokensDetails.ImageTokens,
 			VideoTokens:             u.InputTokensDetails.VideoTokens, // priced at input_cost_per_video_token (TXE-7357)
+			DocumentTokens:          u.InputTokensDetails.DocumentTokens,
 			CachedReadTokens:        u.InputTokensDetails.CachedReadTokens,
 			CachedWriteTokens:       u.InputTokensDetails.CachedWriteTokens,
 			CachedWriteTokenDetails: u.InputTokensDetails.CachedWriteTokenDetails,

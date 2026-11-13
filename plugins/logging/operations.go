@@ -2188,9 +2188,13 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 			}
 			if usage.PromptTokensDetails != nil {
 				respUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
-					TextTokens:        usage.PromptTokensDetails.TextTokens,
-					AudioTokens:       usage.PromptTokensDetails.AudioTokens,
-					ImageTokens:       usage.PromptTokensDetails.ImageTokens,
+					TextTokens:  usage.PromptTokensDetails.TextTokens,
+					AudioTokens: usage.PromptTokensDetails.AudioTokens,
+					ImageTokens: usage.PromptTokensDetails.ImageTokens,
+					// Video tokens take input_cost_per_video_token (TXE-7357); a recalculation that
+					// dropped them would reprice a video log at the text rate.
+					VideoTokens:       usage.PromptTokensDetails.VideoTokens,
+					DocumentTokens:    usage.PromptTokensDetails.DocumentTokens,
 					CachedReadTokens:  usage.PromptTokensDetails.CachedReadTokens,
 					CachedWriteTokens: usage.PromptTokensDetails.CachedWriteTokens,
 					// The 5m/1h split drives tieredCacheCreationInputAbove1hrTokenRate.

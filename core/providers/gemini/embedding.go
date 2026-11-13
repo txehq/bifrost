@@ -342,6 +342,12 @@ func geminiEmbeddingUsage(geminiResp *GeminiEmbeddingResponse) *schemas.BifrostL
 			total = prompt
 		}
 		usage = &schemas.BifrostLLMUsage{PromptTokens: prompt, TotalTokens: total}
+		// Gemini Embedding 2 splits the prompt by modality; video tokens are priced at their own
+		// rate, so the split is kept rather than folding every token into the text rate (TXE-7357).
+		if len(um.PromptTokensDetails) > 0 {
+			usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
+			applyGeminiPromptModalities(usage.PromptTokensDetails, um.PromptTokensDetails)
+		}
 	} else if hasStats {
 		usage = &schemas.BifrostLLMUsage{PromptTokens: statsTokens, TotalTokens: statsTokens}
 	}

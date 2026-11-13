@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
@@ -359,4 +360,35 @@ func TestRejectNonFloatEncodingFormatIsABadRequest(t *testing.T) {
 	bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
 	require.True(t, ok)
 	require.Equal(t, "encoding_format", bifrostErr.Error.Param)
+}
+
+// TestEmbeddingUsageKeepsPromptModalities pins TXE-7357: Gemini Embedding 2 splits its prompt
+// count by modality, and video tokens are priced at input_cost_per_video_token. The converter
+// kept only the totals, so an embedded video was billed at the text rate. Both the Gemini API
+// shape (embeddings) and Vertex's :embedContent shape (embedding), which vertex.go converts
+// through the same function, keep the split.
+func TestEmbeddingUsageKeepsPromptModalities(t *testing.T) {
+	const usage = `"usageMetadata":{"promptTokenCount":1300,"totalTokenCount":1300,
+		"promptTokensDetails":[{"modality":"TEXT","tokenCount":40},{"modality":"VIDEO","tokenCount":1258},{"modality":"AUDIO","tokenCount":2}]}`
+	for name, body := range map[string]string{
+		"gemini embeddings":   `{"embeddings":[{"values":[0.1,0.2]}],` + usage + `}`,
+		"vertex embedContent": `{"embedding":{"values":[0.1,0.2]},` + usage + `}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var resp GeminiEmbeddingResponse
+			require.NoError(t, sonic.UnmarshalString(body, &resp))
+			out := ToBifrostEmbeddingResponse(&resp, "gemini-embedding-2")
+			require.NotNil(t, out)
+			require.NotNil(t, out.Usage)
+			require.Equal(t, 1300, out.Usage.PromptTokens)
+			require.NotNil(t, out.Usage.PromptTokensDetails, "the modality split was dropped")
+			require.Equal(t, 1258, out.Usage.PromptTokensDetails.VideoTokens)
+			require.Equal(t, 40, out.Usage.PromptTokensDetails.TextTokens)
+			require.Equal(t, 2, out.Usage.PromptTokensDetails.AudioTokens)
+		})
+	}
+	// Without a split the usage keeps no details, as before.
+	var plain GeminiEmbeddingResponse
+	require.NoError(t, sonic.UnmarshalString(`{"embeddings":[{"values":[0.1]}],"usageMetadata":{"promptTokenCount":5,"totalTokenCount":5}}`, &plain))
+	require.Nil(t, ToBifrostEmbeddingResponse(&plain, "gemini-embedding-2").Usage.PromptTokensDetails)
 }

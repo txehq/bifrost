@@ -906,23 +906,7 @@ func ConvertGeminiUsageMetadataToChatUsage(metadata *GenerateContentResponseUsag
 		}
 
 		// Map modality breakdowns from PromptTokensDetails
-		for _, detail := range metadata.PromptTokensDetails {
-			if detail == nil {
-				continue
-			}
-			switch detail.Modality {
-			case ModalityText:
-				usage.PromptTokensDetails.TextTokens = int(detail.TokenCount)
-			case ModalityAudio:
-				usage.PromptTokensDetails.AudioTokens = int(detail.TokenCount)
-			case ModalityImage:
-				usage.PromptTokensDetails.ImageTokens = int(detail.TokenCount)
-			case ModalityVideo:
-				usage.PromptTokensDetails.VideoTokens = int(detail.TokenCount)
-			case ModalityDocument:
-				usage.PromptTokensDetails.DocumentTokens = int(detail.TokenCount)
-			}
-		}
+		applyGeminiPromptModalities(usage.PromptTokensDetails, metadata.PromptTokensDetails)
 
 		// Add cached tokens if present
 		if metadata.CachedContentTokenCount > 0 {
@@ -959,6 +943,30 @@ func ConvertGeminiUsageMetadataToChatUsage(metadata *GenerateContentResponseUsag
 	usage.ToolUsePromptTokensDetails = convertGeminiToolUsePromptTokensDetails(metadata.ToolUsePromptTokensDetails)
 
 	return usage
+}
+
+// applyGeminiPromptModalities copies Gemini's per-modality prompt counts (promptTokensDetails)
+// onto the unified prompt details. Chat and embedding usage both read them through here, so a
+// modality priced at its own rate (video tokens at input_cost_per_video_token, TXE-7357) is
+// reported on every path that reports it.
+func applyGeminiPromptModalities(dst *schemas.ChatPromptTokensDetails, details []*ModalityTokenCount) {
+	for _, detail := range details {
+		if detail == nil {
+			continue
+		}
+		switch detail.Modality {
+		case ModalityText:
+			dst.TextTokens = int(detail.TokenCount)
+		case ModalityAudio:
+			dst.AudioTokens = int(detail.TokenCount)
+		case ModalityImage:
+			dst.ImageTokens = int(detail.TokenCount)
+		case ModalityVideo:
+			dst.VideoTokens = int(detail.TokenCount)
+		case ModalityDocument:
+			dst.DocumentTokens = int(detail.TokenCount)
+		}
+	}
 }
 
 // convertGeminiToolUsePromptTokensDetails maps Gemini's toolUsePromptTokensDetails, the

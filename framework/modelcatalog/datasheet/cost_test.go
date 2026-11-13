@@ -9685,6 +9685,10 @@ func TestCalculateVideoCostDetails_TXE7357(t *testing.T) {
 		{"seedance 720p no video in", schemas.Replicate, VideoPricingDimensions{Model: "bytedance/seedance-2.0", Seconds: bifrost.Ptr(5), Size: "1280x720"}, 5 * 0.18},
 		{"seedance 1080p video in", schemas.Replicate, VideoPricingDimensions{Model: "bytedance/seedance-2.0", Seconds: bifrost.Ptr(4), Size: "1920x1080", VideoInput: &on}, 4 * 0.55},
 		{"seedance 4k video in", schemas.Replicate, VideoPricingDimensions{Model: "bytedance/seedance-2.0", Seconds: bifrost.Ptr(4), Size: "3840x2160", VideoInput: &on}, 4 * 1.25},
+		// A create naming its tier only as resolution (Replicate forwards it as an input) and no
+		// size settles at that tier's video-input rate, not the $0.08/s unbanded one.
+		{"seedance 4k resolution only video in", schemas.Replicate, VideoPricingDimensions{Model: "bytedance/seedance-2.0", Seconds: bifrost.Ptr(5), Extra: map[string]any{"resolution": "4k"}, VideoInput: &on}, 5 * 1.25},
+		{"seedance 4k unified resolution video in", schemas.Replicate, VideoPricingDimensions{Model: "bytedance/seedance-2.0", Seconds: bifrost.Ptr(5), Resolution: "4k", VideoInput: &on}, 5 * 1.25},
 		// BytePlus Seedance bills per output video token and reports them: before TXE-7357 $0.
 		{"byteplus seedance tokens", schemas.BytePlus, VideoPricingDimensions{Model: "dreamina-seedance-2-0-260128", OutputTokens: &tokens, Seconds: bifrost.Ptr(5)}, 108900 * 0.000007},
 		// Gemini Omni reports its video tokens: priced by them rather than by the per-second rate.
