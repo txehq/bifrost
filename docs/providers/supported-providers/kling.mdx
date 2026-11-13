@@ -79,7 +79,7 @@ Bifrost calls `https://api-singapore.klingai.com` by default and sends the Kling
 </Tab>
 </Tabs>
 
-`kling` can be the `base_provider_type` of a custom provider. Such a provider reports its own name (task ids end in `:<its name>`), honours `allowed_requests` (`video_generation`, `video_retrieve`, `video_download`, `video_list`), and `request_path_overrides` replaces a default path.
+`kling` can be the `base_provider_type` of a custom provider. Such a provider reports its own name (task ids end in `:<its name>`), honours `allowed_requests` (`video_generation`, `video_retrieve`, `video_download`, `video_list`), and `request_path_overrides` replaces a default path. Kling queries a task by a query parameter on one fixed path, so a `video_retrieve` or `video_download` override has no id to place: such a provider is refused when it is created or updated.
 
 ## Video generation
 

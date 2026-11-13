@@ -4732,6 +4732,54 @@ func BenchmarkGetResourceRequestPath(b *testing.B) {
 	}
 }
 
+// ResourceRequestURLInContext moves a call the way ResourceRequestURL does, except that a path
+// a passthrough route set in the context still wins, and it reads its request types in order
+// (TXE-7096: a video download whose upstream call is the task query).
+func TestResourceRequestURLInContext(t *testing.T) {
+	const baseURL, defaultPath, id = "https://api.minimax.io", "/v2/query/video_generation/task-7", "task-7"
+	config := func(overrides map[schemas.RequestType]string) *schemas.CustomProviderConfig {
+		return &schemas.CustomProviderConfig{BaseProviderType: schemas.MiniMax, RequestPathOverrides: overrides}
+	}
+	both := config(map[schemas.RequestType]string{
+		schemas.VideoRetrieveRequest: "/gw/retrieve/{video_id}",
+		schemas.VideoDownloadRequest: "https://dl.example.com/gw/download/{video_id}",
+	})
+	retrieveOnly := config(map[schemas.RequestType]string{schemas.VideoRetrieveRequest: "/gw/retrieve/{video_id}"})
+	cases := []struct {
+		name   string
+		ctx    context.Context
+		config *schemas.CustomProviderConfig
+		types  []schemas.RequestType
+		want   string
+	}{
+		{"no override is the default URL", context.Background(), nil, []schemas.RequestType{schemas.VideoRetrieveRequest}, baseURL + defaultPath},
+		{"a path template stays on the base URL", context.Background(), both, []schemas.RequestType{schemas.VideoRetrieveRequest}, baseURL + "/gw/retrieve/task-7"},
+		{"the first request type with an override wins", context.Background(), both, []schemas.RequestType{schemas.VideoDownloadRequest, schemas.VideoRetrieveRequest}, "https://dl.example.com/gw/download/task-7"},
+		{"a blank first type falls through to the next", context.Background(), retrieveOnly, []schemas.RequestType{schemas.VideoDownloadRequest, schemas.VideoRetrieveRequest}, baseURL + "/gw/retrieve/task-7"},
+		{"a context path wins over the template", context.WithValue(context.Background(), schemas.BifrostContextKeyURLPath, "/passthrough/v2/query/video_generation/task-7"), both, []schemas.RequestType{schemas.VideoRetrieveRequest}, baseURL + "/passthrough/v2/query/video_generation/task-7"},
+		{"a context full URL is used as it is", context.WithValue(context.Background(), schemas.BifrostContextKeyURLPath, "https://other.example.com/x"), both, []schemas.RequestType{schemas.VideoRetrieveRequest}, "https://other.example.com/x"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResourceRequestURLInContext(tc.ctx, baseURL, defaultPath, tc.config, id, tc.types...)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err.Error)
+			}
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	// A template without its placeholder is a configuration error that never names the override.
+	broken := config(map[schemas.RequestType]string{schemas.VideoRetrieveRequest: "https://user:secret@gw.example.com/retrieve"})
+	if _, err := ResourceRequestURLInContext(context.Background(), baseURL, defaultPath, broken, id, schemas.VideoRetrieveRequest); err == nil || err.Error == nil {
+		t.Fatal("a template without {video_id} must be refused")
+	} else if strings.Contains(err.Error.Message, "secret") {
+		t.Fatalf("the error names the override: %q", err.Error.Message)
+	}
+}
+
 // BenchmarkResourceRequestURL measures building the URL of a call that names a batch or a file
 // on the anthropic, gemini, modelark, volcengine and replicate bases (TXE-7085). "before" is
 // what those call sites did until now, baseURL + defaultPath whatever the overrides said; the
@@ -4761,6 +4809,56 @@ func BenchmarkResourceRequestURL(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				url, err := ResourceRequestURL(baseURL, defaultPath, bc.config, id, schemas.BatchRetrieveRequest)
+				if err != nil {
+					b.Fatal(err)
+				}
+				sink = url
+			}
+		})
+	}
+	_ = sink
+}
+
+// BenchmarkResourceRequestURLInContext measures building the URL of a model or video call that
+// names one resource on the anthropic, cohere, gemini, xai, volcengine, minimax and replicate
+// bases (TXE-7096), with a real BifrostContext as at the call sites. "before" is what those call
+// sites did until now: baseURL plus GetRequestPath, which read a context path and an override
+// but placed no id in it. The built-in provider without a context path is the common case and
+// must stay as cheap.
+func BenchmarkResourceRequestURLInContext(b *testing.B) {
+	const baseURL, defaultPath, id = "https://api.anthropic.com", "/v1/models/claude-sonnet-4-5", "claude-sonnet-4-5"
+	var sink string
+	for _, bc := range []struct {
+		name        string
+		config      *schemas.CustomProviderConfig
+		contextPath string
+	}{
+		{"built-in provider", nil, ""},
+		{"custom provider without overrides", &schemas.CustomProviderConfig{}, ""},
+		{"override for another request type", &schemas.CustomProviderConfig{RequestPathOverrides: map[schemas.RequestType]string{schemas.ListModelsRequest: "/moved/models"}}, ""},
+		{"path template", &schemas.CustomProviderConfig{RequestPathOverrides: map[schemas.RequestType]string{schemas.ModelRetrieveRequest: "/moved/models/{model}"}}, ""},
+		{"full URL template", &schemas.CustomProviderConfig{RequestPathOverrides: map[schemas.RequestType]string{schemas.ModelRetrieveRequest: "https://vendor.example/moved/models/{model}"}}, ""},
+		{"path in context", nil, "/passthrough/v1/models/claude-sonnet-4-5"},
+	} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if bc.contextPath != "" {
+			ctx.SetValue(schemas.BifrostContextKeyURLPath, bc.contextPath)
+		}
+		b.Run("before/"+bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				path, isCompleteURL := GetRequestPath(ctx, defaultPath, bc.config, schemas.ModelRetrieveRequest)
+				if isCompleteURL {
+					sink = path
+					continue
+				}
+				sink = baseURL + path
+			}
+		})
+		b.Run("after/"+bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				url, err := ResourceRequestURLInContext(ctx, baseURL, defaultPath, bc.config, id, schemas.ModelRetrieveRequest)
 				if err != nil {
 					b.Fatal(err)
 				}

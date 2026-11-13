@@ -25078,6 +25078,10 @@ func TestValidateCustomProvider_ResourcePathOverrides(t *testing.T) {
 	withOverrides := func(base schemas.ModelProvider, overrides map[schemas.RequestType]string) configstore.ProviderConfig {
 		return configstore.ProviderConfig{CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: base, RequestPathOverrides: overrides}}
 	}
+	// deepseek stands for a base that serves none of these calls: it neither templates nor
+	// refuses any of them.
+	require.Empty(t, providerUtils.ResourcePathOverrideBases[schemas.DeepSeek])
+	require.Empty(t, providerUtils.ResourcePathOverrideRefusedBases[schemas.DeepSeek])
 	require.NoError(t, ValidateCustomProvider(withOverrides(schemas.OpenAI, map[schemas.RequestType]string{
 		schemas.BatchCreateRequest:    "/api/paas/v4/batches",
 		schemas.BatchListRequest:      "/api/paas/v4/batches",
@@ -25105,6 +25109,9 @@ func TestValidateCustomProvider_ResourcePathOverrides(t *testing.T) {
 
 		for base := range providerUtils.ResourcePathOverrideBases {
 			err := ValidateCustomProvider(withOverrides(base, map[schemas.RequestType]string{requestType: "/api/v2/batches"}), schemas.ModelProvider("my-"+string(base)))
+			if _, refused := providerUtils.ResourcePathOverrideRefusedBases[base][requestType]; refused {
+				continue // checked with the refused bases below
+			}
 			if !providerUtils.TemplatesResourcePath(base, requestType) {
 				// A base that does not template this call does not read the override as one.
 				require.NoError(t, err, "%s on %s, which does not template it", requestType, base)
@@ -25114,13 +25121,15 @@ func TestValidateCustomProvider_ResourcePathOverrides(t *testing.T) {
 			assert.Contains(t, err.Error(), "request_path_overrides."+string(requestType), "%s on %s", requestType, base)
 		}
 		// A base that serves these calls but cannot move them refuses the override, with or
-		// without the placeholder (TXE-7085); a blank one is no override.
-		for base, reason := range providerUtils.ResourcePathOverrideRefusedBases {
+		// without the placeholder (TXE-7085, TXE-7096); a blank one is no override.
+		for base, reasons := range providerUtils.ResourcePathOverrideRefusedBases {
 			withPlaceholders := "/v1/x/" + strings.Join(providerUtils.ResourcePathPlaceholders[requestType], "/")
-			if !slices.Contains(providerUtils.BatchAndFileResourceRequestTypes, requestType) {
-				// The refusal covers the batch and file calls the base cannot move; it does not
-				// read the other overrides at all.
-				require.NoError(t, ValidateCustomProvider(withOverrides(base, map[schemas.RequestType]string{requestType: withPlaceholders}), schemas.ModelProvider("my-"+string(base))), "%s on %s", requestType, base)
+			reason, refused := reasons[requestType]
+			if !refused {
+				// The refusal covers the calls the base cannot move; an override for another
+				// call is either a template the base checks or one it does not read.
+				err := ValidateCustomProvider(withOverrides(base, map[schemas.RequestType]string{requestType: withPlaceholders}), schemas.ModelProvider("my-"+string(base)))
+				require.NoError(t, err, "%s on %s", requestType, base)
 				continue
 			}
 			for _, override := range []string{"/v1/files", withPlaceholders} {
@@ -25131,7 +25140,7 @@ func TestValidateCustomProvider_ResourcePathOverrides(t *testing.T) {
 			}
 			require.NoError(t, ValidateCustomProvider(withOverrides(base, map[schemas.RequestType]string{requestType: " "}), schemas.ModelProvider("my-"+string(base))), "%s blank on %s", requestType, base)
 		}
-		require.NoError(t, ValidateCustomProvider(withOverrides(schemas.Cohere, map[schemas.RequestType]string{requestType: "/v1/files"}), "my-cohere"), "%s on a base that serves no such call", requestType)
+		require.NoError(t, ValidateCustomProvider(withOverrides(schemas.DeepSeek, map[schemas.RequestType]string{requestType: "/v1/files"}), "my-deepseek"), "%s on a base that serves no such call", requestType)
 		require.NoError(t, ValidateCustomProvider(withOverrides(schemas.OpenAI, map[schemas.RequestType]string{requestType: ""}), "tkp_bigmodel"), "%s blank", requestType)
 	}
 }

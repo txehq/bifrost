@@ -9816,10 +9816,11 @@ func ValidateCustomProvider(config configstore.ProviderConfig, provider schemas.
 	// Where a base templates a call that names a resource by id (a batch, a file, a model, a
 	// video, a container, a stored response; providerUtils.ResourcePathOverrideBases), its
 	// override is a template. One without its placeholder would fail every such request, so
-	// it is refused here, when the provider is written. A base that serves batch and file
-	// calls but cannot move them (providerUtils.ResourcePathOverrideRefusedBases: bedrock)
-	// refuses such an override for the same reason: stored, it would be ignored on every
-	// request. Other overrides are not checked: the base does not read them as templates.
+	// it is refused here, when the provider is written. A base that serves such a call but
+	// cannot move it (providerUtils.ResourcePathOverrideRefusedBases: bedrock's batch and file
+	// calls, gemini's and kling's video queries) refuses its override for the same reason:
+	// stored, it would be ignored on every request. Other overrides are not checked: the base
+	// does not read them as templates.
 	requestTypes := make([]string, 0, len(cpc.RequestPathOverrides))
 	for requestType := range cpc.RequestPathOverrides {
 		requestTypes = append(requestTypes, string(requestType))

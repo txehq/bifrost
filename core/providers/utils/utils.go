@@ -2242,18 +2242,33 @@ func GetResourceRequestPathForIDs(defaultPath string, customProviderConfig *sche
 // The cross-base test (core TestCustomProviderResourcePathOverrides) runs every listed call
 // on every base. It fails when a pair listed here ignores an override or loses the id, and
 // when a base honours a request type that is missing here. A pair a base serves without
-// honouring the override is a recorded gap there, with its ticket.
+// honouring the override is a recorded gap there, with its ticket. TXE-7096 adds the model
+// and video calls the other bases serve; a call a base cannot move is refused instead
+// (ResourcePathOverrideRefusedBases).
 var ResourcePathOverrideBases = map[schemas.ModelProvider][]schemas.RequestType{
-	schemas.OpenAI:    resourceRequestTypes(),
-	schemas.XAI:       BatchAndFileResourceRequestTypes,
-	schemas.Anthropic: BatchAndFileResourceRequestTypes,
+	schemas.OpenAI: resourceRequestTypes(),
+	schemas.XAI: append(slices.Clone(BatchAndFileResourceRequestTypes),
+		schemas.ModelRetrieveRequest, schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest),
+	schemas.Anthropic: append(slices.Clone(BatchAndFileResourceRequestTypes), schemas.ModelRetrieveRequest),
 	schemas.Gemini: {
 		schemas.BatchRetrieveRequest, schemas.BatchCancelRequest, schemas.BatchResultsRequest,
 		schemas.FileRetrieveRequest, schemas.FileDeleteRequest,
+		schemas.ModelRetrieveRequest,
 	},
-	schemas.ModelArk:   {schemas.FileRetrieveRequest, schemas.FileDeleteRequest, schemas.FileContentRequest},
-	schemas.Volcengine: {schemas.FileRetrieveRequest, schemas.FileDeleteRequest, schemas.FileContentRequest},
-	schemas.Replicate:  {schemas.FileRetrieveRequest, schemas.FileDeleteRequest},
+	schemas.Cohere: {schemas.ModelRetrieveRequest},
+	schemas.ModelArk: {
+		schemas.FileRetrieveRequest, schemas.FileDeleteRequest, schemas.FileContentRequest,
+		schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoDeleteRequest,
+	},
+	schemas.Volcengine: {
+		schemas.FileRetrieveRequest, schemas.FileDeleteRequest, schemas.FileContentRequest,
+		schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoDeleteRequest,
+	},
+	schemas.Replicate: {
+		schemas.FileRetrieveRequest, schemas.FileDeleteRequest,
+		schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest,
+	},
+	schemas.MiniMax: {schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoDeleteRequest},
 }
 
 // resourceRequestTypes lists every request type of ResourcePathPlaceholders, sorted.
@@ -2294,33 +2309,63 @@ func ResourceRequestURL(baseURL string, defaultPath string, customProviderConfig
 	return baseURL + path, nil
 }
 
+// ResourceRequestURLInContext is ResourceRequestURL for a call that also reads a path or URL
+// set in ctx (BifrostContextKeyURLPath, as a passthrough route sets it). That path wins, as it
+// does for every other call through GetRequestPath; otherwise the first of requestTypes with a
+// non-blank override supplies the template. A call listing more than one request type reads
+// them in order: a video download whose upstream call is the task query names
+// VideoDownloadRequest, then VideoRetrieveRequest.
+func ResourceRequestURLInContext(ctx context.Context, baseURL string, defaultPath string, customProviderConfig *schemas.CustomProviderConfig, escapedID string, requestTypes ...schemas.RequestType) (string, *schemas.BifrostError) {
+	if ctx != nil {
+		if _, ok := ctx.Value(schemas.BifrostContextKeyURLPath).(string); ok && len(requestTypes) > 0 {
+			path, isCompleteURL := GetRequestPath(ctx, defaultPath, customProviderConfig, requestTypes[0])
+			if isCompleteURL {
+				return path, nil
+			}
+			return baseURL + path, nil
+		}
+	}
+	return ResourceRequestURL(baseURL, defaultPath, customProviderConfig, escapedID, requestTypes...)
+}
+
 // BatchAndFileResourceRequestTypes are the request types of ResourcePathPlaceholders that
 // name a batch or a file by id: the calls every base that serves batches or files templates
-// (TXE-7084, TXE-7085), and the ones a base in ResourcePathOverrideRefusedBases refuses.
+// (TXE-7084, TXE-7085), and the ones bedrock refuses (ResourcePathOverrideRefusedBases).
 var BatchAndFileResourceRequestTypes = []schemas.RequestType{
 	schemas.BatchRetrieveRequest, schemas.BatchCancelRequest, schemas.BatchResultsRequest,
 	schemas.FileRetrieveRequest, schemas.FileDeleteRequest, schemas.FileContentRequest,
 }
 
-// ResourcePathOverrideRefusedBases are the base types that serve calls naming a batch or a
-// file by id but cannot move them with a path template, each with the reason. A custom
-// provider on one of them is refused when it is written with an override for such a call
-// (ResourcePathOverrideRefusal), so the override is never stored and silently ignored. The
-// cross-base test checks that such a base sends no call to an override's path.
-var ResourcePathOverrideRefusedBases = map[schemas.ModelProvider]string{
-	schemas.Bedrock: "its batch and file ids are job ARNs and S3 URIs and its calls go to signed AWS endpoints, so there is no path on the provider's base URL for a template to replace",
+// ResourcePathOverrideRefusedBases are the calls naming a resource by id that a base serves
+// but cannot move with a path template, by base and request type, each with the reason. A
+// custom provider on that base is refused when it is written with an override for such a
+// call (ResourcePathOverrideRefusal), so the override is never stored and silently ignored.
+// The cross-base test checks that such a call sends nothing to an override's path, and that
+// no pair is both refused here and templated (ResourcePathOverrideBases).
+var ResourcePathOverrideRefusedBases = map[schemas.ModelProvider]map[schemas.RequestType]string{
+	schemas.Bedrock: refuseEach(BatchAndFileResourceRequestTypes,
+		"its batch and file ids are job ARNs and S3 URIs and its calls go to signed AWS endpoints, so there is no path on the provider's base URL for a template to replace"),
+	schemas.Gemini: refuseEach([]schemas.RequestType{schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest},
+		"a Gemini video id names either a long-running operation (operations/{name} or models/{model}/operations/{name}) or an Interactions task (interactions/{id}), two APIs with different paths, so one {video_id} template cannot place both"),
+	schemas.Kling: refuseEach([]schemas.RequestType{schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest},
+		"Kling queries a task by its task_ids or external_task_ids query parameter on one fixed path and answers a list, so there is no id in a path for a template to place"),
+}
+
+// refuseEach maps every request type to the same refusal reason.
+func refuseEach(requestTypes []schemas.RequestType, reason string) map[schemas.RequestType]string {
+	refused := make(map[schemas.RequestType]string, len(requestTypes))
+	for _, requestType := range requestTypes {
+		refused[requestType] = reason
+	}
+	return refused
 }
 
 // ResourcePathOverrideRefusal is the error for a request_path_overrides entry that base
-// cannot honour: a non-blank override, for a batch or file request type
-// (BatchAndFileResourceRequestTypes), on a base in ResourcePathOverrideRefusedBases.
-// Everything else returns nil.
+// cannot honour: a non-blank override for a request type ResourcePathOverrideRefusedBases
+// lists under that base. Everything else returns nil.
 func ResourcePathOverrideRefusal(base schemas.ModelProvider, requestType schemas.RequestType, override string) error {
-	reason, refused := ResourcePathOverrideRefusedBases[base]
+	reason, refused := ResourcePathOverrideRefusedBases[base][requestType]
 	if !refused || strings.TrimSpace(override) == "" {
-		return nil
-	}
-	if !slices.Contains(BatchAndFileResourceRequestTypes, requestType) {
 		return nil
 	}
 	return fmt.Errorf("request_path_overrides.%s is not supported on the %s base: %s", requestType, base, reason)

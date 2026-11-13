@@ -2735,7 +2735,13 @@ func (provider *ReplicateProvider) VideoRetrieve(ctx *schemas.BifrostContext, ke
 	if err := providerUtils.CheckOperationAllowed(schemas.Replicate, provider.customProviderConfig, schemas.VideoRetrieveRequest); err != nil {
 		return nil, err
 	}
+	return provider.retrievePrediction(ctx, key, request, schemas.VideoRetrieveRequest)
+}
 
+// retrievePrediction is the prediction query behind VideoRetrieve and VideoDownload.
+// requestTypes name the request_path_overrides entries it reads, in order: a download's query
+// is its upstream call, so it reads video_download first, then video_retrieve.
+func (provider *ReplicateProvider) retrievePrediction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest, requestTypes ...schemas.RequestType) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 	if request.ID == "" {
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
@@ -2748,7 +2754,10 @@ func (provider *ReplicateProvider) VideoRetrieve(ctx *schemas.BifrostContext, ke
 		return nil, idErr
 	}
 	// Build URL to fetch the prediction by ID.
-	predictionURL := provider.buildRequestURL(ctx, "/v1/predictions/"+escapedVideoID, schemas.VideoRetrieveRequest)
+	predictionURL, urlErr := providerUtils.ResourceRequestURLInContext(ctx, provider.networkConfig.BaseURL, "/v1/predictions/"+escapedVideoID, provider.customProviderConfig, escapedVideoID, requestTypes...)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -2831,7 +2840,11 @@ func (provider *ReplicateProvider) VideoDownload(ctx *schemas.BifrostContext, ke
 		Provider: request.Provider,
 		ID:       request.ID,
 	}
-	videoResp, bifrostErr := provider.VideoRetrieve(ctx, key, bifrostVideoRetrieveRequest)
+	// The query still needs video_retrieve allowed, as it did through VideoRetrieve.
+	if err := providerUtils.CheckOperationAllowed(schemas.Replicate, provider.customProviderConfig, schemas.VideoRetrieveRequest); err != nil {
+		return nil, err
+	}
+	videoResp, bifrostErr := provider.retrievePrediction(ctx, key, bifrostVideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoRetrieveRequest)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
