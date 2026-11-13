@@ -231,9 +231,10 @@ func FinalizeResponseWithLargeDetection(
 	// A response this attempt must convert is read in full whatever its size: streaming it
 	// raw would hand the caller the vendor's body, with the vendor's usage object, where the
 	// route promises the unified one (schemas.DecideLargePayloadEligibility). The cost is
-	// the body in memory once, as with no threshold configured.
+	// the body in memory once, as with no threshold configured, and no more than the response
+	// limit (client.max_response_body_size_mb, TXE-7148), as every buffered upstream read.
 	if !schemas.LargePayloadEligibilityFromContext(ctx).RawResponse {
-		bodyBytes, readErr := io.ReadAll(reader)
+		bodyBytes, readErr := network.ReadAllBounded(reader)
 		cleanup()
 		if readErr != nil {
 			return nil, false, largeResponseReadError(readErr)
