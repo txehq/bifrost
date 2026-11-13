@@ -1123,20 +1123,31 @@ func TestBFLCapturedBodyIsNoSecretOracle(t *testing.T) {
 // BenchmarkBFLImageTaskKeySecret measures the credential path of TXE-7062 on a create with
 // callback_url: resolving the key's webhook secret, converting and encoding the body, and
 // redacting the captured copy. "unconfigured" is the path every key without bfl_key_config takes.
+// TXE-7310: "trusted" signs and redacts (the callback is under the key's prefix); "untrusted"
+// pays for the destination check and sends no key secret.
 func BenchmarkBFLImageTaskKeySecret(b *testing.B) {
 	in := imageTaskInput{model: "flux-kontext-pro", prompt: "a fox", aspectRatio: schemas.Ptr("16:9"), seed: schemas.Ptr(7),
-		images: []string{"https://example.com/a.png"}, callbackURL: schemas.Ptr("https://hooks.tokun.sh/v/t1")}
+		images: []string{"https://example.com/a.png"}}
+	configured := schemas.Key{Value: *schemas.NewSecretVar("k"), BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar("whsec-0123456789"), WebhookURLPrefixes: trustedHooks}}
 	for _, tc := range []struct {
-		name string
-		key  schemas.Key
+		name     string
+		key      schemas.Key
+		callback string
+		signed   bool
 	}{
-		{"unconfigured", schemas.Key{Value: *schemas.NewSecretVar("k")}},
-		{"configured", schemas.Key{Value: *schemas.NewSecretVar("k"), BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar("whsec-0123456789"), WebhookURLPrefixes: trustedHooks}}},
+		{"unconfigured", schemas.Key{Value: *schemas.NewSecretVar("k")}, "https://hooks.example.test/v/t1", false},
+		{"configured/trusted", configured, "https://hooks.example.test/v/t1", true},
+		{"configured/untrusted", configured, "https://hooks.tokun.sh/v/t1", false},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
+			probe, err := toBFLImageBody(withKeyWebhook(imageTaskInput{model: in.model, prompt: in.prompt, callbackURL: &tc.callback}, tc.key))
+			if err != nil || probe.injectedSecret != tc.signed {
+				b.Fatalf("case %s: injectedSecret = %v, want %v (err %v)", tc.name, probe != nil && probe.injectedSecret, tc.signed, err)
+			}
 			for b.Loop() {
 				run := in
+				run.callbackURL = &tc.callback
 				run = withKeyWebhook(run, tc.key)
 				body, err := toBFLImageBody(run)
 				if err != nil {

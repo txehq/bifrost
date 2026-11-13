@@ -534,13 +534,98 @@ test.describe("Providers", () => {
     const weightInput = page.getByLabel("Weight");
     await expect(weightInput).toBeVisible();
     await weightInput.clear();
-    await weightInput.fill("2");
+    // The form takes weights from 0 to 1 ("Weight must be equal to or less than 1").
+    await weightInput.fill("0.5");
     await expect(providersPage.keySaveBtn).toBeEnabled();
     await providersPage.keySaveBtn.click();
     await providersPage.waitForSuccessToast();
     await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
     expect(await storedSecret(), "an edit that leaves the secret untouched must keep it").toBe(redacted);
-    expect(await providersPage.getKeyWeight(keyName)).toContain("2");
+    expect(await providersPage.getKeyWeight(keyName)).toContain("0.5");
+  });
+
+  // TXE-7310: the destinations a BFL key's webhook secret may sign for save through the form, come
+  // back as stored, and can be edited and cleared; the secret is kept across every edit.
+  test("should save, edit and clear a BFL key's trusted webhook URL prefixes", async ({ providersPage, page }) => {
+    if (!(await providersPage.providerExists("bfl"))) {
+      await providersPage.addKnownProviderFromDropdown("bfl");
+      createdProviders.push("bfl");
+    }
+    await expect(providersPage.getProviderItem("bfl")).toBeVisible({ timeout: 15000 });
+    await providersPage.selectProvider("bfl");
+
+    const keyName = `BFL-Prefix-Key-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const secret = `whsec-e2e-${Math.random().toString(36).slice(2, 10)}`;
+    createdKeys.push({ provider: "bfl", keyName });
+    const first = "https://hooks.example.com/bfl/";
+    const second = "https://hooks2.example.com/cb/";
+    const third = "https://hooks3.example.com/";
+
+    type KeysBody = {
+      keys: { name: string; bfl_key_config?: { webhook_secret?: { value?: string }; webhook_url_prefixes?: string[] } }[];
+    };
+    const stored = async () => {
+      const response = await page.request.get("/api/providers/bfl/keys");
+      expect(response.ok()).toBe(true);
+      const text = await response.text();
+      expect(text, "the webhook secret must never come back in plaintext").not.toContain(secret);
+      const saved = (JSON.parse(text) as KeysBody).keys.find((k) => k.name === keyName);
+      expect(saved, "saved key must be listed").toBeTruthy();
+      return { prefixes: saved?.bfl_key_config?.webhook_url_prefixes ?? [], secret: saved?.bfl_key_config?.webhook_secret?.value };
+    };
+    const prefixInput = () => page.getByTestId("key-input-bfl-webhook-url-prefixes");
+    const addPrefix = async (prefix: string) => {
+      await prefixInput().fill(prefix);
+      await prefixInput().press("Enter");
+      await expect(providersPage.keyForm.getByRole("button", { name: `Remove ${prefix}` })).toBeVisible();
+    };
+    const removePrefix = async (prefix: string) => {
+      await providersPage.keyForm.getByRole("button", { name: `Remove ${prefix}` }).click();
+      await expect(providersPage.keyForm.getByRole("button", { name: `Remove ${prefix}` })).toHaveCount(0);
+    };
+    const save = async () => {
+      await expect(providersPage.keySaveBtn).toBeEnabled();
+      await providersPage.keySaveBtn.click();
+      await providersPage.waitForSuccessToast();
+      await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+    };
+
+    // Add: a secret and two prefixes.
+    await providersPage.dismissToasts();
+    await providersPage.addKeyBtn.click();
+    await expect(providersPage.keyForm).toBeVisible();
+    await page.getByLabel("Name").fill(keyName);
+    await page.getByLabel("API Key").fill("e2e-bfl-api-key");
+    await page.getByTestId("key-input-bfl-webhook-secret").fill(secret);
+    await expect(prefixInput()).toBeVisible();
+    await addPrefix(first);
+    await addPrefix(second);
+    await save();
+    const added = await stored();
+    expect(added.prefixes).toEqual([first, second]);
+    expect(added.secret, "the key must carry a webhook secret").toBeTruthy();
+
+    // Edit: reopen, the saved prefixes are shown; drop one and add another.
+    await providersPage.dismissToasts();
+    await providersPage.openKeyEditor(keyName);
+    await expect(providersPage.keyForm.getByRole("button", { name: `Remove ${first}` })).toBeVisible();
+    await expect(providersPage.keyForm.getByRole("button", { name: `Remove ${second}` })).toBeVisible();
+    await removePrefix(first);
+    await addPrefix(third);
+    await save();
+    const edited = await stored();
+    expect(edited.prefixes).toEqual([second, third]);
+    expect(edited.secret, "an edit of the prefixes must keep the secret").toBe(added.secret);
+
+    // Clear: with no prefixes the key signs for no destination, and the secret stays.
+    await providersPage.dismissToasts();
+    await providersPage.openKeyEditor(keyName);
+    await removePrefix(second);
+    await removePrefix(third);
+    await save();
+    const cleared = await stored();
+    expect(cleared.prefixes).toEqual([]);
+    expect(cleared.secret, "clearing the prefixes must keep the secret").toBe(added.secret);
   });
 
   for (const { name, label } of REGISTRATION_ONLY_PROVIDERS) {
