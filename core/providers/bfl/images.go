@@ -81,6 +81,8 @@ type imageTaskInput struct {
 	callbackURL       *string
 	extra             map[string]any
 	keyWebhookSecret  string // the key's bfl_key_config.webhook_secret (TXE-7062); "" when it has none
+	// keyWebhookURLPrefixes are the destinations the key's secret may sign for (TXE-7310).
+	keyWebhookURLPrefixes []string
 }
 
 // refuse is the caller_unsupported_parameter error for param, carried out of a converter.
@@ -149,8 +151,11 @@ func toBFLImageBody(in imageTaskInput) (*bflImageBody, error) {
 			return nil, refuse(schemas.TaskControlFieldCallbackURL, fmt.Sprintf("model %s has no webhook_url", in.model))
 		}
 		fields["webhook_url"] = *in.callbackURL
-		// The key's secret signs the webhook unless the request names its own (TXE-7062).
-		if !callerNamesWebhookSecret(in.extra) && in.keyWebhookSecret != "" {
+		// The key's secret signs the webhook unless the request names its own (TXE-7062), and
+		// only for a callback_url the operator trusts with it (TXE-7310): any other destination
+		// gets no key secret, so a caller cannot collect deliveries signed with it.
+		if !callerNamesWebhookSecret(in.extra) && in.keyWebhookSecret != "" &&
+			providerUtils.KeySecretMaySignFor(*in.callbackURL, in.keyWebhookURLPrefixes) {
 			fields["webhook_secret"] = in.keyWebhookSecret
 			injected = true
 		}
@@ -317,11 +322,20 @@ func keyWebhookSecret(key schemas.Key) string {
 	return key.BFLKeyConfig.WebhookSecret.GetValue()
 }
 
+// withKeyWebhook sets the key's webhook secret and the destinations it may sign for.
+func withKeyWebhook(in imageTaskInput, key schemas.Key) imageTaskInput {
+	in.keyWebhookSecret = keyWebhookSecret(key)
+	if key.BFLKeyConfig != nil {
+		in.keyWebhookURLPrefixes = key.BFLKeyConfig.WebhookURLPrefixes
+	}
+	return in
+}
+
 // ImageGenerationTask submits an image generation task: one POST /v1/{model}.
 func (provider *BFLProvider) ImageGenerationTask(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
 	return provider.submitImageTask(ctx, key, request, request.Model, func() (*bflImageBody, error) {
 		in := generationTaskInput(request)
-		in.keyWebhookSecret = keyWebhookSecret(key)
+		in = withKeyWebhook(in, key)
 		return toBFLImageBody(in)
 	})
 }
@@ -330,7 +344,7 @@ func (provider *BFLProvider) ImageGenerationTask(ctx *schemas.BifrostContext, ke
 func (provider *BFLProvider) ImageEditTask(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
 	return provider.submitImageTask(ctx, key, request, request.Model, func() (*bflImageBody, error) {
 		in := editTaskInput(request)
-		in.keyWebhookSecret = keyWebhookSecret(key)
+		in = withKeyWebhook(in, key)
 		return toBFLImageBody(in)
 	})
 }

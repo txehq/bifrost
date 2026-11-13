@@ -985,8 +985,30 @@ type CloudflareKeyConfig struct {
 // WebhookSecret is the secret BFL signs its webhook calls with. When an image task create
 // carries callback_url (sent to BFL as webhook_url) and no webhook_secret of its own, the key's
 // secret is sent as BFL's webhook_secret; a webhook_secret on the request wins.
+//
+// WebhookURLPrefixes are the destinations the operator trusts with deliveries signed by that
+// secret (TXE-7310). The key's secret is sent only when callback_url matches one of them, by
+// scheme, host (with port) and path prefix; any other callback_url gets no key secret. With no
+// prefixes the key's secret is never sent, because the caller, not the operator, picks
+// callback_url, and signed deliveries it collects could be replayed to the operator's receiver.
 type BFLKeyConfig struct {
-	WebhookSecret *SecretVar `json:"webhook_secret,omitempty"` // supports env. prefix
+	WebhookSecret      *SecretVar `json:"webhook_secret,omitempty"`       // supports env. prefix
+	WebhookURLPrefixes []string   `json:"webhook_url_prefixes,omitempty"` // e.g. https://hooks.example.com/bfl/
+}
+
+// KeySigningSecretDestination names a key configuration field that holds a secret a vendor
+// signs deliveries with, and the sibling field that lists the destinations the operator trusts
+// with them (TXE-7310). Every such secret must have one: a test in this package fails when a
+// key config gains a webhook or signing secret that this list does not pair with an allowlist.
+type KeySigningSecretDestination struct {
+	Config         string // the Key field holding the provider config, e.g. "BFLKeyConfig"
+	SecretField    string // the secret's field in that config
+	AllowlistField string // the []string field of trusted URL prefixes in that config
+}
+
+// KeySigningSecretDestinations is the one list of key-held signing secrets (TXE-7310).
+var KeySigningSecretDestinations = []KeySigningSecretDestination{
+	{Config: "BFLKeyConfig", SecretField: "WebhookSecret", AllowlistField: "WebhookURLPrefixes"},
 }
 
 // DatabricksAPIFormat selects which Databricks inference surface a key targets. Both surfaces

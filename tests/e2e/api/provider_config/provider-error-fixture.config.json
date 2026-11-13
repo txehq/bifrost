@@ -580,7 +580,10 @@
           ],
           "weight": 1,
           "bfl_key_config": {
-            "webhook_secret": "bfl-fixture-webhook-secret"
+            "webhook_secret": "bfl-fixture-webhook-secret",
+            "webhook_url_prefixes": [
+              "https://hooks.example.test/v/"
+            ]
           }
         }
       ],

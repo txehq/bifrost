@@ -2862,7 +2862,7 @@ func TestBFLKey_WebhookSecretRedactedRoundTrip(t *testing.T) {
 	h := &ProviderHandler{}
 	stored := schemas.Key{
 		ID: "k1", Name: "bfl", Weight: 1, Value: *schemas.NewSecretVar("bfl-api-key"),
-		BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar("bfl-webhook-secret-value")},
+		BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar("bfl-webhook-secret-value"), WebhookURLPrefixes: []string{"https://hooks.example.com/bfl/"}},
 	}
 	redacted := (&configstore.ProviderConfig{Keys: []schemas.Key{stored}}).Redacted().Keys[0]
 	if redacted.BFLKeyConfig == nil || redacted.BFLKeyConfig.WebhookSecret == nil {
@@ -2871,6 +2871,11 @@ func TestBFLKey_WebhookSecretRedactedRoundTrip(t *testing.T) {
 	if got := redacted.BFLKeyConfig.WebhookSecret.GetValue(); got == "bfl-webhook-secret-value" || strings.Contains(got, "webhook-secret-value") {
 		t.Fatalf("GET returned the webhook secret: %q", got)
 	}
+	// TXE-7310: the trusted destinations are not a credential; GET returns them as stored, so a
+	// client that echoes the key back keeps them.
+	if got := redacted.BFLKeyConfig.WebhookURLPrefixes; len(got) != 1 || got[0] != "https://hooks.example.com/bfl/" {
+		t.Fatalf("GET lost bfl_key_config.webhook_url_prefixes: %v", got)
+	}
 
 	merged, err := h.mergeUpdatedKey(stored, redacted)
 	if err != nil {
@@ -2878,6 +2883,9 @@ func TestBFLKey_WebhookSecretRedactedRoundTrip(t *testing.T) {
 	}
 	if got := merged.BFLKeyConfig.WebhookSecret.GetValue(); got != "bfl-webhook-secret-value" {
 		t.Errorf("echoing the redacted secret replaced the stored one: got %q", got)
+	}
+	if got := merged.BFLKeyConfig.WebhookURLPrefixes; len(got) != 1 || got[0] != "https://hooks.example.com/bfl/" {
+		t.Errorf("echoing the key back lost the trusted destinations: %v", got)
 	}
 
 	update := redacted

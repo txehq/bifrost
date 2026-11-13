@@ -798,3 +798,51 @@ func TestApplyRequestRouting(t *testing.T) {
 	nilInfo.ApplyRequestRouting(ctx)
 	(&RoutingInfo{}).ApplyRequestRouting(nil)
 }
+
+// TXE-7310 class check: every secret a key configuration holds for a vendor to sign deliveries
+// with (a webhook, signing or callback secret) is listed in KeySigningSecretDestinations with an
+// allowlist of trusted URL prefixes beside it. A provider that adds such a secret without one
+// would forward the operator's signing secret to whatever URL the caller supplies.
+func TestKeySigningSecretsHaveADestinationAllowlist(t *testing.T) {
+	listed := map[string]KeySigningSecretDestination{}
+	for _, d := range KeySigningSecretDestinations {
+		listed[d.Config+"."+d.SecretField] = d
+	}
+	secretType := reflect.TypeOf(SecretVar{})
+	keyType := reflect.TypeOf(Key{})
+	found := 0
+	for i := 0; i < keyType.NumField(); i++ {
+		cfgField := keyType.Field(i)
+		cfgType := cfgField.Type
+		if cfgType.Kind() == reflect.Pointer {
+			cfgType = cfgType.Elem()
+		}
+		if cfgType.Kind() != reflect.Struct || !strings.HasSuffix(cfgField.Name, "KeyConfig") {
+			continue
+		}
+		for j := 0; j < cfgType.NumField(); j++ {
+			f := cfgType.Field(j)
+			ft := f.Type
+			if ft.Kind() == reflect.Pointer {
+				ft = ft.Elem()
+			}
+			name := strings.ToLower(f.Name + " " + f.Tag.Get("json"))
+			if ft != secretType || !(strings.Contains(name, "webhook") || strings.Contains(name, "signing") || strings.Contains(name, "callback")) {
+				continue
+			}
+			found++
+			d, ok := listed[cfgField.Name+"."+f.Name]
+			if !ok {
+				t.Errorf("%s.%s is a key-held signing secret with no entry in KeySigningSecretDestinations; add a trusted URL prefix allowlist and check it with KeySecretMaySignFor before sending the secret", cfgField.Name, f.Name)
+				continue
+			}
+			allow, ok := cfgType.FieldByName(d.AllowlistField)
+			if !ok || allow.Type != reflect.TypeOf([]string(nil)) {
+				t.Errorf("%s.%s: allowlist field %q is missing or not []string", cfgField.Name, f.Name, d.AllowlistField)
+			}
+		}
+	}
+	if found != len(KeySigningSecretDestinations) {
+		t.Errorf("found %d key-held signing secrets, KeySigningSecretDestinations lists %d: a listed entry names a field that does not exist", found, len(KeySigningSecretDestinations))
+	}
+}

@@ -241,10 +241,24 @@ BFLKeyConfig:
     BFL-specific key configuration. `webhook_secret` is the secret BFL signs its webhook calls
     with. It is sent as BFL's `webhook_secret` on an image task create that carries
     `callback_url` and no `webhook_secret` of its own; the request's own value wins. Redacted in
-    every response.
+    every response. The key's secret is sent only when `callback_url` is under one of
+    `webhook_url_prefixes`; any other `callback_url` gets no key secret, and a key without
+    prefixes sends its secret to no destination.
   properties:
     webhook_secret:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
+    webhook_url_prefixes:
+      type: array
+      items:
+        type: string
+      description: |
+        The destinations the operator trusts with deliveries signed by `webhook_secret`, such as
+        `https://hooks.example.com/bfl/`. A `callback_url` matches a prefix when its scheme, host
+        and port are the same and its path is the prefix's path or below it at a `/` boundary. A
+        `callback_url` with user info, a `.` or `..` segment, or an escaped `/`, `\` or `.` never
+        matches. Not a credential: returned as stored.
+      example:
+        - https://hooks.example.com/bfl/
 
 VLLMKeyConfig:
   type: object

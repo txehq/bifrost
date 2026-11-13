@@ -970,11 +970,16 @@ func BenchmarkBFLVideoConversion(b *testing.B) {
 	}
 }
 
+// trustedHooks is the destination the test keys trust with their webhook secret (TXE-7310).
+var trustedHooks = []string{"https://hooks.example.test/v/"}
+
 // TXE-7062: a key's bfl_key_config.webhook_secret is sent as BFL's webhook_secret on an image task
 // that carries callback_url; a webhook_secret on the request wins, and without callback_url
-// nothing is sent.
+// nothing is sent. TXE-7310: only a callback_url under one of the key's webhook_url_prefixes gets
+// the key's secret; the caller picks callback_url, so any other destination gets none.
 func TestBFLKeyWebhookSecret(t *testing.T) {
-	keyWith := schemas.Key{Value: *schemas.NewSecretVar("k"), BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar("key-secret")}}
+	keyWith := schemas.Key{Value: *schemas.NewSecretVar("k"), BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar("key-secret"), WebhookURLPrefixes: trustedHooks}}
+	keyNoPrefixes := schemas.Key{Value: *schemas.NewSecretVar("k"), BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar("key-secret")}}
 	cases := []struct {
 		name   string
 		key    schemas.Key
@@ -982,10 +987,14 @@ func TestBFLKeyWebhookSecret(t *testing.T) {
 		cb     *string
 		want   any // the webhook_secret BFL receives; nil for none
 	}{
-		{"the key's secret signs the callback", keyWith, nil, schemas.Ptr("https://hooks.example.test/v/1"), "key-secret"},
+		{"the key's secret signs a trusted callback", keyWith, nil, schemas.Ptr("https://hooks.example.test/v/1"), "key-secret"},
 		{"the request's own secret wins", keyWith, &schemas.ImageGenerationParameters{ExtraParams: map[string]any{"webhook_secret": "request-secret"}}, schemas.Ptr("https://hooks.example.test/v/1"), "request-secret"},
 		{"no callback_url, no secret", keyWith, nil, nil, nil},
 		{"a key without the config sends none", schemas.Key{Value: *schemas.NewSecretVar("k")}, nil, schemas.Ptr("https://hooks.example.test/v/1"), nil},
+		{"a caller-chosen host gets no key secret", keyWith, nil, schemas.Ptr("https://attacker.example/v/1"), nil},
+		{"a path outside the prefix gets no key secret", keyWith, nil, schemas.Ptr("https://hooks.example.test/admin"), nil},
+		{"a key with no prefixes signs for nobody", keyNoPrefixes, nil, schemas.Ptr("https://hooks.example.test/v/1"), nil},
+		{"the caller's own secret still goes to its own host", keyWith, &schemas.ImageGenerationParameters{ExtraParams: map[string]any{"webhook_secret": "request-secret"}}, schemas.Ptr("https://attacker.example/v/1"), "request-secret"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1011,11 +1020,58 @@ func TestBFLKeyWebhookSecret(t *testing.T) {
 	}
 }
 
+// TXE-7310 (Codex review): the image edit task route takes its own conversion, so it pins the same
+// rule: a trusted callback_url gets the key's secret, any other gets none, and the request's own
+// secret still wins.
+func TestBFLKeyWebhookSecretOnEditTasks(t *testing.T) {
+	key := schemas.Key{Value: *schemas.NewSecretVar("k"), BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar("key-secret"), WebhookURLPrefixes: trustedHooks}}
+	cases := []struct {
+		name  string
+		cb    string
+		extra map[string]any
+		want  any // the webhook_secret BFL receives; nil for none
+	}{
+		{"a trusted callback gets the key's secret", "https://hooks.example.test/v/edit_1", nil, "key-secret"},
+		{"an untrusted host gets none", "https://attacker.example/v/edit_1", nil, nil},
+		{"a path climbing out of the prefix gets none", "https://hooks.example.test/v/../admin", nil, nil},
+		{"the request's own secret wins", "https://attacker.example/v/edit_1", map[string]any{"webhook_secret": "request-secret"}, "request-secret"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &bflRecorder{submit: `{"id":"t1"}`}
+			server := httptest.NewServer(http.HandlerFunc(rec.serve))
+			defer server.Close()
+			provider := newTestProvider(t, schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true})
+			req := &schemas.BifrostImageEditRequest{
+				Model:       "flux-kontext-pro",
+				Input:       &schemas.ImageEditInput{Prompt: "make it night", Images: []schemas.ImageInput{{URL: "https://example.com/a.png"}}},
+				TaskControl: &schemas.TaskControlParameters{CallbackURL: schemas.Ptr(tc.cb)},
+			}
+			if tc.extra != nil {
+				req.Params = &schemas.ImageEditParameters{ExtraParams: tc.extra}
+			}
+			if _, bifrostErr := provider.ImageEditTask(imageTaskCtx(t), key, req); bifrostErr != nil {
+				t.Fatalf("submit: %+v", bifrostErr.Error)
+			}
+			var sent map[string]any
+			if err := json.Unmarshal(rec.bodies[0], &sent); err != nil {
+				t.Fatal(err)
+			}
+			if sent["webhook_url"] != tc.cb {
+				t.Fatalf("webhook_url = %v, want %s", sent["webhook_url"], tc.cb)
+			}
+			if got, ok := sent["webhook_secret"]; tc.want == nil && ok || tc.want != nil && got != tc.want {
+				t.Fatalf("webhook_secret = %v (present %v), want %v", got, ok, tc.want)
+			}
+		})
+	}
+}
+
 // TXE-7062 review: BFL receives the key's webhook secret, but no copy Bifrost keeps does: the
 // raw_request of a create and of an error carry it redacted. The caller never sent that secret,
 // so echoing it back would expose a credential from the key configuration.
 func TestBFLKeyWebhookSecretIsRedactedFromCapturedBodies(t *testing.T) {
-	key := schemas.Key{Value: *schemas.NewSecretVar("k"), BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar("key-secret-7062")}}
+	key := schemas.Key{Value: *schemas.NewSecretVar("k"), BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar("key-secret-7062"), WebhookURLPrefixes: trustedHooks}}
 	req := func() *schemas.BifrostImageGenerationRequest {
 		return &schemas.BifrostImageGenerationRequest{Model: "flux-pro-1.1", Input: &schemas.ImageGenerationInput{Prompt: "a fox"},
 			TaskControl: &schemas.TaskControlParameters{CallbackURL: schemas.Ptr("https://hooks.example.test/v/1")}}
@@ -1066,7 +1122,7 @@ func TestBFLKeyWebhookSecretIsRedactedFromCapturedBodies(t *testing.T) {
 // captured as sent.
 func TestBFLCapturedBodyIsNoSecretOracle(t *testing.T) {
 	const secret = "key-secret-7062"
-	key := schemas.Key{Value: *schemas.NewSecretVar("k"), BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar(secret)}}
+	key := schemas.Key{Value: *schemas.NewSecretVar("k"), BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar(secret), WebhookURLPrefixes: trustedHooks}}
 	capture := func(req *schemas.BifrostImageGenerationRequest) map[string]any {
 		rec := &bflRecorder{submit: `{"id":"t1"}`}
 		server := httptest.NewServer(http.HandlerFunc(rec.serve))
@@ -1114,21 +1170,32 @@ func TestBFLCapturedBodyIsNoSecretOracle(t *testing.T) {
 // BenchmarkBFLImageTaskKeySecret measures the credential path of TXE-7062 on a create with
 // callback_url: resolving the key's webhook secret, converting and encoding the body, and
 // redacting the captured copy. "unconfigured" is the path every key without bfl_key_config takes.
+// TXE-7310: "trusted" signs and redacts (the callback is under the key's prefix); "untrusted"
+// pays for the destination check and sends no key secret.
 func BenchmarkBFLImageTaskKeySecret(b *testing.B) {
 	in := imageTaskInput{model: "flux-kontext-pro", prompt: "a fox", aspectRatio: schemas.Ptr("16:9"), seed: schemas.Ptr(7),
-		images: []string{"https://example.com/a.png"}, callbackURL: schemas.Ptr("https://hooks.tokun.sh/v/t1")}
+		images: []string{"https://example.com/a.png"}}
+	configured := schemas.Key{Value: *schemas.NewSecretVar("k"), BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar("whsec-0123456789"), WebhookURLPrefixes: trustedHooks}}
 	for _, tc := range []struct {
-		name string
-		key  schemas.Key
+		name     string
+		key      schemas.Key
+		callback string
+		signed   bool
 	}{
-		{"unconfigured", schemas.Key{Value: *schemas.NewSecretVar("k")}},
-		{"configured", schemas.Key{Value: *schemas.NewSecretVar("k"), BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar("whsec-0123456789")}}},
+		{"unconfigured", schemas.Key{Value: *schemas.NewSecretVar("k")}, "https://hooks.example.test/v/t1", false},
+		{"configured/trusted", configured, "https://hooks.example.test/v/t1", true},
+		{"configured/untrusted", configured, "https://hooks.tokun.sh/v/t1", false},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
+			probe, err := toBFLImageBody(withKeyWebhook(imageTaskInput{model: in.model, prompt: in.prompt, callbackURL: &tc.callback}, tc.key))
+			if err != nil || probe.injectedSecret != tc.signed {
+				b.Fatalf("case %s: injectedSecret = %v, want %v (err %v)", tc.name, probe != nil && probe.injectedSecret, tc.signed, err)
+			}
 			for b.Loop() {
 				run := in
-				run.keyWebhookSecret = keyWebhookSecret(tc.key)
+				run.callbackURL = &tc.callback
+				run = withKeyWebhook(run, tc.key)
 				body, err := toBFLImageBody(run)
 				if err != nil {
 					b.Fatal(err)

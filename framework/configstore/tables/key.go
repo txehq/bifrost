@@ -99,6 +99,8 @@ type TableKey struct {
 	// BFL config fields (embedded; fork, TXE-7062). The webhook secret is a credential and is
 	// encrypted at rest like the other key secrets.
 	BFLWebhookSecret *schemas.SecretVar `gorm:"column:bfl_webhook_secret;type:text" json:"bfl_webhook_secret,omitempty"`
+	// The destinations the operator trusts with that secret (TXE-7310); not a credential.
+	BFLWebhookURLPrefixesJSON *string `gorm:"column:bfl_webhook_url_prefixes;type:text" json:"-"` // JSON serialized []string
 
 	// Batch API configuration
 	UseForBatchAPI *bool `gorm:"default:false" json:"use_for_batch_api,omitempty"` // Whether this key can be used for batch API operations
@@ -550,6 +552,16 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.BFLWebhookSecret = &ws
 	} else {
 		k.BFLWebhookSecret = nil
+	}
+	if k.BFLKeyConfig != nil && len(k.BFLKeyConfig.WebhookURLPrefixes) > 0 {
+		data, err := json.Marshal(k.BFLKeyConfig.WebhookURLPrefixes)
+		if err != nil {
+			return err
+		}
+		s := string(data)
+		k.BFLWebhookURLPrefixesJSON = &s
+	} else {
+		k.BFLWebhookURLPrefixesJSON = nil
 	}
 	// GitHub Copilot. Every SecretVar is value-copied before assignment, per the invariant
 	// above: the caller may retain the config struct pointer, and encryption mutates in
@@ -1204,9 +1216,15 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 	} else {
 		k.DatabricksKeyConfig = nil
 	}
-	// Reconstruct BFL config if its secret is present
-	if k.BFLWebhookSecret != nil {
-		k.BFLKeyConfig = &schemas.BFLKeyConfig{WebhookSecret: k.BFLWebhookSecret}
+	// Reconstruct BFL config if its secret or its trusted destinations are present
+	if k.BFLWebhookSecret != nil || (k.BFLWebhookURLPrefixesJSON != nil && *k.BFLWebhookURLPrefixesJSON != "") {
+		bflConfig := &schemas.BFLKeyConfig{WebhookSecret: k.BFLWebhookSecret}
+		if k.BFLWebhookURLPrefixesJSON != nil && *k.BFLWebhookURLPrefixesJSON != "" {
+			if err := json.Unmarshal([]byte(*k.BFLWebhookURLPrefixesJSON), &bflConfig.WebhookURLPrefixes); err != nil {
+				return fmt.Errorf("failed to decode bfl webhook url prefixes: %w", err)
+			}
+		}
+		k.BFLKeyConfig = bflConfig
 	} else {
 		k.BFLKeyConfig = nil
 	}

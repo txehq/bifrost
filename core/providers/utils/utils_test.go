@@ -5102,3 +5102,75 @@ func TestHandleProviderAPIError_ErrorBodyPastTheLimitIsBifrostsRefusal(t *testin
 		t.Fatalf("error chain %v lost the limit error", bifrostErr.Error.Error)
 	}
 }
+
+// TXE-7310: a key-held signing secret signs only deliveries to a destination the operator
+// trusts. The caller picks the URL, so anything that is not plainly under a trusted prefix,
+// by scheme, host and port, and path segment, is refused.
+func TestKeySecretMaySignFor(t *testing.T) {
+	trusted := []string{"https://hooks.example.com/bfl/", "http://127.0.0.1:8080/cb"}
+	cases := []struct {
+		target string
+		want   bool
+	}{
+		{"https://hooks.example.com/bfl/task_1", true},
+		{"https://hooks.example.com/bfl/", true},
+		{"https://hooks.example.com/bfl", true},
+		{"https://HOOKS.example.com/bfl/x?task=1", true},
+		{"http://127.0.0.1:8080/cb", true},
+		{"http://127.0.0.1:8080/cb/a", true},
+		{"https://attacker.example/bfl/task_1", false},
+		{"https://hooks.example.com.attacker.example/bfl/task_1", false},
+		{"https://hooks.example.com@attacker.example/bfl/task_1", false},
+		{"https://user@hooks.example.com/bfl/task_1", false},
+		{"http://hooks.example.com/bfl/task_1", false},
+		{"https://hooks.example.com:8443/bfl/task_1", false},
+		{"https://hooks.example.com/bflx/task_1", false},
+		{"https://hooks.example.com/admin", false},
+		{"https://hooks.example.com/bfl/../admin", false},
+		{"https://hooks.example.com/bfl/./x", false},
+		{"https://hooks.example.com/bfl/%2e%2e/admin", false},
+		{"https://hooks.example.com/bfl%2F..%2Fadmin", false},
+		{"http://127.0.0.1:8080/cbx", false},
+		{"http://127.0.0.1:9090/cb", false},
+		{"ftp://hooks.example.com/bfl/x", false},
+		{"/bfl/task_1", false},
+		{"", false},
+		{"not a url", false},
+	}
+	for _, tc := range cases {
+		if got := KeySecretMaySignFor(tc.target, trusted); got != tc.want {
+			t.Errorf("KeySecretMaySignFor(%q) = %v, want %v", tc.target, got, tc.want)
+		}
+	}
+	for _, prefixes := range [][]string{nil, {}, {""}, {"not a url"}, {"hooks.example.com/bfl/"}, {"https://u@hooks.example.com/bfl/"}} {
+		if KeySecretMaySignFor("https://hooks.example.com/bfl/task_1", prefixes) {
+			t.Errorf("prefixes %q trusted a destination", prefixes)
+		}
+	}
+	if !KeySecretMaySignFor("https://hooks.example.com/anything", []string{"https://hooks.example.com"}) {
+		t.Error("a host-only prefix should trust every path on that host")
+	}
+
+	// Hosts are compared as a resolver dials them (Codex security review): σ and ς fold together
+	// but are different domains (xn--4xa, xn--3xa), so neither trusts the other; a Unicode name
+	// and its punycode form are the same host, and so are two spellings of one IP.
+	idn := []struct {
+		target, prefix string
+		want           bool
+	}{
+		{"https://ς.example/cb/1", "https://σ.example/cb/", false},
+		{"https://σ.example/cb/1", "https://ς.example/cb/", false},
+		{"https://Σ.example/cb/1", "https://σ.example/cb/", true},
+		{"https://xn--4xa.example/cb/1", "https://σ.example/cb/", true},
+		{"https://σ.example/cb/1", "https://xn--4xa.example/cb/", true},
+		{"https://bücher.example/cb/1", "https://xn--bcher-kva.example/cb/", true},
+		{"https://buecher.example/cb/1", "https://bücher.example/cb/", false},
+		{"http://[::1]:8080/cb", "http://[0:0:0:0:0:0:0:1]:8080/cb", true},
+		{"https://hooks.example.com:443/bfl/x", "https://hooks.example.com/bfl/", false},
+	}
+	for _, tc := range idn {
+		if got := KeySecretMaySignFor(tc.target, []string{tc.prefix}); got != tc.want {
+			t.Errorf("KeySecretMaySignFor(%q, [%q]) = %v, want %v", tc.target, tc.prefix, got, tc.want)
+		}
+	}
+}
