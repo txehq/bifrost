@@ -954,7 +954,7 @@
           }
         },
         "url": {
-          "raw": "{{baseUrl}}/genai/v1beta/models/pp-tts-ok:generateContent",
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini/pp-tts-ok:generateContent",
           "host": [
             "{{baseUrl}}"
           ],
@@ -962,6 +962,7 @@
             "genai",
             "v1beta",
             "models",
+            "gemini",
             "pp-tts-ok:generateContent"
           ]
         }
@@ -1199,7 +1200,7 @@
           }
         },
         "url": {
-          "raw": "{{baseUrl}}/genai/v1beta/models/pp-tts-ok:streamGenerateContent?alt=sse",
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini/pp-tts-ok:streamGenerateContent?alt=sse",
           "host": [
             "{{baseUrl}}"
           ],
@@ -1207,6 +1208,7 @@
             "genai",
             "v1beta",
             "models",
+            "gemini",
             "pp-tts-ok:streamGenerateContent"
           ],
           "query": [
@@ -1283,7 +1285,7 @@
           }
         },
         "url": {
-          "raw": "{{baseUrl}}/genai/v1beta/models/pp-tts-blocked:streamGenerateContent?alt=sse",
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini/pp-tts-blocked:streamGenerateContent?alt=sse",
           "host": [
             "{{baseUrl}}"
           ],
@@ -1291,6 +1293,7 @@
             "genai",
             "v1beta",
             "models",
+            "gemini",
             "pp-tts-blocked:streamGenerateContent"
           ],
           "query": [
@@ -1364,7 +1367,7 @@
           }
         },
         "url": {
-          "raw": "{{baseUrl}}/genai/v1beta/models/pp-tts-truncated:streamGenerateContent?alt=sse",
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini/pp-tts-truncated:streamGenerateContent?alt=sse",
           "host": [
             "{{baseUrl}}"
           ],
@@ -1372,6 +1375,7 @@
             "genai",
             "v1beta",
             "models",
+            "gemini",
             "pp-tts-truncated:streamGenerateContent"
           ],
           "query": [

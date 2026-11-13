@@ -28,6 +28,11 @@ const STALL_HOLD_MS = 15000;
 // counted under "__media_tunnel_connects@<host:port>" in /__hits, so a case can prove the download left
 // through the provider's proxy, to the address the vendor named.
 const mediaTunnelPort = Number(process.env.PROVIDER_ERROR_FIXTURE_MEDIA_TUNNEL_PORT || "8788");
+// The open tunnels. POST /__reset closes them with the hit counts (TXE-7289): a gateway keeps a tunnel it
+// opened for one download and reuses it for the next download to the same address, so without this a case
+// that resets and then asserts its own CONNECT fails whenever an earlier case downloaded from that address
+// (422.15 then 423.26 both fetch 203.0.113.10:80).
+const mediaTunnelSockets = new Set();
 // The address a fixture task names its file at: TEST-NET-3 (RFC 5737), public to the gateway's SSRF check and
 // routed nowhere, so the file is reachable through the media tunnel only.
 const MEDIA_PUBLIC_HOST = "203.0.113.10";
@@ -1658,6 +1663,8 @@ const handleRequest = (req, res) => {
 		}));
 	}
 	if (req.method === "POST" && path === "/__reset") {
+		for (const socket of mediaTunnelSockets) socket.destroy();
+		mediaTunnelSockets.clear();
 		for (const k of Object.keys(hits)) delete hits[k];
 		openAPICalls.length = 0;
 		wireCalls.length = 0;
@@ -2212,12 +2219,16 @@ const handleRequest = (req, res) => {
 		} catch {}
 		// A model that is not a string names no behaviour, so it is answered as an unknown model rather
 		// than reaching the string handling below, which would throw and stop the fixture.
-		const model = typeof parsed.model === "string" ? parsed.model : "";
-		hits[model] = (hits[model] || 0) + 1;
+		const requested = typeof parsed.model === "string" ? parsed.model : "";
+		// An /any-key request (ANY_KEY_PREFIX) is answered as upstream-ok whatever model it names.
+		if (req.anyKey) parsed.model = "upstream-ok";
+		const model = req.anyKey ? "upstream-ok" : requested;
+		const hitName = req.anyKey ? "any-key:" + requested : model;
+		hits[hitName] = (hits[hitName] || 0) + 1;
 		// test-key is the only credential the fixture accepts. A request bearing any other key is refused
 		// with 401 before its model is looked at, which is how a provider refuses a caller's direct key.
 		const auth = req.headers.authorization;
-		if (auth !== undefined && auth !== "Bearer test-key") {
+		if (!req.anyKey && auth !== undefined && auth !== "Bearer test-key") {
 			return send(401, {}, errorBody("Incorrect API key provided", "invalid_request_error", "invalid_api_key"));
 		}
 		if (path === "/chat/completions") {
@@ -2377,7 +2388,18 @@ const handleRequest = (req, res) => {
 		answer();
 	});
 };
-const server = http.createServer(handleRequest);
+// /any-key/<path> is an OpenAI-compatible upstream that accepts every key and serves every model, as a real
+// provider serves a caller's own key (folder 185 row 8, TXE-7289). The prefix is stripped, the request skips
+// the test-key check, every chat answers as upstream-ok, and its hit is counted under "any-key:<model>", so a
+// case tells this upstream's attempts from the strict one's on the same model name.
+const ANY_KEY_PREFIX = "/any-key/";
+const server = http.createServer((req, res) => {
+	if (req.url.startsWith(ANY_KEY_PREFIX)) {
+		req.url = req.url.slice(ANY_KEY_PREFIX.length - 1);
+		req.anyKey = true;
+	}
+	return handleRequest(req, res);
+});
 
 // The forward-proxy role (folder 415, TXE-6429). A client that tunnels answers to CONNECT host:port; the
 // tunnel ends here whatever host it names, so the requests inside it are served by this same server: one for
@@ -2422,6 +2444,8 @@ const throwawayCertificate = () => {
 server.keepAliveTimeout = 0;
 
 const mediaTunnel = net.createServer((socket) => {
+	mediaTunnelSockets.add(socket);
+	socket.on("close", () => mediaTunnelSockets.delete(socket));
 	let head = Buffer.alloc(0);
 	const onData = (c) => {
 		head = Buffer.concat([head, c]);

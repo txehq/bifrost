@@ -90,6 +90,15 @@ export const GROUPS = [
 		vars: (p) => ({ ...providerError.vars(p), include_preview: "1" }),
 	},
 	{
+		// Folder 185's routing rows create their own run-scoped providers on the fixture and assert
+		// what the model catalog picks among them, so the gateway may serve no model of its own:
+		// provider-error-fixture.config.json has dozens of wildcard keys the catalog would pick from.
+		id: "routing-error",
+		...providerError,
+		files: ["185-routing-retries-first-token-cutoffs-and-refused-keys-against.json"],
+		config: "tests/e2e/api/provider_config/routing-error-fixture.config.json",
+	},
+	{
 		id: "vertex-endpoint",
 		variables: ["vertexEndpointFixture", "vertexEndpointFixtureUrl"],
 		ports: { main: 8792 },
@@ -393,7 +402,7 @@ async function main() {
 		process.exit(problems.length ? 1 : 0);
 	}
 	if (command !== "run" || !args.gateway) {
-		console.error("usage: fixture-folders.mjs plan | run --gateway <bifrost-http binary> [--group <id>] [--work-dir <dir>]");
+		console.error("usage: fixture-folders.mjs plan | run --gateway <bifrost-http binary> [--group <id>] [--folder <number>[,<number>...]] [--work-dir <dir>]");
 		process.exit(2);
 	}
 	if (problems.length) {
@@ -401,9 +410,16 @@ async function main() {
 		process.exit(1);
 	}
 	const workDir = args["work-dir"] ? resolve(args["work-dir"]) : mkdtempSync(join(tmpdir(), "fixture-folders-"));
-	const groups = GROUPS.filter((g) => !args.group || g.id === args.group);
+	// --folder <number>[,<number>...] narrows every group to those folders, in the group's order, for
+	// working on one locally; the quarantined and skipped rows of other folders are then not judged, as
+	// with --group.
+	if (args.folder) {
+		const wanted = args.folder.split(",").map((n) => `${n.trim()}. `);
+		for (const [id, list] of members) members.set(id, list.filter((f) => wanted.some((w) => f.name.startsWith(w))));
+	}
+	const groups = GROUPS.filter((g) => (!args.group || g.id === args.group) && members.get(g.id).length > 0);
 	if (groups.length === 0) {
-		console.error(`no group ${args.group}`);
+		console.error(`no group ${args.group || ""} runs ${args.folder ? `folder ${args.folder}` : "any folder"}`);
 		process.exit(2);
 	}
 	const rows = new Map();
@@ -430,9 +446,10 @@ async function main() {
 			failures.push(`${g.id}: ${e.message}`);
 		}
 	}
-	// With --group, only that group's quarantined and skipped rows can be judged.
-	const quarantine = args.group ? data.quarantine.filter((e) => rows.has(e.row)) : data.quarantine;
-	const skippedRows = args.group ? data.skippedRows.filter((e) => selected.has(e.row)) : data.skippedRows;
+	// With --group or --folder, only the quarantined and skipped rows that ran can be judged.
+	const narrowed = Boolean(args.group || args.folder);
+	const quarantine = narrowed ? data.quarantine.filter((e) => rows.has(e.row)) : data.quarantine;
+	const skippedRows = narrowed ? data.skippedRows.filter((e) => selected.has(e.row)) : data.skippedRows;
 	failures.push(...verdict(rows, quarantine, { selected, skippedRows }));
 	console.log(`work dir: ${workDir}`);
 	if (failures.length) {

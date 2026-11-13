@@ -511,17 +511,16 @@ Stop the fixture and isolated gateway with Ctrl+C after testing.
 Folder 185 (`routing-error-fixture`) uses the same fixture for routing cases that need an upstream to
 fail on demand: a 500 retried three times, a first token held past a 500ms deadline, a caller key
 the upstream refuses. Its rows create their own run-scoped providers whose base URL is the fixture,
-and need the management API, governance, the logs and the gateway's OpenAI key, so they run against
-an ordinary gateway rather than the isolated one, for example the python integration profile on
-port 8080, with the fixture running next to it:
+and need the management API, governance and the logs, but no vendor: the provider that accepts a
+caller's own key (row 8) is the fixture's `/any-key/` upstream, which takes any key and counts its hits
+as `any-key:<model>`. The rows assert what the model catalog picks among the run's providers, so the
+gateway must serve no model of its own: run them on
+`tests/e2e/api/provider_config/routing-error-fixture.config.json`, which has no providers, turns
+inference auth off and allows direct keys. The fixture-folder runner does that in its `routing-error`
+group (TXE-7289):
 
 ```bash
-newman run tmp/provider-harness.json \
-  --folder "185. Routing retries, first-token cutoffs and refused keys against the provider error fixture (routing-error-fixture)" \
-  --env-var baseUrl=http://127.0.0.1:8080 \
-  --env-var providerErrorFixture=1 \
-  --env-var providerErrorFixtureUrl=http://127.0.0.1:8791 \
-  --env-var openaiKey="$OPENAI_API_KEY"
+scripts/test-offline.sh node tests/e2e/api/runners/fixture-folders.mjs run --gateway <bifrost-http binary> --group routing-error
 ```
 
 When the gateway needs a setup token for its management API, run the folder through
