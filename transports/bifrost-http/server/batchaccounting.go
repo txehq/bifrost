@@ -2,11 +2,14 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	bifrost "github.com/capsohq/bifrost/core"
+	"github.com/capsohq/bifrost/core/network"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	cstables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/capsohq/bifrost/framework/jobaccounting"
@@ -215,4 +218,38 @@ func (f *bifrostVideoRetriever) RetrieveVideo(ctx context.Context, job *cstables
 		return nil, jobaccounting.NewProviderCallError(bifrostErr)
 	}
 	return resp, nil
+}
+
+// DownloadVideo implements jobaccounting.VideoDownloader: the provider's own buffered download of
+// a finished job's video, so the settler can read its rendered length (fork, TXE-7329). The
+// download is held to client.max_response_body_size_mb (TXE-7148); a file past it is final, and
+// the job is unpriceable, never priced at the seconds its create named.
+func (f *bifrostVideoRetriever) DownloadVideo(ctx context.Context, job *cstables.TableProviderJob) ([]byte, error) {
+	if f == nil || f.client == nil {
+		return nil, fmt.Errorf("bifrost client is nil")
+	}
+	if job == nil {
+		return nil, fmt.Errorf("video job is nil")
+	}
+	resp, bifrostErr := f.client.VideoDownloadRequest(internalJobContext(ctx, job.SelectedKeyID), &schemas.BifrostVideoDownloadRequest{
+		Provider: schemas.ModelProvider(job.Provider),
+		ID:       job.JobID,
+	})
+	if bifrostErr != nil {
+		// Past the limit on the provider's own client, or on the media fetcher that downloads a
+		// file the vendor's task names off the provider's origin (replicate.delivery).
+		if bifrostErr.Error != nil && (errors.Is(bifrostErr.Error.Error, network.ErrResponseBodyTooLarge) || errors.Is(bifrostErr.Error.Error, providerUtils.ErrMediaTooLarge)) {
+			return nil, fmt.Errorf("%w: %s", jobaccounting.ErrVideoDurationUnmeasurable, bifrostErr.GetErrorString())
+		}
+		return nil, jobaccounting.NewProviderCallError(bifrostErr)
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("video download returned nil response for job %s", job.ID)
+	}
+	if resp.Body != nil {
+		// Not asked for a stream; a provider that answers with one anyway is not read here.
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("video download for job %s answered with a stream", job.ID)
+	}
+	return resp.Content, nil
 }

@@ -3,11 +3,15 @@ package jobaccounting
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
+	mp4 "github.com/abema/go-mp4"
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	cstables "github.com/capsohq/bifrost/framework/configstore/tables"
@@ -21,6 +25,10 @@ type fakeVideoRetriever struct {
 	resp  *schemas.BifrostVideoGenerationResponse
 	err   error
 	calls int
+	// video is the file DownloadVideo serves, and downloadErr its error (TXE-7329).
+	video       []byte
+	downloadErr error
+	downloads   int
 }
 
 func (f *fakeVideoRetriever) RetrieveVideo(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostVideoGenerationResponse, error) {
@@ -29,6 +37,14 @@ func (f *fakeVideoRetriever) RetrieveVideo(ctx context.Context, job *cstables.Ta
 		return nil, f.err
 	}
 	return f.resp, nil
+}
+
+func (f *fakeVideoRetriever) DownloadVideo(ctx context.Context, job *cstables.TableProviderJob) ([]byte, error) {
+	f.downloads++
+	if f.downloadErr != nil {
+		return nil, f.downloadErr
+	}
+	return f.video, nil
 }
 
 // videoJob builds a submitted video job row carrying the dimensions the request
@@ -71,6 +87,22 @@ func settleVideo(t *testing.T, job *cstables.TableProviderJob, resp *schemas.Bif
 	return settlement
 }
 
+// settleVideoRendered is settleVideo for a response that reports neither a duration nor a cost:
+// the payload carries the rendered length Poll measured (TXE-7329).
+func settleVideoRendered(t *testing.T, job *cstables.TableProviderJob, resp *schemas.BifrostVideoGenerationResponse, renderedSeconds int) *Settlement {
+	t.Helper()
+	settlement, err := NewVideoSettler(nil).Settle(context.Background(), fakePricing{}, JobRequest{
+		Provider:      schemas.OpenAI,
+		ProviderJobID: job.JobID,
+		FallbackModel: job.Model,
+		Job:           job,
+		Payload:       VideoPayload{Response: resp, RenderedSeconds: &renderedSeconds},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, settlement)
+	return settlement
+}
+
 func TestVideoDimensionsRoundTripThroughJobParams(t *testing.T) {
 	audio := true
 	dims := generationDims("sora-2-pro", "1920x1080", 8)
@@ -96,18 +128,19 @@ func TestVideoDimensionsFromJob_MalformedParamsDoNotBlockSettlement(t *testing.T
 	assert.Equal(t, modelcatalog.VideoPricingDimensions{}, VideoDimensionsFromJob(job))
 }
 
-func TestVideoSettle_PricesFromCapturedParamsWhenResponseIsSilent(t *testing.T) {
-	// The common provider: a retrieve that reports a status and nothing else.
+func TestVideoSettle_PricesFromCapturedParamsAndRenderedLengthWhenResponseIsSilent(t *testing.T) {
+	// The common provider: a retrieve that reports a status and nothing else. The size comes from
+	// the submitted request; the length from the rendered file (TXE-7329).
 	job := videoJob(t, "vid_silent", generationDims("sora-2-pro", "1920x1080", 8))
-	settlement := settleVideo(t, job, &schemas.BifrostVideoGenerationResponse{
+	settlement := settleVideoRendered(t, job, &schemas.BifrostVideoGenerationResponse{
 		Status: schemas.VideoStatusCompleted,
 		Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
-	})
+	}, 8)
 
 	assert.True(t, settlement.Priced)
 	assert.True(t, settlement.Complete)
 	assert.InDelta(t, 8*0.70, settlement.Cost, 1e-12,
-		"the submitted request is the only place the duration and size still exist")
+		"the submitted request is the only place the size still exists")
 	// The settlement is named for the read that produced it, mirroring batch_results:
 	// two rows both reading video_generation read as two generations. The creating
 	// request type moves to the debug blob, which is what repricing reads.
@@ -130,14 +163,14 @@ func TestVideoSettle_ResponseOverridesCapturedParams(t *testing.T) {
 
 func TestVideoSettle_BillsEveryReturnedClip(t *testing.T) {
 	job := videoJob(t, "vid_multi", generationDims("sora-2-pro", "1280x720", 8))
-	settlement := settleVideo(t, job, &schemas.BifrostVideoGenerationResponse{
+	settlement := settleVideoRendered(t, job, &schemas.BifrostVideoGenerationResponse{
 		Status: schemas.VideoStatusCompleted,
 		Videos: []schemas.VideoOutput{
 			{Type: schemas.VideoOutputTypeURL},
 			{Type: schemas.VideoOutputTypeURL},
 			{Type: schemas.VideoOutputTypeURL},
 		},
-	})
+	}, 8)
 
 	require.True(t, settlement.Priced)
 	assert.InDelta(t, 3*8*0.30, settlement.Cost, 1e-12)
@@ -242,10 +275,10 @@ func TestVideoSettle_DashScopeUnknownTaskParksAsGone(t *testing.T) {
 
 func TestVideoSettle_NoRateRecordsUnpricedRatherThanFree(t *testing.T) {
 	job := videoJob(t, "vid_norate", generationDims("some-unknown-model", "1920x1080", 8))
-	settlement := settleVideo(t, job, &schemas.BifrostVideoGenerationResponse{
+	settlement := settleVideoRendered(t, job, &schemas.BifrostVideoGenerationResponse{
 		Status: schemas.VideoStatusCompleted,
 		Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
-	})
+	}, 8)
 
 	assert.False(t, settlement.Priced, "no rate must never read as free")
 	assert.True(t, settlement.RecordUnpriced, "the row must stay visible so backfill can reprice it")
@@ -344,7 +377,7 @@ func TestVideoSweeper_SettlesCompletedJobOnce(t *testing.T) {
 		ID:     "vid_sweep",
 		Status: schemas.VideoStatusCompleted,
 		Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
-	}}
+	}, video: renderedMP4(t, 8)}
 	reporter := &fakeUsageReporter{}
 	sweeper := NewVideoSweeper(store, store, fakePricing{}, retriever, nil, reporter, SweeperConfig{
 		Provider: schemas.OpenAI,
@@ -406,10 +439,12 @@ func TestAccountVideoJob_SettlesFromTheCallersTerminalResponse(t *testing.T) {
 	job := videoJob(t, "vid_inline", generationDims("sora-2-pro", "1920x1080", 8))
 	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
+	// Sora reports its seconds, so the job settles inline without a download (TXE-7329).
 	out := accountVideoInline(t, store, reporter, "vid_inline", &schemas.BifrostVideoGenerationResponse{
-		ID:     "vid_inline",
-		Status: schemas.VideoStatusCompleted,
-		Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+		ID:      "vid_inline",
+		Status:  schemas.VideoStatusCompleted,
+		Seconds: bifrost.Ptr("8"),
+		Videos:  []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
 	})
 
 	require.NotNil(t, out)
@@ -468,9 +503,10 @@ func TestAccountVideoJob_RepeatedRetrievesBillOnce(t *testing.T) {
 	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
 	resp := &schemas.BifrostVideoGenerationResponse{
-		ID:     "vid_repoll",
-		Status: schemas.VideoStatusCompleted,
-		Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+		ID:      "vid_repoll",
+		Status:  schemas.VideoStatusCompleted,
+		Seconds: bifrost.Ptr("8"),
+		Videos:  []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
 	}
 	first := accountVideoInline(t, store, reporter, "vid_repoll", resp)
 	require.NotNil(t, first)
@@ -523,9 +559,10 @@ func TestAccountVideoJob_SharesTheSweepersAggregateRow(t *testing.T) {
 	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
 	resp := &schemas.BifrostVideoGenerationResponse{
-		ID:     "vid_both",
-		Status: schemas.VideoStatusCompleted,
-		Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+		ID:      "vid_both",
+		Status:  schemas.VideoStatusCompleted,
+		Seconds: bifrost.Ptr("8"),
+		Videos:  []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
 	}
 	require.NotNil(t, accountVideoInline(t, store, reporter, "vid_both", resp))
 
@@ -651,10 +688,10 @@ func TestVideoSweeper_GoneJobStopsPollingImmediately(t *testing.T) {
 // submission.
 func TestVideoSettle_AggregateRowCarriesAccountingDetail(t *testing.T) {
 	job := videoJob(t, "vid_debug", generationDims("sora-2-pro", "1920x1080", 8))
-	settlement := settleVideo(t, job, &schemas.BifrostVideoGenerationResponse{
+	settlement := settleVideoRendered(t, job, &schemas.BifrostVideoGenerationResponse{
 		Status: schemas.VideoStatusCompleted,
 		Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
-	})
+	}, 8)
 	require.NotNil(t, settlement.ApplyDebug)
 
 	entry := &logstore.Log{}
@@ -676,10 +713,10 @@ func TestVideoSettle_AggregateRowCarriesAccountingDetail(t *testing.T) {
 // carry the same block — marked incomplete.
 func TestVideoSettle_UnpriceableRowStillCarriesDetail(t *testing.T) {
 	job := videoJob(t, "vid_norate_debug", generationDims("some-unknown-model", "1920x1080", 8))
-	settlement := settleVideo(t, job, &schemas.BifrostVideoGenerationResponse{
+	settlement := settleVideoRendered(t, job, &schemas.BifrostVideoGenerationResponse{
 		Status: schemas.VideoStatusCompleted,
 		Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
-	})
+	}, 8)
 
 	require.False(t, settlement.Priced)
 	require.NotNil(t, settlement.ApplyDebug)
@@ -747,7 +784,7 @@ func TestVideoSweeper_SettlesCustomProviderJob(t *testing.T) {
 			ID:     "vid_custom",
 			Status: schemas.VideoStatusCompleted,
 			Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
-		}},
+		}, video: renderedMP4(t, 8)},
 		bases: map[schemas.ModelProvider]schemas.ModelProvider{"my-minimax": schemas.MiniMax},
 	}
 	reporter := &fakeUsageReporter{}
@@ -858,4 +895,324 @@ func TestVideoSettlerCoversEveryProviderThatImplementsVideo(t *testing.T) {
 	}
 	// A provider that cannot be built from a base URL and a key would be skipped silently.
 	assert.Equal(t, len(schemas.StandardProviders), built, "every standard provider must be built, or it is not checked")
+}
+
+// --- The rendered duration (TXE-7329) ---
+//
+// A video job whose vendor reports neither the video's duration nor a cost is priced on the length
+// of the video it rendered, read from the file's MP4 header, never on the seconds its create
+// named. A hosted model may take its own length input (Replicate's num_frames or length, through
+// extra_params) and render a longer video than the create asked for.
+
+// renderedMP4 builds a small MP4 whose one video track lasts the given seconds: four samples in an
+// mdat, timed by the sample table and stated by mdhd.
+func renderedMP4(t *testing.T, seconds int) []byte {
+	t.Helper()
+	return renderedMP4MS(t, int64(seconds)*1000)
+}
+
+func renderedMP4MS(t *testing.T, ms int64) []byte {
+	t.Helper()
+	f := &mp4MemFile{}
+	w := mp4.NewWriter(f)
+	box := func(typ mp4.BoxType, children func()) {
+		_, err := w.StartBox(&mp4.BoxInfo{Type: typ})
+		require.NoError(t, err)
+		children()
+		_, err = w.EndBox()
+		require.NoError(t, err)
+	}
+	leaf := func(b mp4.IBox) {
+		box(b.GetType(), func() {
+			_, err := mp4.Marshal(w, b, mp4.Context{})
+			require.NoError(t, err)
+		})
+	}
+	leaf(&mp4.Ftyp{MajorBrand: [4]byte{'i', 's', 'o', 'm'}})
+	var at int64
+	box(mp4.BoxTypeMdat(), func() {
+		pos, err := w.Seek(0, io.SeekCurrent)
+		require.NoError(t, err)
+		at = pos
+		_, err = w.Write(make([]byte, 100))
+		require.NoError(t, err)
+	})
+	require.Zero(t, ms%4, "four samples of equal length")
+	box(mp4.BoxTypeMoov(), func() {
+		leaf(&mp4.Mvhd{Timescale: 1000, DurationV0: uint32(ms)})
+		box(mp4.BoxTypeTrak(), func() {
+			leaf(&mp4.Tkhd{TrackID: 1})
+			box(mp4.BoxTypeMdia(), func() {
+				leaf(&mp4.Mdhd{Timescale: 1000, DurationV0: uint32(ms)})
+				leaf(&mp4.Hdlr{HandlerType: [4]byte{'v', 'i', 'd', 'e'}})
+				box(mp4.BoxTypeMinf(), func() {
+					box(mp4.BoxTypeStbl(), func() {
+						leaf(&mp4.Stts{EntryCount: 1, Entries: []mp4.SttsEntry{{SampleCount: 4, SampleDelta: uint32(ms / 4)}}})
+						leaf(&mp4.Stsz{SampleSize: 25, SampleCount: 4})
+						leaf(&mp4.Stsc{EntryCount: 1, Entries: []mp4.StscEntry{{FirstChunk: 1, SamplesPerChunk: 4, SampleDescriptionIndex: 1}}})
+						leaf(&mp4.Stco{EntryCount: 1, ChunkOffset: []uint32{uint32(at)}})
+					})
+				})
+			})
+		})
+	})
+	return f.data
+}
+
+// mp4MemFile is an in-memory io.WriteSeeker for go-mp4's Writer.
+type mp4MemFile struct {
+	data []byte
+	pos  int64
+}
+
+func (m *mp4MemFile) Write(p []byte) (int, error) {
+	if end := m.pos + int64(len(p)); end > int64(len(m.data)) {
+		m.data = append(m.data, make([]byte, end-int64(len(m.data)))...)
+	}
+	n := copy(m.data[m.pos:], p)
+	m.pos += int64(n)
+	return n, nil
+}
+
+func (m *mp4MemFile) Seek(offset int64, whence int) (int64, error) {
+	switch whence {
+	case io.SeekStart:
+		m.pos = offset
+	case io.SeekCurrent:
+		m.pos += offset
+	case io.SeekEnd:
+		m.pos = int64(len(m.data)) + offset
+	}
+	return m.pos, nil
+}
+
+// replicateVideoJob is a Replicate job whose create named seconds; Replicate's prediction reports
+// neither the rendered duration nor a cost.
+func replicateVideoJob(t *testing.T, videoID string, requestedSeconds int) *cstables.TableProviderJob {
+	t.Helper()
+	job := videoJob(t, videoID, generationDims("sora-2-pro", "1920x1080", requestedSeconds))
+	job.Provider = string(schemas.Replicate)
+	job.ID = cstables.ProviderJobID(cstables.ProviderJobKindVideo, job.Provider, videoID)
+	return job
+}
+
+func silentReplicateResponse(videoID string) *schemas.BifrostVideoGenerationResponse {
+	return &schemas.BifrostVideoGenerationResponse{
+		ID:     videoID,
+		Status: schemas.VideoStatusCompleted,
+		Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL, URL: bifrost.Ptr("https://replicate.delivery/out.mp4"), ContentType: "video/mp4"}},
+	}
+}
+
+func sweepVideoJob(t *testing.T, store *fakeAccountingStore, job *cstables.TableProviderJob, retriever VideoRetriever) *fakeUsageReporter {
+	t.Helper()
+	due := time.Now().UTC().Add(-time.Minute)
+	job.NextCheckAt = &due
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
+	reporter := &fakeUsageReporter{}
+	NewVideoSweeper(store, store, fakePricing{}, retriever, nil, reporter, SweeperConfig{
+		Provider: schemas.ModelProvider(job.Provider),
+		Limit:    10,
+	}).SweepOnce(context.Background())
+	return reporter
+}
+
+// The ticket's case: the create asked for 5 seconds, a model-defined input made the model render
+// 12, and Replicate reports neither. The job is charged for the 12 seconds it rendered.
+func TestVideoSweeper_PricesTheRenderedLengthNotTheRequestedSeconds(t *testing.T) {
+	store := newFakeAccountingStore()
+	job := replicateVideoJob(t, "pred_longer", 5)
+	retriever := &fakeVideoRetriever{resp: silentReplicateResponse("pred_longer"), video: renderedMP4(t, 12)}
+
+	reporter := sweepVideoJob(t, store, job, retriever)
+
+	assert.Equal(t, 1, retriever.downloads, "the rendered file is read once")
+	settled := store.jobs[job.ID]
+	require.NotNil(t, settled)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, settled.AccountingStatus)
+	entry := store.logs[AccountingLogID(ProviderJobKindVideo, schemas.Replicate, "pred_longer")]
+	require.NotNil(t, entry)
+	require.NotNil(t, entry.Cost)
+	assert.InDelta(t, 12*0.70, *entry.Cost, 1e-12, "priced on the 12 rendered seconds, not the 5 requested")
+	require.NotNil(t, entry.VideoDebugParsed.Accounting.Seconds)
+	assert.Equal(t, 12, *entry.VideoDebugParsed.Accounting.Seconds, "the row records the seconds it was priced on, which repricing reads")
+	require.Len(t, reporter.reports, 1)
+}
+
+// A shorter render is charged for what was rendered too: the measured length is the price basis,
+// whichever way it differs from the request.
+func TestVideoSweeper_PricesAShorterRenderedLength(t *testing.T) {
+	store := newFakeAccountingStore()
+	job := replicateVideoJob(t, "pred_shorter", 8)
+	retriever := &fakeVideoRetriever{resp: silentReplicateResponse("pred_shorter"), video: renderedMP4(t, 4)}
+
+	sweepVideoJob(t, store, job, retriever)
+
+	entry := store.logs[AccountingLogID(ProviderJobKindVideo, schemas.Replicate, "pred_shorter")]
+	require.NotNil(t, entry)
+	require.NotNil(t, entry.Cost)
+	assert.InDelta(t, 4*0.70, *entry.Cost, 1e-12)
+}
+
+// An ffmpeg-written MP4 (TXE-6774's 12-second fixture, moov after mdat) measures as 12 seconds.
+func TestVideoPoll_MeasuresAnFFmpegMP4(t *testing.T) {
+	video, err := os.ReadFile("../videoduration/testdata/twelve-seconds.mp4")
+	require.NoError(t, err)
+	job := replicateVideoJob(t, "pred_ffmpeg", 5)
+	poll, err := NewVideoSettler(&fakeVideoRetriever{resp: silentReplicateResponse("pred_ffmpeg"), video: video}).Poll(context.Background(), job)
+	require.NoError(t, err)
+	require.True(t, poll.Settleable)
+	payload, ok := poll.Payload.(VideoPayload)
+	require.True(t, ok)
+	require.NotNil(t, payload.RenderedSeconds)
+	assert.Equal(t, 12, *payload.RenderedSeconds)
+}
+
+// A job whose rendered length cannot be measured is parked unpriceable, with no price: it is
+// never charged at the seconds its create named.
+func TestVideoPoll_UnmeasurableVideoIsNotPricedAtTheRequestedSeconds(t *testing.T) {
+	whole := renderedMP4(t, 12)
+	for name, retriever := range map[string]VideoRetriever{
+		"no downloader":           &retrieveOnly{resp: silentReplicateResponse("pred_x")},
+		"not an MP4":              &fakeVideoRetriever{resp: silentReplicateResponse("pred_x"), video: []byte("<html>not a video</html>")},
+		"an empty file":           &fakeVideoRetriever{resp: silentReplicateResponse("pred_x"), video: []byte{}},
+		"a truncated MP4":         &fakeVideoRetriever{resp: silentReplicateResponse("pred_x"), video: whole[:len(whole)-20]},
+		"a file past the limit":   &fakeVideoRetriever{resp: silentReplicateResponse("pred_x"), downloadErr: fmt.Errorf("download: %w", ErrVideoDurationUnmeasurable)},
+		"a job that has no clips": &fakeVideoRetriever{resp: &schemas.BifrostVideoGenerationResponse{ID: "pred_x", Status: schemas.VideoStatusCompleted}, video: whole},
+	} {
+		t.Run(name, func(t *testing.T) {
+			job := replicateVideoJob(t, "pred_x", 5)
+			poll, err := NewVideoSettler(retriever).Poll(context.Background(), job)
+			require.NoError(t, err)
+			require.NotNil(t, poll)
+			assert.True(t, poll.Terminal)
+			assert.False(t, poll.Settleable, "nothing may be priced")
+			assert.Equal(t, UnpriceableReasonVideoDurationUnmeasurable, poll.UnpriceableReason)
+
+			store := newFakeAccountingStore()
+			reporter := sweepVideoJob(t, store, replicateVideoJob(t, "pred_x", 5), retriever)
+			assert.Empty(t, store.logs, "no cost row at the requested seconds")
+			assert.Empty(t, reporter.reports)
+			assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, store.jobs[job.ID].AccountingStatus)
+		})
+	}
+}
+
+// retrieveOnly is a VideoRetriever with no download.
+type retrieveOnly struct {
+	resp *schemas.BifrostVideoGenerationResponse
+}
+
+func (r *retrieveOnly) RetrieveVideo(context.Context, *cstables.TableProviderJob) (*schemas.BifrostVideoGenerationResponse, error) {
+	return r.resp, nil
+}
+
+// A download the vendor refuses is classified like a refused retrieve; any other failure is
+// retried, and the job stays due.
+func TestVideoPoll_DownloadFailures(t *testing.T) {
+	job := replicateVideoJob(t, "pred_dl", 5)
+
+	gone, err := NewVideoSettler(&fakeVideoRetriever{resp: silentReplicateResponse("pred_dl"), downloadErr: providerErr(404, "output expired")}).Poll(context.Background(), job)
+	require.NoError(t, err)
+	assert.True(t, gone.Terminal)
+	assert.False(t, gone.Settleable)
+	assert.Equal(t, UnpriceableReasonVideoGone, gone.UnpriceableReason)
+
+	transient := errors.New("connection reset")
+	_, err = NewVideoSettler(&fakeVideoRetriever{resp: silentReplicateResponse("pred_dl"), downloadErr: transient}).Poll(context.Background(), job)
+	require.ErrorIs(t, err, transient, "a transient download failure is retried")
+
+	store := newFakeAccountingStore()
+	sweepVideoJob(t, store, job, &fakeVideoRetriever{resp: silentReplicateResponse("pred_dl"), downloadErr: transient})
+	assert.Empty(t, store.logs)
+	rescheduled := store.jobs[job.ID]
+	assert.Equal(t, cstables.ProviderJobAccountingStatusPending, rescheduled.AccountingStatus)
+	assert.Equal(t, 1, rescheduled.PollAttempts)
+}
+
+// A vendor that reports the duration or its own cost is priced from that, with no download.
+func TestVideoPoll_ReportedDurationOrCostNeedsNoDownload(t *testing.T) {
+	for name, resp := range map[string]*schemas.BifrostVideoGenerationResponse{
+		"seconds": {ID: "vid_r", Status: schemas.VideoStatusCompleted, Seconds: bifrost.Ptr("8"), Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}}},
+		"cost":    {ID: "vid_r", Status: schemas.VideoStatusCompleted, Usage: &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: 0.4}}, Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}}},
+		"failed":  {ID: "vid_r", Status: schemas.VideoStatusFailed},
+	} {
+		t.Run(name, func(t *testing.T) {
+			retriever := &fakeVideoRetriever{resp: resp, video: renderedMP4(t, 12)}
+			poll, err := NewVideoSettler(retriever).Poll(context.Background(), videoJob(t, "vid_r", generationDims("sora-2-pro", "1920x1080", 8)))
+			require.NoError(t, err)
+			assert.True(t, poll.Settleable)
+			assert.Zero(t, retriever.downloads)
+			assert.False(t, RenderedDurationRequired(resp))
+		})
+	}
+}
+
+// Settle never prices a silent response from the request alone: without the measurement it
+// returns an error, which the sweeper retries.
+func TestVideoSettle_SilentResponseWithoutAMeasurementSettlesNothing(t *testing.T) {
+	job := replicateVideoJob(t, "pred_unmeasured", 5)
+	settlement, err := NewVideoSettler(nil).Settle(context.Background(), fakePricing{}, JobRequest{
+		Provider: schemas.Replicate, ProviderJobID: job.JobID, Job: job,
+		Payload: VideoPayload{Response: silentReplicateResponse("pred_unmeasured")},
+	})
+	require.Error(t, err)
+	assert.Nil(t, settlement)
+}
+
+// The retrieve path never downloads the video: a silent response is left to the sweeper, which
+// then settles it at the measured length.
+func TestAccountVideoJob_LeavesASilentResponseToTheSweeper(t *testing.T) {
+	store := newFakeAccountingStore()
+	reporter := &fakeUsageReporter{}
+	job := replicateVideoJob(t, "pred_inline", 5)
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
+
+	out, err := AccountVideoJob(context.Background(), store, store, fakePricing{}, JobRequest{
+		Provider: schemas.Replicate, ProviderJobID: "pred_inline", UsageReporter: reporter, ClaimedBy: "logging-node",
+		Payload: VideoPayload{Response: silentReplicateResponse("pred_inline")},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, out)
+	assert.Empty(t, store.logs)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusPending, store.jobs[job.ID].AccountingStatus, "the job stays due")
+
+	retriever := &fakeVideoRetriever{resp: silentReplicateResponse("pred_inline"), video: renderedMP4(t, 12)}
+	sweepVideoJob(t, store, job, retriever)
+	entry := store.logs[AccountingLogID(ProviderJobKindVideo, schemas.Replicate, "pred_inline")]
+	require.NotNil(t, entry)
+	assert.InDelta(t, 12*0.70, *entry.Cost, 1e-12)
+}
+
+func TestRenderedSeconds(t *testing.T) {
+	for ms, want := range map[int64]int{
+		1:     1,
+		499:   1,
+		1499:  1,
+		1500:  2,
+		5063:  5, // Wan's 81 frames at 16 per second
+		5042:  5, // 121 frames at 24 per second
+		4960:  5,
+		12000: 12,
+		12500: 13,
+	} {
+		assert.Equal(t, want, RenderedSeconds(ms), "%d ms", ms)
+	}
+	// The built fixture measures as built.
+	poll, err := NewVideoSettler(&fakeVideoRetriever{resp: silentReplicateResponse("pred_ms"), video: renderedMP4MS(t, 7600)}).Poll(context.Background(), replicateVideoJob(t, "pred_ms", 5))
+	require.NoError(t, err)
+	assert.Equal(t, 8, *poll.Payload.(VideoPayload).RenderedSeconds)
+}
+
+// BenchmarkRenderedDurationRequired is the request-path cost TXE-7329 adds: the logging plugin's
+// inline settlement on a terminal retrieve asks it once, to leave a silent response to the
+// sweeper.
+func BenchmarkRenderedDurationRequired(b *testing.B) {
+	silent := silentReplicateResponse("pred_bench")
+	reported := &schemas.BifrostVideoGenerationResponse{ID: "vid_bench", Status: schemas.VideoStatusCompleted, Seconds: bifrost.Ptr("8"), Videos: silent.Videos}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = RenderedDurationRequired(silent)
+		_ = RenderedDurationRequired(reported)
+	}
 }

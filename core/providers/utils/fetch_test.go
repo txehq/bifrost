@@ -26,6 +26,7 @@ import (
 
 	"github.com/capsohq/bifrost/core/internal/testtime"
 
+	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/network/proxytest"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -621,6 +622,9 @@ func TestFetchMediaURL_RawBytesAndMediaLimit(t *testing.T) {
 
 	if _, _, err := FetchAndEncodeURL(proxyCtx(t), "http://203.0.113.10/large.mp4"); err == nil || !strings.Contains(err.Error(), "limit") {
 		t.Fatalf("inline fetch of %d bytes should exceed its limit, got %v", len(large), err)
+	} else if !errors.Is(err, ErrMediaTooLarge) || errors.Is(err, network.ErrResponseBodyTooLarge) {
+		// TXE-7329: the refusal is final, and only the fetcher's own sentinel says so.
+		t.Fatalf("an over-limit fetch should match ErrMediaTooLarge and nothing else, got %v", err)
 	}
 	if _, body, err := FetchMediaURL(proxyCtx(t), "http://203.0.113.10/large.mp4"); err != nil || len(body) != len(large) {
 		t.Fatalf("media fetch of %d bytes: len=%d err=%v", len(large), len(body), err)

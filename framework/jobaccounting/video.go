@@ -1,7 +1,9 @@
 package jobaccounting
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,6 +12,7 @@ import (
 	cstables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/capsohq/bifrost/framework/logstore"
 	"github.com/capsohq/bifrost/framework/modelcatalog"
+	"github.com/capsohq/bifrost/framework/videoduration"
 	"github.com/google/uuid"
 )
 
@@ -35,6 +38,12 @@ const (
 	// the job re-drivable, and the existing missing-cost backfill can settle it in
 	// bulk once the policy is actually known.
 	UnpriceableReasonContentFiltered = "content_filtered_policy_unknown"
+	// UnpriceableReasonVideoDurationUnmeasurable is a finished job whose vendor reported neither a
+	// duration nor a cost, and whose rendered video could not be measured: the settler holds no
+	// downloader, the job returned no clip, or the file is not an MP4 whose header names a duration
+	// (fork, TXE-7329). The job is not priced at the seconds its create named: a model-defined
+	// input can render a longer video than that.
+	UnpriceableReasonVideoDurationUnmeasurable = "video_duration_unmeasurable"
 )
 
 // videoLogNamespace keys the aggregate cost row for a settled video. It is its own
@@ -90,6 +99,19 @@ type VideoRetriever interface {
 	RetrieveVideo(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostVideoGenerationResponse, error)
 }
 
+// VideoDownloader is implemented by a VideoRetriever that can fetch a finished job's video file:
+// the provider's own buffered download of its first clip, held to the gateway's response body
+// limit (client.max_response_body_size_mb, TXE-7148). An error that is a provider call's
+// (NewProviderCallError) is classified like a retrieve's; an error wrapping
+// ErrVideoDurationUnmeasurable is final; any other error is retried (fork, TXE-7329).
+type VideoDownloader interface {
+	DownloadVideo(ctx context.Context, job *cstables.TableProviderJob) ([]byte, error)
+}
+
+// ErrVideoDurationUnmeasurable marks a VideoDownloader error that no retry can change, such as a
+// file past the response body limit.
+var ErrVideoDurationUnmeasurable = errors.New("rendered video duration is unmeasurable")
+
 // VideoSettler prices provider video jobs. It is the Settler for
 // ProviderJobKindVideo.
 //
@@ -107,6 +129,10 @@ func NewVideoSettler(retriever VideoRetriever) *VideoSettler {
 // from Poll (or an inline caller) into Settle.
 type VideoPayload struct {
 	Response *schemas.BifrostVideoGenerationResponse
+	// RenderedSeconds is the length of the rendered video, measured from its file, for a response
+	// that reports neither a duration nor a cost (RenderedDurationRequired). Settle prices such a
+	// job on it and on nothing else (fork, TXE-7329).
+	RenderedSeconds *int
 }
 
 func (s *VideoSettler) Kind() ProviderJobKind { return ProviderJobKindVideo }
@@ -172,12 +198,86 @@ func (s *VideoSettler) Poll(ctx context.Context, job *cstables.TableProviderJob)
 	if !isTerminalVideoStatus(resp.Status) {
 		return &PollResult{Job: latest}, nil
 	}
+	payload := VideoPayload{Response: resp}
+	if RenderedDurationRequired(resp) {
+		seconds, reason, err := s.measureRenderedVideo(ctx, job, resp)
+		if err != nil {
+			return nil, err
+		}
+		if reason != "" {
+			return &PollResult{Job: latest, Terminal: true, UnpriceableReason: reason}, nil
+		}
+		payload.RenderedSeconds = &seconds
+	}
 	return &PollResult{
 		Job:        latest,
 		Terminal:   true,
 		Settleable: true,
-		Payload:    VideoPayload{Response: resp},
+		Payload:    payload,
 	}, nil
+}
+
+// RenderedDurationRequired reports whether a terminal response leaves the job's length to be
+// measured from its file (fork, TXE-7329): the job finished with a video, and the vendor reported
+// neither the video's duration nor a cost. The seconds the create named are then only what was
+// asked for. A vendor's hosted model may define its own length input (Replicate's num_frames or
+// length, sent through extra_params) and render a longer video than that, so the job is priced on
+// the length of the video it rendered.
+func RenderedDurationRequired(resp *schemas.BifrostVideoGenerationResponse) bool {
+	if resp == nil || resp.Status != schemas.VideoStatusCompleted {
+		return false
+	}
+	if resp.ContentFilter != nil && resp.ContentFilter.FilteredCount > 0 {
+		return false
+	}
+	observed := modelcatalog.VideoDimensionsFromResponse(resp)
+	return observed.Seconds == nil && observed.ProviderCost == nil
+}
+
+// measureRenderedVideo downloads a finished job's video through the provider and reads its
+// length from the MP4 header. It returns the length in whole seconds, or the reason the job is
+// unpriceable, or an error worth retrying. A response with several clips is measured on its first,
+// the one the provider's download serves: every clip of one job comes from the same input.
+func (s *VideoSettler) measureRenderedVideo(ctx context.Context, job *cstables.TableProviderJob, resp *schemas.BifrostVideoGenerationResponse) (int, string, error) {
+	downloader, ok := s.retriever.(VideoDownloader)
+	if !ok || modelcatalog.VideoDimensionsFromResponse(resp).OutputCount == 0 {
+		return 0, UnpriceableReasonVideoDurationUnmeasurable, nil
+	}
+	callCtx, cancel := context.WithTimeout(ctx, defaultProviderPollTimeout)
+	defer cancel()
+	content, err := downloader.DownloadVideo(callCtx, job)
+	if err != nil {
+		if errors.Is(err, ErrVideoDurationUnmeasurable) {
+			return 0, UnpriceableReasonVideoDurationUnmeasurable, nil
+		}
+		if reason := videoUnreachableReason(err); reason != "" {
+			return 0, reason, nil
+		}
+		return 0, "", fmt.Errorf("download video for job %s: %w", job.ID, err)
+	}
+	duration, err := videoduration.Read(callCtx, bytes.NewReader(content), int64(len(content)))
+	if err != nil {
+		if errors.Is(err, videoduration.ErrUnmeasurable) {
+			return 0, UnpriceableReasonVideoDurationUnmeasurable, nil
+		}
+		return 0, "", fmt.Errorf("read video duration for job %s: %w", job.ID, err)
+	}
+	if duration.VideoMS <= 0 {
+		return 0, UnpriceableReasonVideoDurationUnmeasurable, nil
+	}
+	return RenderedSeconds(duration.VideoMS), "", nil
+}
+
+// RenderedSeconds is a measured length in milliseconds as the whole seconds a video rate is
+// charged on: rounded to the nearest second, a half second up, and never below one second. A
+// rendered clip runs a frame or two past or short of its nominal length (Wan's 81 frames at 16
+// per second are 5.0625 s), and a rate card's seconds are that nominal length.
+func RenderedSeconds(ms int64) int {
+	seconds := (ms + 500) / 1000
+	if seconds < 1 {
+		return 1
+	}
+	return int(seconds)
 }
 
 // Settle prices one video job from its merged dimensions: what was ordered, as
@@ -195,6 +295,16 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 	dims := captured.MergedWith(modelcatalog.VideoDimensionsFromResponse(resp))
 	if dims.Model == "" && jobReq.FallbackModel != "" {
 		dims.Model = jobReq.FallbackModel
+	}
+	// Fork (TXE-7329): a job whose vendor reported neither a duration nor a cost is priced on the
+	// length of the video it rendered, never on the seconds its create named. Poll measures it;
+	// a payload without the measurement settles nothing, so the job is retried.
+	if RenderedDurationRequired(resp) {
+		if load.RenderedSeconds == nil {
+			return nil, fmt.Errorf("video job %s finished without a reported duration or cost, and its rendered duration was not measured", jobReq.ProviderJobID)
+		}
+		seconds := *load.RenderedSeconds
+		dims.Seconds = &seconds
 	}
 
 	settlement := &Settlement{
@@ -420,6 +530,12 @@ func AccountVideoJob(ctx context.Context, stateStore JobStore, logStore Aggregat
 	load, _ := req.Payload.(VideoPayload)
 	if load.Response == nil || !isTerminalVideoStatus(load.Response.Status) {
 		// Still running: nothing to settle, and the sweeper is already scheduled.
+		return nil, nil
+	}
+	if RenderedDurationRequired(load.Response) && load.RenderedSeconds == nil {
+		// Fork (TXE-7329): the job's price waits on its rendered duration, which only the sweeper
+		// measures: the caller's retrieve is not held up by a download of the video, and the job
+		// stays due until the sweeper settles it.
 		return nil, nil
 	}
 
