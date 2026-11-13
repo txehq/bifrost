@@ -11,7 +11,8 @@
 // tests/e2e/api/runners/lib/harness-partitions.test.mjs fails when a harness row is claimed by
 // no named partition outside a serial-pass folder.
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { buildHaystack } from "./haystack.mjs";
 import { registeredProviders } from "./base-url-support.mjs";
 
@@ -50,9 +51,27 @@ const haystackOf = (item, ancestorNames) => {
   return haystack;
 };
 
+// The provider partitions a model prefix can name: the registry and the resellers. Read once.
+const repoRootOfLib = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..");
+let prefixProviders = null;
+const isProviderPrefix = (prefix) => {
+  if (!prefixProviders) {
+    const registry = registeredProviders(readFileSync(join(repoRootOfLib, "core", "schemas", "bifrost.go"), "utf8"));
+    prefixProviders = new Set([...registry, ...RESELLER_PROVIDERS]);
+  }
+  return prefixProviders.has(prefix);
+};
+
 export const itemMatchesProvider = (item, ancestorNames, provider) => {
   if (!provider) return true;
   const keywords = PROVIDER_KEYWORDS[provider] || [provider];
+  // A row whose model names a provider ("groq/qwen-2.5-32b") is that provider's alone. Keyword
+  // matching would also hand it to every partition whose name appears in the model id (qwen,
+  // glm, minimax) or the folder name (a gemini row in a "Gemini and Vertex" folder), and a sweep
+  // would send the same paid request once per partition (TXE-7308, after the roster grew to the
+  // whole registry). Route families (passthrough) still claim by route, alongside the provider.
+  const prefix = /"model"\s*:\s*"([^"/]+)\//.exec(item.request?.body?.raw || "")?.[1];
+  if (prefix && !ROUTE_PARTITIONS.includes(provider) && isProviderPrefix(prefix)) return prefix === provider;
   const haystack = haystackOf(item, ancestorNames);
   // OpenRouter rows (model "openrouter/<vendor>/<model>") embed vendor substrings like
   // gpt-/claude-/gemini, so they'd otherwise be claimed by the openai/anthropic/gemini

@@ -59,6 +59,20 @@ test("a row whose model names the provider is that provider's, even when the hay
   assert.ok(!itemMatchesProvider(row, ["Some folder"], "openai"));
 });
 
+test("a row whose model names a provider runs in that provider's fork only, never once per name in it", () => {
+  const roster = harnessPartitions(repoRoot);
+  const claimants = (row, ancestors) => roster.filter((p) => itemMatchesProvider(row, ancestors, p));
+  // Folder 108's shape: before, qwen claimed the Groq, Cerebras and Parasail rows too, and the
+  // sweep sent each paid request twice.
+  assert.deepStrictEqual(claimants(chat("groq qwen", "groq/qwen-2.5-32b"), ["108. Open-weight chat"]), ["groq"]);
+  assert.deepStrictEqual(claimants(chat("cerebras qwen", "cerebras/qwen-3-32b"), ["108. Open-weight chat"]), ["cerebras"]);
+  // A folder name no longer routes a row the model names elsewhere.
+  assert.deepStrictEqual(claimants(chat("gemini usage", "gemini/gemini-2.5-flash"), ["337. Gemini and Vertex chat usage"]), ["gemini"]);
+  // A route family still claims by route, beside the provider.
+  const passthrough = { name: "pt", request: { method: "POST", url: { raw: "{{baseUrl}}/openai_passthrough/v1/chat/completions" }, body: { mode: "raw", raw: JSON.stringify({ model: "openai/gpt-4o-mini" }) } } };
+  assert.deepStrictEqual(claimants(passthrough, ["Passthrough"]), ["openai", "passthrough"]);
+});
+
 test("the serial pass takes a folder with a row no partition claims, or one that touches fixture state", () => {
   const coll = [
     folder("154. Provider 5xx failover", [get("counters reset", "{{fixtureUrl}}/__reset"), chat("503", "openai/upstream-503"), get("hits", "{{fixtureUrl}}/__hits")]),
