@@ -1,0 +1,109 @@
+{
+  "TXE-7392": {
+    "kind": "offline gap: no seeded LLM logs without a provider key",
+    "file": "features/logs/logs.spec.ts",
+    "tests": [
+      "LLM Logs › Logs Display › should display synthetic Antigravity stored desktop attribution",
+      "LLM Logs › Logs Display › should display synthetic Antigravity stored cli attribution",
+      "LLM Logs › Logs Display › should display synthetic Antigravity raw-only desktop attribution",
+      "LLM Logs › Logs Display › should display synthetic Antigravity edge app key attribution",
+      "LLM Logs › Logs Display › should display logs table",
+      "LLM Logs › Logs Display › should display stats cards",
+      "LLM Logs › Logs Display › should fit stat card trend figures at 1440px",
+      "LLM Logs › Logs Display › should keep the table status row inside the visible table at 1440px",
+      "LLM Logs › Logs Display › should display filters section",
+      "LLM Logs › Log Filtering › should filter logs by provider",
+      "LLM Logs › Log Filtering › should filter logs by model",
+      "LLM Logs › Log Filtering › should filter logs by status",
+      "LLM Logs › Log Filtering › should filter logs by tool call name",
+      "LLM Logs › Log Filtering › should search logs by content",
+      "LLM Logs › Log Filtering › should clear search",
+      "LLM Logs › Log Filtering › should filter by time period",
+      "LLM Logs › Log Details › should open log details sheet",
+      "LLM Logs › Log Details › should close log details sheet",
+      "LLM Logs › Pagination › should navigate to next page",
+      "LLM Logs › Pagination › should navigate to previous page",
+      "LLM Logs › Table Sorting › should sort by timestamp",
+      "LLM Logs › Table Sorting › should sort by latency",
+      "LLM Logs › Table Sorting › should sort by cost",
+      "LLM Logs › Live Updates › should toggle live updates",
+      "LLM Logs › Empty State › should show empty state when no logs",
+      "LLM Logs › Advanced Filtering › should combine multiple filters",
+      "LLM Logs › Advanced Filtering › should clear all filters",
+      "LLM Logs › Advanced Filtering › should search within filtered results",
+      "LLM Logs › Grouped View › should tell session rows apart from fallback chain rows",
+      "LLM Logs › Decision Logs › should show the questions of an older decision log keyed by name",
+      "LLM Logs › Decision Logs › should show the questions of a decision in request order",
+      "LLM Logs › Decision Logs › should copy the questions as JSON",
+      "LLM Logs › Decision Logs › should not show a questions box on a chat log",
+      "LLM Logs › Passthrough Logs › should render a parsed passthrough row as a conversation",
+      "LLM Logs › Passthrough Logs › should keep the raw body view for a passthrough row that did not parse",
+      "LLM Logs › Attempt Trail › should show each attempt with its class or reason and its status",
+      "LLM Logs › Video Outputs › should show a video job's clip as a video and its last frame as an image",
+      "LLM Logs › URL State Persistence › should persist filters in URL",
+      "LLM Logs › URL State Persistence › should look up a pasted request ID by id instead of content",
+      "LLM Logs › URL State Persistence › should restore state from URL"
+    ]
+  },
+  "TXE-7393": {
+    "kind": "stale test or product defect, not offline",
+    "file": "features/mcp-registry/mcp-registry-openapi.spec.ts",
+    "tests": [
+      "MCP Registry - OpenAPI servers › Creation from a pasted document › parses the document, lets operations be picked, and creates the server",
+      "MCP Registry - OpenAPI servers › Creation from a pasted document › per-user auth takes a header scheme from the caller's own header",
+      "MCP Registry - OpenAPI servers › Creation from a pasted document › creates through the shared createClient helper and shows the stored document on the edit sheet",
+      "MCP Registry - OpenAPI servers › Creation from a pasted document › does not create before the document was parsed",
+      "MCP Registry - OpenAPI servers › Other document sources › parses the pasted document again after a URL was fetched",
+      "MCP Registry - OpenAPI servers › Replacing the document › keeps the selection of operations that survive and adds the new ones",
+      "MCP Registry - OpenAPI servers › Replacing the document: credentials and provenance › clears a stored key whose scheme moved to the query string, even when the stored preview lands last",
+      "MCP Registry - OpenAPI servers › Replacing the document: base URL › shows an invalid custom base URL at the input and does not save",
+      "MCP Registry - OpenAPI servers › Filtering › filters the table by the OpenAPI connection type"
+    ]
+  },
+  "TXE-7394": {
+    "kind": "offline gap: the empty datasheet offers no gpt-4o-mini",
+    "file": "features/model-limits/model-limits.spec.ts",
+    "tests": [
+      "Model Limits › should create a model limit with budget and rate limit",
+      "Model Limits › should edit a model limit budget and rate limit",
+      "Model Limits › should delete a model limit"
+    ]
+  },
+  "TXE-7395": {
+    "kind": "offline gap: saves a live getbifrost.ai datasheet URL",
+    "file": "features/config/config-pricing.spec.ts",
+    "tests": ["Pricing Config › should set and save datasheet URL", "Pricing Config › should trigger force sync"]
+  },
+  "TXE-7396": {
+    "kind": "stale test or product defect, not offline",
+    "file": "features/agent-gateway/agent-gateway.spec.ts",
+    "tests": [
+      "Agent Gateway › registers an agent from its fetched card with its credentials",
+      "Agent Gateway › edits a registration without re-entering its masked credentials",
+      "Agent Gateway › grants and revokes virtual key access"
+    ]
+  },
+  "TXE-7397": {
+    "kind": "stale test",
+    "file": "features/config/config-client-settings.spec.ts",
+    "tests": ["Skills marketplace URL settings › marketplace registration follows missing URL"]
+  },
+  "TXE-7398": {
+    "kind": "stale test or product defect, not offline",
+    "file": "features/config/config-security.spec.ts",
+    "tests": ["Security Settings › Dashboard Auth Confirmation › should require the current admin password to turn protection back on after disabling it"]
+  },
+  "TXE-7399": {
+    "kind": "stale test",
+    "file": "features/placeholders/placeholders.spec.ts",
+    "tests": ["Placeholder and Enterprise Pages › should load cluster page"]
+  },
+  "TXE-7400": {
+    "kind": "stale test or product defect, not offline",
+    "file": "features/providers/providers-crud.spec.ts",
+    "tests": [
+      "Providers › Provider Navigation › Voyage catalog entry opens an API key form",
+      "Providers › Form Validation › should show an error for an invalid custom provider hostname"
+    ]
+  }
+}

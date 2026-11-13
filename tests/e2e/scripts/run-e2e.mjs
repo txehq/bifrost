@@ -7,9 +7,14 @@
 //
 //   node scripts/run-e2e.mjs [--workers n] [--features x,y] [--rerun file.json]
 //                            [--grep re] [--headed] [--ui] [--skip-build] [--keep]
-//                            [--down] [-- <extra playwright args>]
+//                            [--down] [--offline] [--shard i/n] [-- <extra playwright args>]
+//
+// --offline (TXE-7385) runs with no provider keys and no egress: empty pricing datasheets from a
+// loopback server, no MCP library sync, and tests/e2e/quarantine.json applied. --shard i/n runs
+// one of n balanced slices of the selected spec files; the "E2E UI (offline)" job uses both.
 import { spawn, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
 import net from 'node:net'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -57,6 +62,12 @@ function parseArgs(argv) {
     else if (a === '--skip-build') opts.skipBuild = true
     else if (a === '--keep') opts.keep = true
     else if (a === '--down') opts.down = true
+    else if (a === '--offline') opts.offline = true
+    else if (a === '--shard') {
+      const m = /^(\d+)\/(\d+)$/.exec(argv[++i] ?? '')
+      if (!m || Number(m[1]) < 1 || Number(m[1]) > Number(m[2])) fail('--shard takes i/n with 1 <= i <= n, e.g. --shard 1/2')
+      opts.shard = { index: Number(m[1]), total: Number(m[2]) }
+    }
     else fail(`unknown argument: ${a}`)
   }
   return opts
@@ -101,8 +112,9 @@ function selectFiles(opts) {
 
 // Longest-first greedy bin packing: each file goes to the currently lightest worker.
 // Weights are last run's durations; unseen files are estimated from their test count.
-function schedule(files, requested) {
-  const timings = existsSync(TIMINGS_FILE) ? JSON.parse(readFileSync(TIMINGS_FILE, 'utf8')) : {}
+// useTimings false weighs by test count alone, which every checkout computes the same way.
+function schedule(files, requested, useTimings = true) {
+  const timings = useTimings && existsSync(TIMINGS_FILE) ? JSON.parse(readFileSync(TIMINGS_FILE, 'utf8')) : {}
   const weight = (f) => timings[f] ?? Math.max(5000, (readFileSync(join(E2E_ROOT, f), 'utf8').match(/\btest(\.skip|\.fixme)?\(/g)?.length ?? 1) * 6000)
   const count = Math.max(1, Math.min(requested, files.length))
   const workers = Array.from({ length: count }, (_, i) => ({ name: `w${i + 1}`, port: BASE_PORT + i, files: [], estimateMs: 0 }))
@@ -182,11 +194,35 @@ async function startPostgres(workers) {
 const dbName = (w) => `bifrost_e2e_${w.name}`
 const workerDir = (name) => join(WORK_DIR, 'workers', name)
 
-async function startWorker(w) {
+// --offline (TXE-7385): the gateway downloads its pricing datasheets and the MCP library at startup,
+// and exits when it cannot. An offline run serves both datasheets empty from a loopback server and
+// turns the library sync off, as the offline harness fixtures do (fixtureGatewayConfig in
+// tests/e2e/api/runners/lib/tls-intercept-proxy.mjs).
+async function serveEmptyDatasheets() {
+  const server = createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end('{}')
+  })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  return { server, origin: `http://127.0.0.1:${server.address().port}` }
+}
+
+function writeWorkerConfig(dir, datasheetOrigin) {
+  const config = JSON.parse(readFileSync(SEED_CONFIG, 'utf8'))
+  if (datasheetOrigin) {
+    config.framework = {
+      ...config.framework,
+      pricing: { ...config.framework?.pricing, pricing_url: `${datasheetOrigin}/pricing.json`, model_parameters_url: `${datasheetOrigin}/model-parameters.json`, mcp_library_sync_interval: 0 },
+    }
+  }
+  writeFileSync(join(dir, 'config.json'), JSON.stringify(config, null, 2))
+}
+
+async function startWorker(w, datasheetOrigin) {
   const dir = workerDir(w.name)
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
-  copyFileSync(SEED_CONFIG, join(dir, 'config.json'))
+  writeWorkerConfig(dir, datasheetOrigin)
   const logFile = join(dir, 'bifrost.log')
   const out = openSync(logFile, 'a')
   const child = spawn(BINARY, ['--app-dir', dir, '--port', String(w.port), '--log-level', 'info'], {
@@ -276,7 +312,14 @@ async function main() {
   acquireLock()
   if (opts.down) return down()
 
-  const { files, filters } = selectFiles(opts)
+  const selected = selectFiles(opts)
+  const { filters } = selected
+  // --shard i/n (TXE-7385): the workers' packing into n shards, weighed by test count only, and this
+  // run takes shard i. Last run's timings would differ between runs (each run records its own), so
+  // two shards could overlap and leave files unrun; the test count is the same in every checkout.
+  const files = opts.shard ? schedule(selected.files, opts.shard.total, false)[opts.shard.index - 1]?.files ?? [] : selected.files
+  if (opts.shard) log(`shard ${opts.shard.index}/${opts.shard.total}: ${files.length} of ${selected.files.length} spec file(s)`)
+  if (!files.length) fail('no spec files selected')
   const requested = opts.workers ?? (Number(process.env.WORKERS) || DEFAULT_WORKERS)
   if (!Number.isInteger(requested) || requested < 1) fail(`WORKERS must be a positive integer, got ${requested}`)
   const workers = schedule(files, requested)
@@ -297,8 +340,10 @@ async function main() {
   process.on('SIGINT', () => { cleanup(); process.exit(130) })
   process.on('SIGTERM', () => { cleanup(); process.exit(143) })
 
+  const datasheets = opts.offline ? await serveEmptyDatasheets() : null
+  if (datasheets) log(`offline: empty pricing datasheets on ${datasheets.origin}, MCP library sync off`)
   try {
-    await Promise.all(workers.map(startWorker))
+    await Promise.all(workers.map((w) => startWorker(w, datasheets?.origin)))
     await Promise.all(workers.map(seedLogs))
   } catch (err) {
     stopWorkers()
@@ -321,6 +366,8 @@ async function main() {
     env: {
       ...process.env,
       E2E_PLAN: PLAN_FILE,
+      // Offline runs apply the quarantine (quarantine.ts); other runs ignore it.
+      E2E_OFFLINE: opts.offline ? '1' : '',
       // Reruns are for debugging, so they keep traces and videos of failures.
       E2E_DEBUG_ARTIFACTS: opts.rerun ? '1' : (process.env.E2E_DEBUG_ARTIFACTS ?? ''),
       // Only full-file runs are representative enough to schedule the next run on.

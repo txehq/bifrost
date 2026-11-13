@@ -1,0 +1,137 @@
+name: E2E UI offline
+
+# The Playwright UI suite (tests/e2e/features) on every pull request, offline (TXE-7385).
+#
+# Before this, its only workflow was e2e-tests.yml, which fires on a push to one upstream branch
+# nobody pushes to, so the suite ran in no job and rotted: a first offline run failed 58 tests in 9
+# spec files, several of them stale against the UI rather than broken by being offline.
+#
+# Offline means no provider keys and no egress past the setup steps: run-e2e.mjs --offline serves
+# the gateway empty pricing datasheets from loopback and turns the MCP library sync off, and
+# scripts/test-offline.sh refuses every non-loopback dial the gateway makes. Tests that fail
+# offline are listed in tests/e2e/quarantine.json, each under the ticket that fixes it. A listed
+# test that fails does not fail the run; one that starts passing does, and so does an entry whose
+# test no longer exists, so the list cannot go stale (tests/e2e/quarantine.ts).
+#
+# Two shards, each with its own gateways and Postgres, split by run-e2e.mjs --shard. The required
+# check is the `E2E UI (offline)` job below, which fails unless both shards passed. No paths
+# filter: a path-filtered required check never reports on a PR outside its paths, which blocks
+# that PR's merge.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+# No concurrency group: this is a required check, and a group cancels one of two runs on the
+# same head, which leaves the PR blocked beside a passing run (TXE-7104).
+
+jobs:
+  shard:
+    name: E2E UI offline shard ${{ matrix.shard }}
+    # Outside contributors' PRs wait for approval in pr-testing; everyone else runs in
+    # ci-trusted-branch. The same expression as the other required jobs
+    # (scripts/test-approval-environment.py).
+    environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          # Setup only: setup-node and setup-go (api.github.com, github.com, nodejs.org,
+          # release-assets.githubusercontent.com, storage.googleapis.com), the Go modules
+          # (proxy.golang.org, sum.golang.org), npm ci for ui and tests/e2e (registry.npmjs.org),
+          # the e2e Postgres image (Docker Hub), Chromium and its system packages for Playwright
+          # (cdn.playwright.dev, playwright.download.prss.microsoft.com, the Ubuntu APT hosts).
+          # The tests themselves dial only loopback.
+          allowed-endpoints: >
+            api.github.com:443
+            auth.docker.io:443
+            azure.archive.ubuntu.com:80
+            cdn.playwright.dev:443
+            esm.ubuntu.com:443
+            github.com:443
+            nodejs.org:443
+            packages.microsoft.com:443
+            playwright.download.prss.microsoft.com:443
+            production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
+            proxy.golang.org:443
+            registry-1.docker.io:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.3"
+          cache: false
+
+      - name: Restore the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: go-unit
+
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "25"
+
+      - name: Install Playwright and Chromium
+        working-directory: tests/e2e
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Run the UI suite offline (shard ${{ matrix.shard }} of 2)
+        env:
+          SHARD: ${{ matrix.shard }}
+          CI: "true"
+        run: scripts/test-offline.sh node tests/e2e/scripts/run-e2e.mjs --offline --shard "$SHARD/2" --workers 3
+
+      - name: Upload the Playwright report and gateway logs
+        if: failure()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: e2e-ui-offline-shard-${{ matrix.shard }}
+          path: |
+            tests/e2e/reports/
+            tests/e2e/test-results/
+            tests/e2e/playwright-report/
+            tmp/e2e/workers/*/bifrost.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  e2e-ui-offline:
+    if: always()
+    needs: [shard]
+    name: E2E UI (offline)
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    timeout-minutes: 5
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          allowed-endpoints: >+
+
+      - name: Both shards passed
+        env:
+          RESULT: ${{ needs.shard.result }}
+        run: |
+          echo "shards: $RESULT"
+          [ "$RESULT" = success ]

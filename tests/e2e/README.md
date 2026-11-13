@@ -56,6 +56,18 @@ Put fixed preconditions in `env/config.json` (validated against `transports/conf
 
 `errors` holds failures outside any test (a spec that fails to load, global setup). A failed run with no test targets cannot be replayed with `RERUN`, and neither can a failed login setup (`core/auth.setup.ts`), since the tests behind it were skipped rather than failed; the runner refuses both and asks for a full run. Only one run can use `tmp/e2e` at a time; a second one exits while the first is in progress.
 
+### Offline, as CI runs it
+
+The `E2E UI (offline)` check (`.github/workflows/e2e-ui-offline.yml`) runs this suite on every pull request with no provider keys and no egress, in two shards (TXE-7385):
+
+```bash
+scripts/test-offline.sh node tests/e2e/scripts/run-e2e.mjs --offline --shard 1/2 --workers 3
+```
+
+`--offline` serves the gateway empty pricing datasheets from loopback and turns the MCP library sync off. `--shard i/n` runs one of `n` balanced slices of the selected spec files, so every file runs in exactly one shard. On macOS `scripts/test-offline.sh` also refuses non-loopback dials, so build once without it (or pass `--skip-build` after an earlier run).
+
+Tests that fail offline are listed in `quarantine.json`, each by its describe and test titles under the ticket that fixes it. In an offline run a listed test is expected to fail: it fails the run only when it passes, which means its fix landed and its entry must go. An entry whose test no longer exists also fails the run, and so does a spec that does not import `core/fixtures/base.fixture` (the fixture applies the quarantine). Add an entry only with a ticket, never to get a new test past the check.
+
 ### Against a server you started yourself
 
 ```bash
