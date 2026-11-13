@@ -86,7 +86,7 @@
               "  virtual_key_id: pm.collectionVariables.get('cache12hVkId'),",
               "  match_type: 'exact',",
               "  pattern: 'gpt-5.6-sol',",
-              "  request_types: ['chat'],",
+              "  request_types: ['chat_completion'],",
               "  patch: {\"input_cost_per_token\": 1e-06, \"output_cost_per_token\": 2e-06, \"cache_read_input_token_cost\": 1e-07, \"cache_creation_input_token_cost\": 1e-05, \"cache_creation_input_token_cost_above_1hr\": 3e-05, \"cache_creation_input_token_cost_above_12hr\": 0.0001, \"cache_creation_input_token_cost_above_12hr_above_272k_tokens\": 0.0001, \"cache_creation_input_token_cost_above_12hr_flex\": 0.0001, \"cache_creation_input_token_cost_above_12hr_above_272k_tokens_flex\": 0.0001, \"cache_creation_input_token_cost_above_12hr_priority\": 0.0001, \"cache_creation_input_token_cost_above_12hr_above_272k_tokens_priority\": 0.0001, \"cache_creation_input_token_cost_above_12hr_ultrafast\": 0.0001, \"cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast\": 0.0001}",
               "});"
             ]
