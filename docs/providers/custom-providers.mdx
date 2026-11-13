@@ -265,6 +265,7 @@ Requests Bifrost makes on its own behalf:
 - **`list_models`**: when it is not allowed, listing all models skips the provider, and the model catalog uses the static model datasheet for it.
 - **Billing a batch or a video job**: Bifrost polls the job's status and results (`batch_retrieve`, `batch_results`, `video_retrieve`, `video_download`) to bill it, and this central check does not refuse those polls, so a job a caller was allowed to create is billed. Some base providers also check these operations inside their own handlers and refuse a poll there; on those bases, allow the retrieve and results operations alongside `batch_create` or `video_generation`.
 - **A `live` session's backend calls**: a GPT Live session sends Responses requests on the caller's behalf, and they need `responses` allowed.
+- **Responses on the `deepseek`, `glm` and `qwen` bases**: these providers serve a Responses request through their own chat API. It needs only `responses` allowed, not `chat_completion`.
 
 ### Base Provider Types
 

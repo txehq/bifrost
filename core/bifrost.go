@@ -5426,12 +5426,17 @@ func (bifrost *Bifrost) SelectKeyForProviderRequestType(ctx *schemas.BifrostCont
 		ctx = bifrost.ctx
 	}
 	// These sessions dial the vendor themselves and never pass the request worker, so a custom
-	// provider's allowed_requests is enforced here, before a key is handed out (TXE-7370).
-	if config, configErr := bifrost.account.GetConfigForProvider(providerKey); configErr == nil && config != nil &&
-		config.CustomProviderConfig != nil && !config.CustomProviderConfig.IsOperationAllowed(requestType) {
-		return schemas.Key{}, errOperationNotAllowed(requestType, providerKey)
+	// provider's allowed_requests is enforced here, before a key is handed out (TXE-7370). The
+	// one config read also gives the base provider (what baseProviderType reads).
+	baseProvider := providerKey
+	if config, configErr := bifrost.account.GetConfigForProvider(providerKey); configErr == nil && config != nil && config.CustomProviderConfig != nil {
+		if !config.CustomProviderConfig.IsOperationAllowed(requestType) {
+			return schemas.Key{}, errOperationNotAllowed(requestType, providerKey)
+		}
+		if config.CustomProviderConfig.BaseProviderType != "" {
+			baseProvider = config.CustomProviderConfig.BaseProviderType
+		}
 	}
-	baseProvider := bifrost.baseProviderType(providerKey)
 	supportedKeys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, requestType, providerKey, model, baseProvider, additionalModels...)
 	if err != nil {
 		return schemas.Key{}, err

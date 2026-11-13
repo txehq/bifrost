@@ -14622,14 +14622,9 @@ var allowedRequestsGateCalls = map[schemas.RequestType]resourceOverrideCall{
 
 // allowedRequestsGateGaps are the (base, request type) pairs that still reach the upstream with
 // the request type disabled, each with the ticket that closes it. The test fails on a stale
-// entry. TXE-7370 moves the check into core for every base.
-var allowedRequestsGateGaps = map[schemas.ModelProvider]map[schemas.RequestType]string{
-	schemas.DeepSeek: {schemas.ChatCompletionRequest: "TXE-7370"},
-	schemas.GLM:      {schemas.ChatCompletionRequest: "TXE-7370"},
-	schemas.Moonshot: {schemas.ChatCompletionRequest: "TXE-7370"},
-	schemas.Qwen:     {schemas.ChatCompletionRequest: "TXE-7370"},
-	schemas.XAI:      {schemas.ChatCompletionRequest: "TXE-7370", schemas.ModelRetrieveRequest: "TXE-7370"},
-}
+// entry. TXE-7370 closed the last ones; core also checks every request type before dispatch
+// (allowedrequests.go), so this list holds only a gap found later, with its ticket.
+var allowedRequestsGateGaps = map[schemas.ModelProvider]map[schemas.RequestType]string{}
 
 // TestCustomProviderAllowedRequestsGateEveryCall builds a custom provider of every base with
 // nothing in allowed_requests and sends every listed call. None may reach the upstream: a custom

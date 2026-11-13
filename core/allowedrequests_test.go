@@ -216,6 +216,45 @@ func TestUpstreamOperationFollowsDispatchConversions(t *testing.T) {
 	}
 }
 
+// BenchmarkCheckAllowedRequest measures the check the request worker now runs on every queued
+// request. A built-in provider and a custom provider without allowed_requests return on the
+// first nil test; the allowed and refused cases are a custom provider with allowed_requests.
+func BenchmarkCheckAllowedRequest(b *testing.B) {
+	var provider schemas.Provider = stubProvider{key: "custom-bench"} // boxed once, not per call
+	chat := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{}}
+	mode := "pro"
+	chatWithMode := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+		Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Mode: &mode}},
+	}}
+	custom := func(allowed *schemas.AllowedRequests) *schemas.ProviderConfig {
+		return &schemas.ProviderConfig{CustomProviderConfig: &schemas.CustomProviderConfig{
+			CustomProviderKey: "custom-bench", BaseProviderType: schemas.OpenAI, AllowedRequests: allowed,
+		}}
+	}
+	cases := []struct {
+		name   string
+		config *schemas.ProviderConfig
+		req    *schemas.BifrostRequest
+	}{
+		{"built-in provider", &schemas.ProviderConfig{}, chat},
+		{"custom provider without allowed_requests", custom(nil), chat},
+		{"custom provider, chat allowed", custom(&schemas.AllowedRequests{ChatCompletion: true}), chat},
+		{"custom provider, chat with reasoning.mode checked as responses", custom(&schemas.AllowedRequests{Responses: true}), chatWithMode},
+		{"custom provider, chat refused", custom(&schemas.AllowedRequests{}), chat},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.OpenAI)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = checkAllowedRequest(ctx, provider, tc.config, tc.req)
+			}
+		})
+	}
+}
+
 // countingUpstream answers every call with a minimal chat completion and counts the calls.
 func countingUpstream(t *testing.T) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
@@ -304,6 +343,54 @@ func TestCustomProviderOCRNotAllowed(t *testing.T) {
 	}
 	if got := calls.Load(); got != 0 {
 		t.Fatalf("the upstream got %d calls", got)
+	}
+}
+
+// TestResponsesServedThroughChatNeedsOnlyResponses: the deepseek, glm and qwen bases serve a
+// Responses request through their own chat call. Their ChatCompletion now checks chat, so
+// Responses calls the unchecked path: a provider that allows responses but not chat still
+// serves Responses, and the request is checked once, as responses.
+func TestResponsesServedThroughChatNeedsOnlyResponses(t *testing.T) {
+	for _, base := range []schemas.ModelProvider{schemas.DeepSeek, schemas.GLM, schemas.Qwen} {
+		t.Run(string(base), func(t *testing.T) {
+			server, calls := countingUpstream(t)
+			name := schemas.ModelProvider("responses-only-" + string(base))
+			provider, err := (&Bifrost{logger: NewNoOpLogger()}).createBaseProvider(name, &schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 10},
+				CustomProviderConfig: &schemas.CustomProviderConfig{
+					CustomProviderKey: string(name), BaseProviderType: base,
+					AllowedRequests: &schemas.AllowedRequests{Responses: true},
+				},
+			})
+			if err != nil {
+				t.Fatalf("construct: %v", err)
+			}
+			key := schemas.Key{ID: "k", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 1}
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+			defer ctx.Cancel()
+
+			_, chatErr := provider.ChatCompletion(ctx, key, &schemas.BifrostChatRequest{
+				Provider: name, Model: "m",
+				Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: Ptr("hi")}}},
+			})
+			if chatErr == nil || chatErr.Error == nil || chatErr.Error.Code == nil || *chatErr.Error.Code != "unsupported_operation" {
+				t.Fatalf("chat is not allowed, want unsupported_operation, got %+v", chatErr)
+			}
+			if got := calls.Load(); got != 0 {
+				t.Fatalf("a refused chat made %d upstream calls", got)
+			}
+
+			_, respErr := provider.Responses(ctx, key, &schemas.BifrostResponsesRequest{
+				Provider: name, Model: "m",
+				Input: []schemas.ResponsesMessage{{Role: Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: Ptr("hi")}}},
+			})
+			if respErr != nil && respErr.Error != nil && respErr.Error.Code != nil && *respErr.Error.Code == "unsupported_operation" {
+				t.Fatalf("responses is allowed, but it was refused: %s", respErr.Error.Message)
+			}
+			if got := calls.Load(); got != 1 {
+				t.Fatalf("an allowed Responses request made %d upstream calls, want 1", got)
+			}
+		})
 	}
 }
 

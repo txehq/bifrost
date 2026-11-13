@@ -314,6 +314,15 @@ func (provider *DeepSeekProvider) TextCompletionStream(ctx *schemas.BifrostConte
 
 // ChatCompletion performs a chat completion request to DeepSeek's Anthropic-compatible API.
 func (provider *DeepSeekProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.DeepSeek, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
+		return nil, err
+	}
+	return provider.servedChatCompletion(ctx, key, request)
+}
+
+// servedChatCompletion is ChatCompletion without the allowed_requests check: Responses serves a
+// Responses request through it, and that request is checked as responses (TXE-7370).
+func (provider *DeepSeekProvider) servedChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	resp, bifrostErr := provider.chatCompletion(ctx, key, request)
 	if resp != nil {
 		stampServedModel(&resp.ExtraFields, resp.Usage, request.Model, resp.Model)
@@ -444,7 +453,7 @@ func (provider *DeepSeekProvider) Responses(ctx *schemas.BifrostContext, key sch
 		return resp, bifrostErr
 	}
 
-	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+	chatResponse, err := provider.servedChatCompletion(ctx, key, request.ToChatRequest())
 	if err != nil {
 		return nil, err
 	}
