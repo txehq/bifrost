@@ -590,6 +590,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_priority_image_token_pricing_column"}, run: migrationAddPriorityImageTokenPricingColumn},
 	{IDs: []string{"add_long_context_tier_pricing_columns"}, run: migrationAddLongContextTierPricingColumns},
 	{IDs: []string{"add_unmeasured_video_seconds_column"}, run: migrationAddUnmeasuredVideoSecondsColumn},
+	{IDs: []string{"add_cached_audio_pricing_columns"}, run: migrationAddCachedAudioPricingColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16988,6 +16989,17 @@ func migrationAddLongContextTierPricingColumns(ctx context.Context, db *gorm.DB,
 		"input_cost_per_token_above_512k_tokens",
 		"output_cost_per_token_above_512k_tokens",
 		"cache_read_input_token_cost_above_512k_tokens",
+	})
+}
+
+// migrationAddCachedAudioPricingColumns adds the cached audio input rates (fork, TXE-7361).
+// Expand-only.
+func migrationAddCachedAudioPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return addPricingColumnsMigration(ctx, db, logger, "add_cached_audio_pricing_columns", []string{
+		"cache_read_input_audio_token_cost",
+		"cache_read_input_audio_token_cost_flex",
+		"cache_read_input_audio_token_cost_priority",
+		"cache_read_input_audio_token_cost_batches",
 	})
 }
 

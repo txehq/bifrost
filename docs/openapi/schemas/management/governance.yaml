@@ -2552,6 +2552,22 @@ PricingPatch:
     cache_creation_input_audio_token_cost:
       type: number
       minimum: 0
+    cache_read_input_audio_token_cost:
+      type: number
+      minimum: 0
+      description: Cached audio input token cost, applied to the cached audio a vendor reports apart (OpenAI cached_tokens_details, Gemini cacheTokensDetails). Without it, cached audio costs the text cache-read rate.
+    cache_read_input_audio_token_cost_flex:
+      type: number
+      minimum: 0
+      description: Cached audio input token cost for flex requests.
+    cache_read_input_audio_token_cost_priority:
+      type: number
+      minimum: 0
+      description: Cached audio input token cost for priority requests.
+    cache_read_input_audio_token_cost_batches:
+      type: number
+      minimum: 0
+      description: Cached audio input token cost in a batch.
     cache_read_input_token_cost_priority:
       type: number
       minimum: 0

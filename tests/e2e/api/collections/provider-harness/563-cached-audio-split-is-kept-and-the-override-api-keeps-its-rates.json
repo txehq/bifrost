@@ -1,0 +1,430 @@
+{
+  "name": "563. The override API keeps every cached-audio rate the datasheet publishes (cached-audio rates) [SERIAL]",
+  "description": "TXE-7361. OpenAI and Gemini split cached input by modality (cached_tokens_details, cacheTokensDetails), and the datasheet prices cached audio apart (azure/gpt-realtime-mini: 3e-07 against a text cache rate of 6e-08). The fork dropped both the split and the rate, so cached audio was billed at the text cache rate, 5x under. 563.0 and 563.0b run against the fixture only: a chat answer carrying OpenAI's split comes back with it, under OpenAI's name and Bifrost's (before the change the split was dropped), and its logged cost prices the cached audio at the cached-audio rate (0.0032208; 0.0040408 before). The remaining rows pin that the override API stores every new cached-audio field. The override is VK-scoped and never used for a request.",
+  "item": [
+    {
+      "name": "563.0 the chat answer keeps OpenAI's cached modality split (fixture) - openai/upstream-cached-audio",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('chat through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var d = ((pm.response.json().usage || {}).prompt_tokens_details) || {};",
+              "pm.test('the cached split is returned under OpenAI\\'s name and Bifrost\\'s', function () {",
+              "  pm.expect(d.cached_tokens, JSON.stringify(d)).to.eql(600);",
+              "  pm.expect((d.cached_tokens_details || {}).audio_tokens, JSON.stringify(d)).to.eql(500);",
+              "  pm.expect((d.cached_tokens_details || {}).text_tokens, JSON.stringify(d)).to.eql(100);",
+              "  pm.expect((d.cached_read_token_details || {}).audio_tokens, JSON.stringify(d)).to.eql(500);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"openai/upstream-cached-audio\", \"messages\": [{\"role\": \"user\", \"content\": \"hello\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "563.0b the cached audio is billed at the cached-audio rate (fixture) - openai/upstream-cached-audio",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('cachedAudioCostReq', 'e2e-cached-audio-cost-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('chat through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var reqId = pm.collectionVariables.get('cachedAudioCostReq');",
+              "// 1000 prompt tokens: 200 text and 800 audio, of which 600 cached (100 text, 500 audio), and 2 output, at",
+              "// gpt-realtime-mini's rates: 100 uncached text x 6e-07 + 300 uncached audio x 1e-05 + 100 cached text x 6e-08",
+              "// + 500 cached audio x 3e-07 + 2 out x 2.4e-06. Before TXE-7361 the split was dropped: all 400 uncached tokens were",
+              "// priced as audio (audio_tokens counts cached audio too) and the cached audio at the text cache rate, 0.0040408.",
+              "var want = 0.0032208, old = 0.0040408;",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + reqId + '&limit=1', method: 'GET' }, function (err, res) {",
+              "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+              "    var logRow = rows.filter(function (r) { return r.id === reqId; })[0];",
+              "    if ((!logRow || !(logRow.cost > 0)) && tries > 0) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the call was logged under its request id', function () {",
+              "      pm.expect(logRow, err ? String(err) : res.text()).to.not.equal(undefined);",
+              "    });",
+              "    if (!logRow) { return; }",
+              "    pm.test('the cached audio is priced at the cached-audio rate', function () {",
+              "      pm.expect(Math.abs(logRow.cost - want), 'cost ' + logRow.cost + ' vs ' + want + ' (before TXE-7361: ' + old + '); token_usage: ' + JSON.stringify(logRow.token_usage)).to.be.at.most(Math.max(1e-9, want * 1e-6));",
+              "    });",
+              "  });",
+              "}",
+              "read(20);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{cachedAudioCostReq}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"openai/upstream-cached-audio\", \"messages\": [{\"role\": \"user\", \"content\": \"hello\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "563.1 Setup - Create VK for the cached-audio override - openai/override-only",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.unset('cachedAudioRatesVkId');",
+              "pm.request.body.raw = JSON.stringify({",
+              "  name: 'Cached Audio Rates VK ' + Date.now(),",
+              "  provider_configs: [{ provider: 'openai', weight: 1.0, allowed_models: ['*'], key_ids: ['*'] }]",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Create VK returns 2xx', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "var body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var vk = body && (body.virtual_key || body);",
+              "pm.test('Created VK exposes an id', function () {",
+              "  pm.expect(vk && vk.id, 'id in: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+              "});",
+              "if (vk && vk.id) { pm.collectionVariables.set('cachedAudioRatesVkId', vk.id); }"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "563.2 [EXPECT-201] a VK-scoped override on every cached-audio rate is stored whole - openai/override-only",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['cachedAudioRatesVkId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "pm.collectionVariables.unset('cachedAudioRatesOverrideId');",
+              "pm.request.body.raw = JSON.stringify({",
+              "  name: 'e2e-cached-audio-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),",
+              "  // Virtual-key scoped and never used for a request, so nothing in the suite is repriced.",
+              "  scope_kind: 'virtual_key',",
+              "  virtual_key_id: pm.collectionVariables.get('cachedAudioRatesVkId'),",
+              "  match_type: 'exact',",
+              "  pattern: 'gpt-realtime-mini',",
+              "  request_types: ['chat_completion'],",
+              "  patch: {\"cache_read_input_audio_token_cost\": 1e-06, \"cache_read_input_audio_token_cost_flex\": 2e-06, \"cache_read_input_audio_token_cost_priority\": 3e-06, \"cache_read_input_audio_token_cost_batches\": 4e-06}",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Override on the cached-audio rates is accepted', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.eql(201);",
+              "});",
+              "var body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var ov = body && (body.pricing_override || body);",
+              "if (ov && ov.id) { pm.collectionVariables.set('cachedAudioRatesOverrideId', ov.id); }",
+              "var expected = {\"cache_read_input_audio_token_cost\": 1e-06, \"cache_read_input_audio_token_cost_flex\": 2e-06, \"cache_read_input_audio_token_cost_priority\": 3e-06, \"cache_read_input_audio_token_cost_batches\": 4e-06};",
+              "var stored = null;",
+              "try { stored = ov && JSON.parse(ov.pricing_patch); } catch (e) { stored = null; }",
+              "pm.test('the stored patch keeps every cached-audio rate', function () {",
+              "  pm.expect(stored, 'pricing_patch in: ' + pm.response.text()).to.be.an('object');",
+              "  Object.keys(expected).forEach(function (k) {",
+              "    pm.expect(stored[k], k + ' in ' + JSON.stringify(stored)).to.eql(expected[k]);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides"
+          ]
+        }
+      }
+    },
+    {
+      "name": "563.3 the override reads back with every cached-audio rate - openai/override-only",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['cachedAudioRatesOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('override read responds', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var id = pm.collectionVariables.get('cachedAudioRatesOverrideId');",
+              "var ov = null;",
+              "((body && body.pricing_overrides) || []).forEach(function (o) { if (o.id === id) { ov = o; } });",
+              "pm.test('the override is listed under its virtual key', function () {",
+              "  pm.expect(ov, 'override ' + id + ' in: ' + pm.response.text()).to.not.equal(null);",
+              "});",
+              "var expected = {\"cache_read_input_audio_token_cost\": 1e-06, \"cache_read_input_audio_token_cost_flex\": 2e-06, \"cache_read_input_audio_token_cost_priority\": 3e-06, \"cache_read_input_audio_token_cost_batches\": 4e-06};",
+              "var stored = null;",
+              "try { stored = ov && JSON.parse(ov.pricing_patch); } catch (e) { stored = null; }",
+              "pm.test('the stored patch keeps every cached-audio rate', function () {",
+              "  pm.expect(stored, 'pricing_patch in: ' + pm.response.text()).to.be.an('object');",
+              "  Object.keys(expected).forEach(function (k) {",
+              "    pm.expect(stored[k], k + ' in ' + JSON.stringify(stored)).to.eql(expected[k]);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides?scope_kind=virtual_key&virtual_key_id={{cachedAudioRatesVkId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides"
+          ],
+          "query": [
+            {
+              "key": "scope_kind",
+              "value": "virtual_key"
+            },
+            {
+              "key": "virtual_key_id",
+              "value": "{{cachedAudioRatesVkId}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "563.4 Teardown - Delete the cached-audio override - openai/override-only",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['cachedAudioRatesOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Override deleted', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "pm.collectionVariables.unset('cachedAudioRatesOverrideId');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{cachedAudioRatesOverrideId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides",
+            "{{cachedAudioRatesOverrideId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "563.5 Teardown - Delete VK - openai/override-only",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['cachedAudioRatesVkId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('VK deleted', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "pm.collectionVariables.unset('cachedAudioRatesVkId');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys/{{cachedAudioRatesVkId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{cachedAudioRatesVkId}}"
+          ]
+        }
+      }
+    }
+  ]
+}

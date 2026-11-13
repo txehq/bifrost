@@ -3699,6 +3699,33 @@ func TestGeminiUsageCarriesVideoDocumentAndToolUsePromptTokens(t *testing.T) {
 	})
 }
 
+// TXE-7361: Gemini splits cachedContentTokenCount by modality under cacheTokensDetails. The split
+// is kept so cached audio is priced at cache_read_input_audio_token_cost, and a response without
+// it leaves the split empty.
+func TestConvertGeminiUsageMetadataKeepsTheCachedModalitySplit(t *testing.T) {
+	usage := gemini.ConvertGeminiUsageMetadataToChatUsage(&gemini.GenerateContentResponseUsageMetadata{
+		PromptTokenCount: 1000, CandidatesTokenCount: 10, TotalTokenCount: 1010,
+		CachedContentTokenCount: 600,
+		PromptTokensDetails: []*gemini.ModalityTokenCount{
+			{Modality: gemini.ModalityText, TokenCount: 200}, {Modality: gemini.ModalityAudio, TokenCount: 800},
+		},
+		CacheTokensDetails: []*gemini.ModalityTokenCount{
+			{Modality: gemini.ModalityText, TokenCount: 100}, {Modality: gemini.ModalityAudio, TokenCount: 500},
+		},
+	})
+	require.NotNil(t, usage.PromptTokensDetails)
+	assert.Equal(t, 600, usage.PromptTokensDetails.CachedReadTokens)
+	require.NotNil(t, usage.PromptTokensDetails.CachedReadTokenDetails)
+	assert.Equal(t, 500, usage.PromptTokensDetails.CachedReadTokenDetails.AudioTokens)
+	assert.Equal(t, 100, usage.PromptTokensDetails.CachedReadTokenDetails.TextTokens)
+
+	plain := gemini.ConvertGeminiUsageMetadataToChatUsage(&gemini.GenerateContentResponseUsageMetadata{
+		PromptTokenCount: 10, TotalTokenCount: 10, CachedContentTokenCount: 4,
+	})
+	require.NotNil(t, plain.PromptTokensDetails)
+	assert.Nil(t, plain.PromptTokensDetails.CachedReadTokenDetails)
+}
+
 // BenchmarkConvertGeminiUsageMetadataToChatUsage measures the usage conversion every Gemini
 // and Vertex chat response and streamed usage frame runs (TXE-6535): a text-only response,
 // the common case, and one with video, document and tool-use prompt tokens.

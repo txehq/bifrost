@@ -3109,6 +3109,11 @@ var pricingSyncUpdateColumns = []string{
 	"input_cost_per_token_above_512k_tokens",
 	"output_cost_per_token_above_512k_tokens",
 	"cache_read_input_token_cost_above_512k_tokens",
+	// Fork, TXE-7361: cached audio.
+	"cache_read_input_audio_token_cost",
+	"cache_read_input_audio_token_cost_flex",
+	"cache_read_input_audio_token_cost_priority",
+	"cache_read_input_audio_token_cost_batches",
 	// Costs - 128k Tier
 	"input_cost_per_token_above_128k_tokens",
 	"input_cost_per_image_above_128k_tokens",

@@ -94,6 +94,11 @@ type TableModelPricing struct {
 	InputCostPerTokenAbove512kTokens       *float64 `gorm:"default:null;column:input_cost_per_token_above_512k_tokens" json:"input_cost_per_token_above_512k_tokens,omitempty"`
 	OutputCostPerTokenAbove512kTokens      *float64 `gorm:"default:null;column:output_cost_per_token_above_512k_tokens" json:"output_cost_per_token_above_512k_tokens,omitempty"`
 	CacheReadInputTokenCostAbove512kTokens *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_512k_tokens" json:"cache_read_input_token_cost_above_512k_tokens,omitempty"`
+	// Costs - cached audio input tokens, by tier and in a batch (fork, TXE-7361).
+	CacheReadInputAudioTokenCost         *float64 `gorm:"default:null;column:cache_read_input_audio_token_cost" json:"cache_read_input_audio_token_cost,omitempty"`
+	CacheReadInputAudioTokenCostFlex     *float64 `gorm:"default:null;column:cache_read_input_audio_token_cost_flex" json:"cache_read_input_audio_token_cost_flex,omitempty"`
+	CacheReadInputAudioTokenCostPriority *float64 `gorm:"default:null;column:cache_read_input_audio_token_cost_priority" json:"cache_read_input_audio_token_cost_priority,omitempty"`
+	CacheReadInputAudioTokenCostBatches  *float64 `gorm:"default:null;column:cache_read_input_audio_token_cost_batches" json:"cache_read_input_audio_token_cost_batches,omitempty"`
 	// Costs - 128k Tier
 	InputCostPerTokenAbove128kTokens          *float64 `gorm:"default:null;column:input_cost_per_token_above_128k_tokens" json:"input_cost_per_token_above_128k_tokens,omitempty"`
 	InputCostPerImageAbove128kTokens          *float64 `gorm:"default:null;column:input_cost_per_image_above_128k_tokens" json:"input_cost_per_image_above_128k_tokens,omitempty"`

@@ -320,13 +320,10 @@ func sortedKeys[V any](m map[string]V) []string {
 var ignoredUpstreamCostKeys = map[string]string{
 	// Batch tiers.
 	"annotation_cost_per_page_batches":                     "TXE-7354: deliberately ignored: the fork has no Mistral batch API, so an OCR batch cannot be created and these rates price nothing",
-	"cache_read_input_audio_token_cost_batches":            "TXE-7361: cached audio in a batch",
 	"cache_read_input_image_token_cost_batches":            "TXE-7358: cached image tokens",
 	"input_cost_per_audio_token_above_200k_tokens_batches": "TXE-7355: deliberately ignored: every row publishing a 200k audio tier repeats its non-200k audio rate, except gemini-2.5-flash standard (3e-07 against Google flat 1e-06), an upstream error that would underbill",
 	"ocr_cost_per_page_batches":                            "TXE-7354: deliberately ignored: the fork has no Mistral batch API, so an OCR batch cannot be created and these rates price nothing",
 	// Flex, priority, fast, ultrafast, decisions and balanced tiers.
-	"cache_read_input_audio_token_cost_flex":                "TXE-7361: cached audio by service tier",
-	"cache_read_input_audio_token_cost_priority":            "TXE-7361: cached audio by service tier",
 	"cache_read_input_token_cost_balanced":                  "TXE-7353: deliberately ignored: upstream publishes _balanced rates only for sail/*, which is not a fork provider, so no request the fork serves can reach them",
 	"input_cost_per_audio_token_above_200k_tokens_flex": "TXE-7355: deliberately ignored: every row publishing a 200k audio tier repeats its non-200k audio rate, except gemini-2.5-flash standard (3e-07 against Google flat 1e-06), an upstream error that would underbill",
 	"input_cost_per_audio_token_above_200k_tokens_priority": "TXE-7355: deliberately ignored: every row publishing a 200k audio tier repeats its non-200k audio rate, except gemini-2.5-flash standard (3e-07 against Google flat 1e-06), an upstream error that would underbill",
@@ -343,7 +340,6 @@ var ignoredUpstreamCostKeys = map[string]string{
 	"input_cost_per_character_above_128k_tokens": "TXE-7355: deliberately ignored: published only for two free Gemini models (gemma-3-27b-it, learnlm-1.5-pro-experimental), priced 0",
 	"output_cost_per_character_above_128k_tokens": "TXE-7355: deliberately ignored: published only for two free Gemini models (gemma-3-27b-it, learnlm-1.5-pro-experimental), priced 0",
 	// Everything else.
-	"cache_read_input_audio_token_cost":    "TXE-7350: other",
 	"citation_cost_per_token":              "TXE-7350: other",
 	"cost_per_second":                      "TXE-7350: other",
 	"explicit_cache_read_input_token_cost": "TXE-7350: other",

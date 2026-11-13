@@ -549,6 +549,8 @@ func buildRealtimeResponsesUsage(usage *schemas.BifrostLLMUsage) *schemas.Respon
 			ImageTokens:       usage.PromptTokensDetails.ImageTokens,
 			CachedReadTokens:  usage.PromptTokensDetails.CachedReadTokens,
 			CachedWriteTokens: usage.PromptTokensDetails.CachedWriteTokens,
+
+			CachedReadTokenDetails: usage.PromptTokensDetails.CachedReadTokenDetails,
 		}
 	}
 	if usage.CompletionTokensDetails != nil {
