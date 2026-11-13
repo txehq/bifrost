@@ -132,6 +132,12 @@ type BifrostEmbeddingResponse struct {
 	Object      string                     `json:"object"` // "list"
 	Usage       *BifrostLLMUsage           `json:"usage"`
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+
+	// VideoIntervalSec is the longest embedding interval the request asked for on a video part
+	// (video_config.interval_sec), 0 when it named none (fork, TXE-7357). Vertex prices a second
+	// of embedded video by the interval, which the response's segments show only when the video
+	// is longer than it. Not on the wire.
+	VideoIntervalSec int `json:"-"`
 }
 
 // BackfillParams copies request metadata into the response when the provider omitted it (e.g. model in JSON).
@@ -141,6 +147,13 @@ func (r *BifrostEmbeddingResponse) BackfillParams(request *BifrostEmbeddingReque
 	}
 	if strings.TrimSpace(r.Model) == "" && strings.TrimSpace(request.Model) != "" {
 		r.Model = request.Model
+	}
+	for _, item := range request.Input {
+		for _, part := range item.Content {
+			if part.Type == EmbeddingContentPartTypeVideo && part.VideoConfig != nil && part.VideoConfig.IntervalSec != nil {
+				r.VideoIntervalSec = max(r.VideoIntervalSec, *part.VideoConfig.IntervalSec)
+			}
+		}
 	}
 }
 

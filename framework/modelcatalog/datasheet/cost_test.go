@@ -9767,4 +9767,12 @@ func TestCalculateCost_EmbeddingVideoIntervals_TXE7357(t *testing.T) {
 	assert.InDelta(t, 40*0.002, s.CalculateCost(embedding([2]int{0, 16}, [2]int{16, 32}, [2]int{32, 40}), nil), 1e-12)
 	assert.InDelta(t, 30*0.001, s.CalculateCost(embedding([2]int{0, 10}, [2]int{10, 20}, [2]int{20, 30}), nil), 1e-12)
 	assert.InDelta(t, 12*0.0005, s.CalculateCost(embedding([2]int{0, 4}, [2]int{4, 8}, [2]int{8, 12}), nil), 1e-12)
+	// A video shorter than the interval returns one segment as long as the video: the interval
+	// the request named prices it, else Vertex's default of 16 seconds, never the segment's length.
+	assert.InDelta(t, 6*0.002, s.CalculateCost(embedding([2]int{0, 6}), nil), 1e-12, "default interval")
+	short := embedding([2]int{0, 6})
+	short.EmbeddingResponse.VideoIntervalSec = 8
+	assert.InDelta(t, 6*0.0005, s.CalculateCost(short, nil), 1e-12, "interval 8 named by the request")
+	short.EmbeddingResponse.VideoIntervalSec = 10
+	assert.InDelta(t, 6*0.001, s.CalculateCost(short, nil), 1e-12, "interval 10 named by the request")
 }

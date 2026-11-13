@@ -1509,10 +1509,20 @@ func embeddingHasVideoSegments(resp *schemas.BifrostEmbeddingResponse) bool {
 	return false
 }
 
-// embeddingVideoSegments returns the seconds of video an embedding response embedded (the sum
-// of its segments) and the longest segment, which is the interval the video was embedded at:
-// every segment is one interval long but the last, which ends with the video.
+// vertexDefaultVideoIntervalSec is the embedding interval Vertex multimodalembedding uses when
+// the request names none (its "Plus" tier; core/providers/vertex/types.go VertexVideoSegmentConfig).
+const vertexDefaultVideoIntervalSec = 16
+
+// embeddingVideoSegments returns the seconds of video an embedding response embedded (the sum of
+// its segments) and the interval it was embedded at: the interval the request named, else
+// Vertex's default of 16 seconds. A segment shows the interval only when the video is longer
+// than it, so a 6 second video at the default interval returns one [0, 6] segment and is still
+// priced at the 16 second interval. When the request named none, or the response was rebuilt
+// without the request (a reprice from logs), several segments show the interval exactly (every
+// one but the last is one interval long), and a single segment, which only says the interval is
+// at least the video's length, takes the default.
 func embeddingVideoSegments(resp *schemas.BifrostEmbeddingResponse) (seconds, interval int) {
+	longest, segments := 0, 0
 	for i := range resp.Data {
 		segment := resp.Data[i].VideoSegment
 		if segment == nil || segment.EndOffsetSec <= segment.StartOffsetSec {
@@ -1520,7 +1530,16 @@ func embeddingVideoSegments(resp *schemas.BifrostEmbeddingResponse) (seconds, in
 		}
 		length := segment.EndOffsetSec - segment.StartOffsetSec
 		seconds += length
-		interval = max(interval, length)
+		longest = max(longest, length)
+		segments++
+	}
+	switch {
+	case resp.VideoIntervalSec > 0:
+		interval = resp.VideoIntervalSec
+	case segments > 1:
+		interval = longest
+	default:
+		interval = max(longest, vertexDefaultVideoIntervalSec)
 	}
 	return seconds, interval
 }
