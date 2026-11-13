@@ -600,6 +600,14 @@ func TestIsRealtimeClientTextMessage(t *testing.T) {
 	item := func(typ, role, content string) *schemas.BifrostRealtimeEvent {
 		return &schemas.BifrostRealtimeEvent{Type: schemas.RTEventConversationItemCreate, Item: &schemas.RealtimeItem{Type: typ, Role: role, Content: json.RawMessage(content)}}
 	}
+	// parse reads a raw client frame through the same parser the handlers use.
+	parse := func(raw string) *schemas.BifrostRealtimeEvent {
+		event, err := schemas.ParseRealtimeEvent([]byte(raw))
+		if err != nil {
+			t.Fatalf("ParseRealtimeEvent(%s): %v", raw, err)
+		}
+		return event
+	}
 	cases := []struct {
 		name  string
 		event *schemas.BifrostRealtimeEvent
@@ -610,6 +618,11 @@ func TestIsRealtimeClientTextMessage(t *testing.T) {
 		{"user audio-only item", item("message", "user", `[{"type":"input_audio","audio":"AAA="}]`), false},
 		{"tool result", &schemas.BifrostRealtimeEvent{Type: schemas.RTEventConversationItemCreate, Item: &schemas.RealtimeItem{Type: "function_call_output", CallID: "c1", Output: "{}"}}, false},
 		{"assistant text item", item("message", "assistant", `[{"type":"text","text":"ok"}]`), false},
+		// Fail closed: only the content parts decide, so a role or item type this parse reads
+		// differently from the vendor (a duplicated key, an odd casing) cannot hide a text input.
+		{"input_text under an odd role", item("message", "User", `[{"type":"input_text","text":"hi"}]`), true},
+		{"input_text under another item type", item("function_call_output", "user", `[{"type":"input_text","text":"hi"}]`), true},
+		{"duplicated role key", parse(`{"type":"conversation.item.create","item":{"type":"message","role":"user","role":"assistant","content":[{"type":"input_text","text":"hi"}]}}`), true},
 		{"server echo of a user text item", &schemas.BifrostRealtimeEvent{Type: schemas.RTEventConversationItemCreated, Item: &schemas.RealtimeItem{Type: "message", Role: "user", Content: json.RawMessage(`[{"type":"input_text","text":"hi"}]`)}}, false},
 		{"response.create", &schemas.BifrostRealtimeEvent{Type: schemas.RTEventResponseCreate}, false},
 		{"nil", nil, false},

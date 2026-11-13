@@ -157,16 +157,16 @@ func pendingRealtimeInputUpdate(event *schemas.BifrostRealtimeEvent) (string, st
 }
 
 // isRealtimeClientTextMessage reports whether a client event sends a text message into the
-// session: a conversation.item.create whose item is a user message with input_text content
-// (fork, TXE-7363). xAI bills "$0.004 / text input" for its voice models
-// (docs.x.ai/developers/pricing) without defining a text input in its own docs; a user text item
-// is the narrowest reading. A tool result (function_call_output) and an audio-only item are not
-// text messages.
+// session: a conversation.item.create whose item carries input_text content (fork, TXE-7363).
+// xAI bills "$0.004 / text input" for its voice models (docs.x.ai/developers/pricing) without
+// defining a text input in its own docs. A tool result (function_call_output) and an audio-only
+// item are not text messages: neither carries an input_text part.
+//
+// The raw frame is what reaches the vendor, so the check fails closed: it reads only the content
+// parts, never the item's role or type. A frame whose role or type this parse reads differently
+// from the vendor's (a duplicated key, say) is still counted when it sends text.
 func isRealtimeClientTextMessage(event *schemas.BifrostRealtimeEvent) bool {
 	if event == nil || event.Type != schemas.RTEventConversationItemCreate || event.Item == nil {
-		return false
-	}
-	if event.Item.Role != string(schemas.ChatMessageRoleUser) || (event.Item.Type != "" && event.Item.Type != "message") {
 		return false
 	}
 	var parts []struct {
