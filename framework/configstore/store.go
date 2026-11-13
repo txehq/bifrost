@@ -1062,6 +1062,16 @@ type ConfigStore interface {
 	// HasForeignProviderJobFileUnderPrefix reports whether a job row of another virtual key
 	// names an output or error file starting with prefix.
 	HasForeignProviderJobFileUnderPrefix(ctx context.Context, prefix, virtualKeyID string) (bool, error)
+	// HasForeignRecordAt reports whether another virtual key has a file or folder row, or a batch
+	// output or error file, at exactly one of names.
+	HasForeignRecordAt(ctx context.Context, names []string, virtualKeyID string) (bool, error)
+	// ListProviderObjects returns a page of the provider objects of kind, in object id order,
+	// optionally only those of one virtual key or under one object id prefix, and how many
+	// match in all. A caller with a row scope sees only the objects of the virtual keys it shows.
+	ListProviderObjects(ctx context.Context, query ProviderObjectQuery) ([]*tables.TableProviderObject, int64, error)
+	// ReleaseProviderObject deletes the provider object of kind recorded for objectID, within the
+	// caller's row scope, and returns the virtual key it was recorded for (ErrNotFound if none).
+	ReleaseProviderObject(ctx context.Context, kind, objectID string) (string, error)
 	DeleteProviderObject(ctx context.Context, id string) error
 	// DeleteProviderObjectsByObjectIDSuffix forgets the provider objects of kind on
 	// provider that virtualKeyID created and whose provider-side id ends in

@@ -1181,6 +1181,108 @@ rate-limits:
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
 
+storage-folders:
+  get:
+    operationId: listStorageFolders
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List storage folder claims
+    description: |
+      Lists the output folders in object storage that virtual keys have claimed, in byte order of
+      their URI. A virtual key claims a folder the first time it names it as the place its output
+      is written (a batch's output folder, a task's `output_storage_uri`); the folder and
+      everything in it are then that key's. A key with no `allowed_storage_prefixes` cannot name
+      the root of a bucket as an output location (400). A claim stays when its key is deleted,
+      until it is released.
+    tags:
+      - Governance
+    parameters:
+      - name: virtual_key_id
+        in: query
+        description: Only the claims of this virtual key.
+        schema:
+          type: string
+      - name: prefix
+        in: query
+        description: Only the folders whose URI starts with this, matched byte for byte (no wildcards, case-sensitive).
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Page size, 1 to 100.
+        schema:
+          type: integer
+          default: 25
+          minimum: 0
+      - name: offset
+        in: query
+        schema:
+          type: integer
+          default: 0
+          minimum: 0
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/governance.yaml#/ListStorageFoldersResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+  delete:
+    operationId: deleteStorageFolder
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Governance:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Release a storage folder claim
+    description: |
+      Releases the claim on one folder. What lies in the folder is then reachable as any
+      unclaimed storage is, and the next virtual key to name the folder as an output location
+      claims it.
+    tags:
+      - Governance
+    parameters:
+      - name: folder
+        in: query
+        required: true
+        description: The claimed folder's exact storage URI, ending in `/` (for example `gs://bucket/out/`).
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: The claim was released
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/governance.yaml#/DeleteStorageFolderResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+
 # Routing Rules CRUD
 
 model-configs:

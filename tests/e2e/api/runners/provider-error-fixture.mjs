@@ -850,11 +850,18 @@ const seedanceTask = (id) => {
 let storageUploads = 0;
 let storageBatches = 0;
 const storageBatchIds = new Set();
+// A batch created with metadata.fixture_output_dir retrieves as completed, naming that directory as its output
+// (folder 498, TXE-7259), as a Vertex or Bedrock retrieve names the directory its results were written to.
+const storageBatchOutputs = new Map();
 const STORAGE_BATCH_MADE_ELSEWHERE = "batch_storage_made_elsewhere";
-const storageBatchObject = (id) => ({
-	id, object: "batch", endpoint: "/v1/chat/completions", input_file_id: "gs://bifrost-fixture-bucket/uploads/input.jsonl", completion_window: "24h",
-	status: "validating", created_at: 1, request_counts: { total: 1, completed: 0, failed: 0 },
-});
+const storageBatchObject = (id) => {
+	const batch = {
+		id, object: "batch", endpoint: "/v1/chat/completions", input_file_id: "gs://bifrost-fixture-bucket/uploads/input.jsonl", completion_window: "24h",
+		status: "validating", created_at: 1, request_counts: { total: 1, completed: 0, failed: 0 },
+	};
+	if (storageBatchOutputs.has(id)) Object.assign(batch, { status: "completed", output_file_id: storageBatchOutputs.get(id), request_counts: { total: 1, completed: 1, failed: 0 } });
+	return batch;
+};
 const storageBatchList = () => {
 	const data = [...storageBatchIds, STORAGE_BATCH_MADE_ELSEWHERE].map(storageBatchObject);
 	return { status: 200, body: JSON.stringify({ object: "list", data, first_id: data[0].id, last_id: data[data.length - 1].id, has_more: false }) };
@@ -868,6 +875,8 @@ const storageAnswer = (path, body) => {
 		storageBatches += 1;
 		const id = `batch_storage_${Date.now()}_${storageBatches}`;
 		storageBatchIds.add(id);
+		const outputDir = body && body.metadata && body.metadata.fixture_output_dir;
+		if (typeof outputDir === "string" && outputDir) storageBatchOutputs.set(id, outputDir);
 		return { status: 200, body: JSON.stringify(storageBatchObject(id)) };
 	}
 	if (path === "/pp/storage/v1/files") {

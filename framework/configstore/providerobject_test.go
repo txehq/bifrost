@@ -494,3 +494,45 @@ func TestStoragePrefixIndexesMigration(t *testing.T) {
 		})
 	}
 }
+
+// A page of one kind's objects comes back in byte order of the object id, filtered by key
+// and by a literal prefix, with the count of every match.
+func TestListProviderObjects(t *testing.T) {
+	for name, store := range storagePrefixTestStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			folder := tables.ProviderObjectKindStorageFolder
+			put := func(kind, objectID, vk string) {
+				require.NoError(t, store.UpsertProviderObject(ctx, &tables.TableProviderObject{
+					ID: tables.ProviderObjectID(kind, "gcs", objectID), Kind: kind, Provider: "gcs", ObjectID: objectID, VirtualKeyID: vk,
+				}))
+			}
+			put(folder, "gs://b/out-b/", "vk-b")
+			put(folder, "gs://b/Out-a/", "vk-a")
+			put(folder, "gs://b/out-a/", "vk-a")
+			put(folder, "gs://b/out_a/", "vk-a")
+			put(folder, "gs://c/", "vk-a")
+			put(tables.ProviderObjectKindFile, "gs://b/out-a/file.jsonl", "vk-a")
+
+			ids := func(rows []*tables.TableProviderObject) []string {
+				out := make([]string, 0, len(rows))
+				for _, row := range rows {
+					out = append(out, row.ObjectID)
+				}
+				return out
+			}
+			rows, total, err := store.ListProviderObjects(ctx, ProviderObjectQuery{Kind: folder})
+			require.NoError(t, err)
+			assert.EqualValues(t, 5, total)
+			assert.Equal(t, []string{"gs://b/Out-a/", "gs://b/out-a/", "gs://b/out-b/", "gs://b/out_a/", "gs://c/"}, ids(rows), "byte order, folders only")
+
+			rows, total, err = store.ListProviderObjects(ctx, ProviderObjectQuery{Kind: folder, VirtualKeyID: "vk-a", Prefix: "gs://b/out", Limit: 1, Offset: 1})
+			require.NoError(t, err)
+			assert.EqualValues(t, 2, total, "the prefix is literal: case and _ are not wildcards")
+			assert.Equal(t, []string{"gs://b/out_a/"}, ids(rows))
+
+			_, _, err = store.ListProviderObjects(ctx, ProviderObjectQuery{})
+			require.Error(t, err)
+		})
+	}
+}
