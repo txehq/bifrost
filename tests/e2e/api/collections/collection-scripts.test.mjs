@@ -856,6 +856,44 @@ test("redaction matrix covers every provider-specific SecretVar field", () => {
   }
 });
 
+// KeyAliases.Validate refuses an alias that carries another provider's sub-config: the
+// azurespeech row copied the azure row's alias endpoint, and its key create answered 400 in
+// the release run (TXE-7463). Each row's aliases may carry only the sub-config fields its own
+// provider owns. The owners are read from Validate itself, so a new sub-config needs no edit.
+function jsonFields(name) {
+  return [...structBody(name).matchAll(/`json:"([^",]+)[^"]*"`/g)]
+    .map((match) => match[1]).filter((field) => field !== "-");
+}
+function aliasSubConfigOwners() {
+  const validate = accountSource.match(/func \(ka KeyAliases\) Validate\([\s\S]*?\n\}/);
+  assert.ok(validate, "KeyAliases.Validate not found");
+  const owners = new Map();
+  for (const [, type, constant] of validate[0].matchAll(/ac\.(\w+AliasCfg) != nil && providerKey != (\w+)/g)) {
+    const provider = providerConstants.get(constant);
+    assert.ok(provider, `provider constant ${constant} not found`);
+    for (const field of jsonFields(type)) owners.set(field, provider);
+  }
+  return owners;
+}
+
+test("redaction rows carry only their own provider's alias sub-config fields", () => {
+  const owners = aliasSubConfigOwners();
+  // The derivation must keep finding Validate's checks, or this test passes on nothing.
+  assert.strictEqual(owners.get("endpoint"), "azure");
+  assert.strictEqual(owners.get("inference_profile_arn"), "bedrock");
+  assert.strictEqual(owners.get("project_number"), "vertex");
+  for (const fixture of redactionFixtures) {
+    for (const [alias, config] of Object.entries(fixture.key.aliases)) {
+      for (const field of Object.keys(config)) {
+        const owner = owners.get(field);
+        if (owner === undefined) continue;
+        assert.strictEqual(fixture.provider, owner,
+          `${fixture.provider}: alias ${alias} sets ${field}, part of ${owner}'s alias sub-config, which KeyAliases.Validate refuses on a key of provider ${fixture.provider}`);
+      }
+    }
+  }
+});
+
 // Unlike the generic script sandbox above, these assertions must really fail:
 // otherwise a broken no-leak assertion could manufacture a passing regression.
 function redactionExpect(actual, message) {
