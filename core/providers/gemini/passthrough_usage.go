@@ -220,12 +220,14 @@ func extractGeminiEmbeddingUsage(body []byte) *schemas.BifrostPassthroughUsage {
 	if total == 0 {
 		total = prompt
 	}
-	return &schemas.BifrostPassthroughUsage{
-		LLMUsage: &schemas.BifrostLLMUsage{
-			PromptTokens: prompt,
-			TotalTokens:  total,
-		},
+	usage := &schemas.BifrostLLMUsage{PromptTokens: prompt, TotalTokens: total}
+	// Gemini Embedding 2 splits the prompt by modality, and video tokens take their own rate:
+	// keep the split, as the /v1/embeddings converter does (TXE-7408).
+	if len(m.PromptTokensDetails) > 0 {
+		usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
+		applyGeminiPromptModalities(usage.PromptTokensDetails, m.PromptTokensDetails)
 	}
+	return &schemas.BifrostPassthroughUsage{LLMUsage: usage}
 }
 
 // ---- /interactions (Interactions API) ----
@@ -333,10 +335,26 @@ type geminiPredictResponse struct {
 		} `json:"embeddings"`
 		// Multimodal embedding modality vectors — used only to recognize the response as an
 		// embedding (multimodal responses carry no token count to bill).
-		TextEmbedding   []float64 `json:"textEmbedding"`
-		ImageEmbedding  []float64 `json:"imageEmbedding"`
-		VideoEmbeddings []any     `json:"videoEmbeddings"`
+		TextEmbedding  []float64 `json:"textEmbedding"`
+		ImageEmbedding []float64 `json:"imageEmbedding"`
+		// The video segments carry the seconds a video embedding is priced by (TXE-7408).
+		VideoEmbeddings []struct {
+			StartOffsetSec int `json:"startOffsetSec"`
+			EndOffsetSec   int `json:"endOffsetSec"`
+		} `json:"videoEmbeddings"`
 	} `json:"predictions"`
+}
+
+// geminiPredictRequest is the part of a :predict request a video embedding is priced by: the
+// embedding interval each video instance asked for.
+type geminiPredictRequest struct {
+	Instances []struct {
+		Video *struct {
+			VideoSegmentConfig *struct {
+				IntervalSec *int `json:"intervalSec"`
+			} `json:"videoSegmentConfig"`
+		} `json:"video"`
+	} `json:"instances"`
 }
 
 func extractGeminiPredictUsage(reqBody, body []byte) *schemas.BifrostPassthroughUsage {
@@ -344,6 +362,9 @@ func extractGeminiPredictUsage(reqBody, body []byte) *schemas.BifrostPassthrough
 		var resp geminiPredictResponse
 		if err := sonic.Unmarshal(body, &resp); err == nil {
 			if u := resp.embeddingUsage(); u != nil {
+				if len(u.EmbeddingVideoSegments) > 0 && len(reqBody) > 0 {
+					u.EmbeddingVideoIntervalSec = requestedVideoIntervalSec(reqBody)
+				}
 				return u
 			}
 		}
@@ -373,9 +394,31 @@ func (r *geminiPredictResponse) embeddingUsage() *schemas.BifrostPassthroughUsag
 	if !isEmbedding {
 		return nil
 	}
-	return &schemas.BifrostPassthroughUsage{
+	u := &schemas.BifrostPassthroughUsage{
 		LLMUsage: &schemas.BifrostLLMUsage{PromptTokens: total, TotalTokens: total},
 	}
+	for i := range r.Predictions {
+		for _, seg := range r.Predictions[i].VideoEmbeddings {
+			u.EmbeddingVideoSegments = append(u.EmbeddingVideoSegments, schemas.EmbeddingVideoSegment{StartOffsetSec: seg.StartOffsetSec, EndOffsetSec: seg.EndOffsetSec})
+		}
+	}
+	return u
+}
+
+// requestedVideoIntervalSec is the longest embedding interval a :predict request's video
+// instances asked for, or 0 when none named one.
+func requestedVideoIntervalSec(reqBody []byte) int {
+	var req geminiPredictRequest
+	if err := sonic.Unmarshal(reqBody, &req); err != nil {
+		return 0
+	}
+	longest := 0
+	for _, inst := range req.Instances {
+		if inst.Video != nil && inst.Video.VideoSegmentConfig != nil && inst.Video.VideoSegmentConfig.IntervalSec != nil {
+			longest = max(longest, *inst.Video.VideoSegmentConfig.IntervalSec)
+		}
+	}
+	return longest
 }
 
 // ---- :predict (Imagen) ----

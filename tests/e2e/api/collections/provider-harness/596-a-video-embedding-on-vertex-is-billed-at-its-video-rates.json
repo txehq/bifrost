@@ -1,5 +1,5 @@
 {
-  "name": "596. A video embedding on Vertex is billed at its video rates: Gemini Embedding 2's video tokens, multimodalembedding's seconds at the requested interval's tier (video embedding pricing)",
+  "name": "596. A video embedding on Vertex is billed at its video rates: Gemini Embedding 2's video tokens, multimodalembedding's seconds at the requested interval's tier, on /v1/embeddings and through /genai_passthrough (video embedding pricing)",
   "item": [
     {
       "name": "596.1 vertex/gemini-embedding-2 POST /v1/embeddings with a video reports 1258 video tokens and is billed $0.0151044, the video token rate, not the text rate (video embedding pricing)",
@@ -212,6 +212,156 @@
               "    if (tries > 0 && (!row || row.status === 'processing')) { setTimeout(function () { readCost(tries - 1); }, 300); return; }",
               "    pm.test('the log row of this request is readable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(row, 'no log row for ' + requestId).to.be.an('object'); });",
               "    pm.test('the logged cost is 20 s at $0.0005/s', function () { pm.expect(row && (row.cost || 0), JSON.stringify(row && { cost: row.cost })).to.be.closeTo(0.01, 1e-9); });",
+              "  });",
+              "}",
+              "readCost(40);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "596.4 vertex gemini-embedding-2 :embedContent through /genai_passthrough with a video is billed $0.0151044, its 1258 video tokens at the video token rate (video embedding pricing)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/genai_passthrough/v1/projects/fixture-project/locations/us-central1/publishers/google/models/gemini-embedding-2:embedContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai_passthrough",
+            "v1",
+            "projects",
+            "fixture-project",
+            "locations",
+            "us-central1",
+            "publishers",
+            "google",
+            "models",
+            "gemini-embedding-2:embedContent"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"content\": {\n    \"parts\": [\n      {\n        \"text\": \"a paper boat\"\n      },\n      {\n        \"fileData\": {\n          \"fileUri\": \"gs://fixture-bucket/clip.mp4\",\n          \"mimeType\": \"video/mp4\"\n        }\n      }\n    ]\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the vendor answer is passed through with 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 600)).to.equal(200); });",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var requestId = pm.response.headers.get('x-bifrost-request-id');",
+              "var token = pm.variables.get('setup_token') || 'bifrost-e2e-setup-token';",
+              "function readCost(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?limit=50', method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    var rows = (!err && res.code === 200 && res.json().logs) || [];",
+              "    var row = rows.filter(function (r) { return r.id === requestId; })[0];",
+              "    if (tries > 0 && (!row || row.status === 'processing')) { setTimeout(function () { readCost(tries - 1); }, 300); return; }",
+              "    pm.test('the log row of this request is readable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(row, 'no log row for ' + requestId).to.be.an('object'); });",
+              "    pm.test('the logged cost is 42 text tokens at $0.0000002 and 1258 video tokens at $0.000012', function () { pm.expect(row && (row.cost || 0), JSON.stringify(row && { cost: row.cost })).to.be.closeTo(42 * 2e-7 + 1258 * 0.000012, 1e-9); });",
+              "  });",
+              "}",
+              "readCost(40);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "596.5 vertex multimodalembedding@001 :predict through /genai_passthrough with a video at interval 10 s is billed $0.02, 20 s at the above-8s rate, not $0 (video embedding pricing)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/genai_passthrough/v1/projects/fixture-project/locations/us-central1/publishers/google/models/multimodalembedding@001:predict",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai_passthrough",
+            "v1",
+            "projects",
+            "fixture-project",
+            "locations",
+            "us-central1",
+            "publishers",
+            "google",
+            "models",
+            "multimodalembedding@001:predict"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"instances\": [\n    {\n      \"video\": {\n        \"gcsUri\": \"gs://fixture-bucket/clip.mp4\",\n        \"videoSegmentConfig\": {\n          \"intervalSec\": 10\n        }\n      }\n    }\n  ]\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the vendor answer is passed through with 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 600)).to.equal(200); });",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var requestId = pm.response.headers.get('x-bifrost-request-id');",
+              "var token = pm.variables.get('setup_token') || 'bifrost-e2e-setup-token';",
+              "function readCost(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?limit=50', method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    var rows = (!err && res.code === 200 && res.json().logs) || [];",
+              "    var row = rows.filter(function (r) { return r.id === requestId; })[0];",
+              "    if (tries > 0 && (!row || row.status === 'processing')) { setTimeout(function () { readCost(tries - 1); }, 300); return; }",
+              "    pm.test('the log row of this request is readable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(row, 'no log row for ' + requestId).to.be.an('object'); });",
+              "    pm.test('the logged cost is 20 s at $0.001/s', function () { pm.expect(row && (row.cost || 0), JSON.stringify(row && { cost: row.cost })).to.be.closeTo(20 * 0.001, 1e-9); });",
               "  });",
               "}",
               "readCost(40);"

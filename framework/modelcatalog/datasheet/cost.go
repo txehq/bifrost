@@ -3747,6 +3747,15 @@ func passthroughUsageToCostInput(su *schemas.BifrostPassthroughUsage) costInput 
 	if su.ContainerIdentifier != "" {
 		input.containerIdentifierString = su.ContainerIdentifier
 	}
+	// A video embedding is priced by the seconds it embedded at its interval tier, by the same
+	// rule as an /v1/embeddings response (TXE-7408).
+	if len(su.EmbeddingVideoSegments) > 0 {
+		data := make([]schemas.EmbeddingData, len(su.EmbeddingVideoSegments))
+		for i := range su.EmbeddingVideoSegments {
+			data[i].VideoSegment = &su.EmbeddingVideoSegments[i]
+		}
+		input.embeddingVideoSeconds, input.embeddingVideoInterval = embeddingVideoSegments(&schemas.BifrostEmbeddingResponse{Data: data, VideoIntervalSec: su.EmbeddingVideoIntervalSec})
+	}
 	// Provider-reported exact cost wins over datasheet estimation; attach it to usage.Cost so the
 	// provider-cost short-circuit in computeCost returns it verbatim. input.usage may alias the
 	// caller's su.LLMUsage, so copy before assigning Cost to preserve the pure-read invariant (see

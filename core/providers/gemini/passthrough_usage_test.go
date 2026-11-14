@@ -246,3 +246,44 @@ func TestExtractGeminiPassthroughUsage_EmbeddingPredictBilling(t *testing.T) {
 		t.Fatalf("imagen :predict usage = %+v, want per-image usage", imagen)
 	}
 }
+
+// TestExtractGeminiPassthroughUsage_VideoEmbeddingInputs pins TXE-7408: a passthrough embedding
+// keeps what its video is priced by. Gemini Embedding 2's :embedContent keeps the per-modality
+// prompt split (video tokens take input_cost_per_video_token); Vertex multimodalembedding's
+// :predict keeps the embedded segments and the interval the request asked for.
+func TestExtractGeminiPassthroughUsage_VideoEmbeddingInputs(t *testing.T) {
+	gemini2 := gemini.ExtractGeminiPassthroughUsage(
+		"/projects/p/locations/us-central1/publishers/google/models/gemini-embedding-2:embedContent",
+		[]byte(`{"content":{"parts":[{"fileData":{"fileUri":"gs://b/clip.mp4","mimeType":"video/mp4"}}]}}`),
+		[]byte(`{"embedding":{"values":[0.1]},"usageMetadata":{"promptTokenCount":1300,"totalTokenCount":1300,
+			"promptTokensDetails":[{"modality":"TEXT","tokenCount":42},{"modality":"VIDEO","tokenCount":1258}]}}`),
+	)
+	if gemini2 == nil || gemini2.LLMUsage == nil || gemini2.LLMUsage.PromptTokensDetails == nil {
+		t.Fatalf(":embedContent usage = %+v, want the modality split", gemini2)
+	}
+	if d := gemini2.LLMUsage.PromptTokensDetails; d.VideoTokens != 1258 || d.TextTokens != 42 {
+		t.Fatalf("prompt split = %+v, want 1258 video and 42 text", d)
+	}
+
+	multimodal := gemini.ExtractGeminiPassthroughUsage(
+		"/projects/p/locations/us-central1/publishers/google/models/multimodalembedding@001:predict",
+		[]byte(`{"instances":[{"video":{"gcsUri":"gs://b/clip.mp4","videoSegmentConfig":{"intervalSec":10}}}]}`),
+		[]byte(`{"predictions":[{"videoEmbeddings":[{"startOffsetSec":0,"endOffsetSec":10,"embedding":[0.1]},{"startOffsetSec":10,"endOffsetSec":20,"embedding":[0.2]}]}]}`),
+	)
+	want := []schemas.EmbeddingVideoSegment{{StartOffsetSec: 0, EndOffsetSec: 10}, {StartOffsetSec: 10, EndOffsetSec: 20}}
+	if multimodal == nil || len(multimodal.EmbeddingVideoSegments) != 2 || multimodal.EmbeddingVideoSegments[0] != want[0] || multimodal.EmbeddingVideoSegments[1] != want[1] {
+		t.Fatalf(":predict usage = %+v, want the two 10 s segments", multimodal)
+	}
+	if multimodal.EmbeddingVideoIntervalSec != 10 {
+		t.Fatalf("interval = %d, want the requested 10", multimodal.EmbeddingVideoIntervalSec)
+	}
+	// A request naming no interval leaves it to pricing's default.
+	noInterval := gemini.ExtractGeminiPassthroughUsage(
+		"/projects/p/locations/us-central1/publishers/google/models/multimodalembedding@001:predict",
+		[]byte(`{"instances":[{"video":{"gcsUri":"gs://b/clip.mp4"}}]}`),
+		[]byte(`{"predictions":[{"videoEmbeddings":[{"startOffsetSec":0,"endOffsetSec":6,"embedding":[0.1]}]}]}`),
+	)
+	if noInterval == nil || len(noInterval.EmbeddingVideoSegments) != 1 || noInterval.EmbeddingVideoIntervalSec != 0 {
+		t.Fatalf(":predict usage without an interval = %+v", noInterval)
+	}
+}

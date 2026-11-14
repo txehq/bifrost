@@ -37,6 +37,12 @@ type BifrostPassthroughUsage struct {
 	// Video generation
 	VideoSeconds *int
 
+	// Embedding of a video (Vertex multimodalembedding :predict, TXE-7408): the segments it
+	// embedded and the longest interval the request asked for (0 when it named none). Pricing
+	// reads them as it reads an /v1/embeddings response's segments and VideoIntervalSec.
+	EmbeddingVideoSegments    []EmbeddingVideoSegment
+	EmbeddingVideoIntervalSec int
+
 	// Container creation (code interpreter session) — synthetic pricing identifier,
 	// e.g. "container-1g", or "container" when no memory limit is reported. Maps to
 	// costInput.containerIdentifierString for the flat per-session fee.
