@@ -987,7 +987,10 @@ func (p *GovernancePlugin) objectHolders(kind string, requestType schemas.Reques
 	}
 	holds := func(name schemas.ModelProvider) bool {
 		if len(creating) == 0 {
-			return call.endpoint == providerEndpoint(name, configured)
+			if every {
+				return call.endpoint == providerEndpoint(name, configured)
+			}
+			return strings.EqualFold(call.endpoint, providerEndpoint(name, configured))
 		}
 		for _, createType := range creating {
 			if reaches(callTarget(createType, name, configured)) != every {
@@ -1084,9 +1087,13 @@ func (a callUpstream) sameAs(b callUpstream) bool {
 // host, an override the base provider does not read. Counting another provider's rows can only
 // refuse an id, and an id another key holds on a different account of the same vendor is refused
 // only if it collides.
+//
+// Base URLs are compared ignoring case, path included, as they were before TXE-7368: a server
+// that tells /V1 from /v1 is a guess the access check must not make in the key's favour. Only
+// the delete bookkeeping (sameAs, plainlyShares) keeps the path's case.
 func (a callUpstream) mayShare(b callUpstream) bool {
 	if a.override == "" && b.override == "" {
-		return a.endpoint == b.endpoint
+		return strings.EqualFold(a.endpoint, b.endpoint)
 	}
 	return true
 }

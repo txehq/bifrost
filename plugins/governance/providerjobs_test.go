@@ -2685,9 +2685,18 @@ func TestPreLLMHookMatchesOverridesWhateverTheirSpelling(t *testing.T) {
 			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Gemini},
 			NetworkConfig:        &schemas.NetworkConfig{BaseURL: "https://gemini-proxy.example/v1beta"},
 		},
+		// Two base URLs that differ only in their path's case, no overrides.
+		"path-lower": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
+			NetworkConfig:        &schemas.NetworkConfig{BaseURL: "https://proxy.example/v1"},
+		},
+		"path-upper": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
+			NetworkConfig:        &schemas.NetworkConfig{BaseURL: "https://proxy.example/V1"},
+		},
 	}}
 	vk := buildVKForMCPStamping(nil)
-	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("port-spelled", []string{"*"}), buildProviderConfig("gemini-reader", []string{"*"}))
+	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("port-spelled", []string{"*"}), buildProviderConfig("gemini-reader", []string{"*"}), buildProviderConfig("path-upper", []string{"*"}))
 	plugin := newAccessTestPlugin(t, vk, nil)
 	plugin.configStore = store
 	plugin.inMemoryStore = configured
@@ -2702,6 +2711,13 @@ func TestPreLLMHookMatchesOverridesWhateverTheirSpelling(t *testing.T) {
 	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.BatchRetrieveRequest, BatchRetrieveRequest: &schemas.BifrostBatchRetrieveRequest{Provider: "gemini-reader", BatchID: "batches/own-batch"}})
 	require.NoError(t, err)
 	assert.Nil(t, shortCircuit, "the creator retrieves its batch through a provider on the same base URL, whatever gemini-creator's unread override says")
+
+	// Whether /V1 and /v1 are one store is a guess; the access check makes it toward refusing.
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "path-lower", "file-path-case", "vk-someone-else")
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.FileRetrieveRequest, FileRetrieveRequest: &schemas.BifrostFileRetrieveRequest{Provider: "path-upper", FileID: "file-path-case"}})
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "base URLs that differ only in path case share their ownership rows for access")
+	assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
 }
 
 // A delete through a full-URL override forgets no other provider's binding, however its URL
