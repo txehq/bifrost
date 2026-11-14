@@ -2045,6 +2045,8 @@ jobs:
             172.38.0.12:8301
             172.38.0.13:6379
             api.tokenfactory.nebius.com:443
+            files.pythonhosted.org:443
+            pypi.org:443
             iojs.org:443
             aiplatform.googleapis.com:443
             api.anthropic.com:443
@@ -2122,6 +2124,13 @@ jobs:
           npm ci --no-audit --no-fund
           echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
         working-directory: .github/workflows/tools
+
+      # test-api-integrations.sh starts with the offline suites, whose Python checks import
+      # yaml; a runner's own python3 need not have it.
+      - name: Install PyYAML (hash-pinned)
+        run: |
+          python3 -m pip install --user --disable-pip-version-check \
+            --require-hashes -r .github/workflows/requirements/pyyaml.txt
 
       # The content-logging matrix reads raw log rows from the Postgres logs store through `pg`,
       # pinned in tests/e2e/api/package-lock.json. --ignore-scripts skips better-sqlite3's native

@@ -29,8 +29,12 @@ name: Go unit tests (offline)
 # - Harness fixture folders (TXE-7285): fixture-folders runs every provider-harness folder that
 #   a local fixture can answer, offline, against a gateway built from the PR. Before it, no
 #   required check ran a harness row, so a stale row (161.11) and 9 failing ones sat on main.
-# - The required check is the `Go unit tests (offline)` job, which fails unless every shard
-#   and fixture-folders passed. No paths filter: a path-filtered required check never reports on a PR outside its
+# - Release gates (TXE-7424): live-fake (tests/live against its fake upstream) and agentgateway
+#   (tests/agentgateway) run the scripts of the release pipeline's test-live and
+#   test-agentgateway jobs, which stop a release when they fail and need no vendor key.
+#   check-release-gates-run-on-prs.py fails when such a release job has no PR counterpart.
+# - The required check is the `Go unit tests (offline)` job, which fails unless every shard,
+#   fixture-folders, live-fake and agentgateway passed. No paths filter: a path-filtered required check never reports on a PR outside its
 #   paths, which blocks that PR's merge. No concurrency group either: a cancelled run of a
 #   required check leaves the PR blocked beside a passing one (TXE-7104).
 # - On a push to main, warm-cache compiles every test binary and saves the go-unit build cache
@@ -269,10 +273,131 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # The one check to require on main: it fails unless every shard passed.
+  # The GPT Live suite (tests/live) against its fake upstream, offline (TXE-7424). The release
+  # pipeline's test-live job runs the same script and stops a release when it fails; before this
+  # it ran nowhere else, so #292's change to a live session's error type passed every PR check
+  # and first failed in the sync.10 release. WebRTC cases gather ICE candidates through
+  # stun.l.google.com, as in the release job. The Python SDK leg installs its packages with uv.
+  live-fake:
+    if: github.event_name == 'pull_request'
+    name: GPT Live (fake upstream, offline)
+    # The same boundary as the shards: the job builds and runs the PR's own code.
+    environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    timeout-minutes: 20
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          # setup-go, the Go module proxy (gotestsum, the suite's modules), uv and the Python
+          # SDK leg's packages, and the STUN server the WebRTC cases use. The gateway, the fake
+          # upstream and the datasheets are on loopback.
+          allowed-endpoints: >
+            api.github.com:443
+            files.pythonhosted.org:443
+            github.com:443
+            objects.githubusercontent.com:443
+            proxy.golang.org:443
+            pypi.org:443
+            release-assets.githubusercontent.com:443
+            releases.astral.sh:443
+            storage.googleapis.com:443
+            stun.l.google.com:19302
+            sum.golang.org:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.3"
+          cache: false
+
+      - name: Restore the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: go-unit
+
+      - name: Install uv
+        # astral-sh's action, as the fork's other uv steps: StepSecurity's setup-uv needs a
+        # subscription this organisation does not have and fails the job (TXE-5256).
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
+        with:
+          version: "0.11.0"
+          python-version: "3.12"
+          ignore-nothing-to-cache: true
+
+      # test-live.sh builds the gateway and, under test-offline.sh, serves its pricing
+      # datasheets on loopback (offline-datasheets.sh).
+      - name: Run GPT Live e2e tests (fake upstream)
+        run: scripts/test-offline.sh bash .github/workflows/scripts/test-live.sh fake
+
+      - name: Upload the live test report
+        if: failure()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: live-fake
+          path: |
+            test-reports/live.xml
+            tmp/live-gateway.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The Agent Gateway e2e (tests/agentgateway), offline (TXE-7424): the release pipeline's
+  # test-agentgateway job runs the same script and stops a release when it fails.
+  agentgateway:
+    if: github.event_name == 'pull_request'
+    name: Agent Gateway e2e (offline)
+    environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    timeout-minutes: 15
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          # setup-go and the Go module proxy; the gateway, the fixture agent and the datasheets
+          # are on loopback.
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            proxy.golang.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.3"
+          cache: false
+
+      - name: Restore the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: go-unit
+
+      - name: Stub the UI directory
+        run: |
+          mkdir -p transports/bifrost-http/ui
+          [ -f transports/bifrost-http/ui/.gitkeep ] || echo placeholder > transports/bifrost-http/ui/.gitkeep
+
+      - name: Run the Agent Gateway e2e
+        run: scripts/test-offline.sh bash .github/workflows/scripts/test-agentgateway-e2e.sh
+
+  # The one check to require on main: it fails unless every job above passed.
   go-unit-tests:
     if: always() && github.event_name == 'pull_request'
-    needs: [shard, fixture-folders]
+    needs: [shard, fixture-folders, live-fake, agentgateway]
     name: Go unit tests (offline)
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     timeout-minutes: 5
@@ -283,14 +408,18 @@ jobs:
           egress-policy: block
           allowed-endpoints: >+
 
-      - name: Every shard and the fixture folders passed
+      - name: Every shard, the fixture folders and the release-gate suites passed
         env:
           RESULT: ${{ needs.shard.result }}
           FIXTURE_FOLDERS: ${{ needs.fixture-folders.result }}
+          LIVE_FAKE: ${{ needs.live-fake.result }}
+          AGENTGATEWAY: ${{ needs.agentgateway.result }}
         run: |
           echo "shards: $RESULT"
           echo "harness fixture folders: $FIXTURE_FOLDERS"
-          [ "$RESULT" = success ] && [ "$FIXTURE_FOLDERS" = success ]
+          echo "GPT Live (fake upstream): $LIVE_FAKE"
+          echo "Agent Gateway e2e: $AGENTGATEWAY"
+          [ "$RESULT" = success ] && [ "$FIXTURE_FOLDERS" = success ] && [ "$LIVE_FAKE" = success ] && [ "$AGENTGATEWAY" = success ]
 
   warm-cache:
     if: github.event_name == 'push'
