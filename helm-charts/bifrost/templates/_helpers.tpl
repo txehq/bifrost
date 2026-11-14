@@ -461,8 +461,17 @@ false
 {{- if hasKey .Values.bifrost.client "disablePassthroughSseHeartbeat" }}
 {{- $_ := set $client "disable_passthrough_sse_heartbeat" .Values.bifrost.client.disablePassthroughSseHeartbeat }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "enforceVkObjectOwnership" }}
+{{- $_ := set $client "enforce_vk_object_ownership" .Values.bifrost.client.enforceVkObjectOwnership }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "a2aStoreRawRequestResponse" }}
+{{- $_ := set $client "a2a_store_raw_request_response" .Values.bifrost.client.a2aStoreRawRequestResponse }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "disableEncryptedReasoningRetry" }}
 {{- $_ := set $client "disable_encrypted_reasoning_retry" .Values.bifrost.client.disableEncryptedReasoningRetry }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "maxResponseBodySizeMb" }}
+{{- $_ := set $client "max_response_body_size_mb" .Values.bifrost.client.maxResponseBodySizeMb }}
 {{- end }}
 {{- if hasKey .Values.bifrost.client "deleteExpiredVirtualKeys" }}
 {{- $_ := set $client "delete_expired_virtual_keys" .Values.bifrost.client.deleteExpiredVirtualKeys }}

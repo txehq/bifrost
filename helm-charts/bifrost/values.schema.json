@@ -623,7 +623,7 @@
             },
             "enforceSCIMAuth": {
               "type": "boolean",
-              "description": "Deprecated: use enforceAuthOnInference"
+              "description": "Deprecated and ignored: the chart renders nothing for it, and the gateway sets client.enforce_scim_auth from enforce_auth_on_inference. Use enforceAuthOnInference."
             },
             "allowedHeaders": {
               "type": "array",
@@ -696,10 +696,26 @@
               "description": "Fork (txehq/bifrost): turn off the SSE comment heartbeat on passthrough streams. When true, an idle text/event-stream passthrough response carries only the bytes the vendor sent. Maps to client.disable_passthrough_sse_heartbeat.",
               "default": false
             },
+            "enforceVkObjectOwnership": {
+              "type": "boolean",
+              "description": "Restrict provider objects (files, batches, videos, containers, container files, cached contents and live sessions) to the virtual key that created them; another virtual key gets 404 and does not see them in lists. Requests without a virtual key are not restricted. Maps to client.enforce_vk_object_ownership.",
+              "default": true
+            },
+            "a2aStoreRawRequestResponse": {
+              "type": "boolean",
+              "description": "Capture upstream A2A transport bodies before SDK conversion. Stored as base64, bounded to 1 MiB per direction, and subject to the shared content logging policy; unavailable for gRPC. Maps to client.a2a_store_raw_request_response.",
+              "default": false
+            },
             "disableEncryptedReasoningRetry": {
               "type": "boolean",
               "description": "Fork (txehq/bifrost): turn off the encrypted-reasoning retry. When true, a 400 on a request that replays encrypted reasoning is returned unchanged and Bifrost makes no second upstream call, so one request is exactly one upstream call. Maps to client.disable_encrypted_reasoning_retry.",
               "default": false
+            },
+            "maxResponseBodySizeMb": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Fork (txehq/bifrost): the largest upstream response body, in MB, that Bifrost reads into memory, counted after decompression. A larger buffered answer fails with a bifrost_internal error and is never cut short; the vendor may already have billed it. 0 or unset means 512. Maps to client.max_response_body_size_mb.",
+              "default": 0
             },
             "deleteExpiredVirtualKeys": {
               "type": "boolean",
