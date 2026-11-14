@@ -271,17 +271,11 @@ build_bifrost_http() {
 
 # Clone and setup mocker from bifrost-benchmarking
 setup_mocker() {
-  if [ -d "${BENCHMARK_DIR}" ]; then
-    log_info "Updating bifrost-benchmarking repository..."
-    cd "${BENCHMARK_DIR}"
-    git pull --quiet || true
-    cd "${WORK_DIR}"
-  else
-    log_info "Cloning bifrost-benchmarking repository..."
-    mkdir -p "$(dirname "${BENCHMARK_DIR}")"
-    git clone --depth 1 https://github.com/maximhq/bifrost-benchmarking.git "${BENCHMARK_DIR}"
-    cd "${WORK_DIR}"
-  fi
+  # The pinned commit (TXE-7452), never the repository's moving default branch.
+  # shellcheck source=bifrost-benchmarking.sh
+  source "${REPO_ROOT}/.github/workflows/scripts/bifrost-benchmarking.sh"
+  fetch_bifrost_benchmarking "${BENCHMARK_DIR}" || exit 1
+  cd "${WORK_DIR}"
 
   log_success "Mocker setup complete"
 }
