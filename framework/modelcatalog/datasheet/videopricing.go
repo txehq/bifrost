@@ -405,8 +405,9 @@ func VideoBillingSelectors(extra map[string]any) map[string]any {
 // reference_video content; Replicate passes extra params to the model as they are). provider is
 // the name the create was routed under; the answer no longer depends on it.
 func VideoRequestHasVideoInput(provider schemas.ModelProvider, input *schemas.VideoGenerationInput, extra map[string]any) bool {
-	// Every provider either sends a video_uri or refuses the create (Replicate maps it to no model
-	// input and refuses it, TXE-7374), so a recorded job with one received it.
+	// Every video converter either sends a video_uri or refuses the create (Replicate and the
+	// OpenAI create form, which OpenAI, Azure's v1 videos and Volcengine send, refuse it:
+	// TXE-7374), so a recorded job with one received it.
 	if input != nil && input.VideoURI != nil && strings.TrimSpace(*input.VideoURI) != "" {
 		return true
 	}

@@ -1,5 +1,5 @@
 {
-  "name": "572. A Replicate video create with video_uri is refused naming it, not rendered without the video (replicate video_uri) [SERIAL]",
+  "name": "572. A video create with video_uri on a provider that cannot send it (Replicate, the OpenAI form) is refused naming it, not rendered without the video (replicate video_uri) [SERIAL]",
   "item": [
     {
       "name": "572.1 reset the fixture's record (replicate video_uri)",
@@ -93,7 +93,60 @@
       ]
     },
     {
-      "name": "572.3 no prediction reached Replicate: the refusal is made before any upstream call (replicate video_uri)",
+      "name": "572.3 [EXPECT-400] openai_video_keys/sora-2 (a custom provider on the OpenAI base) POST /v1/videos with video_uri is refused naming video_uri: the OpenAI create form has no source-video field, so the video would be dropped (replicate video_uri)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai_video_keys/sora-2\",\n  \"prompt\": \"the same boat, now at night\",\n  \"seconds\": \"4\",\n  \"video_uri\": \"https://media.example/in.mp4\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a create with video_uri is caller_unsupported_parameter naming video_uri', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('video_uri');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "572.4 no prediction reached Replicate: the refusal is made before any upstream call (replicate video_uri)",
       "request": {
         "method": "GET",
         "header": [],

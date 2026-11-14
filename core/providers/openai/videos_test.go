@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -452,5 +453,23 @@ func TestOpenAIVideoRequestKeepsUnifiedFieldCopies(t *testing.T) {
 	plain := OpenAIVideoGenerationRequest{Model: "openai/sora-2", Prompt: "a dog"}
 	if got := plain.ToBifrostVideoGenerationRequest(nil).Params.ExtraParams; got != nil {
 		t.Errorf("ExtraParams = %v, want nil when no unified field is set", got)
+	}
+}
+
+// TestVideoCreateRefusesVideoURI pins TXE-7374 on the OpenAI create form, which every
+// OpenAI-shaped video provider sends: the form has no source-video field, so a video_uri is
+// refused naming it rather than dropped. A blank one is no source video and converts.
+func TestVideoCreateRefusesVideoURI(t *testing.T) {
+	_, err := ToOpenAIVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Model: "sora-2", Input: &schemas.VideoGenerationInput{Prompt: "a fox", VideoURI: schemas.Ptr("https://media.example/in.mp4")},
+	})
+	bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
+	if !ok || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error == nil || bifrostErr.Error.Param != "video_uri" {
+		t.Fatalf("got %v, want caller_unsupported_parameter naming video_uri", err)
+	}
+	if _, err := ToOpenAIVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Model: "sora-2", Input: &schemas.VideoGenerationInput{Prompt: "a fox", VideoURI: schemas.Ptr(" ")},
+	}); err != nil {
+		t.Fatalf("a blank video_uri must convert: %v", err)
 	}
 }
