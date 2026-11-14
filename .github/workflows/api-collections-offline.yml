@@ -102,6 +102,12 @@ jobs:
           echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
         working-directory: .github/workflows/tools
 
+      # The suites' Python checks import yaml; a runner's own python3 need not have it.
+      - name: Install PyYAML (hash-pinned)
+        run: |
+          python3 -m pip install --user --disable-pip-version-check \
+            --require-hashes -r .github/workflows/requirements/pyyaml.txt
+
       - name: Run the offline API collection suites
         run: bash .github/workflows/scripts/test-api-collections-offline.sh
 
