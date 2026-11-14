@@ -107,6 +107,8 @@ async function configWrittenBy(fixture) {
 await test("fixtureGatewayConfig turns inference auth off and serves the datasheets from the fixture", () => {
 	const config = fixtureGatewayConfig({ datasheetOrigin: "http://127.0.0.1:20001", providers: { vertex: { keys: [] } } });
 	assert.deepStrictEqual(config.client, { enforce_auth_on_inference: false });
+	// The token cases send to read the gateway's logs and the cost a request was billed.
+	assert.strictEqual(config.setup_token, "bifrost-e2e-setup-token");
 	assert.strictEqual(config.framework.pricing.pricing_url, "http://127.0.0.1:20001/pricing.json");
 	assert.strictEqual(config.framework.pricing.model_parameters_url, "http://127.0.0.1:20001/model-parameters.json");
 	assert.deepStrictEqual(config.providers, { vertex: { keys: [] } });

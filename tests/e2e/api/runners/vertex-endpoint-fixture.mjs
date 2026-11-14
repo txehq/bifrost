@@ -37,6 +37,13 @@ const claudeBody = JSON.stringify({
 	stop_reason: "end_turn",
 	usage: { input_tokens: 1, output_tokens: 1 },
 });
+const geminiEmbeddingVideoBody = JSON.stringify({
+	embedding: { values: [0.1, 0.2] },
+	usageMetadata: { promptTokenCount: 1300, totalTokenCount: 1300, promptTokensDetails: [{ modality: "TEXT", tokenCount: 42 }, { modality: "VIDEO", tokenCount: 1258 }] },
+});
+const multimodalVideoBody = JSON.stringify({
+	predictions: [{ videoEmbeddings: [{ startOffsetSec: 0, endOffsetSec: 10, embedding: [0.1] }, { startOffsetSec: 10, endOffsetSec: 20, embedding: [0.2] }] }],
+});
 const imagenBody = JSON.stringify({
 	predictions: [
 		{ bytesBase64Encoded: "aW1hZ2Ux", mimeType: "image/png" },
@@ -167,7 +174,19 @@ const vertexBatchRespond = (req, body) => {
 const proxy = createInterceptProxy({
 	port,
 	staticJson: {
-		"/pricing.json": {},
+		// TXE-7357: the live rows (getbifrost.ai/datasheet, 14 Nov 2026) of the two video embedding models folder 596 prices.
+		"/pricing.json": {
+			"gemini-embedding-2": { provider: "vertex_ai", mode: "embedding", input_cost_per_token: 2e-7, input_cost_per_video_token: 0.000012, output_cost_per_token: 0 },
+			"multimodalembedding@001": {
+				provider: "vertex_ai",
+				mode: "embedding",
+				input_cost_per_token: 8e-7,
+				input_cost_per_video_per_second: 0.0005,
+				input_cost_per_video_per_second_above_8s_interval: 0.001,
+				input_cost_per_video_per_second_above_15s_interval: 0.002,
+				output_cost_per_token: 0,
+			},
+		},
 		"/model-parameters.json": { "claude-opus-4-7": { provider: "vertex", vertex_multi_region_only: true } },
 	},
 	// The path decides the body shape.
@@ -178,6 +197,10 @@ const proxy = createInterceptProxy({
 		if (speech) return speech;
 		if (/:generateContent/.test(req.url)) return { status: 200, body: geminiBody };
 		if (/:rawPredict/.test(req.url)) return { status: 200, body: claudeBody };
+		// Folder 596 (TXE-7357): Gemini Embedding 2 splits its prompt by modality, and multimodalembedding embeds a
+		// 20 second video as two 10 second segments, the quantities each is priced by.
+		if (/gemini-embedding-2[^/]*:embedContent/.test(req.url)) return { status: 200, body: geminiEmbeddingVideoBody };
+		if (/multimodalembedding[^/]*:predict(\?|$)/.test(req.url)) return { status: 200, body: multimodalVideoBody };
 		if (/:predict(\?|$)/.test(req.url)) return { status: 200, body: imagenBody };
 		// The video is inline so download needs no second fetch; the WebM magic marks it binary to the harness shape check.
 		if (/:fetchPredictOperation/.test(req.url)) return { status: 200, body: JSON.stringify({ name: (body.match(/"operationName":"([^"]+)"/) || [])[1], done: true, response: { videos: [{ bytesBase64Encoded: fixtureVideo, mimeType: "video/webm" }] } }) };

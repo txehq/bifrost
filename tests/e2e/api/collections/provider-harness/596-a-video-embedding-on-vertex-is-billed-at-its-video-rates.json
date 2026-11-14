@@ -1,0 +1,224 @@
+{
+  "name": "596. A video embedding on Vertex is billed at its video rates: Gemini Embedding 2's video tokens, multimodalembedding's seconds at the requested interval's tier (video embedding pricing)",
+  "item": [
+    {
+      "name": "596.1 vertex/gemini-embedding-2 POST /v1/embeddings with a video reports 1258 video tokens and is billed $0.0151044, the video token rate, not the text rate (video embedding pricing)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-embedding-2\",\n  \"input\": [\n    {\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"a paper boat\"\n        },\n        {\n          \"type\": \"video\",\n          \"video\": {\n            \"url\": \"gs://fixture-bucket/clip.mp4\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the client gets 200 with an embedding', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 600)).to.equal(200);",
+              "  pm.expect(pm.response.json().data, pm.response.text().slice(0, 600)).to.be.an('array').that.is.not.empty;",
+              "});",
+              "pm.test('the usage carries the video tokens Vertex reported', function () {",
+              "  var u = pm.response.json().usage || {};",
+              "  pm.expect(u.prompt_tokens, JSON.stringify(u)).to.equal(1300);",
+              "  pm.expect(u.prompt_tokens_details && u.prompt_tokens_details.video_tokens, JSON.stringify(u)).to.equal(1258);",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var requestId = pm.response.headers.get('x-bifrost-request-id');",
+              "var token = pm.variables.get('setup_token') || 'bifrost-e2e-setup-token';",
+              "function readCost(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?limit=50', method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    var rows = (!err && res.code === 200 && res.json().logs) || [];",
+              "    var row = rows.filter(function (r) { return r.id === requestId; })[0];",
+              "    if (tries > 0 && (!row || row.status === 'processing')) { setTimeout(function () { readCost(tries - 1); }, 300); return; }",
+              "    pm.test('the log row of this request is readable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(row, 'no log row for ' + requestId).to.be.an('object'); });",
+              "    pm.test('the logged cost is 42 text tokens at $0.0000002 and 1258 video tokens at $0.000012', function () { pm.expect(row && (row.cost || 0), JSON.stringify(row && { cost: row.cost })).to.be.closeTo(0.0151044, 1e-9); });",
+              "  });",
+              "}",
+              "readCost(40);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "596.2 vertex/multimodalembedding@001 POST /v1/embeddings with a video at interval 10 s embeds two 10 s segments and is billed $0.02, 20 s at the above-8s rate (video embedding pricing)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/multimodalembedding@001\",\n  \"input\": [\n    {\n      \"content\": [\n        {\n          \"type\": \"video\",\n          \"video\": {\n            \"url\": \"gs://fixture-bucket/clip.mp4\"\n          },\n          \"video_config\": {\n            \"interval_sec\": 10\n          }\n        }\n      ]\n    }\n  ]\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the client gets 200 with an embedding', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 600)).to.equal(200);",
+              "  pm.expect(pm.response.json().data, pm.response.text().slice(0, 600)).to.be.an('array').that.is.not.empty;",
+              "});",
+              "pm.test('the response carries both video segments', function () {",
+              "  var segs = (pm.response.json().data || []).map(function (d) { return d.video_segment; }).filter(Boolean);",
+              "  pm.expect(segs.length, pm.response.text().slice(0, 600)).to.equal(2);",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var requestId = pm.response.headers.get('x-bifrost-request-id');",
+              "var token = pm.variables.get('setup_token') || 'bifrost-e2e-setup-token';",
+              "function readCost(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?limit=50', method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    var rows = (!err && res.code === 200 && res.json().logs) || [];",
+              "    var row = rows.filter(function (r) { return r.id === requestId; })[0];",
+              "    if (tries > 0 && (!row || row.status === 'processing')) { setTimeout(function () { readCost(tries - 1); }, 300); return; }",
+              "    pm.test('the log row of this request is readable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(row, 'no log row for ' + requestId).to.be.an('object'); });",
+              "    pm.test('the logged cost is 20 s at $0.001/s', function () { pm.expect(row && (row.cost || 0), JSON.stringify(row && { cost: row.cost })).to.be.closeTo(0.02, 1e-9); });",
+              "  });",
+              "}",
+              "readCost(40);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "596.3 vertex/multimodalembedding@001 POST /v1/embeddings with the same video at interval 4 s is billed $0.01, 20 s at the base rate the requested interval names (video embedding pricing)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/embeddings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "embeddings"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/multimodalembedding@001\",\n  \"input\": [\n    {\n      \"content\": [\n        {\n          \"type\": \"video\",\n          \"video\": {\n            \"url\": \"gs://fixture-bucket/clip.mp4\"\n          },\n          \"video_config\": {\n            \"interval_sec\": 4\n          }\n        }\n      ]\n    }\n  ]\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the client gets 200 with an embedding', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 600)).to.equal(200);",
+              "  pm.expect(pm.response.json().data, pm.response.text().slice(0, 600)).to.be.an('array').that.is.not.empty;",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var requestId = pm.response.headers.get('x-bifrost-request-id');",
+              "var token = pm.variables.get('setup_token') || 'bifrost-e2e-setup-token';",
+              "function readCost(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?limit=50', method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    var rows = (!err && res.code === 200 && res.json().logs) || [];",
+              "    var row = rows.filter(function (r) { return r.id === requestId; })[0];",
+              "    if (tries > 0 && (!row || row.status === 'processing')) { setTimeout(function () { readCost(tries - 1); }, 300); return; }",
+              "    pm.test('the log row of this request is readable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(row, 'no log row for ' + requestId).to.be.an('object'); });",
+              "    pm.test('the logged cost is 20 s at $0.0005/s', function () { pm.expect(row && (row.cost || 0), JSON.stringify(row && { cost: row.cost })).to.be.closeTo(0.01, 1e-9); });",
+              "  });",
+              "}",
+              "readCost(40);"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
