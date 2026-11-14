@@ -27,6 +27,7 @@ OFFLINE = ".github/workflows/scripts/test-api-collections-offline.sh"
 INTEGRATIONS = ".github/workflows/scripts/test-integrations.sh"
 E2E_WORKFLOW = ".github/workflows/e2e-ui-offline.yml"
 E2E_RUNNER = "tests/e2e/scripts/run-e2e.mjs"
+E2E_PLAN = "tests/e2e/scripts/e2e-plan.mjs"
 
 # A test file: name.test.ext or name.spec.ext, ext a JavaScript or TypeScript one.
 TEST_FILE = re.compile(r"\.(test|spec)\.[cm]?[jt]sx?$")
@@ -53,14 +54,25 @@ RUNNERS = [
         [(WORKFLOW, "run: npm test", True), (".github/workflows/tools/package.json", '"test": "node --test *.test.js"', True)],
     ),
     (r"^\.claude/skills/security-audit/[^/]+\.test\.cjs$", [(WORKFLOW, "run: node --test .claude/skills/security-audit/*.test.cjs", True)]),
-    # The Playwright UI suite, offline in two shards (TXE-7385). run-e2e.mjs finds every *.spec.ts
-    # under features/ except the accessibility audit, which has its own config.
+    # The Playwright UI suite, offline in two shards (TXE-7385). run-e2e.mjs takes specFiles from
+    # e2e-plan.mjs: every *.spec.ts under features/ except the accessibility audit (its own config).
     (
         r"^tests/e2e/features/(?!accessibility/).+\.spec\.ts$",
         [
             (E2E_WORKFLOW, "run-e2e.mjs --offline --shard", True),
-            (E2E_RUNNER, "d.name.endsWith('.spec.ts')", True),
-            (E2E_RUNNER, "d.name === 'accessibility' ? []", True),
+            (E2E_PLAN, "d.name.endsWith('.spec.ts')", True),
+            (E2E_PLAN, "d.name === 'accessibility' ? []", True),
+            (E2E_RUNNER, "specFiles(E2E_ROOT)", True),
+        ],
+    ),
+    # The runner's own tests: the shard split and the quarantine rules (TXE-7385).
+    (r"^tests/e2e/scripts/[^/]+\.test\.mjs$", [(E2E_WORKFLOW, "run: node --test tests/e2e/scripts/*.test.mjs", True)]),
+    # The sample suite the quarantine test runs through Playwright.
+    (
+        r"^tests/e2e/selftest/quarantine/[^/]+\.spec\.ts$",
+        [
+            ("tests/e2e/scripts/quarantine.test.mjs", "selftest/playwright.quarantine.config.ts", True),
+            ("tests/e2e/selftest/playwright.quarantine.config.ts", 'testDir: "./quarantine"', True),
         ],
     ),
 ]

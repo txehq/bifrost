@@ -8,7 +8,9 @@ import { resolve } from 'path'
  * In an offline run the base fixture marks each listed test as expected to fail (testInfo.fail), so:
  *   - a listed test that fails does not fail the run;
  *   - a listed test that passes fails the run ("expected to fail, but passed"): remove its entry;
- *   - a listed test that no longer exists fails the run (reporters/quarantine.ts): remove its entry.
+ *   - a listed test, or a listed spec file, that no longer exists fails the run
+ *     (reporters/quarantine.ts): remove its entry.
+ * scripts/quarantine.test.mjs pins these rules on the sample suite in selftest/quarantine.
  * Every other test fails the run as usual. Outside an offline run the list does nothing.
  *
  * quarantine.json maps a ticket to { kind, file, tests }: file is relative to tests/e2e, and each

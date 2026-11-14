@@ -69,11 +69,6 @@
       "Model Limits › should delete a model limit"
     ]
   },
-  "TXE-7395": {
-    "kind": "offline gap: saves a live getbifrost.ai datasheet URL",
-    "file": "features/config/config-pricing.spec.ts",
-    "tests": ["Pricing Config › should set and save datasheet URL", "Pricing Config › should trigger force sync"]
-  },
   "TXE-7396": {
     "kind": "stale test or product defect, not offline",
     "file": "features/agent-gateway/agent-gateway.spec.ts",
@@ -101,9 +96,6 @@
   "TXE-7400": {
     "kind": "stale test or product defect, not offline",
     "file": "features/providers/providers-crud.spec.ts",
-    "tests": [
-      "Providers › Provider Navigation › Voyage catalog entry opens an API key form",
-      "Providers › Form Validation › should show an error for an invalid custom provider hostname"
-    ]
+    "tests": ["Providers › Provider Navigation › Voyage catalog entry opens an API key form"]
   }
 }

@@ -48,18 +48,14 @@ jobs:
           # Setup only: setup-node and setup-go (api.github.com, github.com, nodejs.org,
           # release-assets.githubusercontent.com, storage.googleapis.com), the Go modules
           # (proxy.golang.org, sum.golang.org), npm ci for ui and tests/e2e (registry.npmjs.org),
-          # the e2e Postgres image (Docker Hub), Chromium and its system packages for Playwright
-          # (cdn.playwright.dev, playwright.download.prss.microsoft.com, the Ubuntu APT hosts).
-          # The tests themselves dial only loopback.
+          # the e2e Postgres image (Docker Hub) and Playwright's Chromium (cdn.playwright.dev,
+          # playwright.download.prss.microsoft.com). The tests themselves dial only loopback.
           allowed-endpoints: >
             api.github.com:443
             auth.docker.io:443
-            azure.archive.ubuntu.com:80
             cdn.playwright.dev:443
-            esm.ubuntu.com:443
             github.com:443
             nodejs.org:443
-            packages.microsoft.com:443
             playwright.download.prss.microsoft.com:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
@@ -91,11 +87,19 @@ jobs:
         with:
           node-version: "25"
 
+      # Chromium only, no --with-deps: the runner image carries Chromium's libraries, and the extra
+      # font packages --with-deps installs come from a regional APT mirror (us-east-2.ec2.archive
+      # on the AWS runners) that this job does not allow.
       - name: Install Playwright and Chromium
         working-directory: tests/e2e
         run: |
           npm ci --no-audit --no-fund
-          npx playwright install --with-deps chromium
+          npx playwright install chromium
+
+      # The shard split (every spec file in one shard, the same split on every runner) and the
+      # quarantine's rules, on a sample suite. A few seconds; both need the install above.
+      - name: Test the shard split and the quarantine rules
+        run: node --test tests/e2e/scripts/*.test.mjs
 
       - name: Run the UI suite offline (shard ${{ matrix.shard }} of 2)
         env:

@@ -66,7 +66,9 @@ scripts/test-offline.sh node tests/e2e/scripts/run-e2e.mjs --offline --shard 1/2
 
 `--offline` serves the gateway empty pricing datasheets from loopback and turns the MCP library sync off. `--shard i/n` runs one of `n` balanced slices of the selected spec files, so every file runs in exactly one shard. On macOS `scripts/test-offline.sh` also refuses non-loopback dials, so build once without it (or pass `--skip-build` after an earlier run).
 
-Tests that fail offline are listed in `quarantine.json`, each by its describe and test titles under the ticket that fixes it. In an offline run a listed test is expected to fail: it fails the run only when it passes, which means its fix landed and its entry must go. An entry whose test no longer exists also fails the run, and so does a spec that does not import `core/fixtures/base.fixture` (the fixture applies the quarantine). Add an entry only with a ticket, never to get a new test past the check.
+Tests that fail offline are listed in `quarantine.json`, each by its describe and test titles under the ticket that fixes it. In an offline run a listed test is expected to fail: it fails the run only when it passes, which means its fix landed and its entry must go. An entry whose test or spec file no longer exists also fails the run, and so does a spec that does not import `core/fixtures/base.fixture` (the fixture applies the quarantine). Add an entry only with a ticket, never to get a new test past the check, and never for a test that sometimes passes: that one fails the job at random. A test that cannot run offline by design skips itself when `E2E_OFFLINE=1`, naming its ticket.
+
+`node --test tests/e2e/scripts/*.test.mjs` pins the shard split (`scripts/e2e-plan.mjs`) and the quarantine rules (on the sample suite in `selftest/`); the CI job runs it before the suite.
 
 ### Against a server you started yourself
 

@@ -18,6 +18,7 @@ import { createServer } from 'node:http'
 import net from 'node:net'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { packFiles, shardFiles, specFiles, testCountWeight } from './e2e-plan.mjs'
 
 const E2E_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const REPO_ROOT = resolve(E2E_ROOT, '../..')
@@ -73,18 +74,9 @@ function parseArgs(argv) {
   return opts
 }
 
-function specFiles(dir = join(E2E_ROOT, 'features')) {
-  return readdirSync(dir, { withFileTypes: true }).flatMap((d) => {
-    const path = join(dir, d.name)
-    // Accessibility audits have their own config (npm run test:a11y).
-    if (d.isDirectory()) return d.name === 'accessibility' ? [] : specFiles(path)
-    return d.name.endsWith('.spec.ts') ? [relative(E2E_ROOT, path)] : []
-  })
-}
-
 // Picks the spec files to run and the Playwright filters (file:line for reruns).
 function selectFiles(opts) {
-  const all = specFiles()
+  const all = specFiles(E2E_ROOT)
   if (opts.rerun) {
     const path = resolve(process.cwd(), opts.rerun)
     if (!existsSync(path)) fail(`rerun file not found: ${opts.rerun}`)
@@ -110,20 +102,12 @@ function selectFiles(opts) {
   return { files: all, filters: [] }
 }
 
-// Longest-first greedy bin packing: each file goes to the currently lightest worker.
-// Weights are last run's durations; unseen files are estimated from their test count.
-// useTimings false weighs by test count alone, which every checkout computes the same way.
-function schedule(files, requested, useTimings = true) {
-  const timings = useTimings && existsSync(TIMINGS_FILE) ? JSON.parse(readFileSync(TIMINGS_FILE, 'utf8')) : {}
-  const weight = (f) => timings[f] ?? Math.max(5000, (readFileSync(join(E2E_ROOT, f), 'utf8').match(/\btest(\.skip|\.fixme)?\(/g)?.length ?? 1) * 6000)
-  const count = Math.max(1, Math.min(requested, files.length))
-  const workers = Array.from({ length: count }, (_, i) => ({ name: `w${i + 1}`, port: BASE_PORT + i, files: [], estimateMs: 0 }))
-  for (const file of [...files].sort((a, b) => weight(b) - weight(a))) {
-    const w = workers.reduce((min, cur) => (cur.estimateMs < min.estimateMs ? cur : min))
-    w.files.push(file)
-    w.estimateMs += weight(file)
-  }
-  return workers
+// Spreads files over the workers (packFiles in e2e-plan.mjs). Weights are last run's durations;
+// unseen files are estimated from their test count.
+function schedule(files, requested) {
+  const timings = existsSync(TIMINGS_FILE) ? JSON.parse(readFileSync(TIMINGS_FILE, 'utf8')) : {}
+  const byCount = testCountWeight(E2E_ROOT)
+  return packFiles(files, requested, (f) => timings[f] ?? byCount(f)).map((bin, i) => ({ name: `w${i + 1}`, port: BASE_PORT + i, ...bin }))
 }
 
 function run(cmd, args, options = {}) {
@@ -314,10 +298,9 @@ async function main() {
 
   const selected = selectFiles(opts)
   const { filters } = selected
-  // --shard i/n (TXE-7385): the workers' packing into n shards, weighed by test count only, and this
-  // run takes shard i. Last run's timings would differ between runs (each run records its own), so
-  // two shards could overlap and leave files unrun; the test count is the same in every checkout.
-  const files = opts.shard ? schedule(selected.files, opts.shard.total, false)[opts.shard.index - 1]?.files ?? [] : selected.files
+  // --shard i/n (TXE-7385): this run takes shard i of n (shardFiles in e2e-plan.mjs). It weighs by
+  // test count only: last run's timings differ between runs, so two shards could overlap.
+  const files = opts.shard ? shardFiles(E2E_ROOT, selected.files, opts.shard.index, opts.shard.total) : selected.files
   if (opts.shard) log(`shard ${opts.shard.index}/${opts.shard.total}: ${files.length} of ${selected.files.length} spec file(s)`)
   if (!files.length) fail('no spec files selected')
   const requested = opts.workers ?? (Number(process.env.WORKERS) || DEFAULT_WORKERS)
@@ -360,15 +343,16 @@ async function main() {
   pwArgs.push(...opts.passthrough)
   log(`npx ${pwArgs.join(' ')}`)
 
-  const pw = spawnSync('npx', pwArgs, {
+  // Asynchronous, not spawnSync: the offline datasheet server lives on this process's event loop,
+  // and a blocked loop would leave a gateway's mid-run datasheet fetch (a force sync) hanging.
+  const pw = spawn('npx', pwArgs, {
     cwd: E2E_ROOT,
     stdio: 'inherit',
     env: {
       ...process.env,
       E2E_PLAN: PLAN_FILE,
       // Offline runs apply the quarantine (quarantine.ts); other runs ignore it.
-      E2E_OFFLINE: opts.offline ? '1' : '',
-      // Reruns are for debugging, so they keep traces and videos of failures.
+      E2E_OFFLINE: opts.offline ? '1' : '',      // Reruns are for debugging, so they keep traces and videos of failures.
       E2E_DEBUG_ARTIFACTS: opts.rerun ? '1' : (process.env.E2E_DEBUG_ARTIFACTS ?? ''),
       // Only full-file runs are representative enough to schedule the next run on.
       E2E_RECORD_TIMINGS: filters.length || opts.grep || opts.passthrough.length ? '0' : '1',
@@ -376,6 +360,11 @@ async function main() {
       BIFROST_ADMIN_PASSWORD: ADMIN_PASSWORD,
     },
   })
+  const pwStatus = await new Promise((res) => {
+    pw.once('error', () => res(1))
+    pw.once('exit', (code) => res(code))
+  })
+  datasheets?.server.close()
 
   if (opts.keep) {
     log('workers left running (--keep):')
@@ -387,7 +376,7 @@ async function main() {
     stopWorkers()
   }
   log(`HTML report: cd tests/e2e && npx playwright show-report`)
-  process.exit(pw.status ?? 1)
+  process.exit(pwStatus ?? 1)
 }
 
 main().catch((err) => {
