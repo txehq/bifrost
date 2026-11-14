@@ -22,8 +22,10 @@ the R2 report bucket). Every keyless gate must be in exactly one of:
   NOT_MOVED     gates that do not run on pull requests, each with the reason or the ticket
                 that moves it.
 
-A gate that reads a vendor secret is out of scope: a PR from a fork never gets the keys. An
-entry for a job that is not a keyless gate fails too, so neither list can go stale.
+A gate that reads a vendor secret need not be listed: a PR from a fork never gets the keys. When
+part of such a gate runs with no key, OFFLINE_PARTS names the PR jobs that run that part, checked
+like COUNTERPARTS (TXE-7464). An entry for a job that is not a gate of the table's kind fails
+too, so no list can go stale.
 
 Usage: check-release-gates-run-on-prs.py [--self-test]
 """
@@ -77,6 +79,18 @@ COUNTERPARTS = {
     ],
 }
 
+# Gates that read a vendor key but have an offline part, and the pull-request jobs that run
+# that part with no key. Checked like COUNTERPARTS, so the part cannot silently stop running.
+OFFLINE_PARTS = {
+    # The offline suites and the api-management collection, with the list-models stub for the
+    # providers whose key is unset (TXE-7464). The Warp and wiring collections call live models
+    # and stay in the release job.
+    "test-api-integrations": [
+        {"workflow": "go-unit-tests.yml", "job": "api-integrations", "release": "test-api-integrations.sh",
+         "pr": "test-offline.sh bash .github/workflows/scripts/test-api-integrations.sh"},
+    ],
+}
+
 # Keyless gates that do not run on pull requests, and why.
 NOT_MOVED = {
     "check-skip": "pipeline plumbing: reads the commit message's skip flags, tests nothing",
@@ -120,9 +134,10 @@ def triggers(workflow):
     return set(on or {})
 
 
-def problems(release, workflows, scripts, counterparts, not_moved, required):
+def problems(release, workflows, scripts, counterparts, not_moved, required, offline_parts=None):
     """release: the parsed release workflow. workflows: file name -> parsed workflow.
-    scripts: script name -> text. Returns one line per defect; empty passes."""
+    scripts: script name -> text. offline_parts: like counterparts, for gates that read a
+    vendor key. Returns one line per defect; empty passes."""
     out = []
     jobs = release.get("jobs") or {}
     gates = set()
@@ -150,13 +165,17 @@ def problems(release, workflows, scripts, counterparts, not_moved, required):
         for gate in sorted(set(table) - keyless):
             why = "is not a job a publishing job needs" if gate not in gates else "reads a vendor key"
             out.append(f"{table_name} lists {gate}, which {why}: remove the entry")
+    offline_parts = offline_parts or {}
+    for gate in sorted(set(offline_parts) - (gates - keyless)):
+        why = "is not a job a publishing job needs" if gate not in gates else "reads no vendor key: list it in COUNTERPARTS"
+        out.append(f"OFFLINE_PARTS lists {gate}, which {why}")
 
-    for gate, entries in sorted(counterparts.items()):
-        if gate not in keyless:
-            continue
+    checked = [("COUNTERPARTS", gate, entries) for gate, entries in sorted(counterparts.items()) if gate in keyless]
+    checked += [("OFFLINE_PARTS", gate, entries) for gate, entries in sorted(offline_parts.items()) if gate in gates - keyless]
+    for table_name, gate, entries in checked:
         gate_text = run_text(jobs[gate], scripts)
         for entry in entries:
-            where = f"COUNTERPARTS[{gate}] -> {entry['workflow']}:{entry['job']}"
+            where = f"{table_name}[{gate}] -> {entry['workflow']}:{entry['job']}"
             if entry["release"] not in gate_text:
                 out.append(f"{where}: release job {gate} no longer runs '{entry['release']}'; update the entry")
             workflow = workflows.get(entry["workflow"])
@@ -235,13 +254,17 @@ on: {pull_request: {}}
 jobs:
   fast: {steps: [{run: ./.github/workflows/scripts/run-it.sh fast}]}
   token: {steps: [{run: make token}]}
-  aggregate: {name: Required, needs: [fast, token], steps: [{run: 'test "${{ needs.fast.result }}" = success'}]}
+  keyed-offline: {steps: [{run: make keyed}]}
+  aggregate: {name: Required, needs: [fast, token, keyed-offline],
+              steps: [{run: 'test "${{ needs.fast.result }}${{ needs.keyed-offline.result }}" = successsuccess'}]}
 """
     )
     scripts = {"run-it.sh": "echo running"}
     required = {"Required"}
     good_cp = {"test-keyless": [{"workflow": "pr.yml", "job": "fast", "release": "run-it.sh fast", "pr": "run-it.sh fast"}]}
     good_nm = {"test-token": "reason"}
+    keyed_part = {"workflow": "pr.yml", "job": "keyed-offline", "release": "make keyed", "pr": "make keyed"}
+    good_op = {"test-keyed": [keyed_part]}
     cases = [
         ("passes", good_cp, good_nm, {"pr.yml": pr}, []),
         ("unlisted keyless gate", {}, good_nm, {"pr.yml": pr}, ["job test-keyless can stop a release"]),
@@ -256,10 +279,17 @@ jobs:
         ("not required", {"test-keyless": [{**good_cp["test-keyless"][0], "job": "token", "pr": "make token"}]}, good_nm, {"pr.yml": pr},
          ["no required check in its workflow needs it and reads needs.token.result"]),
         ("not on pull_request", good_cp, good_nm, {"pr.yml": {**pr, "on": {"push": {}}}}, ["does not run on pull_request"]),
+        ("offline part passes", good_cp, good_nm, {"pr.yml": pr}, [], good_op),
+        ("offline part of a keyless gate", good_cp, good_nm, {"pr.yml": pr},
+         ["OFFLINE_PARTS lists test-keyless, which reads no vendor key"], {**good_op, "test-keyless": [keyed_part]}),
+        ("offline part of no gate", good_cp, good_nm, {"pr.yml": pr}, ["OFFLINE_PARTS lists gone"], {**good_op, "gone": [keyed_part]}),
+        ("offline part's PR command renamed", good_cp, good_nm, {"pr.yml": pr},
+         ["OFFLINE_PARTS[test-keyed] -> pr.yml:keyed-offline: the job no longer runs 'other.sh'"],
+         {"test-keyed": [{**keyed_part, "pr": "other.sh"}]}),
     ]
     failed = 0
-    for label, cps, nms, workflows, expect in cases:
-        got = problems(release, workflows, scripts, cps, nms, required)
+    for label, cps, nms, workflows, expect, *rest in cases:
+        got = problems(release, workflows, scripts, cps, nms, required, rest[0] if rest else None)
         ok = (not expect and not got) or (expect and all(any(e in g for g in got) for e in expect))
         if not ok:
             failed += 1
@@ -277,13 +307,13 @@ def main(argv):
         print(__doc__)
         return 2
     workflows, scripts = load_repo()
-    found = problems(workflows[RELEASE_WORKFLOW], workflows, scripts, COUNTERPARTS, NOT_MOVED, load_required())
+    found = problems(workflows[RELEASE_WORKFLOW], workflows, scripts, COUNTERPARTS, NOT_MOVED, load_required(), OFFLINE_PARTS)
     for problem in found:
         print(f"FAIL {problem}")
     if found:
         return 1
     print(f"Release gates run on PRs: {len(COUNTERPARTS)} keyless gates have a required PR counterpart, "
-          f"{len(NOT_MOVED)} are recorded in NOT_MOVED.")
+          f"{len(NOT_MOVED)} are recorded in NOT_MOVED, {len(OFFLINE_PARTS)} keyed gates run their offline part.")
     return 0
 
 

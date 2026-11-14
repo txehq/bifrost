@@ -73,6 +73,7 @@ MERGED_CONFIG="$TEMP_DIR/config.json"
 SERVER_LOG="$TEMP_DIR/server.log"
 BIFROST_PID=""
 STUB_PID=""
+DATASHEET_PID=""
 
 cleanup() {
   local exit_code=$?
@@ -80,6 +81,9 @@ cleanup() {
     echo "🧹 Stopping bifrost (PID $BIFROST_PID)..."
     kill "$BIFROST_PID" 2>/dev/null || true
     wait "$BIFROST_PID" 2>/dev/null || true
+  fi
+  if [ -n "${DATASHEET_PID:-}" ]; then
+    kill "$DATASHEET_PID" 2>/dev/null || true
   fi
   if [ -n "${STUB_PID:-}" ] && kill -0 "$STUB_PID" 2>/dev/null; then
     kill "$STUB_PID" 2>/dev/null || true
@@ -174,6 +178,29 @@ jq --arg host "$POSTGRES_HOST" --arg port "$POSTGRES_PORT" --arg user "$POSTGRES
      "config_store": {"enabled": true, "type": "postgres", "config": {"host": $host, "port": $port, "user": $user, "password": $pass, "db_name": $db, "ssl_mode": $ssl}},
      "logs_store":   {"enabled": true, "type": "postgres", "config": {"host": $host, "port": $port, "user": $user, "password": $pass, "db_name": $db, "ssl_mode": $ssl}}
    } | .client.skills_external_client_url = $skills_url' "$SOURCE_CONFIG" > "$MERGED_CONFIG"
+
+# tests/config.json's sse_mcp client reads its URL from MCP_SSE_URL. Unset, the gateway retries
+# the empty URL five times (31 s) before it reports started, which pushed a pull-request run
+# past the 60 s start limit (TXE-7464). No api-management row uses it, so it is left out then.
+if [ -z "${MCP_SSE_URL:-}" ]; then
+  jq '.mcp.client_configs |= map(select(.name != "sse_mcp"))' "$MERGED_CONFIG" > "$MERGED_CONFIG.tmp"
+  mv "$MERGED_CONFIG.tmp" "$MERGED_CONFIG"
+fi
+
+# Under scripts/test-offline.sh (the pull-request job, TXE-7464) the gateway cannot download its
+# pricing datasheets, so it reads the checked-in snapshot from loopback. The rate-limit suite's
+# "Model config spelling" folder needs a priced gpt-4o (and gpt-4o-mini) to accrue cost.
+if [ "${BIFROST_TEST_OFFLINE:-}" = "1" ]; then
+  # shellcheck source=offline-datasheets.sh
+  source "$SCRIPT_DIR/offline-datasheets.sh"
+  SNAPSHOT_DIR="$REPO_ROOT/examples/configs/withlocalpricingfiles"
+  serve_offline_datasheets "$TEMP_DIR" "$SNAPSHOT_DIR/pricing.json" "$SNAPSHOT_DIR/model-parameters.json"
+  jq --arg origin "$DATASHEET_ORIGIN" \
+    '.framework.pricing.pricing_url = ($origin + "/pricing.json")
+     | .framework.pricing.model_parameters_url = ($origin + "/model-parameters.json")' \
+    "$MERGED_CONFIG" > "$MERGED_CONFIG.tmp"
+  mv "$MERGED_CONFIG.tmp" "$MERGED_CONFIG"
+fi
 
 # Providers whose API key secret is unset get a local list-models stub instead of
 # their real endpoint (TXE-4950). The VK List Models Restriction folder needs one
