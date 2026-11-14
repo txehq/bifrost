@@ -742,6 +742,11 @@ type VideoAccountingDebug struct {
 	// "video_retrieve" so it reads as the settlement it is, which means Object can no
 	// longer name the rates this was priced at — a repricing pass reads it from here.
 	RequestType RequestType `json:"request_type,omitempty"`
+	// InputVideoRateExempt is true when the job was priced without input_cost_per_video_per_second:
+	// a generation rendered by a provider whose vendor takes no video input. Settlement decides it
+	// with a custom provider's base in hand, which a reprice lacks, so a reprice reads it from here
+	// (fork, TXE-7351).
+	InputVideoRateExempt bool `json:"input_video_rate_exempt,omitempty"`
 	// ProviderCost is the figure the provider reported for the job, when it reported
 	// one. A provider is always right about its own bill, so repricing must return
 	// this verbatim rather than substituting a catalog estimate.

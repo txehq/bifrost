@@ -487,7 +487,7 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 	}
 	// The base provider names the converter that rendered a custom provider's job (TXE-7349).
 	dims.BaseProvider = s.baseProvider(jobReq.Provider)
-	settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, dims.TierOnlyResolution(jobReq.Provider), false)
+	settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, jobReq.Provider, dims.TierOnlyResolution(jobReq.Provider), false)
 
 	if resp != nil && resp.ContentFilter != nil && resp.ContentFilter.FilteredCount > 0 {
 		settlement.UnpriceableReason = UnpriceableReasonContentFiltered
@@ -520,21 +520,21 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 		// once the rate lands, rather than dropping the job's cost entirely.
 		settlement.RecordUnpriced = true
 		settlement.UnpricedModel = dims.Model
-		settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, dims.TierOnlyResolution(jobReq.Provider), true)
+		settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, jobReq.Provider, dims.TierOnlyResolution(jobReq.Provider), true)
 		return settlement, nil
 	}
 
 	settlement.Priced = true
 	settlement.Complete = true
 	settlement.Cost = details.Cost
-	settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, details.PricedResolution, unmeasured)
+	settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, jobReq.Provider, details.PricedResolution, unmeasured)
 	return settlement, nil
 }
 
 // videoDebugFor builds the closure that attaches video detail to the aggregate row.
 // Accounting being set is what marks this row as the settlement rather than the
 // submission it settles — the two are otherwise identical but for a cost.
-func videoDebugFor(videoID string, status schemas.VideoStatus, dims modelcatalog.VideoPricingDimensions, resolution string, incomplete bool) func(*logstore.Log) {
+func videoDebugFor(videoID string, status schemas.VideoStatus, dims modelcatalog.VideoPricingDimensions, provider schemas.ModelProvider, resolution string, incomplete bool) func(*logstore.Log) {
 	return func(entry *logstore.Log) {
 		entry.VideoDebugParsed = &schemas.BifrostVideoDebug{
 			VideoID: videoID,
@@ -550,7 +550,9 @@ func videoDebugFor(videoID string, status schemas.VideoStatus, dims modelcatalog
 				OutputCount:  dims.OutputCount,
 				Incomplete:   incomplete,
 				RequestType:  videoRequestTypeFor(dims.RequestType),
-				ProviderCost: dims.ProviderCost,
+				// Decided with a custom provider's base in hand, which a reprice lacks (TXE-7351).
+				InputVideoRateExempt: dims.InputVideoRateExemptFor(provider),
+				ProviderCost:         dims.ProviderCost,
 			},
 		}
 	}
@@ -634,6 +636,9 @@ func (s *VideoSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManage
 		VideoInput:   accounting.VideoInput,
 		OutputTokens: accounting.OutputTokens,
 		OutputCount:  accounting.OutputCount,
+		// The settlement's exemption from the input-video rate, decided by the base provider of a
+		// custom one, which a reprice cannot resolve (TXE-7351).
+		InputVideoRateExempt: accounting.InputVideoRateExempt,
 	}, schemas.ModelProvider(entry.Provider), &scopes)
 	if !details.Priced {
 		return nil, fmt.Errorf("%w: no video rate for log %s", ErrPricingInputsUnavailable, entry.ID)

@@ -294,7 +294,7 @@
               "  pm.expect(row.video_debug.accounting.resolution, JSON.stringify(row.video_debug)).to.equal('2K');",
               "  pm.expect(row.video_debug.accounting.seconds, JSON.stringify(row.video_debug)).to.equal(6);",
               "});",
-              "pm.test('priced at 6 s x $0.13, output_cost_per_second_2k, not 6 s x $0.08 unbanded', function () {",
+              "pm.test('priced at 6 s x $0.13, output_cost_per_second_2k, not 6 s x $0.08 unbanded, with no input_cost_per_video_per_second on the output seconds (TXE-7351)', function () {",
               "  pm.expect(row.cost, JSON.stringify(row).slice(0, 1500)).to.be.closeTo(0.78, 1e-9);",
               "});"
             ]

@@ -755,7 +755,8 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		// The response carries neither the mode nor the video input either; it carries the
 		// output video tokens and the input video seconds the vendor billed (TXE-7357).
 		cost = computeVideoCost(pricing, input.usage, input.videoSeconds, input.videoSize, input.videoCount, VideoPricedWithAudio(routingInfo.Provider, nil),
-			videoJob{videoInput: input.videoInputSeconds, outputTokens: input.videoOutputTokens}, input.tier)
+			videoJob{videoInput: input.videoInputSeconds, outputTokens: input.videoOutputTokens,
+				inputVideoRateExempt: !videoInputRateApplies(requestType, routingInfo.Provider)}, input.tier)
 	case schemas.OCRRequest:
 		cost = computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
 	case schemas.ContainerCreateRequest:
@@ -2287,10 +2288,17 @@ type videoJob struct {
 	mode         string // Kling's generation mode: "pro", or "standard" ("std")
 	videoInput   bool   // the job took a video as input
 	outputTokens *int   // output video tokens the vendor reported
+	// inputVideoRateExempt is true for a generation on a provider whose vendor takes no video
+	// input (videoInputRateApplies): it owes no input_cost_per_video_per_second (fork, TXE-7351).
+	// The zero value charges the rate.
+	inputVideoRateExempt bool
 }
 
-// computeVideoCost handles video generation requests.
-// Input and output are calculated independently — tokens first, then per-second fallback.
+// computeVideoCost handles video generation, remix and edit requests.
+// Input and output are calculated independently, tokens first, then a per-second fallback.
+//
+// The per-second input fallback (input_cost_per_video_per_second) is charged on videoSeconds
+// unless job.inputVideoRateExempt (fork, TXE-7351).
 //
 // Output, most specific first (fork, TXE-7357): the output video tokens the vendor reported,
 // on a model priced per video token (Seedance, Gemini Omni); completion tokens; a per-clip
@@ -2300,11 +2308,11 @@ type videoJob struct {
 func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, videoSize string, videoCount int, audio bool, job videoJob, tier serviceTier) *schemas.BifrostCost {
 	tierTokens := inputTierTokens(usage)
 
-	// Input: text prompt tokens first, then per-second fallback
+	// Input: text prompt tokens first, then the per-second input-video fallback.
 	inputCost := 0.0
 	if usage != nil && usage.PromptTokens > 0 {
 		inputCost = float64(usage.PromptTokens) * tieredInputRate(pricing, tierTokens, tier)
-	} else if videoSeconds != nil && *videoSeconds > 0 {
+	} else if !job.inputVideoRateExempt && videoSeconds != nil && *videoSeconds > 0 {
 		if rate := tieredVideoInputPerSecondRate(pricing, tierTokens); rate > 0 {
 			inputCost = float64(*videoSeconds) * rate
 		}
@@ -2931,6 +2939,29 @@ func tieredAudioInputPerSecondRate(pricing *configstoreTables.TableModelPricing,
 		return *pricing.InputCostPerSecond
 	}
 	return 0
+}
+
+// videoGenerationTakesNoVideoInput lists the providers whose vendor accepts no video input on a
+// generation, each with the evidence (fork, TXE-7351). A generation on one of them can carry no
+// source video, so it owes no input_cost_per_video_per_second, whatever the row publishes. Every
+// other provider is charged that rate on the job's seconds as before: a caller can reach a vendor's
+// video input through fields the gateway does not model, so the charge is never dropped on a guess.
+// TestVideoGenerationTakesNoVideoInput_ConvertersRefuseVideoInput checks each entry's converter.
+var videoGenerationTakesNoVideoInput = map[schemas.ModelProvider]string{
+	schemas.MiniMax: "the datasheet lists reference-video input as rejected for MiniMax-H3, -Max and -Regeneration, whose input_cost_per_video_per_second (0.08) was billed on the output seconds; ToMiniMaxVideoGenerationRequest refuses video_uri",
+}
+
+// videoInputRateApplies reports whether a video job owes input_cost_per_video_per_second on its
+// seconds: always, except a generation on a provider in videoGenerationTakesNoVideoInput. An edit
+// or remix carries a source video on any provider. provider is the one that rendered the job, the
+// base provider for a custom one where the caller knows it; an unknown custom provider keeps the
+// charge.
+func videoInputRateApplies(requestType schemas.RequestType, provider schemas.ModelProvider) bool {
+	if requestType != "" && requestType != schemas.VideoGenerationRequest {
+		return true
+	}
+	_, none := videoGenerationTakesNoVideoInput[provider]
+	return !none
 }
 
 // tieredVideoInputPerSecondRate returns the effective per-second rate for video input.
