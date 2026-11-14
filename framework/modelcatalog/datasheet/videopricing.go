@@ -80,6 +80,10 @@ type VideoPricingDimensions struct {
 	// reference_videos, or input video seconds the vendor billed). Seedance prices such a
 	// job at its band's video-input rate (TXE-7357).
 	VideoInput *bool `json:"video_input,omitempty"`
+	// InputImages is how many images the job sent as input: the first frame, the last frame and
+	// the reference images (VideoRequestInputImages), or the count the vendor reported. Those
+	// beyond the row's free_input_images are billed at input_cost_per_image (fork, TXE-7409).
+	InputImages *int `json:"input_images,omitempty"`
 	// OutputTokens is the output video tokens the vendor reported (Seedance's completion
 	// tokens, Gemini Omni's video tokens). A model priced per video token is billed by them
 	// rather than by seconds (TXE-7357).
@@ -150,6 +154,10 @@ func (d VideoPricingDimensions) MergedWith(observed VideoPricingDimensions) Vide
 	}
 	if observed.OutputTokens != nil {
 		out.OutputTokens = observed.OutputTokens
+	}
+	// The vendor's own count of the input images it billed wins over the request's.
+	if observed.InputImages != nil {
+		out.InputImages = observed.InputImages
 	}
 	// A finished job reporting zero clips is a job that produced nothing, not a job
 	// we lack a count for — but only the response can say that, so it only ever
@@ -431,7 +439,15 @@ func (d VideoPricingDimensions) job() videoJob {
 		mode:         d.PricedMode(),
 		videoInput:   d.VideoInput != nil && *d.VideoInput,
 		outputTokens: d.OutputTokens,
+		inputImages:  intValue(d.InputImages),
 	}
+}
+
+func intValue(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
 
 // videoURIDroppedBy are the providers whose create converter never sends Input.VideoURI, with
@@ -481,6 +497,63 @@ func VideoRequestHasVideoInput(provider schemas.ModelProvider, input *schemas.Vi
 		return strings.TrimSpace(refs) != ""
 	}
 	return false
+}
+
+// VideoRequestInputImages counts the images a video create sends as input (fork, TXE-7409): the
+// first frame (input_reference), the last frame and the reference images. The last frame and the
+// reference images are read from their typed fields, else from the extra params under the same
+// names, where the handlers also keep them and where MiniMax's converter reads them. A last frame
+// in extra may be a string or xAI's {"url": ...} object. A request that is refused for combining
+// them (MiniMax) never reaches the vendor, so it is never settled.
+func VideoRequestInputImages(input *schemas.VideoGenerationInput, lastFrame string, referenceImages []string, extra map[string]any) int {
+	n := 0
+	if input != nil && input.InputReference != nil && strings.TrimSpace(*input.InputReference) != "" {
+		n++
+	}
+	if strings.TrimSpace(lastFrame) != "" || presentImage(extra["last_frame"]) {
+		n++
+	}
+	if refs := nonEmptyCount(referenceImages); refs > 0 {
+		n += refs
+	} else {
+		switch refs := extra["reference_images"].(type) {
+		case []string:
+			n += nonEmptyCount(refs)
+		case []any:
+			for _, ref := range refs {
+				if presentImage(ref) {
+					n++
+				}
+			}
+		case string:
+			if strings.TrimSpace(refs) != "" {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// presentImage reports whether an extra-param value names an image: a non-empty string, or an
+// object (xAI's {"url": ...}).
+func presentImage(v any) bool {
+	switch v := v.(type) {
+	case string:
+		return strings.TrimSpace(v) != ""
+	case map[string]any:
+		return len(v) > 0
+	}
+	return false
+}
+
+func nonEmptyCount(values []string) int {
+	n := 0
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			n++
+		}
+	}
+	return n
 }
 
 // videoClipCount counts the billable clips in outputs, skipping image outputs such as a task's last frame.
@@ -545,6 +618,11 @@ func VideoDimensionsFromResponse(resp *schemas.BifrostVideoGenerationResponse) V
 		}
 		if resp.Usage.InputSeconds != nil && *resp.Usage.InputSeconds > 0 {
 			dims.VideoInput = schemas.Ptr(true)
+		}
+		// Fork (TXE-7409): the input images the vendor billed, when it reports them.
+		if resp.Usage.InputImages != nil && *resp.Usage.InputImages >= 0 {
+			images := *resp.Usage.InputImages
+			dims.InputImages = &images
 		}
 	}
 	return dims
