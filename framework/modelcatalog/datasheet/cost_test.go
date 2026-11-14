@@ -10421,6 +10421,8 @@ func TestCalculateCost_PassthroughVideoEmbeddings(t *testing.T) {
 			LLMUsage: &schemas.BifrostLLMUsage{}, EmbeddingVideoSegments: segments, EmbeddingVideoIntervalSec: interval}), nil)
 	}
 	assert.InDelta(t, 20*0.001, at(10), 1e-12, "20 s at the above-8s rate")
-	assert.InDelta(t, 20*0.0005, at(4), 1e-12, "20 s at the base rate")
 	assert.InDelta(t, 20*0.001, at(0), 1e-12, "no interval named: two segments show it, 10 s")
+	// A passthrough body's interval is the caller's: a shorter one than the segments Vertex
+	// returned (10 s each) never prices below what they show.
+	assert.InDelta(t, 20*0.001, at(4), 1e-12, "a requested 4 s cannot price 10 s segments at the base rate")
 }

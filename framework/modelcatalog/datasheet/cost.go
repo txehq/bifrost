@@ -3755,6 +3755,12 @@ func passthroughUsageToCostInput(su *schemas.BifrostPassthroughUsage) costInput 
 			data[i].VideoSegment = &su.EmbeddingVideoSegments[i]
 		}
 		input.embeddingVideoSeconds, input.embeddingVideoInterval = embeddingVideoSegments(&schemas.BifrostEmbeddingResponse{Data: data, VideoIntervalSec: su.EmbeddingVideoIntervalSec})
+		// The interval read off a passthrough body is the caller's, not one Bifrost wrote, so it
+		// never prices below what Vertex returned: no segment is longer than the interval used.
+		for i := range su.EmbeddingVideoSegments {
+			seg := su.EmbeddingVideoSegments[i]
+			input.embeddingVideoInterval = max(input.embeddingVideoInterval, seg.EndOffsetSec-seg.StartOffsetSec)
+		}
 	}
 	// Provider-reported exact cost wins over datasheet estimation; attach it to usage.Cost so the
 	// provider-cost short-circuit in computeCost returns it verbatim. input.usage may alias the

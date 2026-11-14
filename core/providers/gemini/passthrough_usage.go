@@ -345,17 +345,13 @@ type geminiPredictResponse struct {
 	} `json:"predictions"`
 }
 
-// geminiPredictRequest is the part of a :predict request a video embedding is priced by: the
-// embedding interval each video instance asked for.
-type geminiPredictRequest struct {
-	Instances []struct {
-		Video *struct {
-			VideoSegmentConfig *struct {
-				IntervalSec *int `json:"intervalSec"`
-			} `json:"videoSegmentConfig"`
-		} `json:"video"`
-	} `json:"instances"`
-}
+// videoSegmentConfigKeys and intervalSecKeys are the spellings of the :predict request fields a
+// video embedding's interval is read from: the proto JSON Vertex parses accepts the lowerCamel and
+// the original snake_case name of each, so both are read, compared case-insensitively.
+var (
+	videoSegmentConfigKeys = []string{"videosegmentconfig", "video_segment_config"}
+	intervalSecKeys        = []string{"intervalsec", "interval_sec"}
+)
 
 func extractGeminiPredictUsage(reqBody, body []byte) *schemas.BifrostPassthroughUsage {
 	if len(body) > 0 {
@@ -406,19 +402,46 @@ func (r *geminiPredictResponse) embeddingUsage() *schemas.BifrostPassthroughUsag
 }
 
 // requestedVideoIntervalSec is the longest embedding interval a :predict request's video
-// instances asked for, or 0 when none named one.
+// instances asked for, or 0 when none named one. Every spelling Vertex accepts is read and the
+// largest value taken, so a body naming the interval twice (intervalSec and interval_sec, or a
+// case variant) cannot be priced at a shorter, cheaper interval than the one Vertex applied.
+// Pricing also never goes below the interval the returned segments show.
 func requestedVideoIntervalSec(reqBody []byte) int {
-	var req geminiPredictRequest
+	var req struct {
+		Instances []map[string]any `json:"instances"`
+	}
 	if err := sonic.Unmarshal(reqBody, &req); err != nil {
 		return 0
 	}
 	longest := 0
 	for _, inst := range req.Instances {
-		if inst.Video != nil && inst.Video.VideoSegmentConfig != nil && inst.Video.VideoSegmentConfig.IntervalSec != nil {
-			longest = max(longest, *inst.Video.VideoSegmentConfig.IntervalSec)
+		for _, video := range valuesForKeys(inst, []string{"video"}) {
+			videoMap, _ := video.(map[string]any)
+			for _, config := range valuesForKeys(videoMap, videoSegmentConfigKeys) {
+				configMap, _ := config.(map[string]any)
+				for _, v := range valuesForKeys(configMap, intervalSecKeys) {
+					if n, ok := v.(float64); ok && n > 0 {
+						longest = max(longest, int(n))
+					}
+				}
+			}
 		}
 	}
 	return longest
+}
+
+// valuesForKeys returns the values of m whose key matches one of names, ignoring case.
+func valuesForKeys(m map[string]any, names []string) []any {
+	var out []any
+	for key, value := range m {
+		for _, name := range names {
+			if strings.EqualFold(key, name) {
+				out = append(out, value)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // ---- :predict (Imagen) ----

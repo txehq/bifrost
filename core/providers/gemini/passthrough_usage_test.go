@@ -286,4 +286,21 @@ func TestExtractGeminiPassthroughUsage_VideoEmbeddingInputs(t *testing.T) {
 	if noInterval == nil || len(noInterval.EmbeddingVideoSegments) != 1 || noInterval.EmbeddingVideoIntervalSec != 0 {
 		t.Fatalf(":predict usage without an interval = %+v", noInterval)
 	}
+	// Vertex's proto JSON reads the snake_case names too: every spelling is read and the largest
+	// interval taken, so a body naming it twice is never priced at the shorter one.
+	for name, body := range map[string]string{
+		"snake case":          `{"instances":[{"video":{"gcsUri":"gs://b/c.mp4","video_segment_config":{"interval_sec":16}}}]}`,
+		"both spellings":      `{"instances":[{"video":{"gcsUri":"gs://b/c.mp4","videoSegmentConfig":{"intervalSec":4,"interval_sec":16}}}]}`,
+		"case variant":        `{"instances":[{"video":{"gcsUri":"gs://b/c.mp4","VideoSegmentConfig":{"IntervalSec":16},"videoSegmentConfig":{"intervalSec":4}}}]}`,
+		"two video instances": `{"instances":[{"video":{"gcsUri":"gs://b/a.mp4","videoSegmentConfig":{"intervalSec":4}}},{"video":{"gcsUri":"gs://b/b.mp4","videoSegmentConfig":{"intervalSec":16}}}]}`,
+	} {
+		u := gemini.ExtractGeminiPassthroughUsage(
+			"/projects/p/locations/us-central1/publishers/google/models/multimodalembedding@001:predict",
+			[]byte(body),
+			[]byte(`{"predictions":[{"videoEmbeddings":[{"startOffsetSec":0,"endOffsetSec":6,"embedding":[0.1]}]}]}`),
+		)
+		if u == nil || u.EmbeddingVideoIntervalSec != 16 {
+			t.Fatalf("%s: interval = %+v, want 16, the largest the body names", name, u)
+		}
+	}
 }
