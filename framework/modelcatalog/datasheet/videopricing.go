@@ -2,6 +2,7 @@ package datasheet
 
 import (
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -483,20 +484,10 @@ func VideoBillingSelectors(extra map[string]any) map[string]any {
 // VideoRequestHasVideoInput reports whether a video create sends the vendor a video as input:
 // a video_uri on a provider that sends it, or the reference_videos extra param that Seedance
 // reads (BytePlus maps it to its reference_video content; Replicate passes extra params to the
-// model as they are).
+// model as they are). provider is the one whose converter sends the request: a custom provider's
+// base provider, not its name (TXE-7434).
 func VideoRequestHasVideoInput(provider schemas.ModelProvider, input *schemas.VideoGenerationInput, extra map[string]any) bool {
-	if _, dropped := videoURIDroppedBy[provider]; !dropped && input != nil && input.VideoURI != nil && strings.TrimSpace(*input.VideoURI) != "" {
-		return true
-	}
-	switch refs := extra["reference_videos"].(type) {
-	case []string:
-		return len(refs) > 0
-	case []any:
-		return len(refs) > 0
-	case string:
-		return strings.TrimSpace(refs) != ""
-	}
-	return false
+	return ReadVideoInputs(input, "", nil, extra).HasVideoInput(provider)
 }
 
 // VideoRequestInputImages counts the images a video create sends as input (fork, TXE-7409): the
@@ -508,32 +499,100 @@ func VideoRequestHasVideoInput(provider schemas.ModelProvider, input *schemas.Vi
 // list holds reference images, and a bare string is not one. Those are the images the converters
 // of the providers that price input images (MiniMax, xAI) send, which
 // TestVideoRequestInputImagesMatchWhatTheConvertersSend checks; MiniMax refuses the forms it cannot
-// send. A refused request never reaches the vendor, so it is never settled.
+// send. A refused request never reaches the vendor, so it is never settled. provider is the one
+// whose converter sends the request, as for VideoRequestHasVideoInput.
 func VideoRequestInputImages(provider schemas.ModelProvider, input *schemas.VideoGenerationInput, lastFrame string, referenceImages []string, extra map[string]any) int {
-	n := 0
-	if input != nil && input.InputReference != nil && strings.TrimSpace(*input.InputReference) != "" {
-		n++
-	} else if name, ok := videoNativeFirstFrameNames[provider]; ok && presentImage(extra[name]) {
-		n++
+	return ReadVideoInputs(input, lastFrame, referenceImages, extra).InputImages(provider)
+}
+
+// VideoInputs is what a video create carries as input, read without knowing which converter sends
+// it (fork, TXE-7434). Part of it reaches the vendor only through some converters: a video_uri
+// (videoURIDroppedBy) and a provider's own first-frame name (videoNativeFirstFrameNames). For a
+// custom provider the converter is its base provider's, which core resolves only after the plugin
+// pre-hooks run, so a capture made there keeps this and resolves it once the base is known
+// (VideoPricingDimensions.ApplyVideoInputs).
+type VideoInputs struct {
+	videoURI        bool // a non-empty input video_uri
+	referenceVideos bool // Seedance's reference_videos extra param
+	firstFrame      bool // a non-empty input_reference
+	// nativeFirstFrame are the providers whose own first-frame name the extra params carry. It is
+	// nil for nearly every request, so reading the inputs allocates nothing.
+	nativeFirstFrame []schemas.ModelProvider
+	images           int // the last frame and the reference images
+}
+
+// ReadVideoInputs reads a video create's inputs; see VideoRequestInputImages for the forms counted.
+func ReadVideoInputs(input *schemas.VideoGenerationInput, lastFrame string, referenceImages []string, extra map[string]any) VideoInputs {
+	var v VideoInputs
+	if input != nil {
+		v.videoURI = input.VideoURI != nil && strings.TrimSpace(*input.VideoURI) != ""
+		v.firstFrame = input.InputReference != nil && strings.TrimSpace(*input.InputReference) != ""
+	}
+	switch refs := extra["reference_videos"].(type) {
+	case []string:
+		v.referenceVideos = len(refs) > 0
+	case []any:
+		v.referenceVideos = len(refs) > 0
+	case string:
+		v.referenceVideos = strings.TrimSpace(refs) != ""
+	}
+	if !v.firstFrame && len(extra) > 0 {
+		for _, native := range videoNativeFirstFrameNames {
+			if presentImage(extra[native.name]) {
+				v.nativeFirstFrame = append(v.nativeFirstFrame, native.provider)
+			}
+		}
 	}
 	if strings.TrimSpace(lastFrame) != "" || presentImage(extra["last_frame"]) {
-		n++
+		v.images++
 	}
 	if refs := nonEmptyCount(referenceImages); refs > 0 {
-		n += refs
+		v.images += refs
 	} else {
 		switch refs := extra["reference_images"].(type) {
 		case []string:
-			n += nonEmptyCount(refs)
+			v.images += nonEmptyCount(refs)
 		case []any:
 			for _, ref := range refs {
 				if presentImage(ref) {
-					n++
+					v.images++
 				}
 			}
 		}
 	}
+	return v
+}
+
+// HasVideoInput reports whether provider's converter sends a video as input.
+func (v VideoInputs) HasVideoInput(provider schemas.ModelProvider) bool {
+	if _, dropped := videoURIDroppedBy[provider]; v.videoURI && !dropped {
+		return true
+	}
+	return v.referenceVideos
+}
+
+// InputImages counts the images provider's converter sends as input.
+func (v VideoInputs) InputImages(provider schemas.ModelProvider) int {
+	n := v.images
+	if v.firstFrame || slices.Contains(v.nativeFirstFrame, provider) {
+		n++
+	}
 	return n
+}
+
+// ApplyVideoInputs sets VideoInput and InputImages to what provider's converter sends of inputs.
+// provider is the base provider of a custom one; the custom name still selects the rates.
+func (d *VideoPricingDimensions) ApplyVideoInputs(provider schemas.ModelProvider, inputs VideoInputs) {
+	d.VideoInput = nil
+	if inputs.HasVideoInput(provider) {
+		d.VideoInput = schemas.Ptr(true)
+	}
+	d.InputImages = nil
+	// The count escapes only when there is one, so a text-only create allocates nothing for it.
+	if n := inputs.InputImages(provider); n > 0 {
+		images := n
+		d.InputImages = &images
+	}
 }
 
 // videoNativeFirstFrameNames are the vendors' own names for the first frame that a converter
@@ -542,8 +601,12 @@ func VideoRequestInputImages(provider schemas.ModelProvider, input *schemas.Vide
 // CheckExtraParamPriceFieldsFor lets it through. Another provider passes the name through as an
 // unknown field, not an image, so it is counted only for the provider listed.
 // TestVideoRequestInputImagesMatchWhatTheConvertersSend checks the count against each converter.
-var videoNativeFirstFrameNames = map[schemas.ModelProvider]string{
-	schemas.XAI: "image",
+// A list, not a map: every create scans it, and ranging over a map costs more than the scan.
+var videoNativeFirstFrameNames = []struct {
+	provider schemas.ModelProvider
+	name     string
+}{
+	{schemas.XAI, "image"},
 }
 
 // presentImage reports whether an extra-param value names an image: a non-empty URL or data URL

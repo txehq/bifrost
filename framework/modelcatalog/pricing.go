@@ -16,6 +16,9 @@ type (
 	// job. See the datasheet type for why it is captured at submission.
 	VideoPricingDimensions = datasheet.VideoPricingDimensions
 	VideoCostDetails       = datasheet.VideoCostDetails
+	// VideoInputs is a video create's inputs, read before the provider that sends them is known;
+	// see the datasheet type.
+	VideoInputs = datasheet.VideoInputs
 )
 
 // GetModelCapabilityEntryForModel returns capability metadata for a
@@ -196,6 +199,11 @@ func VideoRequestHasVideoInput(provider schemas.ModelProvider, input *schemas.Vi
 // datasheet.VideoRequestInputImages.
 func VideoRequestInputImages(provider schemas.ModelProvider, input *schemas.VideoGenerationInput, lastFrame string, referenceImages []string, extra map[string]any) int {
 	return datasheet.VideoRequestInputImages(provider, input, lastFrame, referenceImages, extra)
+}
+
+// ReadVideoInputs reads a video create's inputs without its provider; see datasheet.ReadVideoInputs.
+func ReadVideoInputs(input *schemas.VideoGenerationInput, lastFrame string, referenceImages []string, extra map[string]any) VideoInputs {
+	return datasheet.ReadVideoInputs(input, lastFrame, referenceImages, extra)
 }
 
 // VideoSeconds reads a video duration as whole seconds; see datasheet.VideoSeconds.
