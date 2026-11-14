@@ -2651,10 +2651,68 @@ func TestPreLLMHookRefusesAnUploadReadThroughAnotherPathOfTheSameStore(t *testin
 		require.NotNil(t, shortCircuit, "another key's upload in the store is refused to %s", req.RequestType)
 		assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
 	}
-	// OpenAI's own file calls do not reach that store, so the store's binding does not apply there.
+	// Whether OpenAI's own calls reach that store cannot be told from its URL, so the binding of a
+	// provider with a full-URL override counts there too: the id is refused rather than guessed.
 	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), providerObjectRequests("file-in-store")[schemas.FileContentRequest])
 	require.NoError(t, err)
-	assert.Nil(t, shortCircuit, "an id on OpenAI is not the store's file")
+	require.NotNil(t, shortCircuit, "an id recorded through an override provider of the openai base is refused through openai")
+}
+
+// An override that spells the upstream differently from a base URL still shares its objects: a
+// default port written out (Codex P1 on 29a5a0dac), or an override the base provider never reads
+// (a gemini batch_create, which gemini builds from its base URL; Codex P2 on 29a5a0dac). Access
+// checks count the rows of any provider whose creating call carries a full-URL override, so the
+// first is refused to another key and the second admits its creator (TXE-7368).
+func TestPreLLMHookMatchesOverridesWhateverTheirSpelling(t *testing.T) {
+	store := newProviderObjectConfigStore(t)
+	configured := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {},
+		"port-spelled": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.FileContentRequest: "https://api.openai.com:443/v1/files/{file_id}/content",
+			}},
+		},
+		"gemini-creator": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Gemini, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.BatchCreateRequest: "https://batches.gemini-proxy.example/v1beta/batches",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://gemini-proxy.example/v1beta"},
+		},
+		"gemini-reader": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Gemini},
+			NetworkConfig:        &schemas.NetworkConfig{BaseURL: "https://gemini-proxy.example/v1beta"},
+		},
+	}}
+	vk := buildVKForMCPStamping(nil)
+	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("port-spelled", []string{"*"}), buildProviderConfig("gemini-reader", []string{"*"}))
+	plugin := newAccessTestPlugin(t, vk, nil)
+	plugin.configStore = store
+	plugin.inMemoryStore = configured
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-openai-other", "vk-someone-else")
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindBatch, "gemini-creator", "batches/own-batch", "vk-mcp-stamp")
+
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.FileContentRequest, FileContentRequest: &schemas.BifrostFileContentRequest{Provider: "port-spelled", FileID: "file-openai-other"}})
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "an override on api.openai.com:443 reaches OpenAI's files: another key's is refused")
+	assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.BatchRetrieveRequest, BatchRetrieveRequest: &schemas.BifrostBatchRetrieveRequest{Provider: "gemini-reader", BatchID: "batches/own-batch"}})
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "the creator retrieves its batch through a provider on the same base URL, whatever gemini-creator's unread override says")
+}
+
+func TestCanonicalURL(t *testing.T) {
+	for raw, want := range map[string]string{
+		" https://API.openai.com:443/v1/ ":                      "https://api.openai.com/v1",
+		"https://api.openai.com:443":                            "https://api.openai.com",
+		"http://localhost:80/v1/files/{file_id}":                "http://localhost/v1/files/{file_id}",
+		"https://api.openai.com:8443/v1":                        "https://api.openai.com:8443/v1",
+		"http://gateway.example:443/v1":                         "http://gateway.example:443/v1",
+		"/v1/files/{file_id}":                                   "/v1/files/{file_id}",
+		"https://files.example/v1/files/{file_id}/content:443/": "https://files.example/v1/files/{file_id}/content:443",
+	} {
+		assert.Equal(t, want, canonicalURL(raw), raw)
+	}
 }
 
 // Batch results on the openai base fetch the batch through the batch_retrieve override when they

@@ -3,7 +3,6 @@ package governance
 import (
 	"bytes"
 	"fmt"
-	neturl "net/url"
 	"path"
 	"slices"
 	"sort"
@@ -955,10 +954,10 @@ var objectCreationRequestTypes = map[string][]schemas.RequestType{
 // read this, and each errs on its own safe side when a provider's creating calls go to more than
 // one upstream:
 //   - checking access (every = false): a provider's rows count when any of its creating calls
-//     reaches this call's origin (sameOrigin: a full-URL override is compared by scheme, host and
-//     port, since two calls of one store have different paths), so a key cannot reach another
-//     key's object by naming a provider whose override goes there. The calling provider's own
-//     rows always count: an extra row can only refuse an id, never admit one;
+//     may share this call's upstream (mayShare: base URLs match, or either call has a full-URL
+//     override), so a key cannot reach another key's object by naming a provider whose override
+//     goes there, however its URL is spelled. The calling provider's own rows always count: an
+//     extra row can only refuse an id, never admit one;
 //   - forgetting a delete (every = true): a provider's rows are forgotten only when every one of
 //     its creating calls went where the delete went (sameAs), so a binding whose object may
 //     survive on another upstream is kept. The calling provider's own rows follow the same rule.
@@ -983,7 +982,7 @@ func (p *GovernancePlugin) objectHolders(kind string, requestType schemas.Reques
 	// Access widens the match and forgetting narrows it, each toward refusing (see above).
 	reaches := call.sameAs
 	if !every {
-		reaches = call.sameOrigin
+		reaches = call.mayShare
 	}
 	holds := func(name schemas.ModelProvider) bool {
 		if len(creating) == 0 {
@@ -1028,7 +1027,7 @@ func callTarget(requestType schemas.RequestType, name schemas.ModelProvider, con
 	// follow batch_retrieve on the openai and gemini bases. The first non-blank entry decides; a
 	// relative one stays on the base URL.
 	for _, readType := range providerUtils.OverrideRequestTypes(baseProviderOf(name, configured), requestType) {
-		url := strings.TrimRight(strings.ToLower(strings.TrimSpace(config.CustomProviderConfig.RequestPathOverrides[readType])), "/")
+		url := canonicalURL(config.CustomProviderConfig.RequestPathOverrides[readType])
 		if url == "" {
 			continue
 		}
@@ -1055,34 +1054,42 @@ func (a callUpstream) sameAs(b callUpstream) bool {
 	}
 }
 
-// sameOrigin is the wider form of sameAs that access checks use: two calls with no full-URL
-// override still compare base URLs, but once either has one, their targets match when they share
-// a scheme, host and port. Calls of one store have different paths (an upload override on
-// .../files and a content override on .../files/{file_id}/content), so comparing override strings
-// would miss a provider's own store and let an id through unchecked.
-func (a callUpstream) sameOrigin(b callUpstream) bool {
+// mayShare is the wider form of sameAs that access checks use. Two calls with no full-URL
+// override compare base URLs. A call with one may reach any upstream of its base, so it matches
+// every other call on that base. Telling from URLs whether two hosts serve one store fails open
+// whenever the spellings differ: paths that differ by call, a default port written out, an alias
+// host, an override the base provider does not read. Counting another provider's rows can only
+// refuse an id, and an id another key holds on a different account of the same vendor is refused
+// only if it collides.
+func (a callUpstream) mayShare(b callUpstream) bool {
 	if a.override == "" && b.override == "" {
 		return a.endpoint == b.endpoint
 	}
-	origin := urlOrigin(a.target())
-	return origin != "" && origin == urlOrigin(b.target())
+	return true
 }
 
-// target is the URL a call goes to: its full-URL override, or else its base URL.
-func (a callUpstream) target() string {
-	if a.override != "" {
-		return a.override
+// canonicalURL lowercases a base URL or full-URL override, trims it and its trailing slashes, and
+// drops a default port (:443 on https, :80 on http), so that spellings of one endpoint compare
+// equal.
+func canonicalURL(raw string) string {
+	url := strings.TrimRight(strings.ToLower(strings.TrimSpace(raw)), "/")
+	scheme, port := "https://", ":443"
+	rest, ok := strings.CutPrefix(url, scheme)
+	if !ok {
+		scheme, port = "http://", ":80"
+		if rest, ok = strings.CutPrefix(url, scheme); !ok {
+			return url
+		}
 	}
-	return a.endpoint
-}
-
-// urlOrigin is the scheme, host and port of an absolute URL, lowercased, or "" when it has none.
-func urlOrigin(raw string) string {
-	parsed, err := neturl.Parse(raw)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return ""
+	host, path, hasPath := strings.Cut(rest, "/")
+	trimmed, cut := strings.CutSuffix(host, port)
+	if !cut {
+		return url
 	}
-	return strings.ToLower(parsed.Scheme + "://" + parsed.Host)
+	if hasPath {
+		return scheme + trimmed + "/" + path
+	}
+	return scheme + trimmed
 }
 
 // baseProviderDefaultEndpoints are the endpoints the base providers a custom provider can be built
@@ -1109,7 +1116,7 @@ func providerEndpoint(name schemas.ModelProvider, configured map[schemas.ModelPr
 	if strings.TrimSpace(url) == "" {
 		url = baseProviderDefaultEndpoints[baseProviderOf(name, configured)]
 	}
-	return strings.TrimRight(strings.ToLower(strings.TrimSpace(url)), "/")
+	return canonicalURL(url)
 }
 
 // baseProviderOf is the upstream a configured provider name reaches: the base of a custom
