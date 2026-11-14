@@ -127,6 +127,10 @@ export function DecisionModelSelector({
 		);
 	}
 	if (servesJev || !provider) {
+		// A provider named but not loaded yet: whether it lists decision models is unknown until it
+		// is, and opening the picker now would list its whole catalog, chat models included (a
+		// custom provider built on OpenAI did, TXE-7404). Keep it closed until the provider arrives.
+		const providerLoading = !servesJev && !!providerName && !provider;
 		return (
 			<ModelSelector
 				inputId={inputId}
@@ -138,8 +142,8 @@ export function DecisionModelSelector({
 				value={value}
 				onChange={onChange}
 				allowCustomModel
-				placeholder={providerName ? "Search or type a Jev model…" : "Select a provider first"}
-				disabled={disabled || !providerName}
+				placeholder={providerLoading ? "Loading provider…" : providerName ? "Search or type a Jev model…" : "Select a provider first"}
+				disabled={disabled || !providerName || providerLoading}
 				className={className}
 			/>
 		);
