@@ -2605,9 +2605,12 @@ func TestPostLLMHookKeepsTheBindingOfAProviderThatCreatesElsewhere(t *testing.T)
 	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{FileDeleteResponse: &schemas.BifrostFileDeleteResponse{ID: "file-same-name", Deleted: true,
 		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.FileDeleteRequest, Provider: "delete-moved"}}}, nil)
 	require.NoError(t, err)
+	// The delete reached OpenAI, but a delete through a full-URL override forgets no other
+	// provider's binding: matching override URLs is a guess, and the binding left behind only
+	// refuses an id nobody has (TXE-7368).
 	gone, err = store.GetProviderObjectsByIDs(context.Background(), []string{configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindFile, "openai", "file-same-name")})
 	require.NoError(t, err)
-	assert.Empty(t, gone, "the delete through delete-moved reached OpenAI and forgets OpenAI's file")
+	assert.Len(t, gone, 1, "the delete through delete-moved's override keeps OpenAI's binding")
 	kept, err = store.GetProviderObjectsByIDs(context.Background(), []string{configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindFile, "delete-moved", "file-same-name")})
 	require.NoError(t, err)
 	assert.Len(t, kept, 1, "delete-moved's own upload was not where its delete went")
@@ -2701,6 +2704,66 @@ func TestPreLLMHookMatchesOverridesWhateverTheirSpelling(t *testing.T) {
 	assert.Nil(t, shortCircuit, "the creator retrieves its batch through a provider on the same base URL, whatever gemini-creator's unread override says")
 }
 
+// A delete through a full-URL override forgets no other provider's binding, however its URL
+// compares: a proxy whose paths tell stores apart by case keeps tenant-b-upper's file when
+// tenant-b-lower deletes an identically named one (Codex P1 on 4d7af7ed4). Providers on one base
+// URL with no override still share their bookkeeping (TXE-7368).
+func TestPostLLMHookForgetsNoOtherBindingThroughAFullURLDelete(t *testing.T) {
+	store := newProviderObjectConfigStore(t)
+	vk := buildVKForMCPStamping(nil)
+	vk.ProviderConfigs = append(vk.ProviderConfigs,
+		buildProviderConfig("tenant-b-lower", []string{"*"}), buildProviderConfig("tenant-b-upper", []string{"*"}), buildProviderConfig("openai-twin", []string{"*"}))
+	plugin := newAccessTestPlugin(t, vk, nil)
+	plugin.configStore = store
+	plugin.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {},
+		// Its delete override lies under its own base URL, so its delete reaches its own uploads.
+		"tenant-b-lower": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.FileDeleteRequest: "https://proxy.example/tenantb/v1/files/{file_id}",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://proxy.example/tenantb/v1"},
+		},
+		"tenant-b-upper": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
+			NetworkConfig:        &schemas.NetworkConfig{BaseURL: "https://proxy.example/TenantB/v1"},
+		},
+		// The same upstream as openai, spelled with its default port and no override.
+		"openai-twin": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
+			NetworkConfig:        &schemas.NetworkConfig{BaseURL: "https://API.openai.com:443"},
+		},
+	}}
+	rowsOf := func(provider, id string) int {
+		t.Helper()
+		rows, err := store.GetProviderObjectsByIDs(context.Background(), []string{configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindFile, provider, id)})
+		require.NoError(t, err)
+		return len(rows)
+	}
+	deleteThrough := func(provider schemas.ModelProvider, id string) {
+		t.Helper()
+		ctx := presentCtx(mcpTestVKValue)
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.FileDeleteRequest, FileDeleteRequest: &schemas.BifrostFileDeleteRequest{Provider: provider, FileID: id}})
+		require.NoError(t, err)
+		require.Nil(t, shortCircuit, "the key deletes its own file through %s", provider)
+		_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{FileDeleteResponse: &schemas.BifrostFileDeleteResponse{ID: id, Deleted: true,
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.FileDeleteRequest, Provider: provider}}}, nil)
+		require.NoError(t, err)
+	}
+
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "tenant-b-lower", "file-same-name", "vk-mcp-stamp")
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "tenant-b-upper", "file-same-name", "vk-mcp-stamp")
+	deleteThrough("tenant-b-lower", "file-same-name")
+	assert.Equal(t, 0, rowsOf("tenant-b-lower", "file-same-name"), "the deleting provider uploads where it deletes, so its own binding goes")
+	assert.Equal(t, 1, rowsOf("tenant-b-upper", "file-same-name"), "the file uploaded under /TenantB survives and keeps its binding")
+
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-twin", "vk-mcp-stamp")
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai-twin", "file-twin", "vk-mcp-stamp")
+	deleteThrough("openai-twin", "file-twin")
+	assert.Equal(t, 0, rowsOf("openai-twin", "file-twin"))
+	assert.Equal(t, 0, rowsOf("openai", "file-twin"), "one base URL with no override is one store: the delete forgets both bindings")
+}
+
 func TestCanonicalURL(t *testing.T) {
 	for raw, want := range map[string]string{
 		" https://API.openai.com:443/v1/ ":                      "https://api.openai.com/v1",
@@ -2710,6 +2773,8 @@ func TestCanonicalURL(t *testing.T) {
 		"http://gateway.example:443/v1":                         "http://gateway.example:443/v1",
 		"/v1/files/{file_id}":                                   "/v1/files/{file_id}",
 		"https://files.example/v1/files/{file_id}/content:443/": "https://files.example/v1/files/{file_id}/content:443",
+		// The path keeps its case: a server may tell one tenant's store from another's by it.
+		"HTTPS://Proxy.Example:443/TenantB/": "https://proxy.example/TenantB",
 	} {
 		assert.Equal(t, want, canonicalURL(raw), raw)
 	}

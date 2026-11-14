@@ -958,10 +958,11 @@ var objectCreationRequestTypes = map[string][]schemas.RequestType{
 //     override), so a key cannot reach another key's object by naming a provider whose override
 //     goes there, however its URL is spelled. The calling provider's own rows always count: an
 //     extra row can only refuse an id, never admit one;
-//   - forgetting a delete (every = true): a provider's rows are forgotten only when every one of
-//     its creating calls went where the delete went (sameAs), so a binding whose object may
-//     survive on another upstream is kept. The calling provider's own rows follow the same rule.
-//     A stale binding of a deleted object only refuses an id nobody has.
+//   - forgetting a delete (every = true): the calling provider's rows are forgotten only when
+//     every one of its creating calls went where the delete went (sameAs), and another provider's
+//     only when neither side has a full-URL override and their base URLs are equal. A binding
+//     whose object may survive on another upstream is kept: a stale binding of a deleted object
+//     only refuses an id nobody has.
 //
 // A kind with no creating calls listed compares base URLs alone.
 func (p *GovernancePlugin) objectHolders(kind string, requestType schemas.RequestType, provider string, every bool) []string {
@@ -995,13 +996,35 @@ func (p *GovernancePlugin) objectHolders(kind string, requestType schemas.Reques
 		}
 		return every
 	}
+	// A delete forgets another provider's rows only on equal base URLs with no full-URL override
+	// on either side, the rule before TXE-7368. Matching override URLs is a guess (a case-sensitive
+	// path, an alias host), and a wrong guess forgets the binding of an object that survives, which
+	// then reads as untracked to every key. The binding left instead only refuses an id nobody has.
+	plainlyShares := func(name schemas.ModelProvider) bool {
+		if call.override != "" {
+			return false
+		}
+		for _, createType := range creating {
+			target := callTarget(createType, name, configured)
+			if target.override != "" || target.endpoint != call.endpoint {
+				return false
+			}
+		}
+		return call.endpoint == providerEndpoint(name, configured)
+	}
 	var holders []string
 	if _, listed := configured[self]; !listed || !every || holds(self) {
 		holders = append(holders, provider)
 	}
 	var others []string
 	for name := range configured {
-		if name != self && baseProviderOf(name, configured) == base && holds(name) {
+		if name == self || baseProviderOf(name, configured) != base {
+			continue
+		}
+		if every && !plainlyShares(name) {
+			continue
+		}
+		if holds(name) {
 			others = append(others, string(name))
 		}
 	}
@@ -1068,28 +1091,28 @@ func (a callUpstream) mayShare(b callUpstream) bool {
 	return true
 }
 
-// canonicalURL lowercases a base URL or full-URL override, trims it and its trailing slashes, and
-// drops a default port (:443 on https, :80 on http), so that spellings of one endpoint compare
-// equal.
+// canonicalURL trims a base URL or full-URL override and its trailing slashes, lowercases its
+// scheme and host, and drops a default port (:443 on https, :80 on http), so that spellings of one
+// endpoint compare equal. The path keeps its case: a server may tell /TenantB from /tenantb.
 func canonicalURL(raw string) string {
-	url := strings.TrimRight(strings.ToLower(strings.TrimSpace(raw)), "/")
-	scheme, port := "https://", ":443"
-	rest, ok := strings.CutPrefix(url, scheme)
-	if !ok {
-		scheme, port = "http://", ":80"
-		if rest, ok = strings.CutPrefix(url, scheme); !ok {
-			return url
-		}
-	}
-	host, path, hasPath := strings.Cut(rest, "/")
-	trimmed, cut := strings.CutSuffix(host, port)
-	if !cut {
+	url := strings.TrimRight(strings.TrimSpace(raw), "/")
+	schemeEnd := strings.Index(url, "://")
+	if schemeEnd < 0 {
 		return url
 	}
-	if hasPath {
-		return scheme + trimmed + "/" + path
+	scheme := strings.ToLower(url[:schemeEnd])
+	host, path, hasPath := strings.Cut(url[schemeEnd+len("://"):], "/")
+	host = strings.ToLower(host)
+	switch scheme {
+	case "https":
+		host = strings.TrimSuffix(host, ":443")
+	case "http":
+		host = strings.TrimSuffix(host, ":80")
 	}
-	return scheme + trimmed
+	if hasPath {
+		return scheme + "://" + host + "/" + path
+	}
+	return scheme + "://" + host
 }
 
 // baseProviderDefaultEndpoints are the endpoints the base providers a custom provider can be built
