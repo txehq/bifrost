@@ -188,4 +188,20 @@ describe("request type groups", () => {
 		const plain = PRICING_FIELDS.find((f) => f.key === "input_cost_per_token");
 		expect(plain?.requestTypeGroups).not.toContain("decisions");
 	});
+
+	// TXE-7361: cached audio is priced on chat and Responses turns (computeTextCost) as well as on
+	// live audio, so an override scoped to either keeps the cached-audio rates in its field picker.
+	it("offers the cached-audio rates for chat and audio request types", () => {
+		const cachedAudio = PRICING_FIELDS.filter((f) => f.key.startsWith("cache_read_input_audio_token_cost"));
+		expect(cachedAudio.map((f) => f.key).sort()).toEqual([
+			"cache_read_input_audio_token_cost",
+			"cache_read_input_audio_token_cost_batches",
+			"cache_read_input_audio_token_cost_flex",
+			"cache_read_input_audio_token_cost_priority",
+		]);
+		for (const field of cachedAudio) {
+			expect(field.requestTypeGroups as readonly string[], field.key).toContain("chat");
+			expect(field.requestTypeGroups as readonly string[], field.key).toContain("audio");
+		}
+	});
 });

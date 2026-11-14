@@ -827,25 +827,25 @@ export const PRICING_FIELDS = [
 		key: "cache_read_input_audio_token_cost",
 		label: "Cache read / audio token",
 		group: "audio",
-		requestTypeGroups: ["audio"],
+		requestTypeGroups: ["chat", "audio"],
 	},
 	{
 		key: "cache_read_input_audio_token_cost_flex",
 		label: "Cache read / audio token (flex)",
 		group: "audio",
-		requestTypeGroups: ["audio"],
+		requestTypeGroups: ["chat", "audio"],
 	},
 	{
 		key: "cache_read_input_audio_token_cost_priority",
 		label: "Cache read / audio token (priority)",
 		group: "audio",
-		requestTypeGroups: ["audio"],
+		requestTypeGroups: ["chat", "audio"],
 	},
 	{
 		key: "cache_read_input_audio_token_cost_batches",
 		label: "Cache read / audio token (batch)",
 		group: "audio",
-		requestTypeGroups: ["audio"],
+		requestTypeGroups: ["chat", "audio"],
 	},
 	// Image fields
 	{
