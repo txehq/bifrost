@@ -1590,6 +1590,24 @@ func TestCalculateCost_BedrockGuardrailUnitsAreBilled(t *testing.T) {
 	// With no provider guardrails row, the model's own rates are all there is.
 	s = testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey(model.Model, "bedrock", "chat"): model})
 	assert.InDelta(t, tokens+4*0.001, s.CalculateCost(chat(units), nil), 1e-12)
+
+	// A model with no pricing row at all (TXE-7390) prices no tokens, but its guardrail units are
+	// still charged at bedrock/guardrails' rates: on a finished request, and on the billed usage
+	// of a stream cut short.
+	s = testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey("guardrails", "bedrock", "guardrail"): guardrails})
+	unpriced := s.CalculateCostBreakdown(chat(units), nil)
+	require.NotNil(t, unpriced, "an unpriced model's guardrail units are charged")
+	assert.InDelta(t, guardrail, unpriced.TotalCost, 1e-12)
+	require.NotNil(t, unpriced.AdditionalCostDetails)
+	assert.InDelta(t, guardrail, unpriced.AdditionalCostDetails.GuardrailCost, 1e-12)
+	assert.Zero(t, unpriced.InputCost, "no token is priced")
+	interrupted := &schemas.BifrostLLMUsage{PromptTokens: 100, TotalTokens: 100, GuardrailUnits: units}
+	assert.InDelta(t, guardrail, s.CalculateCostForUsage(interrupted, schemas.Bedrock, "anthropic.claude-sonnet-4-5", schemas.ChatCompletionStreamRequest, nil), 1e-12)
+	assert.Nil(t, s.CalculateCostBreakdown(chat(nil), nil), "an unpriced model with no guardrail units still has no cost")
+
+	// With neither the model nor the provider's guardrails priced, nothing is charged.
+	s = testStoreWithPricing(map[string]configstoreTables.TableModelPricing{})
+	assert.Nil(t, s.CalculateCostBreakdown(chat(units), nil))
 }
 
 func TestComputeTextCost_DeprecatedNumSearchQueriesNotPriced(t *testing.T) {
