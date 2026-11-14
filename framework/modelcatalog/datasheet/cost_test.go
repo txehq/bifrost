@@ -2,7 +2,11 @@ package datasheet
 
 import (
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"context"
@@ -9860,4 +9864,42 @@ func TestResponsesUsageKeepsEveryInputDetail(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestVideoBillingExtraKeysCoverEveryExtraRead fails when video pricing reads a key from
+// VideoPricingDimensions.Extra that videoBillingExtraKeys does not list (TXE-7357): a job whose
+// request content may not be stored keeps only the listed keys, so an unlisted one would be priced
+// without the value the caller sent.
+func TestVideoBillingExtraKeysCoverEveryExtraRead(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "videopricing.go", nil, 0)
+	require.NoError(t, err)
+	listed := map[string]bool{}
+	for _, key := range videoBillingExtraKeys {
+		listed[key] = true
+	}
+	read := 0
+	ast.Inspect(file, func(n ast.Node) bool {
+		idx, ok := n.(*ast.IndexExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := idx.X.(*ast.SelectorExpr)
+		lit, isLit := idx.Index.(*ast.BasicLit)
+		if !ok || sel.Sel.Name != "Extra" || !isLit || lit.Kind != token.STRING {
+			return true
+		}
+		key, _ := strconv.Unquote(lit.Value)
+		read++
+		if !listed[key] {
+			t.Errorf("%s: video pricing reads Extra[%q], which videoBillingExtraKeys does not list", fset.Position(idx.Pos()), key)
+		}
+		return true
+	})
+	if read == 0 {
+		t.Fatal("found no Extra reads in videopricing.go; the check no longer sees how pricing reads Extra")
+	}
+	assert.Equal(t, map[string]any{"mode": "pro", "resolution": "4k"},
+		VideoBillingSelectors(map[string]any{"mode": "pro", "resolution": "4k", "reference_videos": []any{"https://x/v.mp4"}, "prompt_extend": true}))
+	assert.Nil(t, VideoBillingSelectors(map[string]any{"seed": 3}))
 }

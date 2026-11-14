@@ -384,6 +384,29 @@ var videoURIDroppedBy = map[schemas.ModelProvider]string{
 	schemas.Replicate: "TXE-7374: core/providers/replicate/videos.go never reads Input.VideoURI",
 }
 
+// videoBillingExtraKeys are the extra params video pricing reads from VideoPricingDimensions.Extra:
+// Kling's mode (PricedMode) and the resolution tier a provider reads from extra_params
+// (requestedTier). TestVideoBillingExtraKeysCoverEveryExtraRead parses this file and fails when
+// pricing reads another key from Extra without it being listed here.
+var videoBillingExtraKeys = []string{"mode", "resolution"}
+
+// VideoBillingSelectors returns the extra params of a video create that choose its rate (see
+// videoBillingExtraKeys), or nil when it carries none. It is what a job keeps of the extra params
+// when the request's content may not be stored (TXE-7357): the rest of extra_params can carry the
+// caller's content (prompts, reference URLs), and pricing reads none of it.
+func VideoBillingSelectors(extra map[string]any) map[string]any {
+	var out map[string]any
+	for _, key := range videoBillingExtraKeys {
+		if value, ok := extra[key].(string); ok {
+			if out == nil {
+				out = make(map[string]any, len(videoBillingExtraKeys))
+			}
+			out[key] = value
+		}
+	}
+	return out
+}
+
 // VideoRequestHasVideoInput reports whether a video create sends the vendor a video as input:
 // a video_uri on a provider that sends it, or the reference_videos extra param that Seedance
 // reads (BytePlus maps it to its reference_video content; Replicate passes extra params to the

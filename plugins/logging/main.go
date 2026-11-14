@@ -829,7 +829,9 @@ func isVideoJobRequestType(requestType schemas.RequestType) bool {
 // later, and most providers' retrieve response reports little beyond a status — so
 // the duration and resolution the price depends on exist nowhere else by then. The
 // request is the only witness, and this is the only moment it is in hand.
-func (p *LoggerPlugin) recordVideoJobLifecycle(entry *logstore.Log, result *schemas.BifrostResponse, requestType schemas.RequestType) {
+// requestPricing is the create's billing dimensions captured in PreLLMHook whatever the content
+// policy; they stand in for the entry's params when content logging removed those.
+func (p *LoggerPlugin) recordVideoJobLifecycle(entry *logstore.Log, result *schemas.BifrostResponse, requestType schemas.RequestType, requestPricing *modelcatalog.VideoPricingDimensions) {
 	if entry == nil || result == nil || p.batchStore == nil || !p.ProviderJobAccountingEnabled() {
 		return
 	}
@@ -854,8 +856,11 @@ func (p *LoggerPlugin) recordVideoJobLifecycle(entry *logstore.Log, result *sche
 
 	// The response is authoritative wherever it says anything; the request fills the
 	// rest, which for most providers is nearly all of it.
-	dims := videoDimensionsFromEntryParams(entry, requestType).
-		MergedWith(modelcatalog.VideoDimensionsFromResponse(resp))
+	requestDims := videoDimensionsFromEntryParams(entry, requestType)
+	if entry.ParamsParsed == nil && requestPricing != nil {
+		requestDims = *requestPricing
+	}
+	dims := requestDims.MergedWith(modelcatalog.VideoDimensionsFromResponse(resp))
 	if dims.Model == "" {
 		dims.Model = entry.Model
 	}
@@ -909,6 +914,40 @@ func (p *LoggerPlugin) recordVideoJobLifecycle(entry *logstore.Log, result *sche
 	if err := p.batchStore.UpsertProviderJob(ctx, job); err != nil {
 		p.logger.Warn("failed to record video job lifecycle for provider=%s video_id=%s: %v", job.Provider, job.JobID, err)
 	}
+}
+
+// videoPricingFromRequest is the billing dimensions of a video create or edit, with Extra reduced
+// to the billing selectors, or nil for any other request.
+func videoPricingFromRequest(provider string, req *schemas.BifrostRequest) *modelcatalog.VideoPricingDimensions {
+	if req == nil {
+		return nil
+	}
+	entry := &logstore.Log{Provider: provider}
+	switch {
+	case req.RequestType == schemas.VideoGenerationRequest && req.VideoGenerationRequest != nil:
+		entry.ParamsParsed = req.VideoGenerationRequest.Params
+		entry.VideoGenerationInputParsed = req.VideoGenerationRequest.Input
+	case req.RequestType == schemas.VideoEditRequest && req.VideoEditRequest != nil:
+		entry.ParamsParsed = req.VideoEditRequest.Params
+	default:
+		return nil
+	}
+	dims := videoDimensionsFromEntryParams(entry, req.RequestType)
+	dims.Extra = modelcatalog.VideoBillingSelectors(dims.Extra)
+	// The request is pooled and reused after this hook, so nothing kept here may point into it.
+	dims.Type = copyPtr(dims.Type)
+	dims.Audio = copyPtr(dims.Audio)
+	dims.UpscaleFactor = copyPtr(dims.UpscaleFactor)
+	dims.TargetMegapixels = copyPtr(dims.TargetMegapixels)
+	return &dims
+}
+
+func copyPtr[T any](v *T) *T {
+	if v == nil {
+		return nil
+	}
+	c := *v
+	return &c
 }
 
 // videoDimensionsFromEntryParams reads the pricing-relevant request parameters off
@@ -1239,6 +1278,11 @@ type InitialLogData struct {
 	PassthroughPath        string
 	UserAgent              string // Raw HTTP User-Agent of the calling client; mapped to a client app in the UI
 	App                    string // Backend-detected client app derived from UserAgent
+	// VideoPricing is what a video create's rate is chosen by (size, seconds, tier, audio, mode,
+	// a video input), captured whatever the content policy: the request's params and input are
+	// kept out of a row whose content may not be stored, and without them the job settled at
+	// the rate its response alone implies (TXE-7357). Its Extra holds only the billing selectors.
+	VideoPricing *modelcatalog.VideoPricingDimensions
 }
 
 // LogCallback is a function that gets called when a new log entry is created
@@ -1982,6 +2026,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	if requestContentPolicy.storeContent || captureProvisional {
 		p.captureRequestInput(ctx, req, initialData)
 	}
+	initialData.VideoPricing = videoPricingFromRequest(initialData.Provider, req)
 
 	// Capture configured logging headers and x-bf-lh-* headers into metadata first
 	initialData.Metadata = mergeVirtualKeyMetadata(mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx), ctx)
@@ -2629,7 +2674,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		p.recordBatchJobLifecycle(entry, result)
 	}
 	if bifrostErr == nil && isVideoJobRequestType(requestType) {
-		p.recordVideoJobLifecycle(entry, result, requestType)
+		p.recordVideoJobLifecycle(entry, result, requestType, pending.InitialData.VideoPricing)
 	}
 
 	// Calculate cost

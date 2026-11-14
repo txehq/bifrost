@@ -180,6 +180,12 @@ func (mc *ModelCatalog) CalculateVideoCostDetails(dims VideoPricingDimensions, p
 	return mc.datasheet.CalculateVideoCostDetails(dims, provider, (*datasheet.LookupScopes)(scopes))
 }
 
+// VideoBillingSelectors returns the extra params of a video create that choose its rate; see
+// datasheet.VideoBillingSelectors.
+func VideoBillingSelectors(extra map[string]any) map[string]any {
+	return datasheet.VideoBillingSelectors(extra)
+}
+
 // VideoRequestHasVideoInput reports whether a video create takes a video as input; see
 // datasheet.VideoRequestHasVideoInput.
 func VideoRequestHasVideoInput(provider schemas.ModelProvider, input *schemas.VideoGenerationInput, extra map[string]any) bool {
