@@ -2,6 +2,8 @@ package bifrost
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -255,6 +257,27 @@ func BenchmarkCheckAllowedRequest(b *testing.B) {
 	}
 }
 
+// BenchmarkErrOperationNotAllowed measures the error SelectKeyForProviderRequestType returns for an
+// operation allowed_requests leaves out. Only a refused session builds it; a key handed out never
+// does. "before" is the plain error it returned before TXE-7423.
+var errOperationNotAllowedSink error
+
+func BenchmarkErrOperationNotAllowed(b *testing.B) {
+	const name = schemas.ModelProvider("custom-openai")
+	b.Run("before", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			errOperationNotAllowedSink = fmt.Errorf("%s is not supported by %s provider", schemas.LiveRequest, name)
+		}
+	})
+	b.Run("after", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			errOperationNotAllowedSink = errOperationNotAllowed(schemas.LiveRequest, name)
+		}
+	})
+}
+
 // countingUpstream answers every call with a minimal chat completion and counts the calls.
 func countingUpstream(t *testing.T) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
@@ -402,8 +425,19 @@ func TestSelectKeyForProviderRequestTypeEnforcesAllowedRequests(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
 	defer ctx.Cancel()
 	for _, rt := range []schemas.RequestType{schemas.WebSocketResponsesRequest, schemas.LiveRequest, schemas.LiveSidebandRequest} {
-		if _, err := client.SelectKeyForProviderRequestType(ctx, rt, name, "gpt-realtime"); err == nil {
+		_, err := client.SelectKeyForProviderRequestType(ctx, rt, name, "gpt-realtime")
+		if err == nil {
 			t.Errorf("%s: a key was handed out for an operation the provider does not allow", rt)
+			continue
+		}
+		// Typed, so the session handlers answer it as unsupported_operation (TXE-7423).
+		var refused *schemas.OperationNotAllowedError
+		if !errors.As(err, &refused) {
+			t.Errorf("%s: refusal is %T, want *schemas.OperationNotAllowedError", rt, err)
+			continue
+		}
+		if refused.RequestType != rt || refused.Provider != name {
+			t.Errorf("%s: refusal names %s on %s", rt, refused.RequestType, refused.Provider)
 		}
 	}
 	key, err := client.SelectKeyForProviderRequestType(ctx, schemas.RealtimeRequest, name, "gpt-realtime")

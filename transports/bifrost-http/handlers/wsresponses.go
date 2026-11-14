@@ -272,7 +272,7 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 
 	key, err := h.client.SelectKeyForProviderRequestType(ctx, schemas.WebSocketResponsesRequest, req.Provider, req.Model)
 	if err != nil {
-		writeWSError(session, 400, "invalid_request_error", err.Error())
+		writeWSError(session, 400, selectKeyErrorCode(err, "invalid_request_error"), err.Error())
 		return true
 	}
 

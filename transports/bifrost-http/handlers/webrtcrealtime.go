@@ -321,7 +321,7 @@ func (h *WebRTCRealtimeHandler) runWebRTCRelay(
 
 	authKey, selectedKey, err := h.resolveRealtimeWebRTCKeys(bifrostCtx, providerKey, model, inboundToken, mapping, mapped)
 	if err != nil {
-		SendBifrostError(ctx, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", err.Error(), nil))
+		SendBifrostError(ctx, withSelectKeyRefusal(newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", err.Error(), nil), err))
 		return
 	}
 

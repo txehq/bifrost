@@ -1,8 +1,6 @@
 package bifrost
 
 import (
-	"fmt"
-
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 )
@@ -103,7 +101,8 @@ func checkAllowedRequest(ctx *schemas.BifrostContext, provider schemas.Provider,
 }
 
 // errOperationNotAllowed is the error SelectKeyForProviderRequestType returns for an operation
-// the custom provider's allowed_requests does not allow.
+// the custom provider's allowed_requests does not allow. It is typed, so the session handlers
+// can answer it as unsupported_operation (TXE-7423).
 func errOperationNotAllowed(requestType schemas.RequestType, providerKey schemas.ModelProvider) error {
-	return fmt.Errorf("%s is not supported by %s provider", requestType, providerKey)
+	return &schemas.OperationNotAllowedError{RequestType: requestType, Provider: providerKey}
 }
