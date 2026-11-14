@@ -50,10 +50,15 @@ jobs:
           # (proxy.golang.org, sum.golang.org), npm ci for ui and tests/e2e (registry.npmjs.org),
           # the e2e Postgres image (Docker Hub) and Playwright's Chromium (cdn.playwright.dev,
           # playwright.download.prss.microsoft.com). The tests themselves dial only loopback.
+          # Docker Hub redirects a blob to one of three CDNs, R2 included, so all three are
+          # allowed: without R2 a pull timed out on harden-runner's block address (TXE-7427).
+          # This job pulls under the block policy; the Go unit tests' service container is
+          # pulled before any step runs.
           allowed-endpoints: >
             api.github.com:443
             auth.docker.io:443
             cdn.playwright.dev:443
+            docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
             github.com:443
             nodejs.org:443
             playwright.download.prss.microsoft.com:443
