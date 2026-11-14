@@ -540,6 +540,17 @@ const fixturePricing = {
 	// TXE-7351: the row also carries MiniMax-H3's live input_cost_per_video_per_second, 0.08, which was billed on the
 	// output length (6 s x 0.08 more, $1.26). Folder 521 still expects $0.78, so it fails if that charge comes back.
 	"fixture-minimax-2k": { provider: "minimax", mode: "video_generation", input_cost_per_video_per_second: 0.08, output_cost_per_second: 0.08, output_cost_per_second_768p: 0.08, output_cost_per_second_2k: 0.13 },
+	// TXE-7422: claude-sonnet-5's and claude-opus-4-7-20260416's live rows, which publish Anthropic's US and fast
+	// multipliers only under provider_specific_entry. Folder 599 bills a US request at 1.1x and a fast one at 6x.
+	"fixture-claude-us": { provider: "anthropic", mode: "chat", input_cost_per_token: 3e-6, output_cost_per_token: 1.5e-5, provider_specific_entry: { us: 1.1 } },
+	"fixture-claude-fast": {
+		provider: "anthropic",
+		mode: "chat",
+		input_cost_per_token: 5e-6,
+		output_cost_per_token: 2.5e-5,
+		cache_read_input_token_cost: 5e-7,
+		provider_specific_entry: { us: 1.1, fast: 6 },
+	},
 	// TXE-7409: MiniMax-H3's live row with its input-image price, $0.04 per image beyond the first five, whose free
 	// allowance upstream publishes only under provider_specific_entry. Folder 598 settles a job with eight reference images.
 	"fixture-minimax-images": {
@@ -602,10 +613,13 @@ const MINIMAX_IMAGES_TASK = "fixture-minimax-images-task";
 // plays them all; the bytes that arrive are kept for the row to compare, and GET /__wire returns them. Nothing here
 // keeps a header, so no key reaches a report.
 const wireCalls = [];
+// TXE-7422 (folder 599): fixture-claude-us is served in the US and fixture-claude-fast in fast mode, so the
+// gateway applies the multiplier each row publishes only under provider_specific_entry.
+const anthropicServedTier = { "fixture-claude-us": { inference_geo: "us" }, "fixture-claude-fast": { speed: "fast" } };
 const anthropicMessage = (model) => ({
 	id: "msg_fixture", type: "message", role: "assistant", model,
 	content: [{ type: "text", text: "hello" }],
-	stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 12, output_tokens: 3 },
+	stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 12, output_tokens: 3, ...(anthropicServedTier[model] || {}) },
 });
 const sse = (events) => events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join("");
 const anthropicMessageStream = (model) => sse([

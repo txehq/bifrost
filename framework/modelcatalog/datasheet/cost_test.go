@@ -10733,3 +10733,46 @@ func TestVideoRequestInputImagesMatchWhatTheConvertersSend(t *testing.T) {
 		}
 	}
 }
+
+// TestCalculateCostForUsage_ProviderSpecificClaudeMultipliers (TXE-7422) prices the live upstream
+// rows that publish Anthropic's multipliers only under provider_specific_entry, decoded through
+// Entry like a sync. Without the fix a US-geo request on claude-sonnet-5 bills at 1.0x and a fast
+// request on claude-opus-4-7-20260416 at the standard rate.
+func TestCalculateCostForUsage_ProviderSpecificClaudeMultipliers(t *testing.T) {
+	rows := map[string]string{
+		// claude-sonnet-5 (14 Nov 2026): us only under provider_specific_entry.
+		"claude-sonnet-5": `{"provider":"anthropic","mode":"chat","input_cost_per_token":3e-06,"output_cost_per_token":1.5e-05,
+			"provider_specific_entry":{"us":1.1}}`,
+		// claude-opus-4-7-20260416: us and fast only under provider_specific_entry.
+		"claude-opus-4-7-20260416": `{"provider":"anthropic","mode":"chat","input_cost_per_token":5e-06,"output_cost_per_token":2.5e-05,
+			"cache_read_input_token_cost":5e-07,"cache_creation_input_token_cost":6.25e-06,"cache_creation_input_token_cost_above_1hr":1e-05,
+			"provider_specific_entry":{"us":1.1,"fast":6}}`,
+		// claude-opus-4-8: explicit fast rates (2x) beside fast 6, and a flat us multiplier.
+		"claude-opus-4-8": `{"provider":"anthropic","mode":"chat","input_cost_per_token":5e-06,"output_cost_per_token":2.5e-05,
+			"input_cost_per_token_fast":1e-05,"output_cost_per_token_fast":5e-05,"inference_geo_us_multiplier":1.1,
+			"provider_specific_entry":{"us":1.1,"fast":6}}`,
+	}
+	pricing := map[string]configstoreTables.TableModelPricing{}
+	for model, row := range rows {
+		var entry Entry
+		require.NoError(t, json.Unmarshal([]byte(row), &entry))
+		p := convertEntryToTablePricing(model, entry)
+		p.Model = model
+		pricing[makeKey(model, "anthropic", "chat")] = p
+	}
+	s := testStoreWithPricing(pricing)
+	fast, us := "fast", "us"
+	cost := func(model string, speed, geo *string, cached bool) float64 {
+		u := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500, Speed: speed, InferenceGeo: geo}
+		if cached {
+			u.PromptTokensDetails = &schemas.ChatPromptTokensDetails{CachedReadTokens: 400}
+		}
+		return s.CalculateCostForUsage(u, schemas.Anthropic, model, schemas.ChatCompletionRequest, nil)
+	}
+
+	assert.InDelta(t, (1000*3e-06+500*1.5e-05)*1.1, cost("claude-sonnet-5", nil, &us, false), 1e-12, "us under provider_specific_entry")
+	assert.InDelta(t, 6*(1000*5e-06+500*2.5e-05), cost("claude-opus-4-7-20260416", &fast, nil, false), 1e-12, "fast 6x on input and output")
+	assert.InDelta(t, 6*(600*5e-06+400*5e-07+500*2.5e-05), cost("claude-opus-4-7-20260416", &fast, nil, true), 1e-12, "fast 6x on a cache read too")
+	assert.InDelta(t, 1000*1e-05+500*5e-05, cost("claude-opus-4-8", &fast, nil, false), 1e-12, "the explicit fast rates win over fast")
+	assert.InDelta(t, 1000*5e-06+500*2.5e-05, cost("claude-opus-4-7-20260416", nil, nil, false), 1e-12, "a standard request is unchanged")
+}

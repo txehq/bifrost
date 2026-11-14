@@ -284,8 +284,6 @@ func jsonTags(typ reflect.Type) map[string]bool {
 // ignoredUpstreamProviderSpecificKeys are the provider_specific_entry keys the fork does not read,
 // each with its reason or the ticket that decides it (TXE-7409).
 var ignoredUpstreamProviderSpecificKeys = map[string]string{
-	"us":                              "TXE-7422: Anthropic's US inference-geo multiplier; 27 Claude rows publish it only here",
-	"fast":                            "TXE-7422: Anthropic's fast-mode multiplier; two dated Claude rows publish it only here",
 	"realtime_ga_only":                "not a price: marks Azure realtime models served only on the GA API",
 	"bedrock_invocation_schema":       "not a price: the request schema of a Bedrock Titan embedding model",
 	"dashscope_video_reference_input": "not a price: how a DashScope video model takes its reference image",

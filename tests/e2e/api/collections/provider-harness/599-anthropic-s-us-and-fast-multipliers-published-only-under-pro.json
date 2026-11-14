@@ -1,0 +1,139 @@
+{
+  "name": "599. Anthropic's US and fast multipliers published only under provider_specific_entry are billed: a US request at 1.1x and a fast request at 6x the standard rates (provider-specific multipliers)",
+  "item": [
+    {
+      "name": "599.1 anthropic/fixture-claude-us POST /v1/chat/completions served in the US is billed at 1.1x (provider-specific multipliers)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/fixture-claude-us\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "// The fixture answers with usage.inference_geo us. The row publishes the 1.1 multiplier only as provider_specific_entry.us (claude-sonnet-5, 14 Nov 2026), which the fork dropped at sync before TXE-7422, billing 1.0x.",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var requestId = pm.response.headers.get('x-bifrost-request-id');",
+              "var token = pm.variables.get('setup_token') || 'bifrost-e2e-setup-token';",
+              "function readCost(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?limit=50', method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    var rows = (!err && res.code === 200 && res.json().logs) || [];",
+              "    var row = rows.filter(function (r) { return r.id === requestId; })[0];",
+              "    if (tries > 0 && (!row || row.status === 'processing')) { setTimeout(function () { readCost(tries - 1); }, 300); return; }",
+              "    pm.test('the log row of this request is readable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(row, 'no log row for ' + requestId).to.be.an('object'); });",
+              "    pm.test('the logged cost is (12 x $3e-06 + 3 x $1.5e-05) x 1.1, the US multiplier', function () { pm.expect(row && (row.cost || 0), JSON.stringify(row && { cost: row.cost })).to.be.closeTo(8.91e-05, 1e-12); });",
+              "  });",
+              "}",
+              "readCost(40);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "599.2 anthropic/fixture-claude-fast POST /v1/chat/completions served in fast mode is billed at 6x (provider-specific multipliers)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/fixture-claude-fast\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "// The fixture answers with usage.speed fast. The row publishes fast 6 only under provider_specific_entry and no *_fast rate (claude-opus-4-7-20260416), so before TXE-7422 a fast request billed the standard rate.",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var requestId = pm.response.headers.get('x-bifrost-request-id');",
+              "var token = pm.variables.get('setup_token') || 'bifrost-e2e-setup-token';",
+              "function readCost(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?limit=50', method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    var rows = (!err && res.code === 200 && res.json().logs) || [];",
+              "    var row = rows.filter(function (r) { return r.id === requestId; })[0];",
+              "    if (tries > 0 && (!row || row.status === 'processing')) { setTimeout(function () { readCost(tries - 1); }, 300); return; }",
+              "    pm.test('the log row of this request is readable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(row, 'no log row for ' + requestId).to.be.an('object'); });",
+              "    pm.test('the logged cost is 6 x (12 x $5e-06 + 3 x $2.5e-05), the fast-mode multiplier', function () { pm.expect(row && (row.cost || 0), JSON.stringify(row && { cost: row.cost })).to.be.closeTo(0.00081, 1e-12); });",
+              "  });",
+              "}",
+              "readCost(40);"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
