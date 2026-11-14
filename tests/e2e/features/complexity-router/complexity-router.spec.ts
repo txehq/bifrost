@@ -149,7 +149,7 @@ test.describe('Complexity Router', () => {
           await expect(page.getByRole('option', { name })).toHaveCount(0)
         }
         expect(modelQueries.length).toBeGreaterThan(0)
-        expect(modelQueries.every((params) => params.get('decisions') === 'true')).toBe(true)
+        expect(modelQueries.filter((params) => params.get('decisions') !== 'true').map(String)).toEqual([])
       })
     }
 
