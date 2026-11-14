@@ -13,15 +13,6 @@
       "MCP Registry - OpenAPI servers › Filtering › filters the table by the OpenAPI connection type"
     ]
   },
-  "TXE-7394": {
-    "kind": "offline gap: the empty datasheet offers no gpt-4o-mini",
-    "file": "features/model-limits/model-limits.spec.ts",
-    "tests": [
-      "Model Limits › should create a model limit with budget and rate limit",
-      "Model Limits › should edit a model limit budget and rate limit",
-      "Model Limits › should delete a model limit"
-    ]
-  },
   "TXE-7396": {
     "kind": "stale test or product defect, not offline",
     "file": "features/agent-gateway/agent-gateway.spec.ts",

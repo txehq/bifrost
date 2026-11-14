@@ -207,11 +207,20 @@ async function serveEmptyDatasheets() {
       })
       return
     }
+    // The openai provider's model listing (TXE-7394): the datasheets are empty offline, so these are
+    // the models the catalog and every model picker offer.
+    if (req.method === 'GET' && req.url?.split('?')[0].endsWith('/models')) {
+      res.end(JSON.stringify({ object: 'list', data: OFFLINE_OPENAI_MODELS.map((id) => ({ id, object: 'model', created: 1, owned_by: 'openai' })) }))
+      return
+    }
     res.end('{}')
   })
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
   return { server, origin: `http://127.0.0.1:${server.address().port}` }
 }
+
+// The models the offline openai provider lists: the seed model, and the ones the specs pick.
+const OFFLINE_OPENAI_MODELS = ['gpt-4o-mini', 'gpt-4o', 'gpt-4']
 
 // The key the offline openai provider sends to the loopback fixture, which ignores it.
 const OFFLINE_OPENAI_KEY = 'sk-e2e-offline-fixture'
