@@ -304,3 +304,34 @@ func TestExtractGeminiPassthroughUsage_VideoEmbeddingInputs(t *testing.T) {
 		}
 	}
 }
+
+// BenchmarkExtractGeminiPassthroughUsage measures the passthrough embedding extractor (TXE-7408):
+// a text embedding (the common case), Gemini Embedding 2 with a video, and multimodalembedding's
+// video segments with the interval read off the request.
+func BenchmarkExtractGeminiPassthroughUsage(b *testing.B) {
+	cases := []struct{ name, path, req, resp string }{
+		{"embedContent_text", "/projects/p/locations/us-central1/publishers/google/models/gemini-embedding-2:embedContent",
+			`{"content":{"parts":[{"text":"hi"}]}}`,
+			`{"embedding":{"values":[0.1,0.2]},"usageMetadata":{"promptTokenCount":5,"totalTokenCount":5}}`},
+		{"embedContent_video", "/projects/p/locations/us-central1/publishers/google/models/gemini-embedding-2:embedContent",
+			`{"content":{"parts":[{"fileData":{"fileUri":"gs://b/c.mp4","mimeType":"video/mp4"}}]}}`,
+			`{"embedding":{"values":[0.1,0.2]},"usageMetadata":{"promptTokenCount":1300,"totalTokenCount":1300,"promptTokensDetails":[{"modality":"TEXT","tokenCount":42},{"modality":"VIDEO","tokenCount":1258}]}}`},
+		{"predict_text", "/projects/p/locations/us-central1/publishers/google/models/text-embedding-005:predict",
+			`{"instances":[{"content":"hi"}]}`,
+			`{"predictions":[{"embeddings":{"values":[0.1,0.2],"statistics":{"token_count":7}}}]}`},
+		{"predict_video", "/projects/p/locations/us-central1/publishers/google/models/multimodalembedding@001:predict",
+			`{"instances":[{"video":{"gcsUri":"gs://b/c.mp4","videoSegmentConfig":{"intervalSec":10}}}]}`,
+			`{"predictions":[{"videoEmbeddings":[{"startOffsetSec":0,"endOffsetSec":10,"embedding":[0.1]},{"startOffsetSec":10,"endOffsetSec":20,"embedding":[0.2]}]}]}`},
+	}
+	for _, tc := range cases {
+		req, resp := []byte(tc.req), []byte(tc.resp)
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if gemini.ExtractGeminiPassthroughUsage(tc.path, req, resp) == nil {
+					b.Fatal("no usage")
+				}
+			}
+		})
+	}
+}

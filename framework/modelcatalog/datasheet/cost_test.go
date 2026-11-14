@@ -10426,3 +10426,32 @@ func TestCalculateCost_PassthroughVideoEmbeddings(t *testing.T) {
 	// returned (10 s each) never prices below what they show.
 	assert.InDelta(t, 20*0.001, at(4), 1e-12, "a requested 4 s cannot price 10 s segments at the base rate")
 }
+
+// BenchmarkCalculateCost_PassthroughEmbeddings measures pricing a passthrough embedding
+// (TXE-7408): the common text embedding, and multimodalembedding's video segments.
+func BenchmarkCalculateCost_PassthroughEmbeddings(b *testing.B) {
+	s := txe7357Store(b)
+	path := "/projects/p/locations/us-central1/publishers/google/models/multimodalembedding@001:predict"
+	resp := func(su *schemas.BifrostPassthroughUsage) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+			PassthroughUsage: su,
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.PassthroughRequest, PassthroughPath: path,
+				RoutingInfo: routingInfoFor(schemas.Vertex, "multimodalembedding@001")},
+		}}
+	}
+	text := resp(&schemas.BifrostPassthroughUsage{LLMUsage: &schemas.BifrostLLMUsage{PromptTokens: 7, TotalTokens: 7}})
+	video := resp(&schemas.BifrostPassthroughUsage{LLMUsage: &schemas.BifrostLLMUsage{},
+		EmbeddingVideoSegments: []schemas.EmbeddingVideoSegment{{StartOffsetSec: 0, EndOffsetSec: 10}, {StartOffsetSec: 10, EndOffsetSec: 20}}, EmbeddingVideoIntervalSec: 10})
+	b.Run("text", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = s.CalculateCost(text, nil)
+		}
+	})
+	b.Run("video_segments", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = s.CalculateCost(video, nil)
+		}
+	})
+}
