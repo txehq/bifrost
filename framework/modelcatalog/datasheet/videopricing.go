@@ -502,11 +502,12 @@ func VideoRequestHasVideoInput(provider schemas.ModelProvider, input *schemas.Vi
 // VideoRequestInputImages counts the images a video create sends as input (fork, TXE-7409): the
 // first frame (input_reference), the last frame and the reference images. The last frame and the
 // reference images are read from their typed fields, else from the copy the handlers keep in the
-// extra params under the same names. Only the unified form is counted, a URL or data URL string;
-// a list holds them, and a bare string is not one. Those are the images the converters of the
-// providers that price input images (MiniMax, xAI) send, which
-// TestVideoRequestInputImagesMatchWhatTheConvertersSend checks. A request refused for combining
-// them (MiniMax) never reaches the vendor, so it is never settled.
+// extra params under the same names. An image is a URL or data URL string, or an object with a
+// non-empty "url" (xAI's own form, which its converter passes through from the extra params); a
+// list holds reference images, and a bare string is not one. Those are the images the converters
+// of the providers that price input images (MiniMax, xAI) send, which
+// TestVideoRequestInputImagesMatchWhatTheConvertersSend checks; MiniMax refuses the forms it cannot
+// send. A refused request never reaches the vendor, so it is never settled.
 func VideoRequestInputImages(input *schemas.VideoGenerationInput, lastFrame string, referenceImages []string, extra map[string]any) int {
 	n := 0
 	if input != nil && input.InputReference != nil && strings.TrimSpace(*input.InputReference) != "" {
@@ -532,11 +533,17 @@ func VideoRequestInputImages(input *schemas.VideoGenerationInput, lastFrame stri
 	return n
 }
 
-// presentImage reports whether an extra-param value names an image in the unified form: a
-// non-empty URL or data URL string.
+// presentImage reports whether an extra-param value names an image: a non-empty URL or data URL
+// string, or an object with a non-empty "url" string (xAI's {"url": ...}).
 func presentImage(v any) bool {
-	s, ok := v.(string)
-	return ok && strings.TrimSpace(s) != ""
+	switch v := v.(type) {
+	case string:
+		return strings.TrimSpace(v) != ""
+	case map[string]any:
+		url, ok := v["url"].(string)
+		return ok && strings.TrimSpace(url) != ""
+	}
+	return false
 }
 
 func nonEmptyCount(values []string) int {

@@ -86,9 +86,19 @@ func ToMiniMaxVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationR
 		// The unified last_frame and reference_images (TXE-6518) are read from their typed fields,
 		// else from the copy the handlers keep in the extra params. A Go SDK request sets only the
 		// typed field, and its images reached MiniMax as a text-only job (fork, TXE-7409).
+		// MiniMax takes an image only as a URL or data URL string. Any other form (xAI's {"url": ...}
+		// object, a bare string of reference images) is refused rather than passed through as an
+		// unknown field: settlement counts what a vendor can receive, and a request that is refused
+		// is never billed.
 		lastFrame := string(params.LastFrame)
 		if lastFrame == "" {
-			lastFrame, _ = req.ExtraParams["last_frame"].(string)
+			if raw, present := req.ExtraParams["last_frame"]; present && raw != nil {
+				s, ok := raw.(string)
+				if !ok {
+					return nil, providerUtils.InvalidRequestErrorf("last_frame must be a URL or data URL string")
+				}
+				lastFrame = s
+			}
 		}
 		if lastFrame != "" {
 			delete(req.ExtraParams, "last_frame")
@@ -101,7 +111,11 @@ func ToMiniMaxVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationR
 		}
 		refs := []string(params.ReferenceImages)
 		if len(refs) == 0 {
-			if fromExtra, err := schemas.ConvertViaJSON[[]string](req.ExtraParams["reference_images"]); err == nil {
+			if raw, present := req.ExtraParams["reference_images"]; present && raw != nil {
+				fromExtra, err := schemas.ConvertViaJSON[[]string](raw)
+				if err != nil {
+					return nil, providerUtils.InvalidRequestErrorf("reference_images must be a list of URL or data URL strings")
+				}
 				refs = fromExtra
 			}
 		}
