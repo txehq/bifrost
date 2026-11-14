@@ -726,6 +726,12 @@ type VideoAccountingDebug struct {
 	// It picks the rate band when Size names none, so repricing must read it back
 	// (TXE-7349).
 	Resolution string `json:"resolution,omitempty"`
+	// Mode, VideoInput and OutputTokens are the other dimensions a rate is chosen by (fork,
+	// TXE-7357): Kling's mode, whether the job took a video as input, and the output video
+	// tokens the vendor reported. A reprice reads them from here.
+	Mode         string `json:"mode,omitempty"`
+	VideoInput   *bool  `json:"video_input,omitempty"`
+	OutputTokens *int   `json:"output_tokens,omitempty"`
 	// OutputCount is how many clips the job returned; the per-second rate is
 	// multiplied by it.
 	OutputCount int `json:"output_count,omitempty"`

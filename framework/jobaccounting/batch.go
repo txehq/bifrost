@@ -830,24 +830,24 @@ func usageFromValue(value interface{}) (*schemas.BifrostLLMUsage, error) {
 		// OpenAI (and Gemini, which we normalize into the same shape) report
 		// cached input as a breakdown of prompt_tokens rather than as a separate
 		// bucket — see the inclusive/exclusive note below.
+		// The per-modality prompt counts are kept too: video tokens take
+		// input_cost_per_video_token (and its batch rate), so a settlement that dropped
+		// them billed a Gemini video-input batch line at the text rate (TXE-7357).
 		PromptTokensDetails struct {
 			CachedTokens int `json:"cached_tokens"`
-			// Audio input tokens and OpenAI's cache writes, which are part of prompt_tokens like
-			// cached_tokens, split by lifetime (fork, TXE-7354): kept so a batch line prices them
-			// at their own batch rates.
-			AudioTokens             int `json:"audio_tokens"`
+			// OpenAI's cache writes, which are part of prompt_tokens like cached_tokens, split by
+			// lifetime (fork, TXE-7354): kept so a batch line prices them at their own batch rates.
+			// Audio input tokens are among the per-modality counts below.
 			CacheWriteTokens        int `json:"cache_write_tokens"`
 			CacheWriteTokensDetails struct {
 				TTL30mTokens int `json:"ttl_30m_tokens"`
 				TTL12hTokens int `json:"ttl_12h_tokens"`
 			} `json:"cache_write_tokens_details"`
+			batchModalityTokens
 		} `json:"prompt_tokens_details"`
 		// An image line reports its tokens per modality (the unified image usage). They
 		// are kept on the usage so a repricing pass can apply image rates to them.
-		InputTokensDetails *struct {
-			TextTokens  int `json:"text_tokens"`
-			ImageTokens int `json:"image_tokens"`
-		} `json:"input_tokens_details"`
+		InputTokensDetails  *batchModalityTokens `json:"input_tokens_details"`
 		OutputTokensDetails *struct {
 			TextTokens  int `json:"text_tokens"`
 			ImageTokens int `json:"image_tokens"`
@@ -921,18 +921,14 @@ func usageFromValue(value interface{}) (*schemas.BifrostLLMUsage, error) {
 			}
 		}
 	}
-	if audio := usage.PromptTokensDetails.AudioTokens; audio > 0 {
+	for _, d := range []*batchModalityTokens{&usage.PromptTokensDetails.batchModalityTokens, usage.InputTokensDetails} {
+		if d == nil || d.empty() {
+			continue
+		}
 		if out.PromptTokensDetails == nil {
 			out.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
 		}
-		out.PromptTokensDetails.AudioTokens = audio
-	}
-	if d := usage.InputTokensDetails; d != nil && (d.TextTokens > 0 || d.ImageTokens > 0) {
-		if out.PromptTokensDetails == nil {
-			out.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
-		}
-		out.PromptTokensDetails.TextTokens = d.TextTokens
-		out.PromptTokensDetails.ImageTokens = d.ImageTokens
+		d.applyTo(out.PromptTokensDetails)
 	}
 	if d := usage.OutputTokensDetails; d != nil && (d.TextTokens > 0 || d.ImageTokens > 0) {
 		out.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{TextTokens: d.TextTokens}
@@ -941,6 +937,38 @@ func usageFromValue(value interface{}) (*schemas.BifrostLLMUsage, error) {
 		}
 	}
 	return out, nil
+}
+
+// batchModalityTokens is a result line's per-modality input counts, under either the chat
+// (prompt_tokens_details) or the image and Responses (input_tokens_details) name.
+type batchModalityTokens struct {
+	TextTokens     int `json:"text_tokens"`
+	AudioTokens    int `json:"audio_tokens"`
+	ImageTokens    int `json:"image_tokens"`
+	VideoTokens    int `json:"video_tokens"`
+	DocumentTokens int `json:"document_tokens"`
+	// CachedVideoTokens are the cached part of VideoTokens, billed at the cache-read rate.
+	CachedVideoTokens int `json:"cached_video_tokens"`
+}
+
+func (d *batchModalityTokens) empty() bool {
+	return d.TextTokens == 0 && d.AudioTokens == 0 && d.ImageTokens == 0 && d.VideoTokens == 0 && d.DocumentTokens == 0 &&
+		d.CachedVideoTokens == 0
+}
+
+// applyTo sets each reported count on dst, leaving a count this line did not report as it was.
+func (d *batchModalityTokens) applyTo(dst *schemas.ChatPromptTokensDetails) {
+	for _, f := range []struct {
+		dst *int
+		src int
+	}{
+		{&dst.TextTokens, d.TextTokens}, {&dst.AudioTokens, d.AudioTokens}, {&dst.ImageTokens, d.ImageTokens},
+		{&dst.VideoTokens, d.VideoTokens}, {&dst.DocumentTokens, d.DocumentTokens}, {&dst.CachedVideoTokens, d.CachedVideoTokens},
+	} {
+		if f.src > 0 {
+			*f.dst = f.src
+		}
+	}
 }
 
 func firstNonZero(values ...int) int {

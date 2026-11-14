@@ -129,3 +129,19 @@ func TestEmbeddingContentPartValidateRejectsMultipleModalities(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "exactly one modality")
 }
+
+// TXE-7357: the response keeps the embedding interval the request asked for on a video part,
+// which prices Vertex's embedded video seconds when the video is shorter than the interval.
+func TestEmbeddingBackfillParamsKeepsTheVideoInterval(t *testing.T) {
+	eight, twelve := 8, 12
+	resp := &BifrostEmbeddingResponse{}
+	resp.BackfillParams(&BifrostEmbeddingRequest{Model: "multimodalembedding@001", Input: []EmbeddingInputItem{
+		{Content: EmbeddingContent{{Type: EmbeddingContentPartTypeVideo, VideoConfig: &EmbeddingVideoConfig{IntervalSec: &eight}}}},
+		{Content: EmbeddingContent{{Type: EmbeddingContentPartTypeVideo, VideoConfig: &EmbeddingVideoConfig{IntervalSec: &twelve}}}},
+	}})
+	require.Equal(t, 12, resp.VideoIntervalSec)
+
+	unset := &BifrostEmbeddingResponse{}
+	unset.BackfillParams(&BifrostEmbeddingRequest{Input: []EmbeddingInputItem{{Content: EmbeddingContent{{Type: EmbeddingContentPartTypeVideo}}}}})
+	require.Equal(t, 0, unset.VideoIntervalSec)
+}

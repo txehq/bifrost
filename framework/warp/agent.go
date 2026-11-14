@@ -279,13 +279,8 @@ func mergePromptTokenDetails(total, next *schemas.ChatPromptTokensDetails) *sche
 	// stayed frozen at the first turn's value while TotalTokens kept climbing,
 	// and a four-step research turn reported a breakdown that did not add up to
 	// the number beside it. That inconsistency is what these helpers exist to
-	// remove.
-	total.TextTokens += next.TextTokens
-	total.AudioTokens += next.AudioTokens
-	total.ImageTokens += next.ImageTokens
-	total.CachedReadTokens += next.CachedReadTokens
-	total.CachedWriteTokens += next.CachedWriteTokens
-	total.CachedWriteTokenDetails = mergeCachedWriteTokenDetails(total.CachedWriteTokenDetails, next.CachedWriteTokenDetails)
+	// remove. ChatPromptTokensDetails.Add sums every count, video and cached video included.
+	total.Add(next)
 	return total
 }
 

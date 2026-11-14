@@ -1935,7 +1935,8 @@ func (p *LoggerPlugin) calculateCostBreakdownForLog(logEntry *logstore.Log) (*sc
 
 	if (logEntry.TokenUsageParsed == nil && logEntry.TokenUsage != "") ||
 		(logEntry.CacheDebugParsed == nil && logEntry.CacheDebug != "") ||
-		(logEntry.GuardrailDebugParsed == nil && logEntry.GuardrailDebug != "") {
+		(logEntry.GuardrailDebugParsed == nil && logEntry.GuardrailDebug != "") ||
+		(logEntry.EmbeddingOutputParsed == nil && logEntry.EmbeddingOutput != "") {
 		if err := logEntry.DeserializeFields(); err != nil {
 			return nil, fmt.Errorf("failed to deserialize fields for log %s: %w", logEntry.ID, err)
 		}
@@ -1946,7 +1947,9 @@ func (p *LoggerPlugin) calculateCostBreakdownForLog(logEntry *logstore.Log) (*sc
 	guardrailMetadata := logEntry.GuardrailDebugParsed
 
 	// If no cache hit, guardrail call, or usage, we can't calculate cost.
-	if usage == nil && (cacheMetadata == nil || !cacheMetadata.CacheHit) && guardrailMetadata == nil {
+	// A video embedding (Vertex multimodalembedding) is priced by the seconds it embedded, which
+	// its stored segments carry with or without token usage (TXE-7357).
+	if usage == nil && (cacheMetadata == nil || !cacheMetadata.CacheHit) && guardrailMetadata == nil && !hasEmbeddingVideoSegments(logEntry) {
 		return nil, fmt.Errorf("%w: token usage not available for log %s", errPricingInputsUnavailable, logEntry.ID)
 	}
 
@@ -2046,6 +2049,13 @@ func (p *LoggerPlugin) calculateCostBreakdownForLog(logEntry *logstore.Log) (*sc
 		resp.TranscriptionResponse.Usage = logEntry.TranscriptionOutputParsed.Usage
 	}
 
+	// Embedding: restore the video segments (seconds embedded) and the interval the request
+	// asked for, which price a video embedding by the second at its interval tier (TXE-7357).
+	if resp.EmbeddingResponse != nil && hasEmbeddingVideoSegments(logEntry) {
+		resp.EmbeddingResponse.Data = logEntry.EmbeddingOutputParsed
+		resp.EmbeddingResponse.BackfillParams(&schemas.BifrostEmbeddingRequest{Input: logEntry.EmbeddingInputParsed})
+	}
+
 	// ImageGeneration: restore full ImageUsage (OutputTokensDetails/NImages for
 	// per-image pricing), Data count, and Size from the stored response object.
 	if resp.ImageGenerationResponse != nil && logEntry.ImageGenerationOutputParsed != nil {
@@ -2136,6 +2146,17 @@ func setResponseModel(resp *schemas.BifrostResponse, model string) {
 
 // buildResponseForRequestType wraps BifrostLLMUsage into the correct response
 // field so that CalculateCost's extractCostInput routes it properly.
+// hasEmbeddingVideoSegments reports whether an embedding log stored a video segment, the
+// quantity a video embedding is priced by.
+func hasEmbeddingVideoSegments(logEntry *logstore.Log) bool {
+	for i := range logEntry.EmbeddingOutputParsed {
+		if logEntry.EmbeddingOutputParsed[i].VideoSegment != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas.BifrostLLMUsage, extra schemas.BifrostResponseExtraFields, tier servedTier) *schemas.BifrostResponse {
 	switch requestType {
 	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
@@ -2186,18 +2207,9 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 				TotalTokens:  usage.TotalTokens,
 				Cost:         usage.Cost,
 			}
-			if usage.PromptTokensDetails != nil {
-				respUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
-					TextTokens:        usage.PromptTokensDetails.TextTokens,
-					AudioTokens:       usage.PromptTokensDetails.AudioTokens,
-					ImageTokens:       usage.PromptTokensDetails.ImageTokens,
-					CachedReadTokens:  usage.PromptTokensDetails.CachedReadTokens,
-					CachedWriteTokens: usage.PromptTokensDetails.CachedWriteTokens,
-					// The 5m/1h split drives tieredCacheCreationInputAbove1hrTokenRate.
-					// Dropping it silently bills 1h cache writes at the cheaper 5m rate.
-					CachedWriteTokenDetails: usage.PromptTokensDetails.CachedWriteTokenDetails,
-				}
-			}
+			// Every input detail: video tokens take input_cost_per_video_token, and the 5m/1h cache-write
+			// split drives the above-1hr rate, so a dropped one reprices a log wrongly (TXE-7357).
+			respUsage.InputTokensDetails = usage.PromptTokensDetails.ToResponsesInputTokens()
 			if usage.CompletionTokensDetails != nil {
 				respUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{
 					TextTokens:               usage.CompletionTokensDetails.TextTokens,

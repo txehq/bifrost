@@ -3098,6 +3098,15 @@ append_dynamic_columns_postgres() {
     fi
   done
 
+  # governance_model_pricing video token, per-clip, mode, video-input and interval rates
+  # (added via add_video_token_clip_mode_pricing_columns, TXE-7357)
+  for col in $VIDEO_TOKEN_CLIP_MODE_PRICING_COLUMNS; do
+    if column_exists_postgres "governance_model_pricing" "$col"; then
+      echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 2;" >> "$output_file"
+    fi
+  done
+
   # logs.redaction_mapping (added via logs_add_redaction_mapping_column)
   if column_exists_postgres "logs" "redaction_mapping"; then
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
@@ -4694,6 +4703,13 @@ append_dynamic_columns_sqlite() {
         echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 2;" >> "$output_file"
       fi
     done
+    # (added via add_video_token_clip_mode_pricing_columns, TXE-7357)
+    for col in $VIDEO_TOKEN_CLIP_MODE_PRICING_COLUMNS; do
+      if column_exists_sqlite "$config_db" "governance_model_pricing" "$col"; then
+        echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 1;" >> "$output_file"
+        echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 2;" >> "$output_file"
+      fi
+    done
   fi
 
   # logs.redaction_mapping (added via logs_add_redaction_mapping_column)
@@ -4871,6 +4887,18 @@ IMAGE_VARIANT_PRICING_COLUMNS="
   output_cost_per_image_above_512x512_pixels_max_steps output_cost_per_image_above_1024x1024_pixels_50_steps
   output_cost_per_image_above_1024x1024_pixels_max_steps output_cost_per_image_above_max_pixels_50_steps
   output_cost_per_image_above_max_pixels_max_steps"
+
+# The governance_model_pricing columns add_video_token_clip_mode_pricing_columns adds (TXE-7357),
+# in the order of videoTokenClipModePricingColumns in framework/configstore/migrations.go.
+VIDEO_TOKEN_CLIP_MODE_PRICING_COLUMNS="
+  input_cost_per_video_token input_cost_per_video_token_batches
+  input_cost_per_video_per_second_above_8s_interval input_cost_per_video_per_second_above_15s_interval
+  output_cost_per_video_token output_cost_per_video output_cost_per_video_768p_6s
+  output_cost_per_video_768p_10s output_cost_per_video_1080p_6s
+  output_cost_per_video_per_second_480p_video_in output_cost_per_video_per_second_720p_video_in
+  output_cost_per_video_per_second_1080p_video_in output_cost_per_video_per_second_4k_video_in
+  output_cost_per_video_per_second_pro output_cost_per_video_per_second_pro_audio
+  output_cost_per_video_per_second_standard output_cost_per_video_per_second_standard_audio"
 
 # Extract table -> columns mapping from the generated faker SQL
 # Output format: table_name:col1,col2,col3 (one per line)

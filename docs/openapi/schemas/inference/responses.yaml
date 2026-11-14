@@ -841,6 +841,11 @@ ResponsesResponseInputTokens:
       description: >
         Tokens served from the prompt cache (cache hit), billed at the reduced
         cache-read rate. Already included in the parent input_tokens total.
+    cached_video_tokens:
+      type: integer
+      description: >
+        Of cached_read_tokens, the tokens that are video (Gemini and Vertex
+        cacheTokensDetails). Already included in both video_tokens and cached_read_tokens.
     cached_write_tokens:
       type: integer
       description: >

@@ -586,6 +586,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_image_variant_pricing_columns"}, run: migrationAddImageVariantPricingColumns},
 	{IDs: []string{"add_guardrail_unit_rate_columns"}, run: migrationAddGuardrailUnitRateColumns},
 	{IDs: []string{"add_explicit_batch_pricing_columns"}, run: migrationAddExplicitBatchPricingColumns},
+	{IDs: []string{"add_video_token_clip_mode_pricing_columns"}, run: migrationAddVideoTokenClipModePricingColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16828,6 +16829,60 @@ var videoAudioPricingColumns = []string{
 	"output_cost_per_video_per_second_720p_audio",
 	"output_cost_per_video_per_second_1080p_audio",
 	"output_cost_per_video_per_second_4k_audio",
+}
+
+// videoTokenClipModePricingColumns are the rate columns TXE-7357 adds: video tokens, per-clip
+// prices, Kling's mode, Seedance's video-input rates and Vertex's embedding interval tiers.
+// Expand-only: nullable columns, nothing rewritten.
+var videoTokenClipModePricingColumns = []string{
+	"input_cost_per_video_token",
+	"input_cost_per_video_token_batches",
+	"input_cost_per_video_per_second_above_8s_interval",
+	"input_cost_per_video_per_second_above_15s_interval",
+	"output_cost_per_video_token",
+	"output_cost_per_video",
+	"output_cost_per_video_768p_6s",
+	"output_cost_per_video_768p_10s",
+	"output_cost_per_video_1080p_6s",
+	"output_cost_per_video_per_second_480p_video_in",
+	"output_cost_per_video_per_second_720p_video_in",
+	"output_cost_per_video_per_second_1080p_video_in",
+	"output_cost_per_video_per_second_4k_video_in",
+	"output_cost_per_video_per_second_pro",
+	"output_cost_per_video_per_second_pro_audio",
+	"output_cost_per_video_per_second_standard",
+	"output_cost_per_video_per_second_standard_audio",
+}
+
+func migrationAddVideoTokenClipModePricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_video_token_clip_mode_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range videoTokenClipModePricingColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range videoTokenClipModePricingColumns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
 }
 
 func migrationAddVideoAudioRateColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {

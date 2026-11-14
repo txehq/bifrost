@@ -762,6 +762,24 @@ export interface PricingOverridePatch {
 	output_cost_per_second_1080p?: number;
 	output_cost_per_second_2k?: number;
 	output_cost_per_second_4k?: number;
+	// Video tokens, per-clip prices, Kling's mode, Seedance's video input, embedding intervals (TXE-7357)
+	input_cost_per_video_token?: number;
+	input_cost_per_video_token_batches?: number;
+	input_cost_per_video_per_second_above_8s_interval?: number;
+	input_cost_per_video_per_second_above_15s_interval?: number;
+	output_cost_per_video_token?: number;
+	output_cost_per_video?: number;
+	output_cost_per_video_768p_6s?: number;
+	output_cost_per_video_768p_10s?: number;
+	output_cost_per_video_1080p_6s?: number;
+	output_cost_per_video_per_second_480p_video_in?: number;
+	output_cost_per_video_per_second_720p_video_in?: number;
+	output_cost_per_video_per_second_1080p_video_in?: number;
+	output_cost_per_video_per_second_4k_video_in?: number;
+	output_cost_per_video_per_second_pro?: number;
+	output_cost_per_video_per_second_pro_audio?: number;
+	output_cost_per_video_per_second_standard?: number;
+	output_cost_per_video_per_second_standard_audio?: number;
 	// Other
 	web_search_cost_per_request?: number;
 	input_cost_per_query?: number;

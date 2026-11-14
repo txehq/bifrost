@@ -616,7 +616,7 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	// that reports nothing still owes one query. Vertex returns no usage on rerank at all, and
 	// treating that as free would silently under-report every one of its calls.
 	if requestType != schemas.RerankRequest &&
-		input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.audioTextInputChars == 0 && input.ocrProcessedPages == nil && input.containerIdentifierString == "" {
+		input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.videoOutputTokens == nil && input.videoCount == 0 && input.audioTextInputChars == 0 && input.ocrProcessedPages == nil && input.containerIdentifierString == "" && input.embeddingVideoSeconds == 0 {
 		return nil
 	}
 
@@ -721,6 +721,9 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		cost = computeBatchTextCost(pricing, input.usage, input.tier)
 	case schemas.EmbeddingRequest:
 		cost = computeEmbeddingCost(pricing, input.usage, input.tier)
+		if c := embeddingVideoCost(pricing, input.embeddingVideoSeconds, input.embeddingVideoInterval); c > 0 {
+			cost = withUndetailedInputCost(cost, c)
+		}
 	case schemas.RerankRequest:
 		cost = computeRerankCost(pricing, input.usage, input.tier)
 	case schemas.DecisionRequest:
@@ -738,7 +741,10 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		// A video response does not carry the request's audio flag, so the per-request price
 		// takes the provider's audio default. Settlement prices from the captured request
 		// dimensions instead (CalculateVideoCostDetails).
-		cost = computeVideoCost(pricing, input.usage, input.videoSeconds, input.videoSize, input.videoCount, VideoPricedWithAudio(routingInfo.Provider, nil), input.tier)
+		// The response carries neither the mode nor the video input either; it carries the
+		// output video tokens and the input video seconds the vendor billed (TXE-7357).
+		cost = computeVideoCost(pricing, input.usage, input.videoSeconds, input.videoSize, input.videoCount, VideoPricedWithAudio(routingInfo.Provider, nil),
+			videoJob{videoInput: input.videoInputSeconds, outputTokens: input.videoOutputTokens}, input.tier)
 	case schemas.OCRRequest:
 		cost = computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
 	case schemas.ContainerCreateRequest:
@@ -834,8 +840,11 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 			}
 		}
 
-	case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
+	// A multimodal embedding of a video reports its segments and no usage (Vertex
+	// multimodalembedding), so it is read even without usage (TXE-7357).
+	case result.EmbeddingResponse != nil && (result.EmbeddingResponse.Usage != nil || embeddingHasVideoSegments(result.EmbeddingResponse)):
 		input.usage = result.EmbeddingResponse.Usage
+		input.embeddingVideoSeconds, input.embeddingVideoInterval = embeddingVideoSegments(result.EmbeddingResponse)
 
 	// Not gated on Usage like its neighbours: rerank bills per query, so a response that
 	// carries no usage at all (Vertex reports none) still owes one query's cost.
@@ -924,11 +933,18 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 				input.videoSeconds = &seconds
 			}
 		}
-		// Size and clip count drive the output rate and its multiplier. Neither can
-		// bypass the no-usage guard below on its own: without seconds there is still
-		// nothing to price.
+		// Size and clip count drive the output rate and its multiplier. A clip count alone
+		// passes the no-usage guard (TXE-7357): a model priced per clip needs no seconds,
+		// and computeVideoCost leaves a job with no length and no clip price unpriced.
 		input.videoSize = video.Size
 		input.videoCount = videoClipCount(video.Videos)
+		if video.Usage != nil {
+			if video.Usage.OutputTokens != nil && *video.Usage.OutputTokens > 0 {
+				tokens := *video.Usage.OutputTokens
+				input.videoOutputTokens = &tokens
+			}
+			input.videoInputSeconds = video.Usage.InputSeconds != nil && *video.Usage.InputSeconds > 0
+		}
 
 	case result.OCRResponse != nil:
 		pages := len(result.OCRResponse.Pages)
@@ -962,16 +978,8 @@ func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.Bi
 		Cost:             u.Cost,
 	}
 	// Map token details for cache and search query pricing
-	if u.InputTokensDetails != nil {
-		usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-			TextTokens:              u.InputTokensDetails.TextTokens,
-			AudioTokens:             u.InputTokensDetails.AudioTokens,
-			ImageTokens:             u.InputTokensDetails.ImageTokens,
-			CachedReadTokens:        u.InputTokensDetails.CachedReadTokens,
-			CachedWriteTokens:       u.InputTokensDetails.CachedWriteTokens,
-			CachedWriteTokenDetails: u.InputTokensDetails.CachedWriteTokenDetails,
-		}
-	}
+	// Every input detail, video and cached video included (TXE-7357).
+	usage.PromptTokensDetails = u.InputTokensDetails.ToChatPromptTokensDetails()
 	if u.OutputTokensDetails != nil {
 		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 			ReasoningTokens: u.OutputTokensDetails.ReasoningTokens,
@@ -1157,6 +1165,12 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 		textOutputCost -= float64(outputAudioTokens) * outputRate
 	}
 
+	// Video token cost (fork, TXE-7357): input video tokens a vendor reports apart (Gemini's
+	// VIDEO modality, Gemini Live) are priced at input_cost_per_video_token instead of the text
+	// rate. The breakdown has no video category, so they stay in TextCost, which already holds
+	// every non-audio token; the side total moves by the rate difference only.
+	textInputCost += videoTokenInputAdjustment(pricing, usage, nonCachedPrompt-pricedInputAudioTokens(pricing, inputAudioTokens), inputRate)
+
 	// Search query cost (billed on the output side)
 	searchCost := 0.0
 	if pricing.WebSearchCostPerRequest != nil && usage.ToolUsage != nil && usage.ToolUsage.WebSearch != nil {
@@ -1294,7 +1308,7 @@ func computeBatchTokenCost(pricing *configstoreTables.TableModelPricing, usage *
 		// Audio input tokens a row reports apart move from the text rate to the audio batch rate
 		// (TXE-7354: Gemini publishes input_cost_per_audio_token_batches), as the synchronous path
 		// moves them to the audio rate; on an image line, image input tokens move to the image
-		// batch rate. A row with no audio or image rate keeps them at the text rate.
+		// batch rate, and video input tokens move to the video token batch rate. A row with no audio or image rate keeps them at the text rate.
 		if d := usage.PromptTokensDetails; d != nil {
 			imageTokens := 0
 			if imageLine {
@@ -1307,6 +1321,9 @@ func computeBatchTokenCost(pricing *configstoreTables.TableModelPricing, usage *
 			}{
 				{d.AudioTokens, pricing.InputCostPerAudioTokenBatches, pricing.InputCostPerAudioToken},
 				{imageTokens, pricing.InputCostPerImageTokenBatches, pricing.InputCostPerImageToken},
+				// Fresh video tokens at the video token batch rate (fork, TXE-7357); cached video is
+				// in CachedReadTokens and already priced at the cache-read batch rate.
+				{d.VideoTokens - d.CachedVideoTokens, pricing.InputCostPerVideoTokenBatches, pricing.InputCostPerVideoToken},
 			} {
 				tokens := min(max(m.tokens, 0), remaining)
 				if rate, ok := in.rate(m.explicit, m.synch); ok && tokens > 0 {
@@ -1431,7 +1448,10 @@ func computeEmbeddingCost(pricing *configstoreTables.TableModelPricing, usage *s
 			TotalCost:        c,
 		}
 	}
-	c := float64(usage.PromptTokens) * tieredInputRate(pricing, usage.PromptTokens, tier)
+	rate := tieredInputRate(pricing, usage.PromptTokens, tier)
+	c := float64(usage.PromptTokens) * rate
+	// Gemini Embedding 2 prices input video tokens apart (TXE-7357).
+	c += videoTokenInputAdjustment(pricing, usage, usage.PromptTokens, rate)
 	if c == 0 {
 		return nil
 	}
@@ -1440,6 +1460,119 @@ func computeEmbeddingCost(pricing *configstoreTables.TableModelPricing, usage *s
 		InputCostDetails: &schemas.InputCostDetails{TextCost: c},
 		TotalCost:        c,
 	}
+}
+
+// pricedInputAudioTokens is how many input audio tokens computeTextCost moved off the text
+// rate: all it was handed, when the model has an audio token rate, and none otherwise.
+func pricedInputAudioTokens(pricing *configstoreTables.TableModelPricing, inputAudioTokens int) int {
+	if pricing.InputCostPerAudioToken == nil {
+		return 0
+	}
+	return inputAudioTokens
+}
+
+// videoTokenInputAdjustment is what pricing the usage's input video tokens at the model's video
+// token rate instead of textRate adds to the input cost (fork, TXE-7357): 0 for a model with no
+// video token rate or usage that reports none. At most available tokens move, the prompt tokens
+// still at the text rate, so a vendor over-reporting video tokens cannot price more of the
+// prompt than it sent.
+func videoTokenInputAdjustment(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, available int, textRate float64) float64 {
+	return videoTokenAdjustment(pricing.InputCostPerVideoToken, usage, available, textRate)
+}
+
+// videoTokenAdjustment is videoTokenInputAdjustment for a given video token rate.
+func videoTokenAdjustment(videoRate *float64, usage *schemas.BifrostLLMUsage, available int, textRate float64) float64 {
+	if videoRate == nil || usage == nil || usage.PromptTokensDetails == nil {
+		return 0
+	}
+	// Cached video tokens are in the video count but billed at the cache-read rate, which
+	// available already excludes; only the fresh video takes the video rate.
+	tokens := min(usage.PromptTokensDetails.VideoTokens-usage.PromptTokensDetails.CachedVideoTokens, available)
+	if tokens <= 0 {
+		return 0
+	}
+	return float64(tokens) * (*videoRate - textRate)
+}
+
+// embeddingHasVideoSegments reports whether an embedding response embedded a video.
+func embeddingHasVideoSegments(resp *schemas.BifrostEmbeddingResponse) bool {
+	for i := range resp.Data {
+		if resp.Data[i].VideoSegment != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// vertexDefaultVideoIntervalSec is the embedding interval Vertex multimodalembedding uses when
+// the request names none (its "Plus" tier; core/providers/vertex/types.go VertexVideoSegmentConfig).
+const vertexDefaultVideoIntervalSec = 16
+
+// embeddingVideoSegments returns the seconds of video an embedding response embedded (the sum of
+// its segments) and the interval it was embedded at: the interval the request named, else
+// Vertex's default of 16 seconds. A segment shows the interval only when the video is longer
+// than it, so a 6 second video at the default interval returns one [0, 6] segment and is still
+// priced at the 16 second interval. When the request named none, or the response was rebuilt
+// without the request (a reprice from logs), several segments show the interval exactly (every
+// one but the last is one interval long), and a single segment, which only says the interval is
+// at least the video's length, takes the default.
+func embeddingVideoSegments(resp *schemas.BifrostEmbeddingResponse) (seconds, interval int) {
+	longest, segments := 0, 0
+	for i := range resp.Data {
+		segment := resp.Data[i].VideoSegment
+		if segment == nil || segment.EndOffsetSec <= segment.StartOffsetSec {
+			continue
+		}
+		length := segment.EndOffsetSec - segment.StartOffsetSec
+		seconds += length
+		longest = max(longest, length)
+		segments++
+	}
+	switch {
+	case resp.VideoIntervalSec > 0:
+		interval = resp.VideoIntervalSec
+	case segments > 1:
+		interval = longest
+	default:
+		interval = max(longest, vertexDefaultVideoIntervalSec)
+	}
+	return seconds, interval
+}
+
+// embeddingVideoCost prices the seconds of video a multimodal embedding embedded (fork,
+// TXE-7357). Vertex multimodalembedding prices a second of video by the embedding interval:
+// input_cost_per_video_per_second_above_15s_interval for an interval longer than 15 seconds,
+// _above_8s_interval for one longer than 8, and input_cost_per_video_per_second otherwise. An
+// interval tier the model does not publish takes the next shorter one.
+func embeddingVideoCost(pricing *configstoreTables.TableModelPricing, seconds, interval int) float64 {
+	if seconds <= 0 {
+		return 0
+	}
+	rate := pricing.InputCostPerVideoPerSecond
+	switch {
+	case interval > 15 && pricing.InputCostPerVideoPerSecondAbove15sInterval != nil:
+		rate = pricing.InputCostPerVideoPerSecondAbove15sInterval
+	case interval > 8 && pricing.InputCostPerVideoPerSecondAbove8sInterval != nil:
+		rate = pricing.InputCostPerVideoPerSecondAbove8sInterval
+	}
+	if rate == nil {
+		return 0
+	}
+	return float64(seconds) * *rate
+}
+
+// withUndetailedInputCost adds an input charge that maps to no breakdown category (seconds of
+// embedded video) to cost. The breakdown is dropped, since its categories would no longer sum
+// to the input side; the totals stay exact.
+func withUndetailedInputCost(cost *schemas.BifrostCost, c float64) *schemas.BifrostCost {
+	out := &schemas.BifrostCost{}
+	if cost != nil {
+		*out = *cost
+	}
+	out.InputCost += c
+	out.TotalCost += c
+	out.InputCostDetails = nil
+	return out
 }
 
 // computeRerankCost handles rerank requests.
@@ -2135,9 +2268,23 @@ func imageQualityRate(pricing *configstoreTables.TableModelPricing, quality stri
 	return nil
 }
 
+// videoJob is what a video job says about itself beyond its size, length and audio, that a
+// rate is chosen by (fork, TXE-7357).
+type videoJob struct {
+	mode         string // Kling's generation mode: "pro", or "standard" ("std")
+	videoInput   bool   // the job took a video as input
+	outputTokens *int   // output video tokens the vendor reported
+}
+
 // computeVideoCost handles video generation requests.
 // Input and output are calculated independently — tokens first, then per-second fallback.
-func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, videoSize string, videoCount int, audio bool, tier serviceTier) *schemas.BifrostCost {
+//
+// Output, most specific first (fork, TXE-7357): the output video tokens the vendor reported,
+// on a model priced per video token (Seedance, Gemini Omni); completion tokens; a per-clip
+// price for the clip's resolution and length (MiniMax Hailuo 768p 6s); the per-second rate
+// (see videoJobOutputPerSecondRate); a flat price per clip. A job with no length is priced
+// only by tokens or a clip price, and is unpriced otherwise.
+func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, videoSize string, videoCount int, audio bool, job videoJob, tier serviceTier) *schemas.BifrostCost {
 	tierTokens := inputTierTokens(usage)
 
 	// Input: text prompt tokens first, then per-second fallback
@@ -2150,18 +2297,121 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 		}
 	}
 
-	// Output: completion tokens first, then per-second fallback
+	// Output: video tokens, then completion tokens, then a clip price or the per-second rate.
+	// Seconds is one clip's duration, and a single job can return several clips (Veo's
+	// sampleCount). Count is 0 on a job that has not produced its outputs yet, which still
+	// owes one clip's worth rather than nothing.
+	clips := float64(max(1, videoCount))
 	outputCost := 0.0
-	if usage != nil && usage.CompletionTokens > 0 {
+	switch {
+	case job.outputTokens != nil && *job.outputTokens > 0 && pricing.OutputCostPerVideoToken != nil:
+		// The vendor's token count covers the whole job, every clip included.
+		outputCost = float64(*job.outputTokens) * *pricing.OutputCostPerVideoToken
+	case usage != nil && usage.CompletionTokens > 0:
 		outputCost = float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
-	} else if videoSeconds != nil && *videoSeconds > 0 {
-		// Seconds is one clip's duration, and a single job can return several clips
-		// (Veo's sampleCount). Count is 0 on a job that has not produced its outputs
-		// yet, which still owes one clip's worth rather than nothing.
-		outputCost = float64(*videoSeconds) * videoOutputPerSecondRate(pricing, videoSize, audio) * float64(max(1, videoCount))
+	default:
+		band := videoResolutionBand(videoSize)
+		if rate := videoClipRate(pricing, band, videoSeconds); rate != nil {
+			outputCost = *rate * clips
+		} else if perSecond := videoJobOutputPerSecondRate(pricing, band, audio, job); videoSeconds != nil && *videoSeconds > 0 && perSecond > 0 {
+			outputCost = float64(*videoSeconds) * perSecond * clips
+		} else if pricing.OutputCostPerVideo != nil {
+			outputCost = *pricing.OutputCostPerVideo * clips
+		}
 	}
 
 	return newInputOutputCost(inputCost, outputCost)
+}
+
+// videoClipRate returns the price of one clip of the given resolution band and length
+// (fork, TXE-7357), or nil when the model publishes none for it. MiniMax Hailuo prices a clip,
+// not a second: 768p 6s, 768p 10s and 1080p 6s, the only combinations it renders. A length
+// or band it does not publish takes no clip price, so it falls through to the per-second and
+// flat rates rather than to the nearest clip.
+func videoClipRate(pricing *configstoreTables.TableModelPricing, band int, seconds *int) *float64 {
+	if seconds == nil {
+		return nil
+	}
+	switch {
+	case band == 768 && *seconds == 6:
+		return pricing.OutputCostPerVideo768p6s
+	case band == 768 && *seconds == 10:
+		return pricing.OutputCostPerVideo768p10s
+	case band == 1080 && *seconds == 6:
+		return pricing.OutputCostPerVideo1080p6s
+	}
+	return nil
+}
+
+// videoJobOutputPerSecondRate is videoOutputPerSecondRate for a job with a mode or a video
+// input (fork, TXE-7357), most specific first:
+//   - a job with a video input takes its band's video-input rate (Seedance 2.0 720p is 0.18
+//     without and 0.22 with a video input);
+//   - then the band's rate, with audio or not, as videoOutputPerSecondRate chooses it;
+//   - then the mode's rate (Kling v3 pro is 0.224, standard 0.168), with audio or not;
+//   - then the unbanded rate.
+//
+// A band rate wins over the mode's because the band is the rendered resolution, which upstream
+// prices on its own (Kling v3 4K is 0.42 in either mode).
+func videoJobOutputPerSecondRate(pricing *configstoreTables.TableModelPricing, band int, audio bool, job videoJob) float64 {
+	if job.videoInput {
+		if rate := videoInputBandRate(pricing, band); rate != nil {
+			return *rate
+		}
+	}
+	if rate := videoBandRate(pricing, band, audio); rate != nil {
+		return *rate
+	}
+	if rate := videoModeRate(pricing, job.mode, audio); rate != nil {
+		return *rate
+	}
+	return videoOutputPerSecondRate(pricing, "", audio)
+}
+
+// videoInputBandRate is a band's per-second rate for a job with a video input, or nil.
+func videoInputBandRate(pricing *configstoreTables.TableModelPricing, band int) *float64 {
+	switch band {
+	case 480:
+		return pricing.OutputCostPerVideoPerSecond480pVideoIn
+	case 720:
+		return pricing.OutputCostPerVideoPerSecond720pVideoIn
+	case 1080:
+		return pricing.OutputCostPerVideoPerSecond1080pVideoIn
+	case 2160:
+		return pricing.OutputCostPerVideoPerSecond4kVideoIn
+	}
+	return nil
+}
+
+// videoModeRate is a generation mode's per-second rate, with audio when the job has it and the
+// model publishes one, or nil. Kling names its modes "pro" and "std"; Replicate's Kling takes
+// "standard". A job that names no mode takes the unbanded rate, which upstream publishes at the
+// default mode's price (Kling v3: standard, 0.168). A mode named but not recognized fails
+// closed: it takes the dearer of the two mode rates, never the cheaper one.
+func videoModeRate(pricing *configstoreTables.TableModelPricing, mode string, audio bool) *float64 {
+	pick := func(silent, withAudio *float64) *float64 {
+		if audio && withAudio != nil {
+			return withAudio
+		}
+		return silent
+	}
+	pro := pick(pricing.OutputCostPerVideoPerSecondPro, pricing.OutputCostPerVideoPerSecondProAudio)
+	standard := pick(pricing.OutputCostPerVideoPerSecondStandard, pricing.OutputCostPerVideoPerSecondStandardAudio)
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "":
+		return nil
+	case "pro":
+		return pro
+	case "standard", "std":
+		return standard
+	}
+	switch {
+	case pro == nil:
+		return standard
+	case standard == nil || *pro >= *standard:
+		return pro
+	}
+	return standard
 }
 
 // videoOutputPerSecondRate returns the per-second output rate for a generated video,
@@ -2185,12 +2435,28 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 // unbanded rates, so a model is billed at its unbanded rate only when it publishes no band for
 // the resolution.
 func videoOutputPerSecondRate(pricing *configstoreTables.TableModelPricing, size string, audio bool) float64 {
-	band := videoResolutionBand(size)
+	if rate := videoBandRate(pricing, videoResolutionBand(size), audio); rate != nil {
+		return *rate
+	}
+	if pricing.OutputCostPerVideoPerSecond != nil {
+		return *pricing.OutputCostPerVideoPerSecond
+	}
+	if pricing.OutputCostPerSecond != nil {
+		return *pricing.OutputCostPerSecond
+	}
+	return 0
+}
+
+// videoBandRate is a resolution band's per-second rate, its with-audio rate first for a job
+// with audio, or nil when the model publishes neither for the band (or the size names none).
+func videoBandRate(pricing *configstoreTables.TableModelPricing, band int, audio bool) *float64 {
 	if audio {
 		if rate := videoAudioBandRate(pricing, band); rate != nil {
-			return *rate
+			return rate
 		}
 	}
+	// Each silent band has up to two keys: the fork's output_cost_per_video_per_second_<band>
+	// first, then upstream's output_cost_per_second_<band> (TXE-7349).
 	var bandRates []*float64
 	switch band {
 	case 360:
@@ -2214,16 +2480,10 @@ func videoOutputPerSecondRate(pricing *configstoreTables.TableModelPricing, size
 	}
 	for _, rate := range bandRates {
 		if rate != nil {
-			return *rate
+			return rate
 		}
 	}
-	if pricing.OutputCostPerVideoPerSecond != nil {
-		return *pricing.OutputCostPerVideoPerSecond
-	}
-	if pricing.OutputCostPerSecond != nil {
-		return *pricing.OutputCostPerSecond
-	}
-	return 0
+	return nil
 }
 
 // videoAudioBandRate is the with-audio per-second rate of a resolution band, or nil when the

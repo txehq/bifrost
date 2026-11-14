@@ -2150,6 +2150,7 @@ type ChatPromptTokensDetails struct {
 
 	// For Providers which don't separate between cache creation and cache read tokens (like Openai, Gemini, etc), this is the total number of cached tokens read.
 	CachedReadTokens        int                          `json:"cached_read_tokens,omitempty"`
+	CachedVideoTokens       int                          `json:"cached_video_tokens,omitempty"` // of the cached read tokens, those that are video (Gemini cacheTokensDetails VIDEO)
 	CachedWriteTokens       int                          `json:"cached_write_tokens,omitempty"`
 	CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details,omitempty"`
 }
@@ -2207,6 +2208,47 @@ func (d *ChatCachedWriteTokenDetails) Tokens(tier string) int {
 		return d.CachedWriteTokens12h
 	}
 	return 0
+}
+
+// Add sums every count of o into d; either may be nil, and a nil d is left nil. Every merge
+// of prompt details (turns, batch lines, live sessions, research steps) sums through here, and
+// TestPromptDetailsSumAndConvertEveryCount fails when a count is added to the type without
+// being summed: hand-written sums each dropped video and cached video tokens (TXE-7357).
+func (d *ChatPromptTokensDetails) Add(o *ChatPromptTokensDetails) {
+	if d == nil || o == nil {
+		return
+	}
+	d.TextTokens += o.TextTokens
+	d.AudioTokens += o.AudioTokens
+	d.ImageTokens += o.ImageTokens
+	d.VideoTokens += o.VideoTokens
+	d.DocumentTokens += o.DocumentTokens
+	d.CachedReadTokens += o.CachedReadTokens
+	d.CachedVideoTokens += o.CachedVideoTokens
+	d.CachedWriteTokens += o.CachedWriteTokens
+	if d.CachedWriteTokenDetails != nil || o.CachedWriteTokenDetails != nil {
+		sum := d.CachedWriteTokenDetails.Plus(o.CachedWriteTokenDetails)
+		d.CachedWriteTokenDetails = &sum
+	}
+}
+
+// ToResponsesInputTokens converts chat prompt details to the Responses input details, every
+// field, or nil for nil. The cache-write split is shared, not copied.
+func (d *ChatPromptTokensDetails) ToResponsesInputTokens() *ResponsesResponseInputTokens {
+	if d == nil {
+		return nil
+	}
+	return &ResponsesResponseInputTokens{
+		TextTokens:              d.TextTokens,
+		AudioTokens:             d.AudioTokens,
+		ImageTokens:             d.ImageTokens,
+		VideoTokens:             d.VideoTokens,
+		DocumentTokens:          d.DocumentTokens,
+		CachedReadTokens:        d.CachedReadTokens,
+		CachedVideoTokens:       d.CachedVideoTokens,
+		CachedWriteTokens:       d.CachedWriteTokens,
+		CachedWriteTokenDetails: d.CachedWriteTokenDetails,
+	}
 }
 
 // Plus returns the tier-by-tier sum of d and o; either may be nil.
@@ -2286,6 +2328,7 @@ func (d *ChatPromptTokensDetails) UnmarshalJSON(data []byte) error {
 		VideoTokens             int                            `json:"video_tokens"`
 		DocumentTokens          int                            `json:"document_tokens"`
 		CachedReadTokens        int                            `json:"cached_read_tokens"`
+		CachedVideoTokens       int                            `json:"cached_video_tokens"` // of the cached read tokens, those that are video (Gemini cacheTokensDetails VIDEO)
 		CachedWriteTokens       int                            `json:"cached_write_tokens"`
 		CachedWriteTokenDetails *ChatCachedWriteTokenDetails   `json:"cached_write_token_details"`
 		CachedTokens            *int                           `json:"cached_tokens"`
@@ -2301,6 +2344,7 @@ func (d *ChatPromptTokensDetails) UnmarshalJSON(data []byte) error {
 	d.VideoTokens = raw.VideoTokens
 	d.DocumentTokens = raw.DocumentTokens
 	d.CachedReadTokens = raw.CachedReadTokens
+	d.CachedVideoTokens = raw.CachedVideoTokens
 	d.CachedWriteTokens = raw.CachedWriteTokens
 	d.CachedWriteTokenDetails = raw.CachedWriteTokenDetails
 	// OpenAI spec providers send just cached_tokens, not separate read and write tokens and we handle them as read tokens in pricing calculations.
@@ -2327,6 +2371,7 @@ func (d ChatPromptTokensDetails) MarshalJSON() ([]byte, error) {
 		VideoTokens             int                          `json:"video_tokens,omitempty"`
 		DocumentTokens          int                          `json:"document_tokens,omitempty"`
 		CachedReadTokens        int                          `json:"cached_read_tokens,omitempty"`
+		CachedVideoTokens       int                          `json:"cached_video_tokens,omitempty"` // of the cached read tokens, those that are video (Gemini cacheTokensDetails VIDEO)
 		CachedWriteTokens       int                          `json:"cached_write_tokens,omitempty"`
 		CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details,omitempty"`
 		CachedTokens            int                          `json:"cached_tokens"`
@@ -2343,6 +2388,7 @@ func (d ChatPromptTokensDetails) MarshalJSON() ([]byte, error) {
 		VideoTokens:             d.VideoTokens,
 		DocumentTokens:          d.DocumentTokens,
 		CachedReadTokens:        d.CachedReadTokens,
+		CachedVideoTokens:       d.CachedVideoTokens,
 		CachedWriteTokens:       d.CachedWriteTokens,
 		CachedWriteTokenDetails: d.CachedWriteTokenDetails,
 		CachedTokens:            d.CachedReadTokens,
@@ -2407,19 +2453,10 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 		if addDetails == nil {
 			addDetails = &ChatPromptTokensDetails{}
 		}
-		merged.PromptTokensDetails = &ChatPromptTokensDetails{
-			TextTokens:        baseDetails.TextTokens + addDetails.TextTokens,
-			AudioTokens:       baseDetails.AudioTokens + addDetails.AudioTokens,
-			ImageTokens:       baseDetails.ImageTokens + addDetails.ImageTokens,
-			VideoTokens:       baseDetails.VideoTokens + addDetails.VideoTokens,
-			DocumentTokens:    baseDetails.DocumentTokens + addDetails.DocumentTokens,
-			CachedReadTokens:  baseDetails.CachedReadTokens + addDetails.CachedReadTokens,
-			CachedWriteTokens: baseDetails.CachedWriteTokens + addDetails.CachedWriteTokens,
-		}
-		if baseDetails.CachedWriteTokenDetails != nil || addDetails.CachedWriteTokenDetails != nil {
-			sum := baseDetails.CachedWriteTokenDetails.Plus(addDetails.CachedWriteTokenDetails)
-			merged.PromptTokensDetails.CachedWriteTokenDetails = &sum
-		}
+		sum := ChatPromptTokensDetails{}
+		sum.Add(baseDetails)
+		sum.Add(addDetails)
+		merged.PromptTokensDetails = &sum
 	}
 
 	if base.CompletionTokensDetails != nil || add.CompletionTokensDetails != nil {

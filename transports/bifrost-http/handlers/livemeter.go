@@ -759,11 +759,7 @@ func addResponsesUsage(total, usage *schemas.ResponsesResponseUsage) *schemas.Re
 		if total.InputTokensDetails == nil {
 			total.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 		}
-		total.InputTokensDetails.TextTokens += usage.InputTokensDetails.TextTokens
-		total.InputTokensDetails.AudioTokens += usage.InputTokensDetails.AudioTokens
-		total.InputTokensDetails.ImageTokens += usage.InputTokensDetails.ImageTokens
-		total.InputTokensDetails.CachedReadTokens += usage.InputTokensDetails.CachedReadTokens
-		total.InputTokensDetails.CachedWriteTokens += usage.InputTokensDetails.CachedWriteTokens
+		total.InputTokensDetails.Add(usage.InputTokensDetails)
 	}
 	if usage.OutputTokensDetails != nil {
 		if total.OutputTokensDetails == nil {

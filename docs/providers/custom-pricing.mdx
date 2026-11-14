@@ -531,10 +531,31 @@ least 1536) is billed at the 1536×1024 rate, which is checked first.
 | `output_cost_per_second_1080p` | Upstream's cost per second of 1080p video output |
 | `output_cost_per_second_2k` | Upstream's cost per second of 2K (1440p) video output |
 | `output_cost_per_second_4k` | Upstream's cost per second of 4K video output |
+| `input_cost_per_video_token` | Input video token, for a vendor that reports video tokens apart (Gemini); replaces the text rate for those tokens |
+| `input_cost_per_video_token_batches` | Input video token in a batch request; half `input_cost_per_video_token` when unset |
+| `input_cost_per_video_per_second_above_8s_interval` | Second of embedded video at an embedding interval longer than 8 seconds (Vertex `multimodalembedding`) |
+| `input_cost_per_video_per_second_above_15s_interval` | Second of embedded video at an embedding interval longer than 15 seconds |
+| `output_cost_per_video_token` | Output video token the vendor reports for a video job (Seedance, Gemini Omni); wins over every per-second and per-clip rate |
+| `output_cost_per_video` | Generated clip, whatever its length; used when no other output rate matches |
+| `output_cost_per_video_768p_6s` | Generated 768p clip of 6 seconds |
+| `output_cost_per_video_768p_10s` | Generated 768p clip of 10 seconds |
+| `output_cost_per_video_1080p_6s` | Generated 1080p clip of 6 seconds |
+| `output_cost_per_video_per_second_480p_video_in` | Second of 480p output for a job with a video input |
+| `output_cost_per_video_per_second_720p_video_in` | Second of 720p output for a job with a video input |
+| `output_cost_per_video_per_second_1080p_video_in` | Second of 1080p output for a job with a video input |
+| `output_cost_per_video_per_second_4k_video_in` | Second of 4K output for a job with a video input |
+| `output_cost_per_video_per_second_pro` | Second of output in pro mode (the request's `mode`) |
+| `output_cost_per_video_per_second_pro_audio` | Second of output with generated audio in pro mode |
+| `output_cost_per_video_per_second_standard` | Second of output in standard mode (`standard` or `std`) |
+| `output_cost_per_video_per_second_standard_audio` | Second of output with generated audio in standard mode |
 | `input_cost_per_video_per_second_above_128k_tokens` | Video input cost above 128k context |
 | `input_cost_per_audio_per_second_above_128k_tokens` | Audio input cost above 128k context |
 
 The resolution-banded video rates are matched on the short edge of the generated video's size, so `1920x1080` and `1080x1920` both resolve to `output_cost_per_video_per_second_1080p`. A request that names a resolution tier instead of a size (`"resolution": "4k"`, `"480P"`, `"2K"`) is matched on that tier; 2K is the 1440 band. For each band, `output_cost_per_video_per_second_<band>` is read first, then `output_cost_per_second_<band>`. A size matching no band falls back to `output_cost_per_video_per_second`, then `output_cost_per_second`. The resolved rate is multiplied by the number of clips the job returned.
+
+A video job's output is priced by the most specific rate the model publishes: the output video tokens the vendor reports (`output_cost_per_video_token`); then a per-clip price for the clip's resolution and length (`output_cost_per_video_768p_6s`, matched exactly, so a length or band the model does not publish takes none); then the per-second rate; then the flat `output_cost_per_video`. The per-second rate is, in order: the band's video-input rate for a job with a video input (a `video_uri` or the `reference_videos` extra param), the band's rate (with audio or not), the mode's rate (`mode` `pro` or `standard`; a mode Bifrost does not recognize takes the dearer of the two), then the unbanded rate. A job with no length is priced only by tokens or a clip price.
+
+A multimodal embedding of a video is priced by the seconds it embedded, at `input_cost_per_video_per_second_above_15s_interval` when its embedding interval (its longest segment) is longer than 15 seconds, `_above_8s_interval` when longer than 8, and `input_cost_per_video_per_second` otherwise.
 
 A video with generated audio is priced at its band's `_audio` rate when the model has one, and at the band's silent rate otherwise. A request that sets `audio: false` takes the silent rate. A request that does not mention `audio` takes its provider's default. Runway, for example, generates audio unless asked not to, so its unstated requests take the `_audio` rate. A provider that documents no default is priced with audio.
 

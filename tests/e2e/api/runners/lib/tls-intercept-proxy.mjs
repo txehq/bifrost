@@ -158,11 +158,17 @@ export function createTlsEndpoints({ respond, staticJson }) {
 //       401 "virtual key is required" before it reaches the provider under test (TXE-7039).
 //   framework.pricing                         the datasheets a fresh gateway downloads on first
 //       start, served by the fixture's own control port so the run stays offline.
+//   setup_token                               the token a case sends to read the gateway's own
+//       logs (GET /api/logs), the one the provider-error fixture config uses; without it the
+//       management API refuses every read, so no case can check what a request was billed.
 //
 // datasheetOrigin is the fixture's plain-HTTP origin (http://127.0.0.1:<port>); providers is the
 // fixture's own provider block. A fixture adds nothing else at the top level.
+export const FIXTURE_SETUP_TOKEN = "bifrost-e2e-setup-token";
+
 export function fixtureGatewayConfig({ datasheetOrigin, providers }) {
 	return {
+		setup_token: FIXTURE_SETUP_TOKEN,
 		client: { enforce_auth_on_inference: false },
 		framework: { pricing: { pricing_url: `${datasheetOrigin}/pricing.json`, model_parameters_url: `${datasheetOrigin}/model-parameters.json`, mcp_library_sync_interval: 0 } },
 		providers,

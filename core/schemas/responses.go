@@ -1438,8 +1438,48 @@ type ResponsesResponseInputTokens struct {
 
 	// For Providers which don't separate between cache creation and cache read tokens (like Openai, Gemini, etc), this is the total number of cached tokens read.
 	CachedReadTokens        int                          `json:"cached_read_tokens"`
+	CachedVideoTokens       int                          `json:"cached_video_tokens,omitempty"` // of the cached read tokens, those that are video (Gemini cacheTokensDetails VIDEO)
 	CachedWriteTokens       int                          `json:"cached_write_tokens"`
 	CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details,omitempty"`
+}
+
+// Add sums every count of o into d; either may be nil, and a nil d is left nil. See
+// ChatPromptTokensDetails.Add.
+func (d *ResponsesResponseInputTokens) Add(o *ResponsesResponseInputTokens) {
+	if d == nil || o == nil {
+		return
+	}
+	d.TextTokens += o.TextTokens
+	d.AudioTokens += o.AudioTokens
+	d.ImageTokens += o.ImageTokens
+	d.VideoTokens += o.VideoTokens
+	d.DocumentTokens += o.DocumentTokens
+	d.CachedReadTokens += o.CachedReadTokens
+	d.CachedVideoTokens += o.CachedVideoTokens
+	d.CachedWriteTokens += o.CachedWriteTokens
+	if d.CachedWriteTokenDetails != nil || o.CachedWriteTokenDetails != nil {
+		sum := d.CachedWriteTokenDetails.Plus(o.CachedWriteTokenDetails)
+		d.CachedWriteTokenDetails = &sum
+	}
+}
+
+// ToChatPromptTokensDetails converts Responses input details to chat prompt details, every
+// field, or nil for nil. The cache-write split is shared, not copied.
+func (d *ResponsesResponseInputTokens) ToChatPromptTokensDetails() *ChatPromptTokensDetails {
+	if d == nil {
+		return nil
+	}
+	return &ChatPromptTokensDetails{
+		TextTokens:              d.TextTokens,
+		AudioTokens:             d.AudioTokens,
+		ImageTokens:             d.ImageTokens,
+		VideoTokens:             d.VideoTokens,
+		DocumentTokens:          d.DocumentTokens,
+		CachedReadTokens:        d.CachedReadTokens,
+		CachedVideoTokens:       d.CachedVideoTokens,
+		CachedWriteTokens:       d.CachedWriteTokens,
+		CachedWriteTokenDetails: d.CachedWriteTokenDetails,
+	}
 }
 
 // UnmarshalJSON maps OpenAI's cached_tokens into CachedReadTokens for compatibility.
@@ -1451,6 +1491,7 @@ func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 		VideoTokens             int                            `json:"video_tokens"`
 		DocumentTokens          int                            `json:"document_tokens"`
 		CachedReadTokens        int                            `json:"cached_read_tokens"`
+		CachedVideoTokens       int                            `json:"cached_video_tokens"` // of the cached read tokens, those that are video (Gemini cacheTokensDetails VIDEO)
 		CachedWriteTokens       int                            `json:"cached_write_tokens"`
 		CachedWriteTokenDetails *ChatCachedWriteTokenDetails   `json:"cached_write_token_details"`
 		CachedTokens            *int                           `json:"cached_tokens"`
@@ -1466,6 +1507,7 @@ func (d *ResponsesResponseInputTokens) UnmarshalJSON(data []byte) error {
 	d.VideoTokens = raw.VideoTokens
 	d.DocumentTokens = raw.DocumentTokens
 	d.CachedReadTokens = raw.CachedReadTokens
+	d.CachedVideoTokens = raw.CachedVideoTokens
 	d.CachedWriteTokens = raw.CachedWriteTokens
 	d.CachedWriteTokenDetails = raw.CachedWriteTokenDetails
 	// OpenAI spec providers send just cached_tokens, not separate read and write tokens and we handle them as read tokens in pricing calculations.
@@ -1492,6 +1534,7 @@ func (d ResponsesResponseInputTokens) MarshalJSON() ([]byte, error) {
 		VideoTokens             int                          `json:"video_tokens,omitempty"`
 		DocumentTokens          int                          `json:"document_tokens,omitempty"`
 		CachedReadTokens        int                          `json:"cached_read_tokens"`
+		CachedVideoTokens       int                          `json:"cached_video_tokens,omitempty"` // of the cached read tokens, those that are video (Gemini cacheTokensDetails VIDEO)
 		CachedWriteTokens       int                          `json:"cached_write_tokens"`
 		CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details,omitempty"`
 		CachedTokens            int                          `json:"cached_tokens"`
@@ -1508,6 +1551,7 @@ func (d ResponsesResponseInputTokens) MarshalJSON() ([]byte, error) {
 		VideoTokens:             d.VideoTokens,
 		DocumentTokens:          d.DocumentTokens,
 		CachedReadTokens:        d.CachedReadTokens,
+		CachedVideoTokens:       d.CachedVideoTokens,
 		CachedWriteTokens:       d.CachedWriteTokens,
 		CachedWriteTokenDetails: d.CachedWriteTokenDetails,
 		CachedTokens:            d.CachedReadTokens,

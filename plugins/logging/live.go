@@ -382,12 +382,7 @@ func addLLMUsage(total, usage *schemas.BifrostLLMUsage) *schemas.BifrostLLMUsage
 		if total.PromptTokensDetails == nil {
 			total.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
 		}
-		sum := total.PromptTokensDetails
-		sum.TextTokens += in.TextTokens
-		sum.AudioTokens += in.AudioTokens
-		sum.ImageTokens += in.ImageTokens
-		sum.CachedReadTokens += in.CachedReadTokens
-		sum.CachedWriteTokens += in.CachedWriteTokens
+		total.PromptTokensDetails.Add(in)
 	}
 	if out := usage.CompletionTokensDetails; out != nil {
 		if total.CompletionTokensDetails == nil {

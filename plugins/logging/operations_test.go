@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -4073,7 +4075,7 @@ func TestRecordVideoJobLifecycle_CapturesRequestPricingDimensions(t *testing.T) 
 			Status: schemas.VideoStatusQueued,
 		},
 	}
-	plugin.recordVideoJobLifecycle(entry, result, schemas.VideoGenerationRequest)
+	plugin.recordVideoJobLifecycle(entry, result, schemas.VideoGenerationRequest, nil)
 
 	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_abc"))
 	if err != nil {
@@ -4110,6 +4112,53 @@ func TestRecordVideoJobLifecycle_CapturesRequestPricingDimensions(t *testing.T) 
 	}
 }
 
+// TXE-7357: the job row keeps what a Seedance or Kling job is priced by beyond size and length:
+// its video input (video_uri, or the reference_videos extra param), Kling's mode (an extra param),
+// and the output video tokens the response reports.
+func TestRecordVideoJobLifecycle_CapturesVideoInputModeAndTokens(t *testing.T) {
+	plugin, bs := newVideoLifecyclePlugin(t)
+	five := "5"
+	for name, tc := range map[string]struct {
+		provider   schemas.ModelProvider
+		input      *schemas.VideoGenerationInput
+		extra      map[string]interface{}
+		videoInput bool
+	}{
+		"byteplus video_uri":         {provider: schemas.BytePlus, input: &schemas.VideoGenerationInput{Prompt: "p", VideoURI: schemas.Ptr("https://example.com/in.mp4")}, videoInput: true},
+		"replicate reference_videos": {provider: schemas.Replicate, extra: map[string]interface{}{"reference_videos": []interface{}{"https://example.com/in.mp4"}, "mode": "pro"}, videoInput: true},
+		// Replicate's converter never sends video_uri (TXE-7374): no video input reached the vendor.
+		"replicate video_uri": {provider: schemas.Replicate, input: &schemas.VideoGenerationInput{Prompt: "p", VideoURI: schemas.Ptr("https://example.com/in.mp4")}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			id := "vid_" + strings.ReplaceAll(name, " ", "_")
+			entry := &logstore.Log{
+				ID: "req-" + id, Provider: string(tc.provider), Model: "bytedance/seedance-2.0",
+				VideoGenerationInputParsed: tc.input,
+				ParamsParsed:               &schemas.VideoGenerationParameters{Seconds: &five, Size: "1280x720", ExtraParams: tc.extra},
+			}
+			result := &schemas.BifrostResponse{VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+				ID: id, Status: schemas.VideoStatusQueued, Usage: &schemas.VideoUsage{OutputTokens: schemas.Ptr(108900)},
+			}}
+			plugin.recordVideoJobLifecycle(entry, result, schemas.VideoGenerationRequest, nil)
+
+			job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, string(tc.provider), id))
+			if err != nil {
+				t.Fatalf("expected a video job row: %v", err)
+			}
+			dims := jobaccounting.VideoDimensionsFromJob(job)
+			if got := dims.VideoInput != nil && *dims.VideoInput; got != tc.videoInput {
+				t.Fatalf("video input = %v, want %v", dims.VideoInput, tc.videoInput)
+			}
+			if dims.OutputTokens == nil || *dims.OutputTokens != 108900 {
+				t.Fatalf("output tokens = %v, want 108900", dims.OutputTokens)
+			}
+			if tc.extra != nil && dims.PricedMode() != "pro" {
+				t.Fatalf("mode = %q, want pro", dims.PricedMode())
+			}
+		})
+	}
+}
+
 // A video submitted before this build was already charged at submission. Creating
 // its row on a later retrieve would hand it to the sweeper and charge it twice.
 func TestRecordVideoJobLifecycle_RetrieveDoesNotCreateRowForPreUpgradeJob(t *testing.T) {
@@ -4122,7 +4171,7 @@ func TestRecordVideoJobLifecycle_RetrieveDoesNotCreateRowForPreUpgradeJob(t *tes
 			Status: schemas.VideoStatusCompleted,
 		},
 	}
-	plugin.recordVideoJobLifecycle(entry, result, schemas.VideoRetrieveRequest)
+	plugin.recordVideoJobLifecycle(entry, result, schemas.VideoRetrieveRequest, nil)
 
 	if _, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_pre_upgrade")); err == nil {
 		t.Fatal("a retrieve must never create a job row we did not see submitted")
@@ -4144,12 +4193,12 @@ func TestRecordVideoJobLifecycle_RetrieveAdvancesKnownJob(t *testing.T) {
 	submitted := &schemas.BifrostResponse{
 		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "vid_known", Status: schemas.VideoStatusQueued},
 	}
-	plugin.recordVideoJobLifecycle(entry, submitted, schemas.VideoGenerationRequest)
+	plugin.recordVideoJobLifecycle(entry, submitted, schemas.VideoGenerationRequest, nil)
 
 	retrieved := &schemas.BifrostResponse{
 		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "vid_known", Status: schemas.VideoStatusCompleted},
 	}
-	plugin.recordVideoJobLifecycle(entry, retrieved, schemas.VideoRetrieveRequest)
+	plugin.recordVideoJobLifecycle(entry, retrieved, schemas.VideoRetrieveRequest, nil)
 
 	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_known"))
 	if err != nil {
@@ -4192,7 +4241,7 @@ func TestAccountVideoResults_SettlesTheJobTheSubmissionRecorded(t *testing.T) {
 	submitted := &schemas.BifrostResponse{
 		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "vid_inline_wired", Status: schemas.VideoStatusQueued},
 	}
-	plugin.recordVideoJobLifecycle(entry, submitted, schemas.VideoGenerationRequest)
+	plugin.recordVideoJobLifecycle(entry, submitted, schemas.VideoGenerationRequest, nil)
 
 	terminal := &schemas.BifrostResponse{
 		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
@@ -4202,7 +4251,7 @@ func TestAccountVideoResults_SettlesTheJobTheSubmissionRecorded(t *testing.T) {
 			Usage:  &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: 0.75}},
 		},
 	}
-	plugin.recordVideoJobLifecycle(entry, terminal, schemas.VideoRetrieveRequest)
+	plugin.recordVideoJobLifecycle(entry, terminal, schemas.VideoRetrieveRequest, nil)
 	plugin.accountVideoResults(entry, terminal, nil)
 
 	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_inline_wired"))
@@ -4262,7 +4311,7 @@ func TestRecordVideoJobLifecycle_MarksTheRequestRowWithTheVideo(t *testing.T) {
 			Status: schemas.VideoStatusQueued,
 		},
 	}
-	plugin.recordVideoJobLifecycle(entry, result, schemas.VideoGenerationRequest)
+	plugin.recordVideoJobLifecycle(entry, result, schemas.VideoGenerationRequest, nil)
 
 	if entry.VideoDebugParsed == nil {
 		t.Fatal("the submission row must name the video it started")
@@ -5100,7 +5149,7 @@ func TestRecordJobLifecycle_WritesNothingWhileProviderJobAccountingOff(t *testin
 
 	videoEntry := &logstore.Log{ID: "req-video-off", Provider: string(schemas.OpenAI), Model: "sora-2", SelectedKeyID: "key-abc"}
 	videoResult := &schemas.BifrostResponse{VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "vid_off", Status: schemas.VideoStatusQueued}}
-	plugin.recordVideoJobLifecycle(videoEntry, videoResult, schemas.VideoGenerationRequest)
+	plugin.recordVideoJobLifecycle(videoEntry, videoResult, schemas.VideoGenerationRequest, nil)
 	_, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_off"))
 	require.Error(t, err, "a video create must write no provider job row while accounting is off")
 
@@ -5111,7 +5160,7 @@ func TestRecordJobLifecycle_WritesNothingWhileProviderJobAccountingOff(t *testin
 	require.Error(t, err, "a batch create must write no provider job row while accounting is off")
 
 	plugin.SetProviderJobAccountingEnabled(true)
-	plugin.recordVideoJobLifecycle(videoEntry, videoResult, schemas.VideoGenerationRequest)
+	plugin.recordVideoJobLifecycle(videoEntry, videoResult, schemas.VideoGenerationRequest, nil)
 	plugin.recordBatchJobLifecycle(batchEntry, batchResult)
 	_, err = bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_off"))
 	require.NoError(t, err, "with accounting on the same video create writes its row")
@@ -5164,7 +5213,7 @@ func BenchmarkRecordVideoJobLifecycleGate(b *testing.B) {
 	result := &schemas.BifrostResponse{}
 	b.ReportAllocs()
 	for b.Loop() {
-		plugin.recordVideoJobLifecycle(entry, result, schemas.VideoGenerationRequest)
+		plugin.recordVideoJobLifecycle(entry, result, schemas.VideoGenerationRequest, nil)
 	}
 }
 
@@ -5264,5 +5313,123 @@ func TestVideoDimensionsFromEntryParams_CapturesResolutionTier(t *testing.T) {
 				t.Fatalf("extra resolution = %v, want %v", dims.Extra["resolution"], tc.wantExtra)
 			}
 		})
+	}
+}
+
+// TestRecalculatedResponsesUsageKeepsEveryInputDetail fails when the Responses rebuild a cost
+// recalculation prices drops an input detail the logged usage carries (TXE-7357: video tokens
+// were dropped, so recalculating a video log repriced it at the text rate). Every field the chat
+// prompt details and the Responses input details share by name and type is set to its own value
+// and must reach the rebuilt response, for the ordinary and the streamed request type.
+func TestRecalculatedResponsesUsageKeepsEveryInputDetail(t *testing.T) {
+	details := &schemas.ChatPromptTokensDetails{}
+	src := reflect.ValueOf(details).Elem()
+	dstType := reflect.TypeOf(schemas.ResponsesResponseInputTokens{})
+	shared := 0
+	for i := 0; i < src.NumField(); i++ {
+		f := src.Type().Field(i)
+		if df, ok := dstType.FieldByName(f.Name); ok && df.Type == f.Type && f.Type.Kind() == reflect.Int {
+			src.Field(i).SetInt(int64(100 + i))
+			shared++
+		}
+	}
+	if shared < 7 {
+		t.Fatalf("only %d shared int fields found; the structs changed shape, update this check", shared)
+	}
+	for _, rt := range []schemas.RequestType{schemas.ResponsesRequest, schemas.ResponsesStreamRequest} {
+		resp := buildResponseForRequestType(rt, &schemas.BifrostLLMUsage{PromptTokens: 1000, PromptTokensDetails: details},
+			schemas.BifrostResponseExtraFields{}, servedTier{})
+		if resp == nil || resp.ResponsesResponse == nil || resp.ResponsesResponse.Usage == nil || resp.ResponsesResponse.Usage.InputTokensDetails == nil {
+			t.Fatalf("%s: no Responses input details rebuilt", rt)
+		}
+		dst := reflect.ValueOf(resp.ResponsesResponse.Usage.InputTokensDetails).Elem()
+		for i := 0; i < src.NumField(); i++ {
+			f := src.Type().Field(i)
+			if df, ok := dstType.FieldByName(f.Name); ok && df.Type == f.Type && f.Type.Kind() == reflect.Int {
+				if got, want := dst.FieldByName(f.Name).Int(), src.Field(i).Int(); got != want {
+					t.Errorf("%s: the rebuild drops PromptTokensDetails.%s: got %d, want %d", rt, f.Name, got, want)
+				}
+			}
+		}
+	}
+}
+
+// A Vertex multimodalembedding log is priced by the seconds of video it embedded at the
+// interval the request asked for (TXE-7357). Recalculation rebuilt only the usage, so it either
+// skipped the row (no token usage) or dropped the video charge; it now restores the stored
+// segments and the requested interval, and lets a segment-backed row past the no-usage guard.
+func TestRecalculatedVideoEmbeddingKeepsItsVideoCharge(t *testing.T) {
+	plugin := &LoggerPlugin{pricingManager: newTestPricingManager(t)}
+	// Two 10 s segments at a requested 10 s interval: 20 s at the above-8s rate, $0.001/s.
+	output := `[{"index":0,"object":"embedding","modality":"video","video_segment":{"start_offset_sec":0,"end_offset_sec":10},"embedding":[0.1]},
+		{"index":1,"object":"embedding","modality":"video","video_segment":{"start_offset_sec":10,"end_offset_sec":20},"embedding":[0.2]}]`
+	input := `[{"content":[{"type":"video","video":{"url":"gs://bucket/clip.mp4"},"video_config":{"interval_sec":10}}]}]`
+	for name, usage := range map[string]string{
+		"no token usage":   "",
+		"with token usage": `{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			entry := &logstore.Log{
+				ID: "log-embed-video", Provider: string(schemas.Vertex), Model: "multimodalembedding@001",
+				Object: string(schemas.EmbeddingRequest), EmbeddingOutput: output, EmbeddingInput: input, TokenUsage: usage,
+			}
+			cost, err := plugin.calculateCostBreakdownForLog(entry)
+			if err != nil {
+				t.Fatalf("recalculation failed: %v", err)
+			}
+			if cost == nil || math.Abs(cost.TotalCost-20*0.001) > 1e-12 {
+				t.Fatalf("recalculated cost %+v, want 20 s × $0.001", cost)
+			}
+		})
+	}
+}
+
+// With content logging off, the entry carries no request params, and the job settled at the rate
+// its response alone implies: a Kling pro-mode create was priced without its mode (TXE-7357).
+// PreLLMHook captures the billing dimensions whatever the content policy, with extra params
+// reduced to the ones pricing reads, and the job keeps them.
+func TestRecordVideoJobLifecycle_KeepsBillingDimensionsWithoutContent(t *testing.T) {
+	plugin, bs := newVideoLifecyclePlugin(t)
+	five := "5"
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.VideoGenerationRequest,
+		VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{
+			Model: "kling-v3",
+			Input: &schemas.VideoGenerationInput{Prompt: "a private prompt"},
+			Params: &schemas.VideoGenerationParameters{
+				Seconds:     &five,
+				Size:        "1920x1080",
+				ExtraParams: map[string]any{"mode": "pro", "negative_prompt_extra": "secret words", "reference_videos": []any{"https://media.example/private.mp4"}},
+			},
+		},
+	}
+	pricing := videoPricingFromRequest(string(schemas.Kling), req)
+	if pricing == nil {
+		t.Fatal("no billing dimensions captured for a video create")
+	}
+	// The request is pooled: a later reuse must not change what was captured.
+	req.VideoGenerationRequest.Params.ExtraParams["mode"] = "std"
+	req.VideoGenerationRequest.Params.Size = "1280x720"
+
+	entry := &logstore.Log{ID: "req-video-nocontent", Provider: string(schemas.Kling), Model: "kling-v3"} // ParamsParsed dropped
+	result := &schemas.BifrostResponse{VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "kling_task_1", Status: schemas.VideoStatusQueued}}
+	plugin.recordVideoJobLifecycle(entry, result, schemas.VideoGenerationRequest, pricing)
+
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "kling", "kling_task_1"))
+	if err != nil {
+		t.Fatalf("expected a video job row: %v", err)
+	}
+	dims := jobaccounting.VideoDimensionsFromJob(job)
+	if dims.Seconds == nil || *dims.Seconds != 5 || dims.Size != "1920x1080" {
+		t.Fatalf("seconds/size not kept: %+v", dims)
+	}
+	if dims.PricedMode() != "pro" {
+		t.Fatalf("mode = %q, want pro", dims.PricedMode())
+	}
+	if _, leaked := dims.Extra["negative_prompt_extra"]; leaked || dims.Extra["reference_videos"] != nil {
+		t.Fatalf("content beyond the billing selectors was kept: %+v", dims.Extra)
+	}
+	if dims.VideoInput == nil || !*dims.VideoInput {
+		t.Fatal("the video input the create carried was not kept")
 	}
 }

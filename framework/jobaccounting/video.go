@@ -429,6 +429,9 @@ func videoDebugFor(videoID string, status schemas.VideoStatus, dims modelcatalog
 				Size:         dims.Size,
 				Audio:        dims.Audio,
 				Resolution:   resolution,
+				Mode:         dims.PricedMode(),
+				VideoInput:   dims.VideoInput,
+				OutputTokens: dims.OutputTokens,
 				OutputCount:  dims.OutputCount,
 				Incomplete:   incomplete,
 				RequestType:  videoRequestTypeFor(dims.RequestType),
@@ -511,7 +514,11 @@ func (s *VideoSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManage
 		// provider's base in hand; a reprice has neither, so it takes the tier as recorded rather
 		// than judging it again (TXE-7349).
 		ResolutionSettled: accounting.Resolution != "",
-		OutputCount:       accounting.OutputCount,
+		// Mode, video input and output tokens choose the rate too (TXE-7357).
+		Mode:         accounting.Mode,
+		VideoInput:   accounting.VideoInput,
+		OutputTokens: accounting.OutputTokens,
+		OutputCount:  accounting.OutputCount,
 	}, schemas.ModelProvider(entry.Provider), &scopes)
 	if !details.Priced {
 		return nil, fmt.Errorf("%w: no video rate for log %s", ErrPricingInputsUnavailable, entry.ID)
