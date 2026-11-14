@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -212,4 +213,54 @@ func TestEverySelectKeyCallerKeepsTheRefusalCode(t *testing.T) {
 		assert.Greater(t, passed, 0, "%s selects a session key %d time(s) but never passes an allowed_requests refusal through withSelectKeyRefusal or selectKeyErrorCode", file, n)
 	}
 	assert.GreaterOrEqual(t, callers, 5, "the guard found the live, realtime client secret, WebRTC, WebSocket realtime and WebSocket Responses handlers")
+}
+
+// BenchmarkSelectKeyRefusal measures what a session handler does with a key-selection error.
+// A session that gets its key never reaches this code, so the common case costs nothing; these are
+// the refused path (an allowed_requests refusal) and any other key-selection error. "before" is the
+// handler's code before TXE-7423: one wire error from the error's text.
+var (
+	selectKeyRefusalSink     *schemas.BifrostError
+	selectKeyRefusalCodeSink string
+)
+
+func BenchmarkSelectKeyRefusal(b *testing.B) {
+	refused := error(&schemas.OperationNotAllowedError{RequestType: schemas.LiveRequest, Provider: notAllowedProvider})
+	other := errors.New("no keys found for provider: custom-chatonly")
+	b.Run("refusal/before", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			selectKeyRefusalSink = newRealtimeWireBifrostError(400, "invalid_request_error", refused.Error())
+		}
+	})
+	b.Run("refusal/after", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			selectKeyRefusalSink = withSelectKeyRefusal(newRealtimeWireBifrostError(400, "invalid_request_error", refused.Error()), refused)
+		}
+	})
+	b.Run("other_error/before", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			selectKeyRefusalSink = newRealtimeWireBifrostError(400, "invalid_request_error", other.Error())
+		}
+	})
+	b.Run("other_error/after", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			selectKeyRefusalSink = withSelectKeyRefusal(newRealtimeWireBifrostError(400, "invalid_request_error", other.Error()), other)
+		}
+	})
+	b.Run("ws_code/other_error", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			selectKeyRefusalCodeSink = selectKeyErrorCode(other, "invalid_request_error")
+		}
+	})
+	b.Run("ws_code/refusal", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			selectKeyRefusalCodeSink = selectKeyErrorCode(refused, "invalid_request_error")
+		}
+	})
 }

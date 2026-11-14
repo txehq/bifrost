@@ -1,0 +1,176 @@
+{
+  "name": "597. A session a custom provider's allowed_requests leaves out is refused as unsupported_operation (session allowed requests)",
+  "description": "TXE-7423. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. TXE-7370 (#292) moved the allowed_requests check for realtime, live and WebSocket Responses sessions into key selection, which returned a plain error that every session handler answered as invalid_request_error. Before TXE-7370 the provider's own check refused these sessions with code unsupported_operation, and the GPT Live e2e suite (tests/live) expects it. The fixture config's xiaomi provider is OpenAI-based and allows only chat, so it leaves out realtime and live. Row 1 asks for a realtime client secret, row 2 sends a realtime WebRTC offer and row 3 opens a GPT Live WebRTC session; each must answer 400 with code unsupported_operation. WebSocket sessions cannot be opened from newman: tests/live covers them, and transports/bifrost-http/handlers/selectkeyrefusal_test.go covers every session type.",
+  "item": [
+    {
+      "name": "[EXPECT-400] 597.1 xiaomi/gpt-realtime - a realtime client secret on a custom provider whose allowed_requests leaves out realtime is refused as unsupported_operation (session allowed requests)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"session\": {\n    \"type\": \"realtime\",\n    \"model\": \"xiaomi/gpt-realtime\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/realtime/client_secrets",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "realtime",
+            "client_secrets"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('client secret: 400 unsupported_operation, as before TXE-7370', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(400);",
+              "  var body = pm.response.json();",
+              "  pm.expect(body.error, pm.response.text().slice(0, 400)).to.be.an('object');",
+              "  pm.expect(body.error.code, pm.response.text().slice(0, 400)).to.eql('unsupported_operation');",
+              "  pm.expect(body.error.message, pm.response.text().slice(0, 400)).to.include('is not supported by xiaomi provider');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 597.2 xiaomi/gpt-realtime - a realtime WebRTC offer on a custom provider whose allowed_requests leaves out realtime is refused as unsupported_operation (session allowed requests)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/sdp"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=sendrecv\r\na=rtpmap:111 opus/48000/2\r\n"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/realtime?model=xiaomi/gpt-realtime",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "realtime"
+          ],
+          "query": [
+            {
+              "key": "model",
+              "value": "xiaomi/gpt-realtime"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('realtime WebRTC: 400 unsupported_operation, as before TXE-7370', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(400);",
+              "  var body = pm.response.json();",
+              "  pm.expect(body.error, pm.response.text().slice(0, 400)).to.be.an('object');",
+              "  pm.expect(body.error.code, pm.response.text().slice(0, 400)).to.eql('unsupported_operation');",
+              "  pm.expect(body.error.message, pm.response.text().slice(0, 400)).to.include('is not supported by xiaomi provider');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 597.3 xiaomi/gpt-live-1 - a GPT Live WebRTC session on a custom provider whose allowed_requests leaves out live is refused as unsupported_operation (session allowed requests)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"session\": {\n    \"model\": \"xiaomi/gpt-live-1\"\n  },\n  \"transport\": {\n    \"type\": \"webrtc\",\n    \"sdp\": \"v=0\\r\\no=- 0 0 IN IP4 127.0.0.1\\r\\ns=-\\r\\nt=0 0\\r\\nm=audio 9 UDP/TLS/RTP/SAVPF 111\\r\\nc=IN IP4 0.0.0.0\\r\\na=mid:0\\r\\na=sendrecv\\r\\na=rtpmap:111 opus/48000/2\\r\\n\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/live/sessions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "live",
+            "sessions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('live WebRTC: 400 unsupported_operation, as before TXE-7370', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(400);",
+              "  var body = pm.response.json();",
+              "  pm.expect(body.error, pm.response.text().slice(0, 400)).to.be.an('object');",
+              "  pm.expect(body.error.code, pm.response.text().slice(0, 400)).to.eql('unsupported_operation');",
+              "  pm.expect(body.error.message, pm.response.text().slice(0, 400)).to.include('is not supported by xiaomi provider');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

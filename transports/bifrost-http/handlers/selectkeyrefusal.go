@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"errors"
 	"net/http"
 
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
@@ -20,8 +19,7 @@ import (
 // selectKeyErrorCode returns unsupported_operation when err is an allowed_requests refusal, and
 // fallback otherwise.
 func selectKeyErrorCode(err error, fallback string) string {
-	var refused *schemas.OperationNotAllowedError
-	if errors.As(err, &refused) {
+	if _, ok := schemas.AsOperationNotAllowed(err); ok {
 		return schemas.UnsupportedOperationCode
 	}
 	return fallback
@@ -31,8 +29,8 @@ func selectKeyErrorCode(err error, fallback string) string {
 // err is an allowed_requests refusal, and be unchanged otherwise. The refusal carries no type:
 // the realtime wire mapping reads a type before a code, so a type would hide the code.
 func withSelectKeyRefusal(be *schemas.BifrostError, err error) *schemas.BifrostError {
-	var refused *schemas.OperationNotAllowedError
-	if !errors.As(err, &refused) {
+	refused, ok := schemas.AsOperationNotAllowed(err)
+	if !ok {
 		return be
 	}
 	refusal := providerUtils.NewUnsupportedOperationError(refused.RequestType, refused.Provider)

@@ -3,6 +3,7 @@ package bifrost
 import (
 	"context"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -254,6 +255,27 @@ func BenchmarkCheckAllowedRequest(b *testing.B) {
 			}
 		})
 	}
+}
+
+// BenchmarkErrOperationNotAllowed measures the error SelectKeyForProviderRequestType returns for an
+// operation allowed_requests leaves out. Only a refused session builds it; a key handed out never
+// does. "before" is the plain error it returned before TXE-7423.
+var errOperationNotAllowedSink error
+
+func BenchmarkErrOperationNotAllowed(b *testing.B) {
+	const name = schemas.ModelProvider("custom-openai")
+	b.Run("before", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			errOperationNotAllowedSink = fmt.Errorf("%s is not supported by %s provider", schemas.LiveRequest, name)
+		}
+	})
+	b.Run("after", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			errOperationNotAllowedSink = errOperationNotAllowed(schemas.LiveRequest, name)
+		}
+	})
 }
 
 // countingUpstream answers every call with a minimal chat completion and counts the calls.

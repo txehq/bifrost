@@ -19,3 +19,28 @@ type OperationNotAllowedError struct {
 func (e *OperationNotAllowedError) Error() string {
 	return fmt.Sprintf("%s is not supported by %s provider", e.RequestType, e.Provider)
 }
+
+// AsOperationNotAllowed returns the OperationNotAllowedError in err's chain, if there is one. It
+// walks the chain with type assertions, so unlike errors.As it allocates nothing for an error that
+// is not one: the session handlers call it on every key-selection error.
+func AsOperationNotAllowed(err error) (*OperationNotAllowedError, bool) {
+	for err != nil {
+		if refused, ok := err.(*OperationNotAllowedError); ok {
+			return refused, true
+		}
+		switch wrapped := err.(type) {
+		case interface{ Unwrap() error }:
+			err = wrapped.Unwrap()
+		case interface{ Unwrap() []error }:
+			for _, inner := range wrapped.Unwrap() {
+				if refused, ok := AsOperationNotAllowed(inner); ok {
+					return refused, true
+				}
+			}
+			return nil, false
+		default:
+			return nil, false
+		}
+	}
+	return nil, false
+}
