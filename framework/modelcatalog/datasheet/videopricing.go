@@ -557,8 +557,9 @@ func ReadVideoInputs(input *schemas.VideoGenerationInput, lastFrame string, refe
 }
 
 // HasVideoInput reports whether provider's converter sends a video as input. Every converter
-// either sends a video_uri or refuses the create (Replicate and the OpenAI create form map it to
-// no vendor input and refuse it, TXE-7374), so a recorded job with one received it, whatever the
+// either sends a video_uri or refuses the create (Replicate and the OpenAI create form, which
+// OpenAI, Azure's v1 videos and Volcengine send, map it to no vendor input and refuse it,
+// TXE-7374), so a recorded job with one received it, whatever the
 // provider.
 func (v VideoInputs) HasVideoInput(provider schemas.ModelProvider) bool {
 	return v.videoURI || v.referenceVideos
