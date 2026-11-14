@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"context"
@@ -10569,7 +10570,8 @@ func TestVideoRequestInputImages(t *testing.T) {
 		{name: "reference images from extra", extra: map[string]any{"reference_images": []any{"a", "b", "c", "d", "e", "f", "g", "h"}}, want: 8},
 		{name: "reference images as strings", extra: map[string]any{"reference_images": []string{"a", "", "c"}}, want: 2},
 		{name: "a bare string is not a reference image list", extra: map[string]any{"reference_images": "a"}, want: 0},
-		{name: "a non-unified object last frame", extra: map[string]any{"last_frame": map[string]any{"url": "https://x/l.png"}}, want: 0},
+		{name: "xAI's object last frame", extra: map[string]any{"last_frame": map[string]any{"url": "https://x/l.png"}}, want: 1},
+		{name: "xAI's object reference images", extra: map[string]any{"reference_images": []any{map[string]any{"url": "https://x/1.png"}, map[string]any{"url": ""}, map[string]any{"uri": "x"}}}, want: 1},
 		{name: "blank values", input: &schemas.VideoGenerationInput{InputReference: bifrost.Ptr(" ")}, extra: map[string]any{"last_frame": "", "reference_images": []any{""}}, want: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -10690,12 +10692,26 @@ func TestVideoRequestInputImagesMatchWhatTheConvertersSend(t *testing.T) {
 		"reference images only in extra": func() *schemas.BifrostVideoGenerationRequest {
 			return &schemas.BifrostVideoGenerationRequest{Input: text(), Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"reference_images": asAny(refs(6))}}}
 		},
+		// xAI's own object form, which only the extra params can carry (the typed fields are strings).
+		"object last frame in extra": func() *schemas.BifrostVideoGenerationRequest {
+			return &schemas.BifrostVideoGenerationRequest{Input: first(), Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"last_frame": map[string]any{"url": "https://x/last.png"}}}}
+		},
+		"object reference images in extra": func() *schemas.BifrostVideoGenerationRequest {
+			return &schemas.BifrostVideoGenerationRequest{Input: text(), Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"reference_images": []any{
+				map[string]any{"url": "https://x/r1.png"}, map[string]any{"url": "https://x/r2.png"}}}}}
+		},
 	} {
 		for provider, convert := range videoInputImageConverters {
 			t.Run(name+"/"+string(provider), func(t *testing.T) {
 				req := build()
 				req.Provider, req.Model = provider, "m"
 				sent, err := convert(req)
+				if provider == schemas.MiniMax && strings.HasPrefix(name, "object ") {
+					// MiniMax takes only strings: it refuses the object form rather than drop it, and
+					// a refused request never reaches the vendor or settles.
+					require.Error(t, err, "MiniMax must refuse an image form it cannot send")
+					return
+				}
 				require.NoError(t, err)
 				var lastFrame string
 				var typedRefs []string
