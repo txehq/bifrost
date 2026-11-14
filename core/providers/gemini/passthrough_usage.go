@@ -220,12 +220,14 @@ func extractGeminiEmbeddingUsage(body []byte) *schemas.BifrostPassthroughUsage {
 	if total == 0 {
 		total = prompt
 	}
-	return &schemas.BifrostPassthroughUsage{
-		LLMUsage: &schemas.BifrostLLMUsage{
-			PromptTokens: prompt,
-			TotalTokens:  total,
-		},
+	usage := &schemas.BifrostLLMUsage{PromptTokens: prompt, TotalTokens: total}
+	// Gemini Embedding 2 splits the prompt by modality, and video tokens take their own rate:
+	// keep the split, as the /v1/embeddings converter does (TXE-7408).
+	if len(m.PromptTokensDetails) > 0 {
+		usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
+		applyGeminiPromptModalities(usage.PromptTokensDetails, m.PromptTokensDetails)
 	}
+	return &schemas.BifrostPassthroughUsage{LLMUsage: usage}
 }
 
 // ---- /interactions (Interactions API) ----
@@ -333,17 +335,32 @@ type geminiPredictResponse struct {
 		} `json:"embeddings"`
 		// Multimodal embedding modality vectors — used only to recognize the response as an
 		// embedding (multimodal responses carry no token count to bill).
-		TextEmbedding   []float64 `json:"textEmbedding"`
-		ImageEmbedding  []float64 `json:"imageEmbedding"`
-		VideoEmbeddings []any     `json:"videoEmbeddings"`
+		TextEmbedding  []float64 `json:"textEmbedding"`
+		ImageEmbedding []float64 `json:"imageEmbedding"`
+		// The video segments carry the seconds a video embedding is priced by (TXE-7408).
+		VideoEmbeddings []struct {
+			StartOffsetSec int `json:"startOffsetSec"`
+			EndOffsetSec   int `json:"endOffsetSec"`
+		} `json:"videoEmbeddings"`
 	} `json:"predictions"`
 }
+
+// videoSegmentConfigKeys and intervalSecKeys are the spellings of the :predict request fields a
+// video embedding's interval is read from: the proto JSON Vertex parses accepts the lowerCamel and
+// the original snake_case name of each, so both are read, compared case-insensitively.
+var (
+	videoSegmentConfigKeys = []string{"videosegmentconfig", "video_segment_config"}
+	intervalSecKeys        = []string{"intervalsec", "interval_sec"}
+)
 
 func extractGeminiPredictUsage(reqBody, body []byte) *schemas.BifrostPassthroughUsage {
 	if len(body) > 0 {
 		var resp geminiPredictResponse
 		if err := sonic.Unmarshal(body, &resp); err == nil {
 			if u := resp.embeddingUsage(); u != nil {
+				if len(u.EmbeddingVideoSegments) > 0 && len(reqBody) > 0 {
+					u.EmbeddingVideoIntervalSec = requestedVideoIntervalSec(reqBody)
+				}
 				return u
 			}
 		}
@@ -373,9 +390,58 @@ func (r *geminiPredictResponse) embeddingUsage() *schemas.BifrostPassthroughUsag
 	if !isEmbedding {
 		return nil
 	}
-	return &schemas.BifrostPassthroughUsage{
+	u := &schemas.BifrostPassthroughUsage{
 		LLMUsage: &schemas.BifrostLLMUsage{PromptTokens: total, TotalTokens: total},
 	}
+	for i := range r.Predictions {
+		for _, seg := range r.Predictions[i].VideoEmbeddings {
+			u.EmbeddingVideoSegments = append(u.EmbeddingVideoSegments, schemas.EmbeddingVideoSegment{StartOffsetSec: seg.StartOffsetSec, EndOffsetSec: seg.EndOffsetSec})
+		}
+	}
+	return u
+}
+
+// requestedVideoIntervalSec is the longest embedding interval a :predict request's video
+// instances asked for, or 0 when none named one. Every spelling Vertex accepts is read and the
+// largest value taken, so a body naming the interval twice (intervalSec and interval_sec, or a
+// case variant) cannot be priced at a shorter, cheaper interval than the one Vertex applied.
+// Pricing also never goes below the interval the returned segments show.
+func requestedVideoIntervalSec(reqBody []byte) int {
+	var req struct {
+		Instances []map[string]any `json:"instances"`
+	}
+	if err := sonic.Unmarshal(reqBody, &req); err != nil {
+		return 0
+	}
+	longest := 0
+	for _, inst := range req.Instances {
+		for _, video := range valuesForKeys(inst, []string{"video"}) {
+			videoMap, _ := video.(map[string]any)
+			for _, config := range valuesForKeys(videoMap, videoSegmentConfigKeys) {
+				configMap, _ := config.(map[string]any)
+				for _, v := range valuesForKeys(configMap, intervalSecKeys) {
+					if n, ok := v.(float64); ok && n > 0 {
+						longest = max(longest, int(n))
+					}
+				}
+			}
+		}
+	}
+	return longest
+}
+
+// valuesForKeys returns the values of m whose key matches one of names, ignoring case.
+func valuesForKeys(m map[string]any, names []string) []any {
+	var out []any
+	for key, value := range m {
+		for _, name := range names {
+			if strings.EqualFold(key, name) {
+				out = append(out, value)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // ---- :predict (Imagen) ----

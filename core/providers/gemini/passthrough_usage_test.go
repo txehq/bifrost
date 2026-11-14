@@ -246,3 +246,92 @@ func TestExtractGeminiPassthroughUsage_EmbeddingPredictBilling(t *testing.T) {
 		t.Fatalf("imagen :predict usage = %+v, want per-image usage", imagen)
 	}
 }
+
+// TestExtractGeminiPassthroughUsage_VideoEmbeddingInputs pins TXE-7408: a passthrough embedding
+// keeps what its video is priced by. Gemini Embedding 2's :embedContent keeps the per-modality
+// prompt split (video tokens take input_cost_per_video_token); Vertex multimodalembedding's
+// :predict keeps the embedded segments and the interval the request asked for.
+func TestExtractGeminiPassthroughUsage_VideoEmbeddingInputs(t *testing.T) {
+	gemini2 := gemini.ExtractGeminiPassthroughUsage(
+		"/projects/p/locations/us-central1/publishers/google/models/gemini-embedding-2:embedContent",
+		[]byte(`{"content":{"parts":[{"fileData":{"fileUri":"gs://b/clip.mp4","mimeType":"video/mp4"}}]}}`),
+		[]byte(`{"embedding":{"values":[0.1]},"usageMetadata":{"promptTokenCount":1300,"totalTokenCount":1300,
+			"promptTokensDetails":[{"modality":"TEXT","tokenCount":42},{"modality":"VIDEO","tokenCount":1258}]}}`),
+	)
+	if gemini2 == nil || gemini2.LLMUsage == nil || gemini2.LLMUsage.PromptTokensDetails == nil {
+		t.Fatalf(":embedContent usage = %+v, want the modality split", gemini2)
+	}
+	if d := gemini2.LLMUsage.PromptTokensDetails; d.VideoTokens != 1258 || d.TextTokens != 42 {
+		t.Fatalf("prompt split = %+v, want 1258 video and 42 text", d)
+	}
+
+	multimodal := gemini.ExtractGeminiPassthroughUsage(
+		"/projects/p/locations/us-central1/publishers/google/models/multimodalembedding@001:predict",
+		[]byte(`{"instances":[{"video":{"gcsUri":"gs://b/clip.mp4","videoSegmentConfig":{"intervalSec":10}}}]}`),
+		[]byte(`{"predictions":[{"videoEmbeddings":[{"startOffsetSec":0,"endOffsetSec":10,"embedding":[0.1]},{"startOffsetSec":10,"endOffsetSec":20,"embedding":[0.2]}]}]}`),
+	)
+	want := []schemas.EmbeddingVideoSegment{{StartOffsetSec: 0, EndOffsetSec: 10}, {StartOffsetSec: 10, EndOffsetSec: 20}}
+	if multimodal == nil || len(multimodal.EmbeddingVideoSegments) != 2 || multimodal.EmbeddingVideoSegments[0] != want[0] || multimodal.EmbeddingVideoSegments[1] != want[1] {
+		t.Fatalf(":predict usage = %+v, want the two 10 s segments", multimodal)
+	}
+	if multimodal.EmbeddingVideoIntervalSec != 10 {
+		t.Fatalf("interval = %d, want the requested 10", multimodal.EmbeddingVideoIntervalSec)
+	}
+	// A request naming no interval leaves it to pricing's default.
+	noInterval := gemini.ExtractGeminiPassthroughUsage(
+		"/projects/p/locations/us-central1/publishers/google/models/multimodalembedding@001:predict",
+		[]byte(`{"instances":[{"video":{"gcsUri":"gs://b/clip.mp4"}}]}`),
+		[]byte(`{"predictions":[{"videoEmbeddings":[{"startOffsetSec":0,"endOffsetSec":6,"embedding":[0.1]}]}]}`),
+	)
+	if noInterval == nil || len(noInterval.EmbeddingVideoSegments) != 1 || noInterval.EmbeddingVideoIntervalSec != 0 {
+		t.Fatalf(":predict usage without an interval = %+v", noInterval)
+	}
+	// Vertex's proto JSON reads the snake_case names too: every spelling is read and the largest
+	// interval taken, so a body naming it twice is never priced at the shorter one.
+	for name, body := range map[string]string{
+		"snake case":          `{"instances":[{"video":{"gcsUri":"gs://b/c.mp4","video_segment_config":{"interval_sec":16}}}]}`,
+		"both spellings":      `{"instances":[{"video":{"gcsUri":"gs://b/c.mp4","videoSegmentConfig":{"intervalSec":4,"interval_sec":16}}}]}`,
+		"case variant":        `{"instances":[{"video":{"gcsUri":"gs://b/c.mp4","VideoSegmentConfig":{"IntervalSec":16},"videoSegmentConfig":{"intervalSec":4}}}]}`,
+		"two video instances": `{"instances":[{"video":{"gcsUri":"gs://b/a.mp4","videoSegmentConfig":{"intervalSec":4}}},{"video":{"gcsUri":"gs://b/b.mp4","videoSegmentConfig":{"intervalSec":16}}}]}`,
+	} {
+		u := gemini.ExtractGeminiPassthroughUsage(
+			"/projects/p/locations/us-central1/publishers/google/models/multimodalembedding@001:predict",
+			[]byte(body),
+			[]byte(`{"predictions":[{"videoEmbeddings":[{"startOffsetSec":0,"endOffsetSec":6,"embedding":[0.1]}]}]}`),
+		)
+		if u == nil || u.EmbeddingVideoIntervalSec != 16 {
+			t.Fatalf("%s: interval = %+v, want 16, the largest the body names", name, u)
+		}
+	}
+}
+
+// BenchmarkExtractGeminiPassthroughUsage measures the passthrough embedding extractor (TXE-7408):
+// a text embedding (the common case), Gemini Embedding 2 with a video, and multimodalembedding's
+// video segments with the interval read off the request.
+func BenchmarkExtractGeminiPassthroughUsage(b *testing.B) {
+	cases := []struct{ name, path, req, resp string }{
+		{"embedContent_text", "/projects/p/locations/us-central1/publishers/google/models/gemini-embedding-2:embedContent",
+			`{"content":{"parts":[{"text":"hi"}]}}`,
+			`{"embedding":{"values":[0.1,0.2]},"usageMetadata":{"promptTokenCount":5,"totalTokenCount":5}}`},
+		{"embedContent_video", "/projects/p/locations/us-central1/publishers/google/models/gemini-embedding-2:embedContent",
+			`{"content":{"parts":[{"fileData":{"fileUri":"gs://b/c.mp4","mimeType":"video/mp4"}}]}}`,
+			`{"embedding":{"values":[0.1,0.2]},"usageMetadata":{"promptTokenCount":1300,"totalTokenCount":1300,"promptTokensDetails":[{"modality":"TEXT","tokenCount":42},{"modality":"VIDEO","tokenCount":1258}]}}`},
+		{"predict_text", "/projects/p/locations/us-central1/publishers/google/models/text-embedding-005:predict",
+			`{"instances":[{"content":"hi"}]}`,
+			`{"predictions":[{"embeddings":{"values":[0.1,0.2],"statistics":{"token_count":7}}}]}`},
+		{"predict_video", "/projects/p/locations/us-central1/publishers/google/models/multimodalembedding@001:predict",
+			`{"instances":[{"video":{"gcsUri":"gs://b/c.mp4","videoSegmentConfig":{"intervalSec":10}}}]}`,
+			`{"predictions":[{"videoEmbeddings":[{"startOffsetSec":0,"endOffsetSec":10,"embedding":[0.1]},{"startOffsetSec":10,"endOffsetSec":20,"embedding":[0.2]}]}]}`},
+	}
+	for _, tc := range cases {
+		req, resp := []byte(tc.req), []byte(tc.resp)
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if gemini.ExtractGeminiPassthroughUsage(tc.path, req, resp) == nil {
+					b.Fatal("no usage")
+				}
+			}
+		})
+	}
+}

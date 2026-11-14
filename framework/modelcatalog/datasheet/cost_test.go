@@ -10008,6 +10008,7 @@ func txe7357Store(t testing.TB) *Store {
 		"byteplus/dreamina-seedance-2-0-260128": byteplusSeedance20Row,
 		"gemini/gemini-omni-flash-preview":      geminiOmniFlashRow,
 		"vertex_ai/multimodalembedding@001":     vertexMultimodalEmbeddingRow,
+		"gemini/gemini-embedding-2":             geminiEmbedding2Row,
 	}
 	pricing := map[string]configstoreTables.TableModelPricing{}
 	for key, blob := range rows {
@@ -10395,4 +10396,62 @@ func BenchmarkUnmeasuredVideoSeconds(b *testing.B) {
 			}
 		})
 	}
+}
+
+// A passthrough embedding is billed at its video rates as /v1/embeddings is (TXE-7408): Gemini
+// Embedding 2's video tokens at input_cost_per_video_token, and Vertex multimodalembedding's
+// seconds at the requested interval's tier.
+func TestCalculateCost_PassthroughVideoEmbeddings(t *testing.T) {
+	s := txe7357Store(t)
+	passthrough := func(provider schemas.ModelProvider, model, path string, su *schemas.BifrostPassthroughUsage) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+			PassthroughUsage: su,
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.PassthroughRequest, PassthroughPath: path,
+				RoutingInfo: routingInfoFor(provider, model)},
+		}}
+	}
+	gemini2 := passthrough(schemas.Gemini, "gemini-embedding-2", "/v1beta/models/gemini-embedding-2:embedContent", &schemas.BifrostPassthroughUsage{
+		LLMUsage: &schemas.BifrostLLMUsage{PromptTokens: 1000, TotalTokens: 1000, PromptTokensDetails: &schemas.ChatPromptTokensDetails{VideoTokens: 600}}})
+	assert.InDelta(t, 400*2e-7+600*0.000012, s.CalculateCost(gemini2, nil), 1e-12)
+
+	segments := []schemas.EmbeddingVideoSegment{{StartOffsetSec: 0, EndOffsetSec: 10}, {StartOffsetSec: 10, EndOffsetSec: 20}}
+	path := "/projects/p/locations/us-central1/publishers/google/models/multimodalembedding@001:predict"
+	at := func(interval int) float64 {
+		return s.CalculateCost(passthrough(schemas.Vertex, "multimodalembedding@001", path, &schemas.BifrostPassthroughUsage{
+			LLMUsage: &schemas.BifrostLLMUsage{}, EmbeddingVideoSegments: segments, EmbeddingVideoIntervalSec: interval}), nil)
+	}
+	assert.InDelta(t, 20*0.001, at(10), 1e-12, "20 s at the above-8s rate")
+	assert.InDelta(t, 20*0.001, at(0), 1e-12, "no interval named: two segments show it, 10 s")
+	// A passthrough body's interval is the caller's: a shorter one than the segments Vertex
+	// returned (10 s each) never prices below what they show.
+	assert.InDelta(t, 20*0.001, at(4), 1e-12, "a requested 4 s cannot price 10 s segments at the base rate")
+}
+
+// BenchmarkCalculateCost_PassthroughEmbeddings measures pricing a passthrough embedding
+// (TXE-7408): the common text embedding, and multimodalembedding's video segments.
+func BenchmarkCalculateCost_PassthroughEmbeddings(b *testing.B) {
+	s := txe7357Store(b)
+	path := "/projects/p/locations/us-central1/publishers/google/models/multimodalembedding@001:predict"
+	resp := func(su *schemas.BifrostPassthroughUsage) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+			PassthroughUsage: su,
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.PassthroughRequest, PassthroughPath: path,
+				RoutingInfo: routingInfoFor(schemas.Vertex, "multimodalembedding@001")},
+		}}
+	}
+	text := resp(&schemas.BifrostPassthroughUsage{LLMUsage: &schemas.BifrostLLMUsage{PromptTokens: 7, TotalTokens: 7}})
+	video := resp(&schemas.BifrostPassthroughUsage{LLMUsage: &schemas.BifrostLLMUsage{},
+		EmbeddingVideoSegments: []schemas.EmbeddingVideoSegment{{StartOffsetSec: 0, EndOffsetSec: 10}, {StartOffsetSec: 10, EndOffsetSec: 20}}, EmbeddingVideoIntervalSec: 10})
+	b.Run("text", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = s.CalculateCost(text, nil)
+		}
+	})
+	b.Run("video_segments", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = s.CalculateCost(video, nil)
+		}
+	})
 }
