@@ -30,6 +30,12 @@ set -euo pipefail
 #   check-js-tests-are-run.py                 every tracked *.test.* / *.spec.* JavaScript or
 #       TypeScript file is matched by a runner that a CI job runs (TXE-7371): the ui vitest
 #       suite ran in no job, and pricingFields.test.ts went red on main unseen.
+#   check-release-gates-run-on-prs.py         every release-pipeline job that can stop a release
+#       and needs no vendor key has a required PR check that runs what it runs, or a recorded
+#       reason (TXE-7424): tests/live's fake suite ran only in the release, so #292's regression
+#       first failed there.
+#   validate-helm-schema.sh                   values.schema.json agrees with config.schema.json;
+#       the release's test-bifrost-http job starts with it and fails the release when it does not.
 #   test-migration-fixtures.py                 the v2.0.0 migration seed SQL; needs no service.
 #       It ran in no job until the check above found it.
 #   every other tests/e2e/api/**/*.test.{mjs,js,cjs}  found, not listed (TXE-7067): the runners/lib
@@ -78,6 +84,19 @@ echo ""
 echo "🧪 check-js-tests-are-run.py (every JavaScript and TypeScript test file has a CI runner, TXE-7371)"
 python3 "$SCRIPT_DIR/check-js-tests-are-run.py" --self-test
 python3 "$SCRIPT_DIR/check-js-tests-are-run.py"
+
+echo ""
+echo "🧪 check-release-gates-run-on-prs.py (every keyless release gate has a required PR check, TXE-7424)"
+python3 "$SCRIPT_DIR/check-release-gates-run-on-prs.py" --self-test
+python3 "$SCRIPT_DIR/check-release-gates-run-on-prs.py"
+
+echo ""
+echo "🧪 validate-helm-schema.sh (the release's test-bifrost-http starts with it; on PRs since TXE-7424)"
+if ! command -v jq >/dev/null 2>&1; then
+  echo "❌ jq is required: validate-helm-schema.sh skips its comparison without it" >&2
+  exit 1
+fi
+bash "$SCRIPT_DIR/validate-helm-schema.sh"
 
 echo ""
 echo "🧪 test-migration-fixtures.py (migration seed SQL; ran in no job before TXE-7111)"

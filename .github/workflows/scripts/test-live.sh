@@ -33,12 +33,36 @@ if curl -sf "http://127.0.0.1:$PORT/health" > /dev/null 2>&1; then
   exit 1
 fi
 
+APP_DIR="$PWD/tests/live"
+DATASHEET_PID=""
+# Under scripts/test-offline.sh (BIFROST_TEST_OFFLINE=1), as the required PR check runs it
+# (TXE-7424), the gateway may reach loopback only and cannot download its pricing datasheets.
+# The fake suite prices through its own pricing overrides (installFakePricing), so the live
+# profile runs from a copy of its config that names empty datasheets on loopback. The store
+# paths in the config are relative to the working directory, so the copy keeps the same databases.
+if [ "${BIFROST_TEST_OFFLINE:-}" = "1" ]; then
+  source "$(dirname "$0")/offline-datasheets.sh"
+  serve_offline_datasheets tmp
+  APP_DIR="$(mktemp -d)"
+  python3 - "$PWD/tests/live/config.json" "$APP_DIR/config.json" "$DATASHEET_ORIGIN" <<'PY'
+import json, sys
+source, target, origin = sys.argv[1:4]
+config = json.load(open(source))
+config.pop("$schema", None)
+pricing = config.setdefault("framework", {}).setdefault("pricing", {})
+pricing["pricing_url"] = origin + "/pricing.json"
+pricing["model_parameters_url"] = origin + "/model-parameters.json"
+json.dump(config, open(target, "w"), indent=2)
+PY
+fi
+
 echo "🚀 Starting the live-profile gateway on 127.0.0.1:$PORT..."
-./tmp/bifrost-http -host 127.0.0.1 -port "$PORT" -log-style json -log-level info -app-dir "$PWD/tests/live" > tmp/live-gateway.log 2>&1 &
+./tmp/bifrost-http -host 127.0.0.1 -port "$PORT" -log-style json -log-level info -app-dir "$APP_DIR" > tmp/live-gateway.log 2>&1 &
 GATEWAY_PID=$!
 cleanup() {
   status=$?
   kill "$GATEWAY_PID" 2>/dev/null || true
+  [ -z "$DATASHEET_PID" ] || kill "$DATASHEET_PID" 2>/dev/null || true
   if [ "$status" -ne 0 ]; then
     echo "--- last gateway log lines ---"
     tail -n 40 tmp/live-gateway.log || true

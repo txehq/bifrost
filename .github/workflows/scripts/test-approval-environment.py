@@ -35,6 +35,8 @@ GATED_JOBS = {
     ("e2e-ui-offline.yml", "shard"),
     ("go-unit-tests.yml", "shard"),
     ("go-unit-tests.yml", "fixture-folders"),
+    ("go-unit-tests.yml", "live-fake"),
+    ("go-unit-tests.yml", "agentgateway"),
     ("workflow-lint.yml", "check-egress-allowlist"),
 }
 
