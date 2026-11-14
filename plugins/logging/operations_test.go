@@ -4126,8 +4126,6 @@ func TestRecordVideoJobLifecycle_CapturesVideoInputModeAndTokens(t *testing.T) {
 	}{
 		"byteplus video_uri":         {provider: schemas.BytePlus, input: &schemas.VideoGenerationInput{Prompt: "p", VideoURI: schemas.Ptr("https://example.com/in.mp4")}, videoInput: true},
 		"replicate reference_videos": {provider: schemas.Replicate, extra: map[string]interface{}{"reference_videos": []interface{}{"https://example.com/in.mp4"}, "mode": "pro"}, videoInput: true},
-		// Replicate's converter never sends video_uri (TXE-7374): no video input reached the vendor.
-		"replicate video_uri": {provider: schemas.Replicate, input: &schemas.VideoGenerationInput{Prompt: "p", VideoURI: schemas.Ptr("https://example.com/in.mp4")}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			id := "vid_" + strings.ReplaceAll(name, " ", "_")

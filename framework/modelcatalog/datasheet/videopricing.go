@@ -377,13 +377,6 @@ func (d VideoPricingDimensions) job() videoJob {
 	}
 }
 
-// videoURIDroppedBy are the providers whose create converter never sends Input.VideoURI, with
-// the ticket that tracks it: a video_uri there is not a video input the vendor received, so it
-// does not take the video-input rate.
-var videoURIDroppedBy = map[schemas.ModelProvider]string{
-	schemas.Replicate: "TXE-7374: core/providers/replicate/videos.go never reads Input.VideoURI",
-}
-
 // videoBillingExtraKeys are the extra params video pricing reads from VideoPricingDimensions.Extra:
 // Kling's mode (PricedMode) and the resolution tier a provider reads from extra_params
 // (requestedTier). TestVideoBillingExtraKeysCoverEveryExtraRead parses this file and fails when
@@ -408,11 +401,13 @@ func VideoBillingSelectors(extra map[string]any) map[string]any {
 }
 
 // VideoRequestHasVideoInput reports whether a video create sends the vendor a video as input:
-// a video_uri on a provider that sends it, or the reference_videos extra param that Seedance
-// reads (BytePlus maps it to its reference_video content; Replicate passes extra params to the
-// model as they are).
+// a video_uri, or the reference_videos extra param that Seedance reads (BytePlus maps it to its
+// reference_video content; Replicate passes extra params to the model as they are). provider is
+// the name the create was routed under; the answer no longer depends on it.
 func VideoRequestHasVideoInput(provider schemas.ModelProvider, input *schemas.VideoGenerationInput, extra map[string]any) bool {
-	if _, dropped := videoURIDroppedBy[provider]; !dropped && input != nil && input.VideoURI != nil && strings.TrimSpace(*input.VideoURI) != "" {
+	// Every provider either sends a video_uri or refuses the create (Replicate maps it to no model
+	// input and refuses it, TXE-7374), so a recorded job with one received it.
+	if input != nil && input.VideoURI != nil && strings.TrimSpace(*input.VideoURI) != "" {
 		return true
 	}
 	switch refs := extra["reference_videos"].(type) {
