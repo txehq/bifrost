@@ -31,10 +31,12 @@ name: Go unit tests (offline)
 #   required check ran a harness row, so a stale row (161.11) and 9 failing ones sat on main.
 # - Release gates (TXE-7424): live-fake (tests/live against its fake upstream) and agentgateway
 #   (tests/agentgateway) run the scripts of the release pipeline's test-live and
-#   test-agentgateway jobs, which stop a release when they fail and need no vendor key.
+#   test-agentgateway jobs, which stop a release when they fail and need no vendor key;
+#   migrations (TXE-7451) runs test-migrations' script, with network access for the previous
+#   releases it migrates from but no vendor key.
 #   check-release-gates-run-on-prs.py fails when such a release job has no PR counterpart.
 # - The required check is the `Go unit tests (offline)` job, which fails unless every shard,
-#   fixture-folders, live-fake and agentgateway passed. No paths filter: a path-filtered required check never reports on a PR outside its
+#   fixture-folders, live-fake, agentgateway and migrations passed. No paths filter: a path-filtered required check never reports on a PR outside its
 #   paths, which blocks that PR's merge. No concurrency group either: a cancelled run of a
 #   required check leaves the PR blocked beside a passing one (TXE-7104).
 # - On a push to main, warm-cache compiles every test binary and saves the go-unit build cache
@@ -394,10 +396,104 @@ jobs:
       - name: Run the Agent Gateway e2e
         run: scripts/test-offline.sh bash .github/workflows/scripts/test-agentgateway-e2e.sh
 
+  # The database migration tests (TXE-7451): the release pipeline's test-migrations job runs the
+  # same script and stops a release when it fails. Each of the three previous releases creates
+  # its schema in Postgres and SQLite, faker rows go into every table, and the PR's build must
+  # migrate them. Not under scripts/test-offline.sh: the previous releases come from npm (the npx
+  # CLI downloads the release binary) and from the fork's private GHCR images, which need this
+  # job's GITHUB_TOKEN with packages: read. No vendor key reaches the job, and the vendor API
+  # hosts the release job allowlists are left out: nothing here calls a provider.
+  migrations:
+    if: github.event_name == 'pull_request'
+    name: Migration tests (previous releases)
+    environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          # Postgres is published on 127.0.0.1:5432 and DNATed to its pinned bridge address
+          # (.github/workflows/configs/docker-compose.yml). Ubuntu's APT mirrors for sqlite3;
+          # Docker Hub for Postgres; npm, nodejs.org and the release downloads for the npx
+          # releases; ghcr.io for the fork's images; getbifrost.ai for the pricing datasheets a
+          # previous release downloads at start; the Go hosts for the PR's build.
+          allowed-endpoints: >
+            127.0.0.1:5432
+            172.38.0.11:5432
+            api.github.com:443
+            auth.docker.io:443
+            azure.archive.ubuntu.com:80
+            downloads.getmaxim.ai:443
+            esm.ubuntu.com:443
+            getbifrost.ai:443
+            ghcr.io:443
+            github.com:443
+            nodejs.org:443
+            packages.microsoft.com:443
+            pkg-containers.githubusercontent.com:443
+            production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
+            proxy.golang.org:443
+            registry-1.docker.io:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+
+      # Every tag: the script picks the previous releases from them.
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.3"
+          cache: false
+
+      - name: Restore the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: go-unit
+
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "25"
+
+      # The SQLite migration tests seed and read the stores through the sqlite3 CLI.
+      - name: Install sqlite3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sqlite3
+          sqlite3 --version
+
+      # The script builds the PR's gateway itself (no SKIP_GATEWAY_BUILD), then migrates.
+      - name: Run migration tests (PostgreSQL)
+        env:
+          MIGRATION_FORK_IMAGES: ${{ github.repository_owner }}/bifrost
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./.github/workflows/scripts/run-migration-tests.sh postgres
+
+      - name: Run migration tests (SQLite)
+        if: ${{ !cancelled() }}
+        env:
+          MIGRATION_FORK_IMAGES: ${{ github.repository_owner }}/bifrost
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./.github/workflows/scripts/run-migration-tests.sh sqlite
+
   # The one check to require on main: it fails unless every job above passed.
   go-unit-tests:
     if: always() && github.event_name == 'pull_request'
-    needs: [shard, fixture-folders, live-fake, agentgateway]
+    needs: [shard, fixture-folders, live-fake, agentgateway, migrations]
     name: Go unit tests (offline)
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     timeout-minutes: 5
@@ -414,12 +510,15 @@ jobs:
           FIXTURE_FOLDERS: ${{ needs.fixture-folders.result }}
           LIVE_FAKE: ${{ needs.live-fake.result }}
           AGENTGATEWAY: ${{ needs.agentgateway.result }}
+          MIGRATIONS: ${{ needs.migrations.result }}
         run: |
           echo "shards: $RESULT"
           echo "harness fixture folders: $FIXTURE_FOLDERS"
           echo "GPT Live (fake upstream): $LIVE_FAKE"
           echo "Agent Gateway e2e: $AGENTGATEWAY"
-          [ "$RESULT" = success ] && [ "$FIXTURE_FOLDERS" = success ] && [ "$LIVE_FAKE" = success ] && [ "$AGENTGATEWAY" = success ]
+          echo "Migration tests: $MIGRATIONS"
+          [ "$RESULT" = success ] && [ "$FIXTURE_FOLDERS" = success ] && [ "$LIVE_FAKE" = success ] &&
+            [ "$AGENTGATEWAY" = success ] && [ "$MIGRATIONS" = success ]
 
   warm-cache:
     if: github.event_name == 'push'
