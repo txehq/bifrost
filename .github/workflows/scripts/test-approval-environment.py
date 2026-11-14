@@ -39,6 +39,7 @@ GATED_JOBS = {
     ("go-unit-tests.yml", "agentgateway"),
     ("go-unit-tests.yml", "migrations"),
     ("go-unit-tests.yml", "cost-accuracy"),
+    ("go-unit-tests.yml", "api-integrations"),
     ("workflow-lint.yml", "check-egress-allowlist"),
 }
 

@@ -36,8 +36,11 @@ name: Go unit tests (offline)
 #   releases it migrates from but no vendor key; cost-accuracy (TXE-7452) runs
 #   test-cost-accuracy's script, offline, with bifrost-benchmarking at a pinned commit.
 #   check-release-gates-run-on-prs.py fails when such a release job has no PR counterpart.
+#   api-integrations (TXE-7464) runs the offline part of test-api-integrations, which reads
+#   vendor keys: the api-management collection against a gateway with none.
 # - The required check is the `Go unit tests (offline)` job, which fails unless every shard,
-#   fixture-folders, live-fake, agentgateway, migrations and cost-accuracy passed. No paths filter: a path-filtered required check never reports on a PR outside its
+#   fixture-folders, live-fake, agentgateway, migrations, cost-accuracy and api-integrations
+#   passed. No paths filter: a path-filtered required check never reports on a PR outside its
 #   paths, which blocks that PR's merge. No concurrency group either: a cancelled run of a
 #   required check leaves the PR blocked beside a passing one (TXE-7104).
 # - On a push to main, warm-cache compiles every test binary and saves the go-unit build cache
@@ -589,10 +592,105 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # The offline part of the Release Pipeline's test-api-integrations (TXE-7464): the offline
+  # suites, then the api-management collection against a local gateway on Postgres, with no
+  # provider key. The list-models stub answers for openai, mistral, groq and anthropic. The
+  # release job, which has the keys, still runs it too.
+  api-integrations:
+    if: github.event_name == 'pull_request'
+    name: API integrations (offline)
+    environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          # The compose stack's published ports DNAT to its pinned bridge addresses
+          # (.github/workflows/configs/docker-compose.yml): Postgres 172.38.0.11, Weaviate
+          # 172.38.0.12 (its gossip to its own advertise address too), Redis 172.38.0.13.
+          # The registries serve its images, npm the lockfile installs, the Go hosts the build.
+          # The gateway, the stubs and the datasheets are on loopback.
+          allowed-endpoints: >
+            127.0.0.1:5432
+            127.0.0.1:6379
+            172.38.0.11:5432
+            172.38.0.12:8080
+            172.38.0.12:8301
+            172.38.0.13:6379
+            auth.docker.io:443
+            cr.weaviate.io:443
+            ghcr.io:443
+            pkg-containers.githubusercontent.com:443
+            production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
+            proxy.golang.org:443
+            registry-1.docker.io:443
+            registry.npmjs.org:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+            telemetry.qdrant.io:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.3"
+          cache: false
+
+      - name: Restore the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: go-unit
+
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "25"
+
+      - name: Install Newman (hash-pinned via lockfile)
+        run: |
+          npm ci --no-audit --no-fund
+          echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
+        working-directory: .github/workflows/tools
+
+      - name: Install e2e API test deps (lockfile)
+        run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: tests/e2e/api
+
+      # Built before the offline run, whose guard would refuse the module downloads. The
+      # collection does not load the UI, so the embed gets a placeholder, as in test-live.sh.
+      - name: Build bifrost-http
+        run: |
+          source .github/workflows/scripts/setup-go-workspace.sh
+          mkdir -p tmp transports/bifrost-http/ui
+          [ -n "$(ls -A transports/bifrost-http/ui)" ] || echo "placeholder" > transports/bifrost-http/ui/.gitkeep
+          (cd transports/bifrost-http && go build -o ../../tmp/bifrost-http .)
+
+      - name: Run the API integrations test
+        env:
+          CI: "1"
+          SKIP_GATEWAY_BUILD: "1"
+        run: scripts/test-offline.sh bash .github/workflows/scripts/test-api-integrations.sh
+
+      - name: Upload the Newman reports
+        if: failure()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: api-integrations-newman-reports
+          path: tests/e2e/api/newman-reports/
+          retention-days: 7
+          if-no-files-found: ignore
+
   # The one check to require on main: it fails unless every job above passed.
   go-unit-tests:
     if: always() && github.event_name == 'pull_request'
-    needs: [shard, fixture-folders, live-fake, agentgateway, migrations, migrations-fork, cost-accuracy]
+    needs: [shard, fixture-folders, live-fake, agentgateway, migrations, migrations-fork, cost-accuracy, api-integrations]
     name: Go unit tests (offline)
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     timeout-minutes: 5
@@ -613,6 +711,7 @@ jobs:
           MIGRATIONS_FORK: ${{ needs.migrations-fork.result }}
           SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
           COST_ACCURACY: ${{ needs.cost-accuracy.result }}
+          API_INTEGRATIONS: ${{ needs.api-integrations.result }}
         run: |
           echo "shards: $RESULT"
           echo "harness fixture folders: $FIXTURE_FOLDERS"
@@ -620,10 +719,12 @@ jobs:
           echo "Agent Gateway e2e: $AGENTGATEWAY"
           echo "Migration tests: $MIGRATIONS (fork PR notice: $MIGRATIONS_FORK)"
           echo "Cost accuracy: $COST_ACCURACY"
+          echo "API integrations: $API_INTEGRATIONS"
           # A PR from this repository must pass the migrations; a fork's PR gets the notice job.
           if [ "$SAME_REPO" = true ]; then migrations_ok=$MIGRATIONS; else migrations_ok=$MIGRATIONS_FORK; fi
           [ "$RESULT" = success ] && [ "$FIXTURE_FOLDERS" = success ] && [ "$LIVE_FAKE" = success ] &&
-            [ "$AGENTGATEWAY" = success ] && [ "$migrations_ok" = success ] && [ "$COST_ACCURACY" = success ]
+            [ "$AGENTGATEWAY" = success ] && [ "$migrations_ok" = success ] && [ "$COST_ACCURACY" = success ] &&
+            [ "$API_INTEGRATIONS" = success ]
 
   warm-cache:
     if: github.event_name == 'push'
