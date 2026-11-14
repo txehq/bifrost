@@ -2106,3 +2106,28 @@ func TestReplicateVideoCreateMustNameSeconds(t *testing.T) {
 		t.Fatalf("a create naming seconds must convert with duration 8: %+v, %v", req, err)
 	}
 }
+
+// BenchmarkToReplicateVideoGenerationInput is the converter every Replicate video create runs
+// (TXE-7374): the common create, and one carrying video_uri, which is refused before anything
+// is built.
+func BenchmarkToReplicateVideoGenerationInput(b *testing.B) {
+	params := &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("5"), ExtraParams: map[string]interface{}{"resolution": "720p"}}
+	common := &schemas.BifrostVideoGenerationRequest{Model: "bytedance/seedance-2.0", Params: params,
+		Input: &schemas.VideoGenerationInput{Prompt: "a paper boat drifting down a rain gutter"}}
+	withVideo := &schemas.BifrostVideoGenerationRequest{Model: "bytedance/seedance-2.0", Params: params,
+		Input: &schemas.VideoGenerationInput{Prompt: "the same boat, now at night", VideoURI: schemas.Ptr("https://media.example/in.mp4")}}
+	b.Run("common", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := replicate.ToReplicateVideoGenerationInput(common); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("video_uri", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_, _ = replicate.ToReplicateVideoGenerationInput(withVideo)
+		}
+	})
+}
