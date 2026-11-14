@@ -500,7 +500,8 @@ func VideoRequestHasVideoInput(provider schemas.ModelProvider, input *schemas.Vi
 }
 
 // VideoRequestInputImages counts the images a video create sends as input (fork, TXE-7409): the
-// first frame (input_reference), the last frame and the reference images. The last frame and the
+// first frame (input_reference, else the provider's own name for it, videoNativeFirstFrameNames),
+// the last frame and the reference images. The last frame and the
 // reference images are read from their typed fields, else from the copy the handlers keep in the
 // extra params under the same names. An image is a URL or data URL string, or an object with a
 // non-empty "url" (xAI's own form, which its converter passes through from the extra params); a
@@ -508,9 +509,11 @@ func VideoRequestHasVideoInput(provider schemas.ModelProvider, input *schemas.Vi
 // of the providers that price input images (MiniMax, xAI) send, which
 // TestVideoRequestInputImagesMatchWhatTheConvertersSend checks; MiniMax refuses the forms it cannot
 // send. A refused request never reaches the vendor, so it is never settled.
-func VideoRequestInputImages(input *schemas.VideoGenerationInput, lastFrame string, referenceImages []string, extra map[string]any) int {
+func VideoRequestInputImages(provider schemas.ModelProvider, input *schemas.VideoGenerationInput, lastFrame string, referenceImages []string, extra map[string]any) int {
 	n := 0
 	if input != nil && input.InputReference != nil && strings.TrimSpace(*input.InputReference) != "" {
+		n++
+	} else if name, ok := videoNativeFirstFrameNames[provider]; ok && presentImage(extra[name]) {
 		n++
 	}
 	if strings.TrimSpace(lastFrame) != "" || presentImage(extra["last_frame"]) {
@@ -531,6 +534,16 @@ func VideoRequestInputImages(input *schemas.VideoGenerationInput, lastFrame stri
 		}
 	}
 	return n
+}
+
+// videoNativeFirstFrameNames are the vendors' own names for the first frame that a converter
+// passes through from the extra params when input_reference is not set (fork, TXE-7409): xAI's
+// "image", which may carry its {"url": ...} object, which input_reference cannot hold, so
+// CheckExtraParamPriceFieldsFor lets it through. Another provider passes the name through as an
+// unknown field, not an image, so it is counted only for the provider listed.
+// TestVideoRequestInputImagesMatchWhatTheConvertersSend checks the count against each converter.
+var videoNativeFirstFrameNames = map[schemas.ModelProvider]string{
+	schemas.XAI: "image",
 }
 
 // presentImage reports whether an extra-param value names an image: a non-empty URL or data URL

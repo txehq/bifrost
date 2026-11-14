@@ -10556,6 +10556,7 @@ func TestVideoRequestInputImages(t *testing.T) {
 	first := &schemas.VideoGenerationInput{Prompt: "p", InputReference: bifrost.Ptr("https://x/first.png")}
 	for _, tc := range []struct {
 		name      string
+		provider  schemas.ModelProvider
 		input     *schemas.VideoGenerationInput
 		lastFrame string
 		refs      []string
@@ -10570,12 +10571,15 @@ func TestVideoRequestInputImages(t *testing.T) {
 		{name: "reference images from extra", extra: map[string]any{"reference_images": []any{"a", "b", "c", "d", "e", "f", "g", "h"}}, want: 8},
 		{name: "reference images as strings", extra: map[string]any{"reference_images": []string{"a", "", "c"}}, want: 2},
 		{name: "a bare string is not a reference image list", extra: map[string]any{"reference_images": "a"}, want: 0},
+		{name: "xAI's own first frame", provider: schemas.XAI, extra: map[string]any{"image": map[string]any{"url": "https://x/f.png"}}, want: 1},
+		{name: "input_reference wins over xAI's own first frame", provider: schemas.XAI, input: first, extra: map[string]any{"image": "https://x/f.png"}, want: 1},
+		{name: "another provider's unknown image field", provider: schemas.MiniMax, extra: map[string]any{"image": map[string]any{"url": "https://x/f.png"}}, want: 0},
 		{name: "xAI's object last frame", extra: map[string]any{"last_frame": map[string]any{"url": "https://x/l.png"}}, want: 1},
 		{name: "xAI's object reference images", extra: map[string]any{"reference_images": []any{map[string]any{"url": "https://x/1.png"}, map[string]any{"url": ""}, map[string]any{"uri": "x"}}}, want: 1},
 		{name: "blank values", input: &schemas.VideoGenerationInput{InputReference: bifrost.Ptr(" ")}, extra: map[string]any{"last_frame": "", "reference_images": []any{""}}, want: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, VideoRequestInputImages(tc.input, tc.lastFrame, tc.refs, tc.extra))
+			assert.Equal(t, tc.want, VideoRequestInputImages(tc.provider, tc.input, tc.lastFrame, tc.refs, tc.extra))
 		})
 	}
 }
@@ -10628,7 +10632,7 @@ var videoInputImageConverters = map[schemas.ModelProvider]func(*schemas.BifrostV
 		}
 		// The extra params are merged into the body as they are, so an unconverted copy is sent too.
 		n := len(body.ReferenceImages)
-		if body.Image != nil {
+		if body.Image != nil || presentImage(body.ExtraParams["image"]) {
 			n++
 		}
 		if body.LastFrame != nil || presentImage(body.ExtraParams["last_frame"]) {
@@ -10692,6 +10696,11 @@ func TestVideoRequestInputImagesMatchWhatTheConvertersSend(t *testing.T) {
 		"reference images only in extra": func() *schemas.BifrostVideoGenerationRequest {
 			return &schemas.BifrostVideoGenerationRequest{Input: text(), Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"reference_images": asAny(refs(6))}}}
 		},
+		// xAI's own first frame, with no input_reference: xAI sends it, MiniMax passes it as an
+		// unknown field.
+		"native image in extra": func() *schemas.BifrostVideoGenerationRequest {
+			return &schemas.BifrostVideoGenerationRequest{Input: text(), Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"image": map[string]any{"url": "https://x/first.png"}}}}
+		},
 		// xAI's own object form, which only the extra params can carry (the typed fields are strings).
 		"object last frame in extra": func() *schemas.BifrostVideoGenerationRequest {
 			return &schemas.BifrostVideoGenerationRequest{Input: first(), Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"last_frame": map[string]any{"url": "https://x/last.png"}}}}
@@ -10719,7 +10728,7 @@ func TestVideoRequestInputImagesMatchWhatTheConvertersSend(t *testing.T) {
 				if p := build().Params; p != nil {
 					lastFrame, typedRefs, extra = string(p.LastFrame), p.ReferenceImages, p.ExtraParams
 				}
-				assert.Equal(t, sent, VideoRequestInputImages(build().Input, lastFrame, typedRefs, extra))
+				assert.Equal(t, sent, VideoRequestInputImages(provider, build().Input, lastFrame, typedRefs, extra))
 			})
 		}
 	}
