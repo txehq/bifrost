@@ -608,6 +608,7 @@ GET `/v1/models` - Lists available models with metadata. Model IDs in Bifrost re
 | `input_reference` | string | ❌ | Input image for image-to-video. **Must be a base64 data URL** (e.g., `data:image/png;base64,...`). Plain URLs are not accepted. |
 | `seconds` | string | ❌ | Duration in seconds |
 | `size` | string | ❌ | Resolution: `720x1280` (default), `1280x720`, `1024x1792`, `1792x1024` |
+| `video_uri` | string | — | Not supported: the create form has no source-video field, so a create with `video_uri` is refused with 400 `caller_unsupported_parameter` naming `video_uri`. The same holds for every provider on this form (Azure's v1 videos, Volcengine, a custom OpenAI base). Remix or edit a completed video instead |
 
 **Response**: [`BifrostVideoGenerationResponse`](https://github.com/capsohq/bifrost/blob/main/core/schemas/videos.go) - `id`, `status`, `model`, `prompt`, `created_at`
 

@@ -2021,6 +2021,28 @@ func BenchmarkPredictionPollURL(b *testing.B) {
 	}
 }
 
+// TestReplicateVideoCreateRefusesVideoURI pins TXE-7374: Replicate's converter maps video_uri to no
+// model input, so a create carrying one is refused naming video_uri, before any upstream call,
+// rather than rendered without the video. A blank video_uri is no source video and converts.
+func TestReplicateVideoCreateRefusesVideoURI(t *testing.T) {
+	params := &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("5")}
+	_, err := replicate.ToReplicateVideoGenerationInput(&schemas.BifrostVideoGenerationRequest{
+		Model: "bytedance/seedance-2.0", Params: params,
+		Input: &schemas.VideoGenerationInput{Prompt: "p", VideoURI: schemas.Ptr("https://example.com/in.mp4")},
+	})
+	bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
+	if !ok || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error == nil || bifrostErr.Error.Param != "video_uri" {
+		t.Fatalf("got %v, want caller_unsupported_parameter naming video_uri", err)
+	}
+	req, err := replicate.ToReplicateVideoGenerationInput(&schemas.BifrostVideoGenerationRequest{
+		Model: "bytedance/seedance-2.0", Params: params,
+		Input: &schemas.VideoGenerationInput{Prompt: "p", VideoURI: schemas.Ptr("  ")},
+	})
+	if err != nil || req == nil {
+		t.Fatalf("a blank video_uri must convert: %v", err)
+	}
+}
+
 // TestReplicateVideoCreateMustNameSeconds pins TXE-7297: a hosted model picks its own length
 // when the create names none, and Replicate reports neither that length nor a cost, so the job
 // could not be priced. The create is refused, naming seconds; with seconds it converts. A value
@@ -2083,4 +2105,29 @@ func TestReplicateVideoCreateMustNameSeconds(t *testing.T) {
 	if err != nil || req.Input == nil || req.Input.Duration == nil || *req.Input.Duration != 8 {
 		t.Fatalf("a create naming seconds must convert with duration 8: %+v, %v", req, err)
 	}
+}
+
+// BenchmarkToReplicateVideoGenerationInput is the converter every Replicate video create runs
+// (TXE-7374): the common create, and one carrying video_uri, which is refused before anything
+// is built.
+func BenchmarkToReplicateVideoGenerationInput(b *testing.B) {
+	params := &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("5"), ExtraParams: map[string]interface{}{"resolution": "720p"}}
+	common := &schemas.BifrostVideoGenerationRequest{Model: "bytedance/seedance-2.0", Params: params,
+		Input: &schemas.VideoGenerationInput{Prompt: "a paper boat drifting down a rain gutter"}}
+	withVideo := &schemas.BifrostVideoGenerationRequest{Model: "bytedance/seedance-2.0", Params: params,
+		Input: &schemas.VideoGenerationInput{Prompt: "the same boat, now at night", VideoURI: schemas.Ptr("https://media.example/in.mp4")}}
+	b.Run("common", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := replicate.ToReplicateVideoGenerationInput(common); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("video_uri", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_, _ = replicate.ToReplicateVideoGenerationInput(withVideo)
+		}
+	})
 }

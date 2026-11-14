@@ -6,6 +6,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strconv"
+	"strings"
 
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -15,6 +16,14 @@ import (
 func ToOpenAIVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRequest) (*OpenAIVideoGenerationRequest, error) {
 	if bifrostReq == nil || bifrostReq.Input == nil || bifrostReq.Input.Prompt == "" {
 		return nil, fmt.Errorf("bifrost request, input, or prompt is nil/empty")
+	}
+
+	// The create form has no field for a source video (videoGenerationFormFieldNames), so a
+	// video_uri was dropped without a word: the job rendered without it, and a model priced
+	// higher with a video input was billed for one it never received (TXE-7374). Every provider
+	// on this form (OpenAI, Azure's v1 videos, Volcengine, a custom OpenAI base) refuses it.
+	if bifrostReq.Input.VideoURI != nil && strings.TrimSpace(*bifrostReq.Input.VideoURI) != "" {
+		return nil, unsupportedVideoFieldError("video_uri", "this provider's video create takes no source video (video_uri); a remix or edit takes a completed video")
 	}
 
 	req := &OpenAIVideoGenerationRequest{
