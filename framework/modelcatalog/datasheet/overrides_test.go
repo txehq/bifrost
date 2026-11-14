@@ -1432,3 +1432,17 @@ func TestPatchPricing_DecisionRatesPassThrough(t *testing.T) {
 	assert.Equal(t, 1.0, *patched.InputCostPerToken)
 	assert.Equal(t, 2.0, *patched.OutputCostPerToken)
 }
+
+// TestPatchPricing_UnmeasuredVideoSeconds (TXE-7401): an override sets the bound an unmeasurable
+// rendered video is charged up to, and the entry and table conversions keep it.
+func TestPatchPricing_UnmeasuredVideoSeconds(t *testing.T) {
+	patched := patchPricing(configstoreTables.TableModelPricing{Model: "wan-video/wan-2.5-t2v", Provider: "replicate", Mode: "video_generation"},
+		Options{UnmeasuredVideoSeconds: bifrost.Ptr(15.0)})
+	require.NotNil(t, patched.UnmeasuredVideoSeconds)
+	assert.Equal(t, 15.0, *patched.UnmeasuredVideoSeconds)
+	entry := convertTablePricingToEntry(&patched)
+	require.NotNil(t, entry.UnmeasuredVideoSeconds)
+	back := convertEntryToTablePricing("replicate/wan-video/wan-2.5-t2v", *entry)
+	require.NotNil(t, back.UnmeasuredVideoSeconds)
+	assert.Equal(t, 15.0, *back.UnmeasuredVideoSeconds)
+}

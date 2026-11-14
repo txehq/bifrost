@@ -93,8 +93,8 @@ var videoSettlementExemptions = map[schemas.ModelProvider]string{
 // measure it (fork, TXE-7386). The settler downloads a finished job's video to read its length,
 // and the download fetches whatever URL the job's response names. A provider whose output URL a
 // caller can choose, such as a Replicate model the caller runs that answers with any URL, lists
-// the vendor's own CDN hosts: an output anywhere else is never fetched, and the job is charged the
-// seconds its create named as a floor, marked incomplete. A provider whose output URL only the
+// the vendor's own CDN hosts: an output anywhere else is never fetched, and the job is charged as
+// an unmeasurable one, up to its bound (TXE-7401), marked incomplete. A provider whose output URL only the
 // vendor generates says why, and its URLs are fetched wherever they point. The provider's
 // configured base URL origin is trusted for every provider: the operator set it.
 type renderedVideoHostPolicy struct {
@@ -197,6 +197,41 @@ func sameOrigin(origin string, u *url.URL) bool {
 	return hostPort(o) == hostPort(u)
 }
 
+// unmeasuredVideoBoundSeconds is each settled provider's default bound, in seconds, for a rendered
+// video the settler could not measure (fork, TXE-7401). Such a job is charged the larger of the
+// seconds its create named and the bound, marked incomplete, so a caller who makes an output
+// unreadable cannot pick a short request and pay for it. A pricing override's
+// unmeasured_video_seconds replaces the default per model. The datasheet publishes no maximum
+// length for any video model, so the default is the fork's. 30 seconds is above every listed
+// vendor's single clip today. TestEverySettledVideoProviderDeclaresAnUnmeasuredBound fails for a
+// provider in videoProviders with no entry here, or with one that is not positive.
+var unmeasuredVideoBoundSeconds = map[schemas.ModelProvider]int{
+	schemas.OpenAI:    30,
+	schemas.Gemini:    30,
+	schemas.Vertex:    30,
+	schemas.Replicate: 30,
+	schemas.Runway:    30,
+	schemas.Runware:   30,
+	schemas.MiniMax:   30,
+	schemas.BytePlus:  30,
+	schemas.Kling:     30,
+	schemas.DashScope: 30,
+	schemas.XAI:       30,
+	schemas.BFL:       30,
+}
+
+// unmeasuredBound is the provider's default bound for an unmeasurable rendered video, a custom
+// provider taking its base provider's.
+func (s *VideoSettler) unmeasuredBound(provider schemas.ModelProvider) int {
+	if bound, ok := unmeasuredVideoBoundSeconds[provider]; ok {
+		return bound
+	}
+	if resolver, ok := s.retriever.(BaseProviderResolver); ok {
+		return unmeasuredVideoBoundSeconds[resolver.BaseProvider(provider)]
+	}
+	return 0
+}
+
 // VideoRetriever is the provider call the video settler needs: given a job row,
 // report where that job now stands.
 type VideoRetriever interface {
@@ -247,9 +282,9 @@ type VideoPayload struct {
 	// job on it, whatever the create asked for (fork, TXE-7329).
 	RenderedSeconds *int
 	// RenderedUnmeasurable is why the rendered length could not be measured. Settle then charges
-	// the seconds the create named as a floor and marks the row incomplete: the job rendered a
-	// video, so it is never left uncharged, and a cost from an unconfirmed length is known to be
-	// possibly short.
+	// the larger of the seconds the create named and the provider's bound (TXE-7401), and marks the
+	// row incomplete: the job rendered a video, so it is never left uncharged, and a cost from an
+	// unconfirmed length is known to be uncertain.
 	RenderedUnmeasurable string
 }
 
@@ -453,7 +488,8 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 	}
 	// Fork (TXE-7329): a job whose vendor reported neither a duration nor a cost is priced on the
 	// length of the video it rendered, which Poll measures. When it could not be measured, the
-	// seconds the create named are charged as a floor and the row is marked incomplete. A payload
+	// larger of the seconds the create named and the provider's bound is charged (TXE-7401) and
+	// the row is marked incomplete. A payload
 	// that never tried settles nothing, so the job is retried.
 	unmeasured := false
 	if RenderedDurationRequired(resp) {
@@ -469,6 +505,8 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 			}
 		case load.RenderedUnmeasurable != "":
 			unmeasured = true
+			// Charged up to a bound the caller cannot choose (TXE-7401).
+			dims.UnmeasuredDefaultSeconds = s.unmeasuredBound(jobReq.Provider)
 		default:
 			return nil, fmt.Errorf("video job %s finished without a reported duration or cost, and its rendered duration was not measured", jobReq.ProviderJobID)
 		}
@@ -520,15 +558,51 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 		// once the rate lands, rather than dropping the job's cost entirely.
 		settlement.RecordUnpriced = true
 		settlement.UnpricedModel = dims.Model
-		settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, jobReq.Provider, dims.TierOnlyResolution(jobReq.Provider), true)
+		settlement.ApplyDebug = withUnmeasuredBound(videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, jobReq.Provider, dims.TierOnlyResolution(jobReq.Provider), true), dims.Seconds, dims.UnmeasuredDefaultSeconds, nil, dims.UnmeasuredDefaultSeconds)
 		return settlement, nil
 	}
 
 	settlement.Priced = true
 	settlement.Complete = true
 	settlement.Cost = details.Cost
-	settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, jobReq.Provider, details.PricedResolution, unmeasured)
+	settlement.ApplyDebug = withUnmeasuredBound(videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, jobReq.Provider, details.PricedResolution, unmeasured), dims.Seconds, details.UnmeasuredBoundSeconds, details.UnmeasuredChargedSeconds, dims.UnmeasuredDefaultSeconds)
 	return settlement, nil
+}
+
+// withUnmeasuredBound records on the settlement row the bound an unmeasurable video was charged up
+// to, the seconds that charge was for (charged, as pricing reports it; nil for an unpriced job),
+// the seconds the create named and the provider's default (fork, TXE-7401), so the row says why it
+// costs more than was asked for and a reprice can price it again from the request.
+func withUnmeasuredBound(apply func(*logstore.Log), requested *int, bound int, charged *int, providerDefault int) func(*logstore.Log) {
+	if bound <= 0 {
+		return apply
+	}
+	return func(entry *logstore.Log) {
+		apply(entry)
+		accounting := entry.VideoDebugParsed.Accounting
+		accounting.RequestedSeconds = requested
+		d := providerDefault
+		accounting.UnmeasuredDefaultSeconds = &d
+		setUnmeasuredCharge(accounting, requested, bound, charged)
+	}
+}
+
+// setUnmeasuredCharge records the bound applied and the seconds charged: the seconds pricing
+// charged, which keeps the requested length where that costs more (a per-clip price), else the
+// larger of the requested seconds and the bound.
+func setUnmeasuredCharge(accounting *schemas.VideoAccountingDebug, requested *int, bound int, charged *int) {
+	b := bound
+	accounting.UnmeasuredBoundSeconds = &b
+	if charged != nil {
+		c := *charged
+		accounting.Seconds = &c
+		return
+	}
+	c := bound
+	if requested != nil && *requested > bound {
+		c = *requested
+	}
+	accounting.Seconds = &c
 }
 
 // videoDebugFor builds the closure that attaches video detail to the aggregate row.
@@ -615,11 +689,22 @@ func (s *VideoSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManage
 		}
 	}
 
+	// An unmeasurable video was charged up to a bound (TXE-7401): it reprices from the seconds asked
+	// for and the provider's default recorded at settlement, so a model override set or removed
+	// since takes effect. Rows that recorded only the bound use it as the default.
+	seconds, unmeasuredDefault := accounting.Seconds, 0
+	if accounting.UnmeasuredBoundSeconds != nil {
+		seconds, unmeasuredDefault = accounting.RequestedSeconds, *accounting.UnmeasuredBoundSeconds
+		if accounting.UnmeasuredDefaultSeconds != nil {
+			unmeasuredDefault = *accounting.UnmeasuredDefaultSeconds
+		}
+	}
 	scopes := PricingScopesForLog(entry)
 	details := pricing.CalculateVideoCostDetails(modelcatalog.VideoPricingDimensions{
-		Model:       entry.Model,
-		RequestType: requestType,
-		Seconds:     accounting.Seconds,
+		Model:                    entry.Model,
+		RequestType:              requestType,
+		Seconds:                  seconds,
+		UnmeasuredDefaultSeconds: unmeasuredDefault,
 		// A recorded tier set the band at settlement, so the size is left out and the tier
 		// alone prices the reprice; without one the size alone does (TXE-7349).
 		Size: repriceSize(accounting),
@@ -642,6 +727,12 @@ func (s *VideoSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManage
 	}, schemas.ModelProvider(entry.Provider), &scopes)
 	if !details.Priced {
 		return nil, fmt.Errorf("%w: no video rate for log %s", ErrPricingInputsUnavailable, entry.ID)
+	}
+
+	// The row says what this price is for: the bound the reprice applied and the seconds it
+	// charged (TXE-7401), not the ones settlement wrote.
+	if unmeasuredDefault > 0 && details.UnmeasuredBoundSeconds > 0 {
+		setUnmeasuredCharge(accounting, seconds, details.UnmeasuredBoundSeconds, details.UnmeasuredChargedSeconds)
 	}
 
 	// Incomplete is left as settlement wrote it: it can stand for dimensions the

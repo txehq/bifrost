@@ -482,3 +482,49 @@ test.describe("Custom pricing overrides - long-context tiers", () => {
 		await expect(page.getByTestId("pricing-override-field-input-cache_read_input_token_cost_above_128k_tokens")).toHaveValue("0");
 	});
 });
+
+// TXE-7401: the bound an unmeasurable rendered video is charged up to is a pricing override field
+// for video. An override that sets it is saved with it in its patch and reopens with the value.
+test.describe("Custom pricing overrides - unmeasured video seconds", () => {
+	const name = `e2e-unmeasured-video-seconds-${Date.now()}`;
+
+	test.afterEach(async ({ request }) => {
+		const res = await request.get("/api/governance/pricing-overrides");
+		if (!res.ok()) return;
+		const body = await res.json();
+		for (const override of body.pricing_overrides ?? []) {
+			if (override.name === name) await request.delete(`/api/governance/pricing-overrides/${override.id}`);
+		}
+	});
+
+	test("saves an unmeasured video bound and reopens with it", async ({ page, request }) => {
+		const key = "unmeasured_video_seconds";
+		await page.goto("/workspace/custom-pricing/overrides");
+		await page.getByTestId("pricing-override-create-btn").first().click();
+
+		await page.getByTestId("pricing-override-name-input").fill(name);
+		await page.getByTestId("pricing-override-pattern-input").fill("wan2.5-t2v-preview");
+		await page.getByTestId("pricing-override-request-types-btn").click();
+		await page.getByTestId("pricing-override-request-type-checkbox-video_generation").click();
+		await page.keyboard.press("Escape");
+
+		await page.getByTestId("pricing-field-search").fill("unmeasurable");
+		await page.getByTestId(`pricing-field-activate-${key}`).click();
+		await page.getByTestId(`pricing-override-field-input-${key}`).fill("15");
+
+		await page.getByTestId("pricing-override-save-btn").click();
+		await expect(page.getByTestId("pricing-override-save-btn")).toBeHidden();
+
+		const res = await request.get("/api/governance/pricing-overrides");
+		expect(res.ok()).toBeTruthy();
+		const saved = ((await res.json()).pricing_overrides ?? []).find((o: { name: string }) => o.name === name);
+		expect(saved, "the override was saved").toBeTruthy();
+		expect(JSON.parse(saved.pricing_patch)[key]).toBe(15);
+
+		await page.reload();
+		await page.getByTestId(`pricing-override-actions-btn-${saved.id}`).click();
+		await page.getByTestId(`pricing-override-edit-btn-${saved.id}`).click();
+		await page.getByTestId("pricing-field-search").fill("unmeasurable");
+		await expect(page.getByTestId(`pricing-override-field-input-${key}`)).toHaveValue("15");
+	});
+});

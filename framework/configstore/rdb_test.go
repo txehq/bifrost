@@ -7497,3 +7497,23 @@ func TestGetVirtualKeysPaginated_MetadataFiltersAndSearch(t *testing.T) {
 		})
 	}
 }
+
+// TestUpsertModelPricesBatch_UnmeasuredVideoSeconds_SurvivesResync (TXE-7401): the second sync of an
+// existing row updates unmeasured_video_seconds.
+func TestUpsertModelPricesBatch_UnmeasuredVideoSeconds_SurvivesResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+	ctx := context.Background()
+	seconds := func(f float64) *float64 { return &f }
+
+	pricing := []tables.TableModelPricing{{Model: "wan-video/wan-2.5-t2v", Provider: "replicate", Mode: "video_generation", UnmeasuredVideoSeconds: seconds(15)}}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+	pricing[0].UnmeasuredVideoSeconds = seconds(20)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].UnmeasuredVideoSeconds)
+	assert.InDelta(t, 20, *got[0].UnmeasuredVideoSeconds, 1e-12)
+}

@@ -58,7 +58,8 @@ type VideoPricingDimensions struct {
 	// input_cost_per_video_per_second (see InputVideoRateExemptFor). A reprice has no base provider
 	// for a custom one, so it takes the recorded answer. Only RepriceFromLog sets it; it is never
 	// persisted here.
-	InputVideoRateExempt bool `json:"-"`
+	InputVideoRateExempt     bool `json:"-"`
+	UnmeasuredDefaultSeconds int  `json:"-"` // provider default bound when the length could not be measured (TXE-7401)
 
 	// Type is the operation selector ("upscale", "3d"). These do not bill per
 	// second of output at all, so a rate keyed only on duration is wrong for them.
@@ -180,7 +181,31 @@ type VideoCostDetails struct {
 	// did (or nothing banded the job). The settlement records it, so a reprice prices from
 	// the tier alone, or the size alone, exactly as settlement chose (TXE-7349): a reprice
 	// cannot resolve a custom provider's base, so it must not rerun that choice.
-	PricedResolution string
+	PricedResolution         string
+	UnmeasuredBoundSeconds   int  // bound an unmeasurable video was charged up to, 0 when measured (TXE-7401)
+	UnmeasuredChargedSeconds *int // seconds an unmeasurable video's charge priced, nil when measured (TXE-7401)
+}
+
+// unmeasuredVideoSeconds returns the seconds a job is priced on, and the bound applied (fork,
+// TXE-7401). A job whose rendered length could not be measured (UnmeasuredDefaultSeconds set) is
+// priced on the larger of the seconds its create named and a bound the caller cannot choose: the
+// model's unmeasured_video_seconds where its pricing row (or an override) sets one, else the
+// provider's default. A job that was measured, or never needed measuring, keeps its seconds and
+// reports no bound. The settler sets dims.UnmeasuredDefaultSeconds only for an unmeasurable job; it
+// is never persisted. The settlement records the bound it reports, so a later reprice can correct an
+// honest output that merely could not be read.
+func unmeasuredVideoSeconds(dims VideoPricingDimensions, pricing *configstoreTables.TableModelPricing) (*int, int) {
+	if dims.UnmeasuredDefaultSeconds <= 0 {
+		return dims.Seconds, 0
+	}
+	bound := dims.UnmeasuredDefaultSeconds
+	if pricing != nil && pricing.UnmeasuredVideoSeconds != nil && *pricing.UnmeasuredVideoSeconds > 0 {
+		bound = int(math.Ceil(*pricing.UnmeasuredVideoSeconds))
+	}
+	if dims.Seconds != nil && *dims.Seconds >= bound {
+		return dims.Seconds, bound
+	}
+	return &bound, bound
 }
 
 // CalculateVideoCostDetails prices a video job from its merged dimensions.
@@ -222,11 +247,25 @@ func (s *Store) CalculateVideoCostDetails(dims VideoPricingDimensions, provider 
 	band := dims.bandSize(provider, pricing, audio)
 	job := dims.job()
 	job.inputVideoRateExempt = dims.InputVideoRateExemptFor(provider)
-	breakdown := computeVideoCost(pricing, nil, dims.Seconds, band, dims.OutputCount, audio, job, serviceTier{})
+	seconds, bound := unmeasuredVideoSeconds(dims, pricing)
+	breakdown := computeVideoCost(pricing, nil, seconds, band, dims.OutputCount, audio, job, serviceTier{})
+	if seconds != dims.Seconds {
+		// The bound raised the seconds, and it may only raise the charge. A model priced per clip
+		// prices the requested length's clip, which a longer length misses: MiniMax Hailuo's 768p
+		// 10s clip falls to the flat price at 30 s, or to nothing where there is none. The
+		// requested length is charged when it costs more.
+		requested := computeVideoCost(pricing, nil, dims.Seconds, band, dims.OutputCount, audio, job, serviceTier{})
+		if requested != nil && (breakdown == nil || requested.TotalCost > breakdown.TotalCost) {
+			breakdown, seconds = requested, dims.Seconds
+		}
+	}
 	if breakdown == nil || breakdown.TotalCost <= 0 {
 		return VideoCostDetails{}
 	}
-	details := VideoCostDetails{Cost: breakdown.TotalCost, Priced: true, Breakdown: breakdown}
+	details := VideoCostDetails{Cost: breakdown.TotalCost, Priced: true, Breakdown: breakdown, UnmeasuredBoundSeconds: bound}
+	if bound > 0 {
+		details.UnmeasuredChargedSeconds = seconds
+	}
 	if band != dims.Size {
 		details.PricedResolution = band
 	}

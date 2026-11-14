@@ -470,6 +470,7 @@ type Options struct {
 	OutputCostPerVideoPerSecond720pAudio  *float64 `json:"output_cost_per_video_per_second_720p_audio,omitempty"`
 	OutputCostPerVideoPerSecond1080pAudio *float64 `json:"output_cost_per_video_per_second_1080p_audio,omitempty"`
 	OutputCostPerVideoPerSecond4kAudio    *float64 `json:"output_cost_per_video_per_second_4k_audio,omitempty"`
+	UnmeasuredVideoSeconds                *float64 `json:"unmeasured_video_seconds,omitempty"` // fork: seconds an unmeasurable video is charged up to (TXE-7401)
 	// Upstream's resolution-banded output rates (TXE-7349), published for Veo, Wan, MiniMax,
 	// Runway, Replicate and fal. A band is read after the video-specific band of the same
 	// resolution above and before either unbanded rate.
@@ -1253,6 +1254,7 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		OutputCostPerVideoPerSecond720pAudio:  entry.OutputCostPerVideoPerSecond720pAudio,
 		OutputCostPerVideoPerSecond1080pAudio: entry.OutputCostPerVideoPerSecond1080pAudio,
 		OutputCostPerVideoPerSecond4kAudio:    entry.OutputCostPerVideoPerSecond4kAudio,
+		UnmeasuredVideoSeconds:                entry.UnmeasuredVideoSeconds,
 		OutputCostPerSecond480p:               entry.OutputCostPerSecond480p,
 		OutputCostPerSecond720p:               entry.OutputCostPerSecond720p,
 		OutputCostPerSecond768p:               entry.OutputCostPerSecond768p,
@@ -1525,6 +1527,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerVideoPerSecond720pAudio:  pricing.OutputCostPerVideoPerSecond720pAudio,
 		OutputCostPerVideoPerSecond1080pAudio: pricing.OutputCostPerVideoPerSecond1080pAudio,
 		OutputCostPerVideoPerSecond4kAudio:    pricing.OutputCostPerVideoPerSecond4kAudio,
+		UnmeasuredVideoSeconds:                pricing.UnmeasuredVideoSeconds,
 		OutputCostPerSecond480p:               pricing.OutputCostPerSecond480p,
 		OutputCostPerSecond720p:               pricing.OutputCostPerSecond720p,
 		OutputCostPerSecond768p:               pricing.OutputCostPerSecond768p,

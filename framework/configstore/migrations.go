@@ -589,6 +589,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_video_token_clip_mode_pricing_columns"}, run: migrationAddVideoTokenClipModePricingColumns},
 	{IDs: []string{"add_priority_image_token_pricing_column"}, run: migrationAddPriorityImageTokenPricingColumn},
 	{IDs: []string{"add_long_context_tier_pricing_columns"}, run: migrationAddLongContextTierPricingColumns},
+	{IDs: []string{"add_unmeasured_video_seconds_column"}, run: migrationAddUnmeasuredVideoSecondsColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17147,6 +17148,28 @@ func migrationAddGuardrailUnitRateColumns(ctx context.Context, db *gorm.DB, logg
 				}
 			}
 			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddUnmeasuredVideoSecondsColumn adds unmeasured_video_seconds, the length an
+// unmeasurable rendered video is charged for when it is more than the create asked for (fork,
+// TXE-7401). Expand-only: one nullable column, nothing rewritten.
+func migrationAddUnmeasuredVideoSecondsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_unmeasured_video_seconds_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableModelPricing{}, "unmeasured_video_seconds")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableModelPricing{}, "unmeasured_video_seconds")
 		},
 	}})
 	if err := m.Migrate(); err != nil {

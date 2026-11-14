@@ -63,8 +63,12 @@ const RENDERED_VIDEOS = {
 	"rendered-reordered": readFileSync(join(VIDEODURATION_TESTDATA, "twelve-seconds-reordered.mp4")),
 	// TXE-7386: the 12-second clip as an output on a host the caller chose (a model that answers with any
 	// URL): the poll names it on localhost, not the provider's configured 127.0.0.1 origin. The settler must
-	// never fetch it, and charges the seconds the create asked for, marked incomplete.
+	// never fetch it, and charges it up to the provider's unmeasured bound (TXE-7401), marked incomplete.
 	"rendered-foreign": RENDERED_LONGER_MP4,
+	// TXE-7401 (folder 582): outputs the settler cannot measure, a page served as video/mp4. One is
+	// charged up to the provider's 30-second bound, the other up to an override's.
+	"rendered-unreadable": Buffer.from("<html>not a video</html>"),
+	"rendered-unreadable-override": Buffer.from("<html>not a video</html>"),
 };
 // The rendered videos whose output the poll names on another origin (TXE-7386).
 const RENDERED_FOREIGN = new Set(["rendered-foreign"]);
@@ -467,6 +471,8 @@ const fixturePricing = {
 	"replicate/fixture/rendered-oversized": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
 	"replicate/fixture/rendered-reordered": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
 	"replicate/fixture/rendered-foreign": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
+	"replicate/fixture/rendered-unreadable": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
+	"replicate/fixture/rendered-unreadable-override": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
 	"turns-tiered": { provider: "openai_turns", ...turnRates },
 	"turns-fail": { provider: "openai_turns", ...turnRates },
 	"gpt-6-luna": { provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, input_cost_per_token_decisions: 0.000003, output_cost_per_token_decisions: 0.000004, supports_decisions: true },
