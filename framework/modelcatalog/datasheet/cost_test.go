@@ -10584,6 +10584,31 @@ func TestVideoRequestInputImages(t *testing.T) {
 	}
 }
 
+// TestVideoInputs_ResolvedForTheConverterThatSends (TXE-7434): inputs read before the provider is
+// known resolve to what each converter sends, so a capture made by a custom provider's name can be
+// applied again with its base provider.
+func TestVideoInputs_ResolvedForTheConverterThatSends(t *testing.T) {
+	native := ReadVideoInputs(&schemas.VideoGenerationInput{Prompt: "p"}, "https://x/l.png", nil,
+		map[string]any{"image": map[string]any{"url": "https://x/f.png"}})
+	assert.Equal(t, 2, native.InputImages(schemas.XAI), "xAI sends its own first frame and the last frame")
+	assert.Equal(t, 1, native.InputImages("my-xai"), "a provider name alone does not send xAI's first frame")
+
+	video := ReadVideoInputs(&schemas.VideoGenerationInput{Prompt: "p", VideoURI: bifrost.Ptr("https://v/in.mp4")}, "", nil, nil)
+	assert.True(t, video.HasVideoInput("my-replicate"))
+	assert.False(t, video.HasVideoInput(schemas.Replicate), "Replicate's converter drops video_uri")
+
+	dims := VideoPricingDimensions{VideoInput: bifrost.Ptr(true), InputImages: bifrost.Ptr(1)}
+	dims.ApplyVideoInputs(schemas.Replicate, video)
+	assert.Nil(t, dims.VideoInput)
+	assert.Nil(t, dims.InputImages)
+	dims.ApplyVideoInputs(schemas.XAI, native)
+	if assert.NotNil(t, dims.InputImages) {
+		assert.Equal(t, 2, *dims.InputImages)
+	}
+
+	assert.Nil(t, ReadVideoInputs(nil, "", nil, map[string]any{"mode": "pro"}).nativeFirstFrame, "a create with no native first frame allocates nothing")
+}
+
 // TestVideoInputImagesSurviveMergeAndResponse (TXE-7409): a vendor's reported count wins over the
 // request's, and a response that reports none keeps the request's.
 func TestVideoInputImagesSurviveMergeAndResponse(t *testing.T) {

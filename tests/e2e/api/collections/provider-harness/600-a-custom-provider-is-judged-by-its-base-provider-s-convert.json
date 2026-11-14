@@ -1,0 +1,377 @@
+{
+  "name": "600. A custom provider is judged by its base provider's converter: xai_media_proxy (base xai) sends xAI's own first frame, extra param image, so its job settles at 6 s x $0.08 plus 1 x input_cost_per_image (custom provider base) [SERIAL]",
+  "item": [
+    {
+      "name": "600.1 the fixture gateway runs with provider job accounting off; its client config is kept to restore at the end (custom provider base)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.unset('baseImgClientConfig');",
+              "pm.collectionVariables.unset('baseImgVideoId');",
+              "pm.collectionVariables.unset('baseImgRetry');",
+              "pm.test('accounting reads back off', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.client_config && j.client_config.disable_provider_job_accounting, pm.response.text().slice(0, 400)).to.equal(true);",
+              "});",
+              "var cc = pm.response.code === 200 ? pm.response.json().client_config : null;",
+              "if (cc) { pm.collectionVariables.set('baseImgClientConfig', JSON.stringify(cc)); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "600.2 [EXPECT-200] turn provider job accounting on, which starts the video sweeper (custom provider base)",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{{baseImgOnBody}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var saved = pm.collectionVariables.get('baseImgClientConfig');",
+              "if (!saved) {",
+              "  // 600.1 kept no config: leave the switch alone rather than write a partial one.",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var cc = JSON.parse(saved);",
+              "  cc.disable_provider_job_accounting = false;",
+              "  pm.variables.set('baseImgOnBody', JSON.stringify({ client_config: cc }));",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('accounting turned on', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "600.3 xai_media_proxy/fixture-xai-images POST /v1/videos with xAI's own first frame, image {url}, and no input_reference is queued (custom provider base)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai_media_proxy/fixture-xai-images\",\n  \"prompt\": \"a paper boat drifts across a still pond at dawn\",\n  \"seconds\": \"6\",\n  \"image\": {\n    \"url\": \"https://example.com/fixture-first-frame.png\"\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('create returns the queued xAI request, which the fixture answers only when the image reached it', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(String(j.id || ''), pm.response.text()).to.match(/^xai-fixture-images/);",
+              "});",
+              "if (pm.response.code === 200) { pm.collectionVariables.set('baseImgVideoId', pm.response.json().id); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "600.4 xai_media_proxy GET /v1/videos/{id} reports the 6 second clip finished, so the job is due for settlement (custom provider base)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/{{baseImgVideoId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "{{baseImgVideoId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the retrieve reports a finished 6 second clip', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.status, pm.response.text()).to.eql('completed');",
+              "  pm.expect(j.seconds, pm.response.text()).to.eql('6');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "600.5 the settled job is priced at 6 s x $0.08 plus 1 x $0.01 for the first frame, where the capture judged by the custom name billed no image (custom provider base)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs?providers=xai_media_proxy&models=fixture-xai-images&limit=50",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "providers",
+              "value": "xai_media_proxy"
+            },
+            {
+              "key": "models",
+              "value": "fixture-xai-images"
+            },
+            {
+              "key": "limit",
+              "value": "50"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var retry = Number(pm.collectionVariables.get('baseImgRetry') || 0);",
+              "if (retry > 0) {",
+              "  // The video sweeper ticks every 30 s; newman drains pending timers before it sends.",
+              "  var until = Date.now() + 2000;",
+              "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('logs query responds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+              "});",
+              "if (pm.response.code !== 200) { pm.collectionVariables.unset('baseImgRetry'); return; }",
+              "// The settlement row is the one whose video_debug carries accounting.",
+              "var row = null;",
+              "(pm.response.json().logs || []).forEach(function (l) {",
+              "  var vd = l.video_debug;",
+              "  if (!row && vd && vd.accounting && String(vd.video_id || '').indexOf('xai-fixture-images') === 0) { row = l; }",
+              "});",
+              "var retry = Number(pm.collectionVariables.get('baseImgRetry') || 0);",
+              "if (!row && retry < 45) {",
+              "  pm.collectionVariables.set('baseImgRetry', retry + 1);",
+              "  postman.setNextRequest(pm.info.requestName);",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('baseImgRetry');",
+              "pm.test('the job settled within 90 s of the retrieve', function () {",
+              "  pm.expect(row, 'no settlement row: ' + pm.response.text().slice(0, 1500)).to.not.equal(null);",
+              "});",
+              "if (!row) { return; }",
+              "pm.test('the settlement records the first frame the create sent', function () {",
+              "  pm.expect(row.video_debug.accounting.input_images, JSON.stringify(row.video_debug)).to.equal(1);",
+              "});",
+              "pm.test('priced at 6 s x $0.08 plus 1 x $0.01: the base provider xai sends extra param image (TXE-7434)', function () {",
+              "  pm.expect(row.cost, JSON.stringify(row).slice(0, 1500)).to.be.closeTo(0.49, 1e-9);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "600.6 [EXPECT-200] teardown: provider job accounting is turned back off with the client config 600.1 kept, whatever the rows above did (custom provider base)",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "bifrost-e2e-setup-token"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{{baseImgOffBody}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var saved = pm.collectionVariables.get('baseImgClientConfig');",
+              "if (!saved) {",
+              "  // 600.2 did not run either, so accounting was never turned on.",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  var cc = JSON.parse(saved);",
+              "  cc.disable_provider_job_accounting = true;",
+              "  pm.variables.set('baseImgOffBody', JSON.stringify({ client_config: cc }));",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.unset('baseImgRetry');",
+              "pm.test('accounting turned back off', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.eql(200);",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config', method: 'GET', header: { 'X-Bifrost-Setup-Token': 'bifrost-e2e-setup-token' } }, function (err, res) {",
+              "  pm.test('accounting reads back off', function () {",
+              "    pm.expect(err, 'gateway unreachable: ' + err).to.equal(null);",
+              "    var j = res.json();",
+              "    pm.expect(j.client_config && j.client_config.disable_provider_job_accounting, res.text().slice(0, 400)).to.equal(true);",
+              "  });",
+              "});",
+              "pm.collectionVariables.unset('baseImgClientConfig');",
+              "pm.collectionVariables.unset('baseImgVideoId');"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

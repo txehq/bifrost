@@ -830,8 +830,11 @@ func isVideoJobRequestType(requestType schemas.RequestType) bool {
 // the duration and resolution the price depends on exist nowhere else by then. The
 // request is the only witness, and this is the only moment it is in hand.
 // requestPricing is the create's billing dimensions captured in PreLLMHook whatever the content
-// policy; they stand in for the entry's params when content logging removed those.
-func (p *LoggerPlugin) recordVideoJobLifecycle(entry *logstore.Log, result *schemas.BifrostResponse, requestType schemas.RequestType, requestPricing *modelcatalog.VideoPricingDimensions) {
+// policy; they stand in for the entry's params when content logging removed those, with
+// requestInputs, the inputs captured beside them. baseProvider is the provider whose converter sent
+// the request (a custom provider's base, empty when unknown): the inputs it sends are recorded,
+// while entry.Provider, the custom name, still keys the job and its rates (TXE-7434).
+func (p *LoggerPlugin) recordVideoJobLifecycle(entry *logstore.Log, result *schemas.BifrostResponse, requestType schemas.RequestType, requestPricing *modelcatalog.VideoPricingDimensions, requestInputs modelcatalog.VideoInputs, baseProvider schemas.ModelProvider) {
 	if entry == nil || result == nil || p.batchStore == nil || !p.ProviderJobAccountingEnabled() {
 		return
 	}
@@ -856,9 +859,12 @@ func (p *LoggerPlugin) recordVideoJobLifecycle(entry *logstore.Log, result *sche
 
 	// The response is authoritative wherever it says anything; the request fills the
 	// rest, which for most providers is nearly all of it.
-	requestDims := videoDimensionsFromEntryParams(entry, requestType)
+	requestDims, inputs := videoDimensionsFromEntryParams(entry, requestType)
 	if entry.ParamsParsed == nil && requestPricing != nil {
-		requestDims = *requestPricing
+		requestDims, inputs = *requestPricing, requestInputs
+	}
+	if requestType == schemas.VideoGenerationRequest && baseProvider != "" && baseProvider != schemas.ModelProvider(entry.Provider) {
+		requestDims.ApplyVideoInputs(baseProvider, inputs)
 	}
 	dims := requestDims.MergedWith(modelcatalog.VideoDimensionsFromResponse(resp))
 	if dims.Model == "" {
@@ -918,9 +924,13 @@ func (p *LoggerPlugin) recordVideoJobLifecycle(entry *logstore.Log, result *sche
 
 // videoPricingFromRequest is the billing dimensions of a video create or edit, with Extra reduced
 // to the billing selectors, or nil for any other request.
-func videoPricingFromRequest(provider string, req *schemas.BifrostRequest) *modelcatalog.VideoPricingDimensions {
+//
+// It also returns the create's inputs: for a custom provider, the dimensions judge them by its name,
+// and the post-hook applies them again with the base provider core resolves after this hook
+// (TXE-7434). VideoInputs holds no pointer into the request.
+func videoPricingFromRequest(provider string, req *schemas.BifrostRequest) (*modelcatalog.VideoPricingDimensions, modelcatalog.VideoInputs) {
 	if req == nil {
-		return nil
+		return nil, modelcatalog.VideoInputs{}
 	}
 	entry := &logstore.Log{Provider: provider}
 	switch {
@@ -930,9 +940,9 @@ func videoPricingFromRequest(provider string, req *schemas.BifrostRequest) *mode
 	case req.RequestType == schemas.VideoEditRequest && req.VideoEditRequest != nil:
 		entry.ParamsParsed = req.VideoEditRequest.Params
 	default:
-		return nil
+		return nil, modelcatalog.VideoInputs{}
 	}
-	dims := videoDimensionsFromEntryParams(entry, req.RequestType)
+	dims, inputs := videoDimensionsFromEntryParams(entry, req.RequestType)
 	dims.Extra = modelcatalog.VideoBillingSelectors(dims.Extra)
 	// The request is pooled and reused after this hook, so nothing kept here may point into it.
 	dims.Type = copyPtr(dims.Type)
@@ -940,7 +950,7 @@ func videoPricingFromRequest(provider string, req *schemas.BifrostRequest) *mode
 	dims.UpscaleFactor = copyPtr(dims.UpscaleFactor)
 	dims.TargetMegapixels = copyPtr(dims.TargetMegapixels)
 	// dims.InputImages is a count computed here, never a pointer into the request: no copy needed.
-	return &dims
+	return &dims, inputs
 }
 
 func copyPtr[T any](v *T) *T {
@@ -954,7 +964,9 @@ func copyPtr[T any](v *T) *T {
 // videoDimensionsFromEntryParams reads the pricing-relevant request parameters off
 // the log entry. The parameters arrive as the typed struct the request carried, but
 // a rehydrated entry can present them as a decoded map, so both shapes are handled.
-func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.RequestType) modelcatalog.VideoPricingDimensions {
+// It also returns the create's inputs, judged by the entry's provider name in the dimensions; a
+// caller that knows a custom provider's base applies them again (TXE-7434).
+func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.RequestType) (modelcatalog.VideoPricingDimensions, modelcatalog.VideoInputs) {
 	dims := modelcatalog.VideoPricingDimensions{RequestType: requestType}
 	if requestType == schemas.VideoRetrieveRequest {
 		// A retrieve carries no request dimensions of its own; the submission's row
@@ -987,7 +999,7 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 		}
 	case *schemas.VideoEditParameters:
 		if params == nil {
-			return dims
+			return dims, modelcatalog.VideoInputs{}
 		}
 		dims.Type = params.Type
 		dims.UpscaleFactor = params.UpscaleFactor
@@ -1001,8 +1013,8 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 	// The input carries what a job sends besides its parameters: a source video and a first frame.
 	// Both are read whether or not the request has parameters (TXE-7409): a Go SDK image-to-video
 	// request may set none, and its first frame is still sent and billed.
-	applyVideoInputDimensions(&dims, entry)
-	return dims
+	inputs := applyVideoInputDimensions(&dims, entry)
+	return dims, inputs
 }
 
 // applyVideoInputDimensions sets the video input and the input image count of a video create from
@@ -1010,7 +1022,7 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 // band's video-input rate (TXE-7357); input images beyond a model's free allowance are billed per
 // image (TXE-7409). Kling's mode is read from Extra at pricing time (PricedMode). A rehydrated
 // entry's map params are read by applyVideoDimensionsFromMap, and an edit carries neither.
-func applyVideoInputDimensions(dims *modelcatalog.VideoPricingDimensions, entry *logstore.Log) {
+func applyVideoInputDimensions(dims *modelcatalog.VideoPricingDimensions, entry *logstore.Log) modelcatalog.VideoInputs {
 	var lastFrame string
 	var referenceImages []string
 	var extra map[string]any
@@ -1021,19 +1033,18 @@ func applyVideoInputDimensions(dims *modelcatalog.VideoPricingDimensions, entry 
 		}
 	case nil:
 	default:
-		return
+		return modelcatalog.VideoInputs{}
 	}
 	if entry.VideoGenerationInputParsed == nil && extra == nil && lastFrame == "" && len(referenceImages) == 0 {
-		return
+		return modelcatalog.VideoInputs{}
 	}
-	if modelcatalog.VideoRequestHasVideoInput(schemas.ModelProvider(entry.Provider), entry.VideoGenerationInputParsed, extra) {
-		dims.VideoInput = schemas.Ptr(true)
-	}
-	// The count escapes only when there is one, so a text-only create allocates nothing for it.
-	if n := modelcatalog.VideoRequestInputImages(schemas.ModelProvider(entry.Provider), entry.VideoGenerationInputParsed, lastFrame, referenceImages, extra); n > 0 {
-		images := n
-		dims.InputImages = &images
-	}
+	// Judged here by the provider name, which is the converter for a built-in provider. A custom
+	// provider's base is known only after the pre-hooks, so the caller that has it applies the
+	// returned inputs again (TXE-7434). The count escapes only when there is one, so a text-only
+	// create allocates nothing for it.
+	inputs := modelcatalog.ReadVideoInputs(entry.VideoGenerationInputParsed, lastFrame, referenceImages, extra)
+	dims.ApplyVideoInputs(schemas.ModelProvider(entry.Provider), inputs)
+	return inputs
 }
 
 // applyVideoDimensionsFromMap decodes the same fields off a rehydrated entry whose
@@ -1320,6 +1331,9 @@ type InitialLogData struct {
 	// kept out of a row whose content may not be stored, and without them the job settled at
 	// the rate its response alone implies (TXE-7357). Its Extra holds only the billing selectors.
 	VideoPricing *modelcatalog.VideoPricingDimensions
+	// VideoInputs is the same create's inputs, which the post-hook applies again with a custom
+	// provider's base provider: VideoPricing judged them by the provider's name (TXE-7434).
+	VideoInputs modelcatalog.VideoInputs
 }
 
 // LogCallback is a function that gets called when a new log entry is created
@@ -2063,7 +2077,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	if requestContentPolicy.storeContent || captureProvisional {
 		p.captureRequestInput(ctx, req, initialData)
 	}
-	initialData.VideoPricing = videoPricingFromRequest(initialData.Provider, req)
+	initialData.VideoPricing, initialData.VideoInputs = videoPricingFromRequest(initialData.Provider, req)
 
 	// Capture configured logging headers and x-bf-lh-* headers into metadata first
 	initialData.Metadata = mergeVirtualKeyMetadata(mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx), ctx)
@@ -2711,7 +2725,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		p.recordBatchJobLifecycle(entry, result)
 	}
 	if bifrostErr == nil && isVideoJobRequestType(requestType) {
-		p.recordVideoJobLifecycle(entry, result, requestType, pending.InitialData.VideoPricing)
+		// The worker stamped the base provider of this attempt before calling the provider.
+		p.recordVideoJobLifecycle(entry, result, requestType, pending.InitialData.VideoPricing, pending.InitialData.VideoInputs,
+			schemas.ResolveBaseProvider(ctx, schemas.ModelProvider(entry.Provider)))
 	}
 
 	// Calculate cost

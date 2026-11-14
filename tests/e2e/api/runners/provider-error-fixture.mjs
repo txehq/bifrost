@@ -552,6 +552,10 @@ const fixturePricing = {
 		output_cost_per_second_2k: 0.13,
 		provider_specific_entry: { minimax_free_input_images: 5 },
 	},
+	// TXE-7434: grok-imagine-video-1.5's live rates ($0.08/s unbanded, $0.01 per input image) under xai_media_proxy, a
+	// custom provider on an xAI base. Folder 600 sends xAI's own first frame, "image", which only xAI's converter
+	// sends; the capture judged it by the custom name and billed no image.
+	"fixture-xai-images": { provider: "xai_media_proxy", mode: "video_generation", input_cost_per_image: 0.01, output_cost_per_second: 0.08 },
 	// TXE-7356: dall-e-3's live upstream row, which prices an image only by its joint size and quality rate, so folder
 	// 570 can read the price of an hd and a standard image. The fork dropped these keys at sync and billed $0.
 	"fixture-dalle-3": {
@@ -1243,6 +1247,8 @@ const storageAnswer = (path, body) => {
 const xaiVideoCreateAnswer = (body) => {
 	if (body.model === "xai-video-drop") return { drop: true };
 	if (body.model === "xai-video-policy") return { status: 403, body: JSON.stringify({ code: "content_policy_violation", error: "The prompt violates the usage policy." }) };
+	// TXE-7434 (folder 600): a create that sent xAI's own first frame is answered with a task that reports no cost.
+	if (body.model === "fixture-xai-images" && body.image && body.image.url) return { status: 200, body: JSON.stringify({ request_id: "xai-fixture-images" }) };
 	return { status: 200, body: JSON.stringify({ request_id: "xai-fixture-done" }) };
 };
 // GET /pp/xai/v1/videos/{request_id}: xai-fixture-pending is still generating, xai-fixture-moderated finished
@@ -1250,6 +1256,10 @@ const xaiVideoCreateAnswer = (body) => {
 // The link is under a reserved name: nothing fetches it.
 const xaiVideoTask = (id) => {
 	if (id === "xai-fixture-pending") return { status: "pending", progress: 42, model: "grok-imagine-video-1.5" };
+	// TXE-7434 (folder 600): finished, 6 s, with no usage, so settlement prices it from the fixture-xai-images row.
+	if (id === "xai-fixture-images") {
+		return { status: "done", progress: 100, model: "fixture-xai-images", video: { url: "https://vidgen.fixture.invalid/xai-video-images.mp4", duration: 6, respect_moderation: true } };
+	}
 	const usage = { cost_in_usd_ticks: 3000000000, input_tokens: 12, output_tokens: 4800, total_tokens: 4812 };
 	if (id === "xai-fixture-moderated") {
 		return { status: "done", progress: 100, model: "grok-imagine-video-1.5", video: { url: "", duration: 6, respect_moderation: false }, usage };
