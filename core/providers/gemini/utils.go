@@ -931,6 +931,11 @@ func ConvertGeminiUsageMetadataToChatUsage(metadata *GenerateContentResponseUsag
 			usage.PromptTokensDetails.CachedReadTokens = int(metadata.CachedContentTokenCount)
 			usage.PromptTokensDetails.CachedVideoTokens = geminiCachedVideoTokens(metadata)
 		}
+		// The modality split of the cached tokens, so cached audio is priced at its own rate
+		// (fork, TXE-7361).
+		if split := geminiCachedReadTokenDetails(metadata.CacheTokensDetails); split != nil {
+			usage.PromptTokensDetails.CachedReadTokenDetails = split
+		}
 	}
 
 	// Process completion token details (modality breakdown + reasoning tokens)
@@ -998,6 +1003,30 @@ func applyGeminiPromptModalities(dst *schemas.ChatPromptTokensDetails, details [
 			dst.DocumentTokens = int(detail.TokenCount)
 		}
 	}
+}
+
+// geminiCachedReadTokenDetails maps Gemini's cacheTokensDetails, the per-modality breakdown of
+// cachedContentTokenCount, to the unified cache-read split (fork, TXE-7361). Nil when Gemini
+// reported no text, audio or image breakdown.
+func geminiCachedReadTokenDetails(details []*ModalityTokenCount) *schemas.ChatCachedReadTokenDetails {
+	var split schemas.ChatCachedReadTokenDetails
+	for _, detail := range details {
+		if detail == nil {
+			continue
+		}
+		switch detail.Modality {
+		case ModalityText:
+			split.TextTokens += int(detail.TokenCount)
+		case ModalityAudio:
+			split.AudioTokens += int(detail.TokenCount)
+		case ModalityImage:
+			split.ImageTokens += int(detail.TokenCount)
+		}
+	}
+	if split == (schemas.ChatCachedReadTokenDetails{}) {
+		return nil
+	}
+	return &split
 }
 
 // convertGeminiToolUsePromptTokensDetails maps Gemini's toolUsePromptTokensDetails, the
@@ -1327,6 +1356,9 @@ func ConvertGeminiUsageMetadataToResponsesUsage(metadata *GenerateContentRespons
 		}
 	}
 	usage.InputTokensDetails.CachedVideoTokens = geminiCachedVideoTokens(metadata)
+	// The modality split of the cached tokens, read as on the chat path, so cached audio on
+	// /v1/responses and native generateContent passthrough is priced at its own rate (TXE-7361).
+	usage.InputTokensDetails.CachedReadTokenDetails = geminiCachedReadTokenDetails(metadata.CacheTokensDetails)
 	usage.ToolUsePromptTokens = int(metadata.ToolUsePromptTokenCount)
 	usage.ToolUsePromptTokensDetails = convertGeminiToolUsePromptTokensDetails(metadata.ToolUsePromptTokensDetails)
 

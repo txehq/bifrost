@@ -69,6 +69,29 @@ func TestExtractRealtimeTurnUsageSupportsTranscriptionCompletion(t *testing.T) {
 	}
 }
 
+// TXE-7361: a realtime response reports its cached input by modality; the split is kept so cached
+// audio is priced at cache_read_input_audio_token_cost, not the text cache rate.
+func TestExtractRealtimeTurnUsageKeepsTheCachedModalitySplit(t *testing.T) {
+	t.Parallel()
+
+	provider := &OpenAIProvider{}
+	usage := provider.ExtractRealtimeTurnUsage([]byte(`{
+		"type":"response.done",
+		"response":{"usage":{
+			"total_tokens":1100,"input_tokens":1000,"output_tokens":100,
+			"input_token_details":{"text_tokens":200,"audio_tokens":800,"cached_tokens":600,
+				"cached_tokens_details":{"text_tokens":100,"audio_tokens":500}},
+			"output_token_details":{"text_tokens":20,"audio_tokens":80}
+		}}
+	}`))
+	if usage == nil || usage.PromptTokensDetails == nil {
+		t.Fatalf("usage = %+v, want prompt details", usage)
+	}
+	if got := usage.PromptTokensDetails.CachedReadTokenDetails; got == nil || got.AudioTokens != 500 || got.TextTokens != 100 {
+		t.Fatalf("cached split = %+v, want 500 audio and 100 text", got)
+	}
+}
+
 func TestExtractRealtimeTurnUsageSupportsDurationTranscriptionCompletion(t *testing.T) {
 	t.Parallel()
 

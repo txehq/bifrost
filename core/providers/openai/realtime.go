@@ -846,6 +846,8 @@ func (provider *OpenAIProvider) ExtractRealtimeTurnUsage(terminalEventRaw []byte
 			AudioTokens:      usage.InputTokenDetails.AudioTokens,
 			ImageTokens:      usage.InputTokenDetails.ImageTokens,
 			CachedReadTokens: usage.InputTokenDetails.CachedTokens,
+
+			CachedReadTokenDetails: usage.InputTokenDetails.CachedTokensDetails,
 		}
 	}
 
@@ -930,6 +932,8 @@ type openAIRealtimeResponseDoneInputTokenUsage struct {
 	AudioTokens  int `json:"audio_tokens"`
 	ImageTokens  int `json:"image_tokens"`
 	CachedTokens int `json:"cached_tokens"`
+	// The modality split of cached_tokens, so cached audio is priced at its own rate (TXE-7361).
+	CachedTokensDetails *schemas.ChatCachedReadTokenDetails `json:"cached_tokens_details"`
 }
 
 type openAIRealtimeResponseDoneOutputTokenUsage struct {

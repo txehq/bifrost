@@ -174,6 +174,25 @@ const behaviours = {
 			usage: { prompt_tokens: 1000, completion_tokens: 100, total_tokens: 1100, prompt_tokens_details: { audio_tokens: 400, text_tokens: 600 } },
 		}),
 	}),
+	// OpenAI's cached input split by modality (folder 563, TXE-7361): the gateway keeps the split so
+	// cached audio is priced at its own rate, and returns it.
+	"upstream-cached-audio": () => ({
+		status: 200,
+		headers: {},
+		body: JSON.stringify({
+			id: "chatcmpl-upstream-cached-audio",
+			object: "chat.completion",
+			created: 1,
+			model: "upstream-cached-audio",
+			choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
+			usage: {
+				prompt_tokens: 1000,
+				completion_tokens: 2,
+				total_tokens: 1002,
+				prompt_tokens_details: { text_tokens: 200, audio_tokens: 800, cached_tokens: 600, cached_tokens_details: { text_tokens: 100, audio_tokens: 500 } },
+			},
+		}),
+	}),
 };
 // Azure OpenAI's documented answer to a prompt its content filter blocked, TXE-6527 (contract C6): HTTP 400 with
 // error.code "content_filter" and the per-category verdicts under innererror.
@@ -508,6 +527,18 @@ const fixturePricing = {
 		input_cost_per_token: 3e-7, output_cost_per_token: 2.5e-6, input_cost_per_token_priority: 5.4e-7, output_cost_per_token_priority: 4.5e-6,
 		input_cost_per_audio_token: 1e-6, input_cost_per_audio_token_priority: 1.8e-6,
 	},
+	// TXE-7361: a Gemini model with a cached-audio rate, for folder 563's Gemini cost rows.
+	"pp-cached-audio": {
+		provider: "gemini", mode: "chat",
+		input_cost_per_token: 3e-7, output_cost_per_token: 2.5e-6, input_cost_per_audio_token: 1e-6,
+		cache_read_input_token_cost: 3e-8, cache_read_input_audio_token_cost: 1e-7,
+	},
+	// TXE-7361: gpt-realtime-mini's live text, audio and cached-audio rates, for folder 563's cost row.
+	"upstream-cached-audio": {
+		provider: "openai", mode: "chat",
+		input_cost_per_token: 6e-7, output_cost_per_token: 2.4e-6, input_cost_per_audio_token: 1e-5,
+		cache_read_input_token_cost: 6e-8, cache_read_input_audio_token_cost: 3e-7,
+	},
 	"typesafe/jev-1.13": { provider: "openrouter", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
 	"decision-emulated": { provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, cache_read_input_token_cost: 0.0000001 },
 	"pp-custom-legacy": { provider: "openai", mode: "responses", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
@@ -767,7 +798,19 @@ const geminiTranscript = {
 	candidates: [{ index: 0, finishReason: "STOP", content: { role: "model", parts: [{ text: "hello from the fixture" }] } }],
 	usageMetadata: { promptTokenCount: 40, candidatesTokenCount: 5, totalTokenCount: 45, promptTokensDetails: [{ modality: "AUDIO", tokenCount: 32 }, { modality: "TEXT", tokenCount: 8 }] },
 };
+// TXE-7361: a Gemini answer whose cached tokens are split by modality (cacheTokensDetails), so the
+// cached audio is priced at the cached-audio rate on chat, /v1/responses and native passthrough.
+const geminiCachedAudio = {
+	candidates: [{ content: { role: "model", parts: [{ text: "hi" }] }, finishReason: "STOP" }],
+	usageMetadata: {
+		promptTokenCount: 1000, candidatesTokenCount: 10, totalTokenCount: 1010, cachedContentTokenCount: 600,
+		promptTokensDetails: [{ modality: "TEXT", tokenCount: 200 }, { modality: "AUDIO", tokenCount: 800 }],
+		cacheTokensDetails: [{ modality: "TEXT", tokenCount: 100 }, { modality: "AUDIO", tokenCount: 500 }],
+	},
+	modelVersion: "pp-cached-audio",
+};
 const geminiAudioFrames = {
+	"pp-cached-audio": [geminiCachedAudio],
 	"pp-tts-ok": [geminiSpeechAudioChunk, geminiSpeechFinal],
 	"pp-tts-blocked": [geminiPromptBlocked],
 	"pp-tts-truncated": [geminiSpeechAudioChunk],

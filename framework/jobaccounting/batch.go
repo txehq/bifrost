@@ -838,7 +838,9 @@ func usageFromValue(value interface{}) (*schemas.BifrostLLMUsage, error) {
 			// OpenAI's cache writes, which are part of prompt_tokens like cached_tokens, split by
 			// lifetime (fork, TXE-7354): kept so a batch line prices them at their own batch rates.
 			// Audio input tokens are among the per-modality counts below.
-			CacheWriteTokens        int `json:"cache_write_tokens"`
+			CacheWriteTokens int `json:"cache_write_tokens"`
+			// The modality split of cached_tokens (TXE-7361), so cached audio takes its batch rate.
+			CachedTokensDetails     *schemas.ChatCachedReadTokenDetails `json:"cached_tokens_details"`
 			CacheWriteTokensDetails struct {
 				TTL30mTokens int `json:"ttl_30m_tokens"`
 				TTL12hTokens int `json:"ttl_12h_tokens"`
@@ -929,6 +931,9 @@ func usageFromValue(value interface{}) (*schemas.BifrostLLMUsage, error) {
 			out.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
 		}
 		d.applyTo(out.PromptTokensDetails)
+	}
+	if split := usage.PromptTokensDetails.CachedTokensDetails; split != nil && out.PromptTokensDetails != nil {
+		out.PromptTokensDetails.CachedReadTokenDetails = split
 	}
 	if d := usage.OutputTokensDetails; d != nil && (d.TextTokens > 0 || d.ImageTokens > 0) {
 		out.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{TextTokens: d.TextTokens}

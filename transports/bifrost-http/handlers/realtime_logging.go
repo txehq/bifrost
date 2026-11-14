@@ -298,6 +298,8 @@ type realtimeResponseDoneInputTokenUsage struct {
 	AudioTokens  int `json:"audio_tokens"`
 	ImageTokens  int `json:"image_tokens"`
 	CachedTokens int `json:"cached_tokens"`
+	// The modality split of cached_tokens, so cached audio is priced at its own rate (TXE-7361).
+	CachedTokensDetails *schemas.ChatCachedReadTokenDetails `json:"cached_tokens_details"`
 }
 
 type realtimeResponseDoneOutputTokenUsage struct {
@@ -448,6 +450,8 @@ func extractRealtimeResponseDoneUsage(rawMessage []byte) *schemas.BifrostLLMUsag
 			AudioTokens:      parsed.Response.Usage.InputTokenDetails.AudioTokens,
 			ImageTokens:      parsed.Response.Usage.InputTokenDetails.ImageTokens,
 			CachedReadTokens: parsed.Response.Usage.InputTokenDetails.CachedTokens,
+
+			CachedReadTokenDetails: parsed.Response.Usage.InputTokenDetails.CachedTokensDetails,
 		}
 	}
 

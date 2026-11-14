@@ -536,6 +536,11 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.InputCostPerTokenAbove512kTokens, src: override.InputCostPerTokenAbove512kTokens},
 		{dst: &patched.OutputCostPerTokenAbove512kTokens, src: override.OutputCostPerTokenAbove512kTokens},
 		{dst: &patched.CacheReadInputTokenCostAbove512kTokens, src: override.CacheReadInputTokenCostAbove512kTokens},
+		// Fork, TXE-7361: cached audio.
+		{dst: &patched.CacheReadInputAudioTokenCost, src: override.CacheReadInputAudioTokenCost},
+		{dst: &patched.CacheReadInputAudioTokenCostFlex, src: override.CacheReadInputAudioTokenCostFlex},
+		{dst: &patched.CacheReadInputAudioTokenCostPriority, src: override.CacheReadInputAudioTokenCostPriority},
+		{dst: &patched.CacheReadInputAudioTokenCostBatches, src: override.CacheReadInputAudioTokenCostBatches},
 		{dst: &patched.InputCostPerTokenFast, src: override.InputCostPerTokenFast},
 		{dst: &patched.OutputCostPerTokenFast, src: override.OutputCostPerTokenFast},
 		{dst: &patched.InputCostPerVideoPerSecond, src: override.InputCostPerVideoPerSecond},

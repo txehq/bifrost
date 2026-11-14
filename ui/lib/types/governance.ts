@@ -649,6 +649,10 @@ export interface PricingOverridePatch {
 	cache_read_input_token_cost_above_100k_tokens?: number;
 	cache_creation_input_token_cost_above_1hr_above_100k_tokens?: number;
 	cache_creation_input_audio_token_cost?: number;
+	cache_read_input_audio_token_cost?: number;
+	cache_read_input_audio_token_cost_flex?: number;
+	cache_read_input_audio_token_cost_priority?: number;
+	cache_read_input_audio_token_cost_batches?: number;
 	cache_read_input_token_cost_priority?: number;
 	cache_read_input_token_cost_ultrafast?: number;
 	cache_read_input_token_cost_flex?: number;
