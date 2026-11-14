@@ -13,6 +13,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 COMPOSE_FILE="${ROOT_DIR}/.github/workflows/configs/docker-compose.yml"
 COMPOSE_PROJECT="${COMPOSE_PROJECT:-bifrost-cost-accuracy}"
 BENCHMARK_DIR="${BENCHMARK_DIR:-${ROOT_DIR}/../bifrost-benchmarking}"
+# The mocker and hitter, at the pinned commit (TXE-7452).
+# shellcheck source=bifrost-benchmarking.sh
+source "${ROOT_DIR}/.github/workflows/scripts/bifrost-benchmarking.sh"
 WORK_DIR="${ROOT_DIR}/tmp/cost-accuracy"
 APP_DIR="${WORK_DIR}/app"
 RESULTS_FILE="${WORK_DIR}/results.json"
@@ -36,6 +39,7 @@ VIRTUAL_KEY_BUDGET_LIMIT="${VIRTUAL_KEY_BUDGET_LIMIT:-100}"
 
 BIFROST_PID=""
 MOCKER_PID=""
+DATASHEET_PID=""
 COMPOSE_CMD=()
 VIRTUAL_KEY_ID=""
 VIRTUAL_KEY_VALUE=""
@@ -53,6 +57,9 @@ cleanup() {
   if [ -n "${MOCKER_PID}" ] && kill -0 "${MOCKER_PID}" 2>/dev/null; then
     kill "${MOCKER_PID}" 2>/dev/null || true
     wait "${MOCKER_PID}" 2>/dev/null || true
+  fi
+  if [ -n "${DATASHEET_PID}" ]; then
+    kill "${DATASHEET_PID}" 2>/dev/null || true
   fi
   docker_compose -p "${COMPOSE_PROJECT}" -f "${COMPOSE_FILE}" down >/dev/null 2>&1 || true
 }
@@ -155,10 +162,7 @@ start_postgres() {
 }
 
 build_binaries() {
-  if [ ! -d "${BENCHMARK_DIR}" ]; then
-    log "cloning bifrost-benchmarking"
-    git clone --depth 1 https://github.com/maximhq/bifrost-benchmarking.git "${BENCHMARK_DIR}"
-  fi
+  fetch_bifrost_benchmarking "${BENCHMARK_DIR}" || exit 1
 
   mkdir -p "${ROOT_DIR}/tmp" "${ROOT_DIR}/transports/bifrost-http/ui"
   touch "${ROOT_DIR}/transports/bifrost-http/ui/.gitkeep"
@@ -191,9 +195,20 @@ build_binaries() {
 write_config() {
   rm -rf "${APP_DIR}"
   mkdir -p "${APP_DIR}"
+  # Under scripts/test-offline.sh (BIFROST_TEST_OFFLINE=1), as the required PR check runs it
+  # (TXE-7452), the gateway cannot download its pricing datasheets; it reads empty ones from
+  # loopback. The test prices gpt-4o-mini through its own pricing override.
+  local framework_config=""
+  if [ "${BIFROST_TEST_OFFLINE:-}" = "1" ]; then
+    # shellcheck source=offline-datasheets.sh
+    source "${ROOT_DIR}/.github/workflows/scripts/offline-datasheets.sh"
+    serve_offline_datasheets "${WORK_DIR}"
+    framework_config="\"framework\": { \"pricing\": { \"pricing_url\": \"${DATASHEET_ORIGIN}/pricing.json\", \"model_parameters_url\": \"${DATASHEET_ORIGIN}/model-parameters.json\" } },"
+  fi
   cat > "${APP_DIR}/config.json" <<EOF
 {
   "\$schema": "https://www.getbifrost.ai/schema",
+  ${framework_config}
   "setup_token": "${SETUP_TOKEN}",
   "client": {
     "enable_logging": true,
