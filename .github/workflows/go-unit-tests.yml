@@ -33,10 +33,11 @@ name: Go unit tests (offline)
 #   (tests/agentgateway) run the scripts of the release pipeline's test-live and
 #   test-agentgateway jobs, which stop a release when they fail and need no vendor key;
 #   migrations (TXE-7451) runs test-migrations' script, with network access for the previous
-#   releases it migrates from but no vendor key.
+#   releases it migrates from but no vendor key; cost-accuracy (TXE-7452) runs
+#   test-cost-accuracy's script, offline, with bifrost-benchmarking at a pinned commit.
 #   check-release-gates-run-on-prs.py fails when such a release job has no PR counterpart.
 # - The required check is the `Go unit tests (offline)` job, which fails unless every shard,
-#   fixture-folders, live-fake, agentgateway and migrations passed. No paths filter: a path-filtered required check never reports on a PR outside its
+#   fixture-folders, live-fake, agentgateway, migrations and cost-accuracy passed. No paths filter: a path-filtered required check never reports on a PR outside its
 #   paths, which blocks that PR's merge. No concurrency group either: a cancelled run of a
 #   required check leaves the PR blocked beside a passing one (TXE-7104).
 # - On a push to main, warm-cache compiles every test binary and saves the go-unit build cache
@@ -515,10 +516,83 @@ jobs:
         run: |
           echo "::notice::Migration tests not run for a fork's PR: the previous releases are private GHCR images, and the token that reads them would reach this PR's code. The release pipeline's test-migrations migrates it after the merge."
 
+  # The cost accuracy test, offline (TXE-7452): the release pipeline's test-cost-accuracy job
+  # runs the same script and stops a release when it fails. A hitter sends chat requests through
+  # a virtual key with a pricing override to a mocker; the logged costs, the budget usage and the
+  # quota usage must agree. The mocker and hitter come from bifrost-benchmarking at the commit
+  # bifrost-benchmarking.sh pins; the gateway reads empty pricing datasheets from loopback.
+  cost-accuracy:
+    if: github.event_name == 'pull_request'
+    name: Cost accuracy (offline)
+    environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    timeout-minutes: 20
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          # Postgres is published on 127.0.0.1:5432 and DNATed to its pinned bridge address
+          # (.github/workflows/configs/docker-compose.yml); Docker Hub for its image; github.com
+          # for the pinned bifrost-benchmarking fetch; the Go hosts for the builds. The mocker,
+          # the gateway and the datasheets are on loopback.
+          allowed-endpoints: >
+            127.0.0.1:5432
+            172.38.0.11:5432
+            api.github.com:443
+            auth.docker.io:443
+            github.com:443
+            production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
+            proxy.golang.org:443
+            registry-1.docker.io:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.3"
+          cache: false
+
+      - name: Restore the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: go-unit
+
+      # The fetch and the Go module downloads happen before the offline run: test-offline.sh
+      # guards the gateway's dials, and these are the test's own build inputs.
+      - name: Fetch the pinned bifrost-benchmarking and its modules
+        run: |
+          source .github/workflows/scripts/bifrost-benchmarking.sh
+          fetch_bifrost_benchmarking "$RUNNER_TEMP/bifrost-benchmarking"
+          (cd "$RUNNER_TEMP/bifrost-benchmarking/mocker" && GOWORK=off go mod download)
+          (cd "$RUNNER_TEMP/bifrost-benchmarking/hitter" && GOWORK=off go mod download)
+
+      - name: Run the cost accuracy test
+        env:
+          BENCHMARK_DIR: ${{ runner.temp }}/bifrost-benchmarking
+        run: scripts/test-offline.sh bash .github/workflows/scripts/cost-accuracy-test.sh
+
+      - name: Upload the cost accuracy logs
+        if: failure()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: cost-accuracy
+          path: tmp/cost-accuracy/
+          retention-days: 7
+          if-no-files-found: ignore
+
   # The one check to require on main: it fails unless every job above passed.
   go-unit-tests:
     if: always() && github.event_name == 'pull_request'
-    needs: [shard, fixture-folders, live-fake, agentgateway, migrations, migrations-fork]
+    needs: [shard, fixture-folders, live-fake, agentgateway, migrations, migrations-fork, cost-accuracy]
     name: Go unit tests (offline)
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     timeout-minutes: 5
@@ -538,16 +612,18 @@ jobs:
           MIGRATIONS: ${{ needs.migrations.result }}
           MIGRATIONS_FORK: ${{ needs.migrations-fork.result }}
           SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          COST_ACCURACY: ${{ needs.cost-accuracy.result }}
         run: |
           echo "shards: $RESULT"
           echo "harness fixture folders: $FIXTURE_FOLDERS"
           echo "GPT Live (fake upstream): $LIVE_FAKE"
           echo "Agent Gateway e2e: $AGENTGATEWAY"
           echo "Migration tests: $MIGRATIONS (fork PR notice: $MIGRATIONS_FORK)"
+          echo "Cost accuracy: $COST_ACCURACY"
           # A PR from this repository must pass the migrations; a fork's PR gets the notice job.
           if [ "$SAME_REPO" = true ]; then migrations_ok=$MIGRATIONS; else migrations_ok=$MIGRATIONS_FORK; fi
           [ "$RESULT" = success ] && [ "$FIXTURE_FOLDERS" = success ] && [ "$LIVE_FAKE" = success ] &&
-            [ "$AGENTGATEWAY" = success ] && [ "$migrations_ok" = success ]
+            [ "$AGENTGATEWAY" = success ] && [ "$migrations_ok" = success ] && [ "$COST_ACCURACY" = success ]
 
   warm-cache:
     if: github.event_name == 'push'
