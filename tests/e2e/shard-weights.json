@@ -23,7 +23,7 @@
   "features/mcp-logs/mcp-logs.spec.ts": 6,
   "features/mcp-registry/mcp-registry-auth.spec.ts": 25,
   "features/mcp-registry/mcp-registry-crud.spec.ts": 63,
-  "features/mcp-registry/mcp-registry-openapi.spec.ts": 119,
+  "features/mcp-registry/mcp-registry-openapi.spec.ts": 81,
   "features/mcp-settings/mcp-settings.spec.ts": 19,
   "features/mcp-tool-groups/mcp-tool-groups.spec.ts": 1,
   "features/mobile/mobile-smoke.spec.ts": 3,

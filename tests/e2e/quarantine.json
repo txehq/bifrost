@@ -45,20 +45,6 @@
       "LLM Logs › URL State Persistence › should restore state from URL"
     ]
   },
-  "TXE-7393": {
-    "kind": "stale test or product defect, not offline",
-    "file": "features/mcp-registry/mcp-registry-openapi.spec.ts",
-    "tests": [
-      "MCP Registry - OpenAPI servers › Creation from a pasted document › parses the document, lets operations be picked, and creates the server",
-      "MCP Registry - OpenAPI servers › Creation from a pasted document › per-user auth takes a header scheme from the caller's own header",
-      "MCP Registry - OpenAPI servers › Creation from a pasted document › creates through the shared createClient helper and shows the stored document on the edit sheet",
-      "MCP Registry - OpenAPI servers › Creation from a pasted document › does not create before the document was parsed",
-      "MCP Registry - OpenAPI servers › Other document sources › parses the pasted document again after a URL was fetched",
-      "MCP Registry - OpenAPI servers › Replacing the document › keeps the selection of operations that survive and adds the new ones",
-      "MCP Registry - OpenAPI servers › Replacing the document: base URL › shows an invalid custom base URL at the input and does not save",
-      "MCP Registry - OpenAPI servers › Filtering › filters the table by the OpenAPI connection type"
-    ]
-  },
   "TXE-7394": {
     "kind": "offline gap: the empty datasheet offers no gpt-4o-mini",
     "file": "features/model-limits/model-limits.spec.ts",

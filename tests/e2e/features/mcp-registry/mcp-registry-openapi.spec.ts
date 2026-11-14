@@ -294,6 +294,8 @@ test.describe("MCP Registry - OpenAPI servers", () => {
         await mcpRegistryPage.page.unroute("**/mcp/openapi/preview");
       }
 
+      // The "not parsed yet" toast sits over the sheet's Cancel button (TXE-7393).
+      await mcpRegistryPage.dismissToasts();
       await mcpRegistryPage.cancelCreation();
     });
   });
@@ -472,16 +474,8 @@ test.describe("MCP Registry - OpenAPI servers", () => {
         "openapi-replace-spec-panel",
       );
       await panel.getByTestId("openapi-spec-source-tab-paste").click();
-      const editor = panel.getByTestId("openapi-spec-paste-editor");
-      await editor
-        .locator("textarea.inputarea")
-        .waitFor({ state: "attached", timeout: 10000 });
-      await editor.locator(".monaco-editor").first().click();
-      await mcpRegistryPage.page.keyboard.press(
-        process.platform === "darwin" ? "Meta+A" : "Control+A",
-      );
-      await mcpRegistryPage.page.keyboard.press("Backspace");
-      await mcpRegistryPage.page.keyboard.insertText(
+      await mcpRegistryPage.setMonacoText(
+        panel.getByTestId("openapi-spec-paste-editor"),
         PETSTORE_OPENAPI_SPEC_YAML,
       );
 
@@ -710,17 +704,9 @@ test.describe("MCP Registry - OpenAPI servers", () => {
         "openapi-replace-spec-panel",
       );
       await panel.getByTestId("openapi-spec-source-tab-paste").click();
-      const editor = panel.getByTestId("openapi-spec-paste-editor");
-      await editor
-        .locator("textarea.inputarea")
-        .waitFor({ state: "attached", timeout: 10000 });
-      await editor.locator(".monaco-editor").first().click();
-      await page.keyboard.press(
-        process.platform === "darwin" ? "Meta+A" : "Control+A",
-      );
-      await page.keyboard.press("Backspace");
       // A pasted document is a new source, so its server has to be absolute.
-      await page.keyboard.insertText(
+      await mcpRegistryPage.setMonacoText(
+        panel.getByTestId("openapi-spec-paste-editor"),
         document("query", "https://api.example.test/v1"),
       );
       await expect.poll(() => previews).toBeGreaterThan(1);
