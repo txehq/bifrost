@@ -750,18 +750,8 @@ type VideoAccountingDebug struct {
 	// ProviderCost is the figure the provider reported for the job, when it reported
 	// one. A provider is always right about its own bill, so repricing must return
 	// this verbatim rather than substituting a catalog estimate.
-	ProviderCost *float64 `json:"provider_cost,omitempty"`
-	// UnmeasuredBoundSeconds is the bound an unmeasurable rendered video was charged up to (fork,
-	// TXE-7401): the model's unmeasured_video_seconds, or the provider's default. Seconds is then
-	// the larger of the requested seconds and this. Nil when the job was measured or needed no
-	// measuring. A reprice reads it back, and an operator can correct an output that was honest
-	// but could not be read.
-	UnmeasuredBoundSeconds *int `json:"unmeasured_bound_seconds,omitempty"`
-	// RequestedSeconds is the seconds the create named, kept beside UnmeasuredBoundSeconds when
-	// the bound was applied, so a reprice prices from what was asked for (fork, TXE-7401).
-	RequestedSeconds *int `json:"requested_seconds,omitempty"`
-	// UnmeasuredDefaultSeconds is the provider's default bound at settlement (fork, TXE-7401). A
-	// reprice starts from it, so a model override set or removed since takes effect; the reprice
-	// then rewrites UnmeasuredBoundSeconds and Seconds to the bound and seconds it charged.
-	UnmeasuredDefaultSeconds *int `json:"unmeasured_default_seconds,omitempty"`
+	ProviderCost             *float64 `json:"provider_cost,omitempty"`
+	UnmeasuredBoundSeconds   *int     `json:"unmeasured_bound_seconds,omitempty"`   // bound an unmeasurable video was charged up to (fork, TXE-7401)
+	RequestedSeconds         *int     `json:"requested_seconds,omitempty"`          // seconds the create named, when the bound applied (TXE-7401)
+	UnmeasuredDefaultSeconds *int     `json:"unmeasured_default_seconds,omitempty"` // provider default bound at settlement (TXE-7401)
 }

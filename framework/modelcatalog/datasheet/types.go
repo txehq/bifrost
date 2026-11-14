@@ -470,11 +470,7 @@ type Options struct {
 	OutputCostPerVideoPerSecond720pAudio  *float64 `json:"output_cost_per_video_per_second_720p_audio,omitempty"`
 	OutputCostPerVideoPerSecond1080pAudio *float64 `json:"output_cost_per_video_per_second_1080p_audio,omitempty"`
 	OutputCostPerVideoPerSecond4kAudio    *float64 `json:"output_cost_per_video_per_second_4k_audio,omitempty"`
-	// UnmeasuredVideoSeconds is the length a rendered video is charged for when the settler
-	// cannot measure it and it is more than the create asked for (fork, TXE-7401): a bound the
-	// caller cannot choose. Upstream does not publish it; a pricing override sets it per model,
-	// and the provider's default applies when no row does.
-	UnmeasuredVideoSeconds *float64 `json:"unmeasured_video_seconds,omitempty"`
+	UnmeasuredVideoSeconds                *float64 `json:"unmeasured_video_seconds,omitempty"` // fork: seconds an unmeasurable video is charged up to (TXE-7401)
 	// Upstream's resolution-banded output rates (TXE-7349), published for Veo, Wan, MiniMax,
 	// Runway, Replicate and fal. A band is read after the video-specific band of the same
 	// resolution above and before either unbanded rate.
