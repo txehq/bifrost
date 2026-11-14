@@ -403,8 +403,15 @@ jobs:
   # CLI downloads the release binary) and from the fork's private GHCR images, which need this
   # job's GITHUB_TOKEN with packages: read. No vendor key reaches the job, and the vendor API
   # hosts the release job allowlists are left out: nothing here calls a provider.
+  #
+  # The baselines are the fork's private GHCR images, read with this job's packages: read token,
+  # and everything the job runs after the checkout is the PR's own code: its scripts, and its
+  # local actions (go-cache), which can read github.token whatever the env says. So the job runs
+  # only for a PR whose branch is in this repository; a PR from another repository gets
+  # migrations-fork instead, a job with no package access that runs none of its code, and is
+  # migrated by the release pipeline's test-migrations after the merge, as before TXE-7451.
   migrations:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     name: Migration tests (previous releases)
     environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
@@ -476,36 +483,42 @@ jobs:
           sudo apt-get install -y sqlite3
           sqlite3 --version
 
-      # The baselines are the fork's private GHCR images, read with this job's packages: read
-      # token, and the script that receives the token is the PR's own. A PR from another
-      # repository could replace it and send the token or the private images to its own log,
-      # so only a PR whose branch is in this repository runs the migrations here; the token
-      # never reaches a fork's code. A fork's PR is migrated by the release pipeline's
-      # test-migrations after the merge, as before TXE-7451.
-      - name: A pull request from a fork does not get the private baselines
-        if: github.event.pull_request.head.repo.full_name != github.repository
-        run: |
-          echo "::notice::Migration tests not run: the previous releases are private GHCR images, and this PR's code would receive the token that reads them. The release pipeline's test-migrations runs them after the merge."
-
       # The script builds the PR's gateway itself (no SKIP_GATEWAY_BUILD), then migrates.
       - name: Run migration tests (PostgreSQL)
-        if: github.event.pull_request.head.repo.full_name == github.repository
         env:
           MIGRATION_FORK_IMAGES: ${{ github.repository_owner }}/bifrost
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./.github/workflows/scripts/run-migration-tests.sh postgres
 
       - name: Run migration tests (SQLite)
-        if: ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository }}
+        if: ${{ !cancelled() }}
         env:
           MIGRATION_FORK_IMAGES: ${{ github.repository_owner }}/bifrost
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./.github/workflows/scripts/run-migration-tests.sh sqlite
 
+  # A PR from another repository: no checkout, no package access, nothing of the PR's runs.
+  migrations-fork:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+    name: Migration tests (fork PR, after merge)
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          allowed-endpoints: >+
+
+      - name: The previous releases are private
+        run: |
+          echo "::notice::Migration tests not run for a fork's PR: the previous releases are private GHCR images, and the token that reads them would reach this PR's code. The release pipeline's test-migrations migrates it after the merge."
+
   # The one check to require on main: it fails unless every job above passed.
   go-unit-tests:
     if: always() && github.event_name == 'pull_request'
-    needs: [shard, fixture-folders, live-fake, agentgateway, migrations]
+    needs: [shard, fixture-folders, live-fake, agentgateway, migrations, migrations-fork]
     name: Go unit tests (offline)
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     timeout-minutes: 5
@@ -523,14 +536,18 @@ jobs:
           LIVE_FAKE: ${{ needs.live-fake.result }}
           AGENTGATEWAY: ${{ needs.agentgateway.result }}
           MIGRATIONS: ${{ needs.migrations.result }}
+          MIGRATIONS_FORK: ${{ needs.migrations-fork.result }}
+          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           echo "shards: $RESULT"
           echo "harness fixture folders: $FIXTURE_FOLDERS"
           echo "GPT Live (fake upstream): $LIVE_FAKE"
           echo "Agent Gateway e2e: $AGENTGATEWAY"
-          echo "Migration tests: $MIGRATIONS"
+          echo "Migration tests: $MIGRATIONS (fork PR notice: $MIGRATIONS_FORK)"
+          # A PR from this repository must pass the migrations; a fork's PR gets the notice job.
+          if [ "$SAME_REPO" = true ]; then migrations_ok=$MIGRATIONS; else migrations_ok=$MIGRATIONS_FORK; fi
           [ "$RESULT" = success ] && [ "$FIXTURE_FOLDERS" = success ] && [ "$LIVE_FAKE" = success ] &&
-            [ "$AGENTGATEWAY" = success ] && [ "$MIGRATIONS" = success ]
+            [ "$AGENTGATEWAY" = success ] && [ "$migrations_ok" = success ]
 
   warm-cache:
     if: github.event_name == 'push'
