@@ -73,6 +73,11 @@ func TestInternalJobContextKeepsSweeperInvariants(t *testing.T) {
 	if requestID, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string); !ok || requestID == "" {
 		t.Fatal("every sweeper call needs its own request id")
 	}
+	// Core's allowed_requests check exempts the sweeper's polls (TXE-7370), so a job a
+	// caller was allowed to create is still billed.
+	if exempt, ok := ctx.Value(schemas.BifrostContextKeyProviderJobAccounting).(bool); !ok || !exempt {
+		t.Fatal("the sweeper's polls must carry the job-accounting marker")
+	}
 }
 
 // Both job kinds poll through the same pinned context. An earlier revision gave

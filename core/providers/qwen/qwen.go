@@ -125,6 +125,15 @@ func (provider *QwenProvider) TextCompletionStream(ctx *schemas.BifrostContext, 
 
 // ChatCompletion performs a chat completion request to the Qwen API.
 func (provider *QwenProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Qwen, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
+		return nil, err
+	}
+	return provider.servedChatCompletion(ctx, key, request)
+}
+
+// servedChatCompletion is ChatCompletion without the allowed_requests check: Responses serves a
+// Responses request through it, and that request is checked as responses (TXE-7370).
+func (provider *QwenProvider) servedChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -177,7 +186,7 @@ func (provider *QwenProvider) ChatCompletionStream(ctx *schemas.BifrostContext, 
 
 // Responses performs a responses request to the Qwen API.
 func (provider *QwenProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+	chatResponse, err := provider.servedChatCompletion(ctx, key, request.ToChatRequest())
 	if err != nil {
 		return nil, err
 	}

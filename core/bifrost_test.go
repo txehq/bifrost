@@ -48,7 +48,6 @@ import (
 	"github.com/capsohq/bifrost/core/keyselectors"
 	"github.com/capsohq/bifrost/core/mcp"
 	"github.com/capsohq/bifrost/core/network"
-	mistralprovider "github.com/capsohq/bifrost/core/providers/mistral"
 	openaiprovider "github.com/capsohq/bifrost/core/providers/openai"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
@@ -627,63 +626,6 @@ func TestCreateBaseProvider_CustomTypesafeBase(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "unsupported base provider type") {
 		t.Fatalf("vertex is not a supported base provider, got err=%v", err)
-	}
-}
-
-func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
-	providerConfig := &schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        "http://127.0.0.1:1",
-			DefaultRequestTimeoutInSeconds: 1,
-		},
-		CustomProviderConfig: &schemas.CustomProviderConfig{
-			CustomProviderKey: "custom-mistral",
-			BaseProviderType:  schemas.Mistral,
-			AllowedRequests:   &schemas.AllowedRequests{},
-		},
-	}
-	provider := mistralprovider.NewMistralProvider(providerConfig, NewDefaultLogger(schemas.LogLevelError))
-	if provider.GetProviderKey() != schemas.ModelProvider("custom-mistral") {
-		t.Fatalf("expected custom provider key, got %q", provider.GetProviderKey())
-	}
-	bifrost := &Bifrost{}
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-
-	request := &ChannelMessage{
-		Context: ctx,
-		BifrostRequest: schemas.BifrostRequest{
-			RequestType: schemas.OCRRequest,
-			OCRRequest: &schemas.BifrostOCRRequest{
-				Model: "custom-mistral/mistral-ocr-latest",
-				Document: schemas.OCRDocument{
-					Type:        schemas.OCRDocumentTypeDocumentURL,
-					DocumentURL: Ptr("https://example.com/doc.pdf"),
-				},
-			},
-		},
-	}
-
-	response, err := bifrost.handleProviderRequest(provider, providerConfig, request, schemas.Key{}, nil)
-	if response != nil {
-		t.Fatalf("expected nil response, got %#v", response)
-	}
-	if err == nil {
-		t.Fatal("expected unsupported operation error, got nil")
-	}
-	if err.Error == nil {
-		t.Fatal("expected detailed error, got nil")
-	}
-	if err.Error.Code == nil || *err.Error.Code != "unsupported_operation" {
-		t.Fatalf("expected unsupported_operation code, got %#v", err.Error.Code)
-	}
-	if err.ExtraFields.Provider != schemas.ModelProvider("custom-mistral") {
-		t.Fatalf("expected custom provider name, got %q", err.ExtraFields.Provider)
-	}
-	if err.ExtraFields.RequestType != schemas.OCRRequest {
-		t.Fatalf("expected OCR request type, got %q", err.ExtraFields.RequestType)
-	}
-	if err.ExtraFields.OriginalModelRequested != "custom-mistral/mistral-ocr-latest" {
-		t.Fatalf("expected model to be preserved, got %q", err.ExtraFields.OriginalModelRequested)
 	}
 }
 
@@ -14680,14 +14622,9 @@ var allowedRequestsGateCalls = map[schemas.RequestType]resourceOverrideCall{
 
 // allowedRequestsGateGaps are the (base, request type) pairs that still reach the upstream with
 // the request type disabled, each with the ticket that closes it. The test fails on a stale
-// entry. TXE-7370 moves the check into core for every base.
-var allowedRequestsGateGaps = map[schemas.ModelProvider]map[schemas.RequestType]string{
-	schemas.DeepSeek: {schemas.ChatCompletionRequest: "TXE-7370"},
-	schemas.GLM:      {schemas.ChatCompletionRequest: "TXE-7370"},
-	schemas.Moonshot: {schemas.ChatCompletionRequest: "TXE-7370"},
-	schemas.Qwen:     {schemas.ChatCompletionRequest: "TXE-7370"},
-	schemas.XAI:      {schemas.ChatCompletionRequest: "TXE-7370", schemas.ModelRetrieveRequest: "TXE-7370"},
-}
+// entry. TXE-7370 closed the last ones; core also checks every request type before dispatch
+// (allowedrequests.go), so this list holds only a gap found later, with its ticket.
+var allowedRequestsGateGaps = map[schemas.ModelProvider]map[schemas.RequestType]string{}
 
 // TestCustomProviderAllowedRequestsGateEveryCall builds a custom provider of every base with
 // nothing in allowed_requests and sends every listed call. None may reach the upstream: a custom

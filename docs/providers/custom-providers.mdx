@@ -247,6 +247,26 @@ Available operations:
 - **`rerank`**: Document reranking via `/v1/rerank` (OpenAI-compatible base only)
 - **`decisions`**: Decision requests via `/v1/decisions`. A `typesafe` or `openai` base forwards every model to its upstream's decisions endpoint, and the upstream rejects a model it does not serve; set `decisions: false` here for an upstream that has no such endpoint. Other bases return `unsupported_operation`, or are emulated through the Responses API when `convert_decision_to_responses` is on. Leave that setting off if a custom provider serves decisions natively: the model catalog has no entries for custom providers, so with it on a decision model under an unrecognized name is diverted away from its native endpoint ([why](/features/compat-plugin#4-decision-to-responses-emulation)). See [Self-Hosted Decision Models](/providers/self-hosted-decision-models) for Laya and Nimble
 
+#### How the check is enforced
+
+Bifrost checks `allowed_requests` in one place, for every request type and every base provider, before it picks a key. A refused request returns `unsupported_operation` and makes no call to the upstream. Realtime, `live` and WebSocket Responses sessions are checked when they ask for a key, before they connect.
+
+The operation checked is the one sent upstream. When Bifrost serves a request through another API, the provider needs that API allowed:
+
+| The caller sends | Bifrost sends upstream | Needs |
+|---|---|---|
+| a text completion, with the compat plugin's text-to-chat conversion | a chat completion | `chat_completion` (`chat_completion_stream` when streamed) |
+| a chat completion, with the compat plugin's chat-to-responses conversion, or with `reasoning.mode` on an `openai` or `azure` base | a Responses request | `responses` (`responses_stream` when streamed) |
+| a Responses request, with the compat plugin's responses-to-chat conversion | a chat completion | `chat_completion` (`chat_completion_stream` when streamed) |
+| a decision, emulated through `convert_decision_to_responses` | a Responses request | `responses` |
+
+Requests Bifrost makes on its own behalf:
+
+- **`list_models`**: when it is not allowed, listing all models skips the provider, and the model catalog uses the static model datasheet for it.
+- **Billing a batch or a video job**: Bifrost polls the job's status and results (`batch_retrieve`, `batch_results`, `video_retrieve`, `video_download`) to bill it, and this central check does not refuse those polls, so a job a caller was allowed to create is billed. Some base providers also check these operations inside their own handlers and refuse a poll there; on those bases, allow the retrieve and results operations alongside `batch_create` or `video_generation`.
+- **A `live` session's backend calls**: a GPT Live session sends Responses requests on the caller's behalf, and they need `responses` allowed.
+- **Responses on the `deepseek`, `glm` and `qwen` bases**: these providers serve a Responses request through their own chat API. It needs only `responses` allowed, not `chat_completion`.
+
 ### Base Provider Types
 
 Custom providers can be built on these supported providers:

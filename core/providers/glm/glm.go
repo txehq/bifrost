@@ -131,6 +131,15 @@ func (provider *GLMProvider) TextCompletionStream(ctx *schemas.BifrostContext, p
 
 // ChatCompletion performs a chat completion request to the GLM API.
 func (provider *GLMProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.GLM, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
+		return nil, err
+	}
+	return provider.servedChatCompletion(ctx, key, request)
+}
+
+// servedChatCompletion is ChatCompletion without the allowed_requests check: Responses serves a
+// Responses request through it, and that request is checked as responses (TXE-7370).
+func (provider *GLMProvider) servedChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -183,7 +192,7 @@ func (provider *GLMProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 
 // Responses performs a responses request to the GLM API.
 func (provider *GLMProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+	chatResponse, err := provider.servedChatCompletion(ctx, key, request.ToChatRequest())
 	if err != nil {
 		return nil, err
 	}

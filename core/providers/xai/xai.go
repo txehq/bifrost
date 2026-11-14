@@ -96,6 +96,9 @@ func (provider *XAIProvider) ListModels(ctx *schemas.BifrostContext, keys []sche
 
 // ModelRetrieve retrieves a single model's metadata from the xAI API.
 func (provider *XAIProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.XAI, provider.customProviderConfig, schemas.ModelRetrieveRequest); err != nil {
+		return nil, err
+	}
 	if provider.networkConfig.BaseURL == "" {
 		return nil, providerUtils.NewConfigurationError("base_url is not set")
 	}
@@ -163,6 +166,9 @@ func (provider *XAIProvider) TextCompletionStream(ctx *schemas.BifrostContext, p
 
 // ChatCompletion performs a chat completion request to the xAI API.
 func (provider *XAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.XAI, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
+		return nil, err
+	}
 	response, bifrostErr := openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
