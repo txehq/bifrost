@@ -9755,6 +9755,13 @@ func TestInputVideoTokens_TXE7357(t *testing.T) {
 	batch := computeBatchTextCost(&emb, embUsage, serviceTier{})
 	require.NotNil(t, batch)
 	assert.InDelta(t, 400*1e-7+600*0.000006, batch.TotalCost, 1e-12)
+	// In a batch too, cached video is not moved to the video batch rate: with 400 of the 600 video
+	// tokens cached, only 200 fresh video tokens are.
+	cachedBatch := &schemas.BifrostLLMUsage{PromptTokens: 1000, TotalTokens: 1000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{VideoTokens: 600, CachedVideoTokens: 400, CachedReadTokens: 400}}
+	noCachedVideo := &schemas.BifrostLLMUsage{PromptTokens: 1000, TotalTokens: 1000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{VideoTokens: 200, CachedReadTokens: 400}}
+	assert.InDelta(t, computeBatchTextCost(&emb, noCachedVideo, serviceTier{}).TotalCost, computeBatchTextCost(&emb, cachedBatch, serviceTier{}).TotalCost, 1e-12)
 
 	// A vendor reporting more video tokens than the prompt has cannot price more than the prompt.
 	over := &schemas.BifrostLLMUsage{PromptTokens: 100, TotalTokens: 100, PromptTokensDetails: &schemas.ChatPromptTokensDetails{VideoTokens: 900}}

@@ -1321,8 +1321,9 @@ func computeBatchTokenCost(pricing *configstoreTables.TableModelPricing, usage *
 			}{
 				{d.AudioTokens, pricing.InputCostPerAudioTokenBatches, pricing.InputCostPerAudioToken},
 				{imageTokens, pricing.InputCostPerImageTokenBatches, pricing.InputCostPerImageToken},
-				// Video tokens at the video token batch rate (fork, TXE-7357).
-				{d.VideoTokens, pricing.InputCostPerVideoTokenBatches, pricing.InputCostPerVideoToken},
+				// Fresh video tokens at the video token batch rate (fork, TXE-7357); cached video is
+				// in CachedReadTokens and already priced at the cache-read batch rate.
+				{d.VideoTokens - d.CachedVideoTokens, pricing.InputCostPerVideoTokenBatches, pricing.InputCostPerVideoToken},
 			} {
 				tokens := min(max(m.tokens, 0), remaining)
 				if rate, ok := in.rate(m.explicit, m.synch); ok && tokens > 0 {
