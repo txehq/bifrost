@@ -20,7 +20,7 @@ const TITLE = (name) => `Quarantine rules › ${name}`
 
 // Runs the sample suite with the given list; returns the exit status, the reporter's output and
 // each test's outcome by title (expected, unexpected, flaky or skipped).
-function runSample(entries, { offline = true } = {}) {
+function runSample(entries, { offline = true, args = [] } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'quarantine-selftest-'))
   try {
     const list = join(dir, 'quarantine.json')
@@ -28,7 +28,7 @@ function runSample(entries, { offline = true } = {}) {
     writeFileSync(list, JSON.stringify(entries))
     const env = { ...process.env, E2E_QUARANTINE_FILE: list, QUARANTINE_SELFTEST_JSON: json, E2E_OFFLINE: offline ? '1' : '' }
     delete env.CI
-    const run = spawnSync('npx', ['playwright', 'test', '-c', 'selftest/playwright.quarantine.config.ts'], { cwd: E2E_ROOT, env, encoding: 'utf8' })
+    const run = spawnSync('npx', ['playwright', 'test', '-c', 'selftest/playwright.quarantine.config.ts', ...args], { cwd: E2E_ROOT, env, encoding: 'utf8' })
     const outcomes = {}
     const walk = (suite) => {
       for (const spec of suite.specs ?? []) {
@@ -71,6 +71,14 @@ test('an entry for a renamed test or a removed file fails the run and names it',
   assert.match(run.output, /\(TXE-1\) lists selftest\/quarantine\/rules\.spec\.ts :: Quarantine rules › a test that was renamed, which this run does not have/)
   assert.match(run.output, /\(TXE-2\) lists .* but selftest\/quarantine\/removed\.spec\.ts does not exist/)
   assert.notEqual(run.status, 0)
+})
+
+test('a filtered run does not call the listed tests it left out stale', () => {
+  const run = runSample({ 'TXE-1': entry('a listed test that fails', 'a listed test that passes') }, { args: ['--grep', 'a listed test that fails'] })
+  assert.equal(run.outcomes['a listed test that fails'], 'expected')
+  assert.equal(run.outcomes['a listed test that passes'], undefined)
+  assert.doesNotMatch(run.output, /which this run does not have/)
+  assert.equal(run.status, 0, run.output)
 })
 
 test('outside an offline run the list does nothing', () => {

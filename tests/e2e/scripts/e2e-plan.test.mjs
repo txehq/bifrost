@@ -4,7 +4,8 @@ import assert from 'node:assert/strict'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { packFiles, shardFiles, specFiles } from './e2e-plan.mjs'
+import { readFileSync } from 'node:fs'
+import { packFiles, shardFiles, shardWeight, specFiles } from './e2e-plan.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -34,6 +35,16 @@ test('the split depends on the files, not on the order they were listed in', () 
   for (const listing of [reversed, shuffled]) {
     for (const index of [1, 2]) assert.deepEqual(shardFiles(ROOT, listing, index, 2), shardFiles(ROOT, files, index, 2))
   }
+})
+
+test('shard-weights.json names only spec files that exist, and balances the two shards', () => {
+  const files = specFiles(ROOT)
+  const measured = JSON.parse(readFileSync(join(ROOT, 'shard-weights.json'), 'utf8'))
+  const stale = Object.keys(measured).filter((k) => !k.startsWith('_') && !files.includes(k))
+  assert.deepEqual(stale, [], 'remove these from shard-weights.json: the spec files are gone')
+  const weight = shardWeight(ROOT)
+  const [a, b] = [1, 2].map((i) => shardFiles(ROOT, files, i, 2).reduce((sum, f) => sum + weight(f), 0))
+  assert.ok(Math.abs(a - b) <= Math.max(a, b) * 0.25, `shard estimates ${a / 1000}s and ${b / 1000}s differ by more than a quarter`)
 })
 
 test('packFiles breaks weight ties by name and fills the lightest bin first', () => {

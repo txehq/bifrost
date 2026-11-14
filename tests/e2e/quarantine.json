@@ -55,7 +55,6 @@
       "MCP Registry - OpenAPI servers › Creation from a pasted document › does not create before the document was parsed",
       "MCP Registry - OpenAPI servers › Other document sources › parses the pasted document again after a URL was fetched",
       "MCP Registry - OpenAPI servers › Replacing the document › keeps the selection of operations that survive and adds the new ones",
-      "MCP Registry - OpenAPI servers › Replacing the document: credentials and provenance › clears a stored key whose scheme moved to the query string, even when the stored preview lands last",
       "MCP Registry - OpenAPI servers › Replacing the document: base URL › shows an invalid custom base URL at the input and does not save",
       "MCP Registry - OpenAPI servers › Filtering › filters the table by the OpenAPI connection type"
     ]

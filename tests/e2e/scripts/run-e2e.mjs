@@ -18,7 +18,7 @@ import { createServer } from 'node:http'
 import net from 'node:net'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { packFiles, shardFiles, specFiles, testCountWeight } from './e2e-plan.mjs'
+import { packFiles, shardFiles, shardWeight, specFiles } from './e2e-plan.mjs'
 
 const E2E_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const REPO_ROOT = resolve(E2E_ROOT, '../..')
@@ -103,11 +103,11 @@ function selectFiles(opts) {
 }
 
 // Spreads files over the workers (packFiles in e2e-plan.mjs). Weights are last run's durations;
-// unseen files are estimated from their test count.
+// files without one (every file on a fresh CI runner) take the checked-in shard weights.
 function schedule(files, requested) {
   const timings = existsSync(TIMINGS_FILE) ? JSON.parse(readFileSync(TIMINGS_FILE, 'utf8')) : {}
-  const byCount = testCountWeight(E2E_ROOT)
-  return packFiles(files, requested, (f) => timings[f] ?? byCount(f)).map((bin, i) => ({ name: `w${i + 1}`, port: BASE_PORT + i, ...bin }))
+  const fallback = shardWeight(E2E_ROOT)
+  return packFiles(files, requested, (f) => timings[f] ?? fallback(f)).map((bin, i) => ({ name: `w${i + 1}`, port: BASE_PORT + i, ...bin }))
 }
 
 function run(cmd, args, options = {}) {
@@ -352,7 +352,9 @@ async function main() {
       ...process.env,
       E2E_PLAN: PLAN_FILE,
       // Offline runs apply the quarantine (quarantine.ts); other runs ignore it.
-      E2E_OFFLINE: opts.offline ? '1' : '',      // Reruns are for debugging, so they keep traces and videos of failures.
+      E2E_OFFLINE: opts.offline ? '1' : '',
+      // A filtered run leaves tests out on purpose, so the quarantine reporter cannot call a missing title stale.
+      E2E_WHOLE_FILES: filters.length || opts.grep || opts.passthrough.length ? '0' : '1',      // Reruns are for debugging, so they keep traces and videos of failures.
       E2E_DEBUG_ARTIFACTS: opts.rerun ? '1' : (process.env.E2E_DEBUG_ARTIFACTS ?? ''),
       // Only full-file runs are representative enough to schedule the next run on.
       E2E_RECORD_TIMINGS: filters.length || opts.grep || opts.passthrough.length ? '0' : '1',

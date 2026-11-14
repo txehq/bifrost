@@ -34,8 +34,16 @@ export function packFiles(files, count, weight) {
   return bins
 }
 
+// A spec file's weight for the shard split: its measured seconds from the checked-in
+// shard-weights.json, in ms, else its test count. Checked in, so the same in every checkout.
+export function shardWeight(root) {
+  const measured = JSON.parse(readFileSync(join(root, 'shard-weights.json'), 'utf8'))
+  const byCount = testCountWeight(root)
+  return (file) => (typeof measured[file] === 'number' ? Math.max(1, measured[file]) * 1000 : byCount(file))
+}
+
 // Shard index (1-based) of total: the files that runner takes. Every runner computes the same
 // split from the same checkout, so the shards are disjoint and together hold every file.
 export function shardFiles(root, files, index, total) {
-  return packFiles(files, total, testCountWeight(root))[index - 1]?.files ?? []
+  return packFiles(files, total, shardWeight(root))[index - 1]?.files ?? []
 }
