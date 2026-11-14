@@ -139,6 +139,237 @@
       }
     },
     {
+      "name": "563.0c /v1/chat/completions the cached audio is billed at the cached-audio rate (fixture) - gemini/pp-cached-audio",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('geminiCachedAudioChatReq', 'e2e-gemini-cached-audio-0c-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the call through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var reqId = pm.collectionVariables.get('geminiCachedAudioChatReq');",
+              "// 1000 prompt tokens: 200 text and 800 audio, of which 600 cached (100 text, 500 audio), and 10 output:",
+              "// 100 uncached text x 3e-07 + 300 uncached audio x 1e-06 + 100 cached text x 3e-08 + 500 cached audio x 1e-07",
+              "// + 10 out x 2.5e-06. Without the split the cached audio took the text cache rate and the audio count included it.",
+              "var want = 0.000408;",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + reqId + '&limit=1', method: 'GET' }, function (err, res) {",
+              "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+              "    var logRow = rows.filter(function (r) { return r.id === reqId; })[0];",
+              "    if ((!logRow || !(logRow.cost > 0)) && tries > 0) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the call was logged under its request id', function () {",
+              "      pm.expect(logRow, err ? String(err) : res.text()).to.not.equal(undefined);",
+              "    });",
+              "    if (!logRow) { return; }",
+              "    pm.test('the cached audio is priced at the cached-audio rate', function () {",
+              "      pm.expect(Math.abs(logRow.cost - want), 'cost ' + logRow.cost + ' vs ' + want + '; token_usage: ' + JSON.stringify(logRow.token_usage)).to.be.at.most(Math.max(1e-9, want * 1e-6));",
+              "    });",
+              "  });",
+              "}",
+              "read(20);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{geminiCachedAudioChatReq}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"gemini/pp-cached-audio\", \"messages\": [{\"role\": \"user\", \"content\": \"hello\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "563.0d /v1/responses the cached audio is billed at the cached-audio rate (fixture) - gemini/pp-cached-audio",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('geminiCachedAudioResponsesReq', 'e2e-gemini-cached-audio-0d-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the call through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var reqId = pm.collectionVariables.get('geminiCachedAudioResponsesReq');",
+              "// 1000 prompt tokens: 200 text and 800 audio, of which 600 cached (100 text, 500 audio), and 10 output:",
+              "// 100 uncached text x 3e-07 + 300 uncached audio x 1e-06 + 100 cached text x 3e-08 + 500 cached audio x 1e-07",
+              "// + 10 out x 2.5e-06. Without the split the cached audio took the text cache rate and the audio count included it.",
+              "var want = 0.000408;",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + reqId + '&limit=1', method: 'GET' }, function (err, res) {",
+              "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+              "    var logRow = rows.filter(function (r) { return r.id === reqId; })[0];",
+              "    if ((!logRow || !(logRow.cost > 0)) && tries > 0) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the call was logged under its request id', function () {",
+              "      pm.expect(logRow, err ? String(err) : res.text()).to.not.equal(undefined);",
+              "    });",
+              "    if (!logRow) { return; }",
+              "    pm.test('the cached audio is priced at the cached-audio rate', function () {",
+              "      pm.expect(Math.abs(logRow.cost - want), 'cost ' + logRow.cost + ' vs ' + want + '; token_usage: ' + JSON.stringify(logRow.token_usage)).to.be.at.most(Math.max(1e-9, want * 1e-6));",
+              "    });",
+              "  });",
+              "}",
+              "read(20);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{geminiCachedAudioResponsesReq}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"gemini/pp-cached-audio\", \"input\": \"hello\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "563.0e /genai_passthrough/v1beta/models/{model}:generateContent the cached audio is billed at the cached-audio rate (fixture) - gemini/pp-cached-audio",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('geminiCachedAudioPassthroughReq', 'e2e-gemini-cached-audio-0e-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the call through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var reqId = pm.collectionVariables.get('geminiCachedAudioPassthroughReq');",
+              "// 1000 prompt tokens: 200 text and 800 audio, of which 600 cached (100 text, 500 audio), and 10 output:",
+              "// 100 uncached text x 3e-07 + 300 uncached audio x 1e-06 + 100 cached text x 3e-08 + 500 cached audio x 1e-07",
+              "// + 10 out x 2.5e-06. Without the split the cached audio took the text cache rate and the audio count included it.",
+              "var want = 0.000408;",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + reqId + '&limit=1', method: 'GET' }, function (err, res) {",
+              "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+              "    var logRow = rows.filter(function (r) { return r.id === reqId; })[0];",
+              "    if ((!logRow || !(logRow.cost > 0)) && tries > 0) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the call was logged under its request id', function () {",
+              "      pm.expect(logRow, err ? String(err) : res.text()).to.not.equal(undefined);",
+              "    });",
+              "    if (!logRow) { return; }",
+              "    pm.test('the cached audio is priced at the cached-audio rate', function () {",
+              "      pm.expect(Math.abs(logRow.cost - want), 'cost ' + logRow.cost + ' vs ' + want + '; token_usage: ' + JSON.stringify(logRow.token_usage)).to.be.at.most(Math.max(1e-9, want * 1e-6));",
+              "    });",
+              "  });",
+              "}",
+              "read(20);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{geminiCachedAudioPassthroughReq}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"contents\": [{\"role\": \"user\", \"parts\": [{\"text\": \"hello\"}]}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/pp-cached-audio:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai_passthrough",
+            "v1beta",
+            "models",
+            "pp-cached-audio:generateContent"
+          ]
+        }
+      }
+    },
+    {
       "name": "563.1 Setup - Create VK for the cached-audio override - openai/override-only",
       "event": [
         {

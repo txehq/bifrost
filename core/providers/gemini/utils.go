@@ -1356,6 +1356,9 @@ func ConvertGeminiUsageMetadataToResponsesUsage(metadata *GenerateContentRespons
 		}
 	}
 	usage.InputTokensDetails.CachedVideoTokens = geminiCachedVideoTokens(metadata)
+	// The modality split of the cached tokens, read as on the chat path, so cached audio on
+	// /v1/responses and native generateContent passthrough is priced at its own rate (TXE-7361).
+	usage.InputTokensDetails.CachedReadTokenDetails = geminiCachedReadTokenDetails(metadata.CacheTokensDetails)
 	usage.ToolUsePromptTokens = int(metadata.ToolUsePromptTokenCount)
 	usage.ToolUsePromptTokensDetails = convertGeminiToolUsePromptTokensDetails(metadata.ToolUsePromptTokensDetails)
 

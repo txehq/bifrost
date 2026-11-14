@@ -180,14 +180,10 @@ func extractGeminiGenerateContentUsage(body []byte) *schemas.BifrostPassthroughU
 		CompletionTokens: ru.OutputTokens,
 		TotalTokens:      ru.TotalTokens,
 	}
-	if ru.InputTokensDetails != nil {
-		usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-			CachedReadTokens: ru.InputTokensDetails.CachedReadTokens,
-			TextTokens:       ru.InputTokensDetails.TextTokens,
-			AudioTokens:      ru.InputTokensDetails.AudioTokens,
-			ImageTokens:      ru.InputTokensDetails.ImageTokens,
-		}
-	}
+	// Every input detail, through the shared conversion: a hand-written copy here kept only text,
+	// audio, image and the cached total, so passthrough dropped video, cached video and the
+	// cached modality split that cached audio is priced from (TXE-7361).
+	usage.PromptTokensDetails = ru.InputTokensDetails.ToChatPromptTokensDetails()
 	if ru.OutputTokensDetails != nil {
 		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 			ReasoningTokens: ru.OutputTokensDetails.ReasoningTokens,

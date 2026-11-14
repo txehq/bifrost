@@ -527,6 +527,12 @@ const fixturePricing = {
 		input_cost_per_token: 3e-7, output_cost_per_token: 2.5e-6, input_cost_per_token_priority: 5.4e-7, output_cost_per_token_priority: 4.5e-6,
 		input_cost_per_audio_token: 1e-6, input_cost_per_audio_token_priority: 1.8e-6,
 	},
+	// TXE-7361: a Gemini model with a cached-audio rate, for folder 563's Gemini cost rows.
+	"pp-cached-audio": {
+		provider: "gemini", mode: "chat",
+		input_cost_per_token: 3e-7, output_cost_per_token: 2.5e-6, input_cost_per_audio_token: 1e-6,
+		cache_read_input_token_cost: 3e-8, cache_read_input_audio_token_cost: 1e-7,
+	},
 	// TXE-7361: gpt-realtime-mini's live text, audio and cached-audio rates, for folder 563's cost row.
 	"upstream-cached-audio": {
 		provider: "openai", mode: "chat",
@@ -792,7 +798,19 @@ const geminiTranscript = {
 	candidates: [{ index: 0, finishReason: "STOP", content: { role: "model", parts: [{ text: "hello from the fixture" }] } }],
 	usageMetadata: { promptTokenCount: 40, candidatesTokenCount: 5, totalTokenCount: 45, promptTokensDetails: [{ modality: "AUDIO", tokenCount: 32 }, { modality: "TEXT", tokenCount: 8 }] },
 };
+// TXE-7361: a Gemini answer whose cached tokens are split by modality (cacheTokensDetails), so the
+// cached audio is priced at the cached-audio rate on chat, /v1/responses and native passthrough.
+const geminiCachedAudio = {
+	candidates: [{ content: { role: "model", parts: [{ text: "hi" }] }, finishReason: "STOP" }],
+	usageMetadata: {
+		promptTokenCount: 1000, candidatesTokenCount: 10, totalTokenCount: 1010, cachedContentTokenCount: 600,
+		promptTokensDetails: [{ modality: "TEXT", tokenCount: 200 }, { modality: "AUDIO", tokenCount: 800 }],
+		cacheTokensDetails: [{ modality: "TEXT", tokenCount: 100 }, { modality: "AUDIO", tokenCount: 500 }],
+	},
+	modelVersion: "pp-cached-audio",
+};
 const geminiAudioFrames = {
+	"pp-cached-audio": [geminiCachedAudio],
 	"pp-tts-ok": [geminiSpeechAudioChunk, geminiSpeechFinal],
 	"pp-tts-blocked": [geminiPromptBlocked],
 	"pp-tts-truncated": [geminiSpeechAudioChunk],
