@@ -3726,6 +3726,36 @@ func TestConvertGeminiUsageMetadataKeepsTheCachedModalitySplit(t *testing.T) {
 	assert.Nil(t, plain.PromptTokensDetails.CachedReadTokenDetails)
 }
 
+// TXE-7361: the same split on the /v1/responses route (ToResponsesBifrostResponsesResponse) and
+// on native generateContent passthrough accounting, which both read Gemini usage through the
+// Responses converter.
+func TestGeminiCachedModalitySplitOnResponsesAndPassthrough(t *testing.T) {
+	body := `{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}],` +
+		`"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":10,"totalTokenCount":1010,"cachedContentTokenCount":600,` +
+		`"promptTokensDetails":[{"modality":"TEXT","tokenCount":200},{"modality":"AUDIO","tokenCount":800}],` +
+		`"cacheTokensDetails":[{"modality":"TEXT","tokenCount":100},{"modality":"AUDIO","tokenCount":500}]},"modelVersion":"gemini-2.5-flash"}`
+
+	var response gemini.GenerateContentResponse
+	require.NoError(t, schemas.Unmarshal([]byte(body), &response))
+	responses := response.ToResponsesBifrostResponsesResponse()
+	require.NotNil(t, responses.Usage)
+	require.NotNil(t, responses.Usage.InputTokensDetails)
+	split := responses.Usage.InputTokensDetails.CachedReadTokenDetails
+	require.NotNil(t, split, "/v1/responses keeps the cached modality split")
+	assert.Equal(t, 500, split.AudioTokens)
+	assert.Equal(t, 100, split.TextTokens)
+
+	passthrough := gemini.ExtractGeminiPassthroughUsage("/v1beta/models/gemini-2.5-flash:generateContent", nil, []byte(body))
+	require.NotNil(t, passthrough)
+	require.NotNil(t, passthrough.LLMUsage)
+	details := passthrough.LLMUsage.PromptTokensDetails
+	require.NotNil(t, details)
+	assert.Equal(t, 600, details.CachedReadTokens)
+	assert.Equal(t, 800, details.AudioTokens)
+	require.NotNil(t, details.CachedReadTokenDetails, "native passthrough keeps the cached modality split")
+	assert.Equal(t, 500, details.CachedReadTokenDetails.AudioTokens)
+}
+
 // BenchmarkConvertGeminiUsageMetadataToChatUsage measures the usage conversion every Gemini
 // and Vertex chat response and streamed usage frame runs (TXE-6535): a text-only response,
 // the common case, and one with video, document and tool-use prompt tokens.
