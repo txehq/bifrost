@@ -99,7 +99,8 @@ test.describe("Providers", () => {
       await providersPage.selectProvider("voyage");
       await expect(providersPage.page).toHaveURL(/provider=voyage/);
       await providersPage.addKeyBtn.click();
-      await expect(providersPage.page.getByTestId("key-value-input")).toBeVisible();
+      // The key form has no key-value-input test id; the other key tests find the field by its label (TXE-7400).
+      await expect(providersPage.page.getByLabel("API Key")).toBeVisible();
       await providersPage.keyCancelBtn.click();
     });
 
