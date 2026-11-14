@@ -732,6 +732,9 @@ type VideoAccountingDebug struct {
 	Mode         string `json:"mode,omitempty"`
 	VideoInput   *bool  `json:"video_input,omitempty"`
 	OutputTokens *int   `json:"output_tokens,omitempty"`
+	// InputImages is how many images the job sent as input (first frame, last frame, reference
+	// images); those beyond the row's free allowance are billed per image (fork, TXE-7409).
+	InputImages *int `json:"input_images,omitempty"`
 	// OutputCount is how many clips the job returned; the per-second rate is
 	// multiplied by it.
 	OutputCount int `json:"output_count,omitempty"`

@@ -3,6 +3,7 @@ package datasheet
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -616,7 +617,7 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	// that reports nothing still owes one query. Vertex returns no usage on rerank at all, and
 	// treating that as free would silently under-report every one of its calls.
 	if requestType != schemas.RerankRequest &&
-		input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.videoOutputTokens == nil && input.videoCount == 0 && input.audioTextInputChars == 0 && input.ocrProcessedPages == nil && input.containerIdentifierString == "" && input.embeddingVideoSeconds == 0 {
+		input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.videoOutputTokens == nil && input.videoCount == 0 && input.videoInputImages == 0 && input.audioTextInputChars == 0 && input.ocrProcessedPages == nil && input.containerIdentifierString == "" && input.embeddingVideoSeconds == 0 {
 		return nil
 	}
 
@@ -755,7 +756,7 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		// The response carries neither the mode nor the video input either; it carries the
 		// output video tokens and the input video seconds the vendor billed (TXE-7357).
 		cost = computeVideoCost(pricing, input.usage, input.videoSeconds, input.videoSize, input.videoCount, VideoPricedWithAudio(routingInfo.Provider, nil),
-			videoJob{videoInput: input.videoInputSeconds, outputTokens: input.videoOutputTokens,
+			videoJob{videoInput: input.videoInputSeconds, outputTokens: input.videoOutputTokens, inputImages: input.videoInputImages,
 				inputVideoRateExempt: !videoInputRateApplies(requestType, routingInfo.Provider)}, input.tier)
 	case schemas.OCRRequest:
 		cost = computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
@@ -958,6 +959,9 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 				input.videoOutputTokens = &tokens
 			}
 			input.videoInputSeconds = video.Usage.InputSeconds != nil && *video.Usage.InputSeconds > 0
+			if video.Usage.InputImages != nil && *video.Usage.InputImages > 0 {
+				input.videoInputImages = *video.Usage.InputImages
+			}
 		}
 
 	case result.OCRResponse != nil:
@@ -2302,6 +2306,10 @@ type videoJob struct {
 	// input (videoInputRateApplies): it owes no input_cost_per_video_per_second (fork, TXE-7351).
 	// The zero value charges the rate.
 	inputVideoRateExempt bool
+	// inputImages is how many images the job sent the vendor as input (first frame, last frame,
+	// reference images). Those beyond the row's free_input_images are billed at
+	// input_cost_per_image (fork, TXE-7409).
+	inputImages int
 }
 
 // computeVideoCost handles video generation, remix and edit requests.
@@ -2309,6 +2317,10 @@ type videoJob struct {
 //
 // The per-second input fallback (input_cost_per_video_per_second) is charged on videoSeconds
 // unless job.inputVideoRateExempt (fork, TXE-7351).
+//
+// A job priced by prompt tokens has its input images in those tokens. Any other job also pays
+// input_cost_per_image for each input image beyond the row's free_input_images (fork, TXE-7409):
+// MiniMax-H3 charges 0.04 per image beyond the first five.
 //
 // Output, most specific first (fork, TXE-7357): the output video tokens the vendor reported,
 // on a model priced per video token (Seedance, Gemini Omni); completion tokens; a per-clip
@@ -2322,10 +2334,13 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 	inputCost := 0.0
 	if usage != nil && usage.PromptTokens > 0 {
 		inputCost = float64(usage.PromptTokens) * tieredInputRate(pricing, tierTokens, tier)
-	} else if !job.inputVideoRateExempt && videoSeconds != nil && *videoSeconds > 0 {
-		if rate := tieredVideoInputPerSecondRate(pricing, tierTokens); rate > 0 {
-			inputCost = float64(*videoSeconds) * rate
+	} else {
+		if !job.inputVideoRateExempt && videoSeconds != nil && *videoSeconds > 0 {
+			if rate := tieredVideoInputPerSecondRate(pricing, tierTokens); rate > 0 {
+				inputCost = float64(*videoSeconds) * rate
+			}
 		}
+		inputCost += videoInputImageCost(pricing, job.inputImages)
 	}
 
 	// Output: video tokens, then completion tokens, then a clip price or the per-second rate.
@@ -2352,6 +2367,23 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 	}
 
 	return newInputOutputCost(inputCost, outputCost)
+}
+
+// videoInputImageCost is the charge for a video job's input images: input_cost_per_image for each
+// image beyond free_input_images (fork, TXE-7409). A row with no free allowance charges every image;
+// a row with no image rate charges none.
+func videoInputImageCost(pricing *configstoreTables.TableModelPricing, images int) float64 {
+	if images <= 0 || pricing.InputCostPerImage == nil || *pricing.InputCostPerImage <= 0 {
+		return 0
+	}
+	free := 0
+	if pricing.FreeInputImages != nil && *pricing.FreeInputImages > 0 {
+		free = int(math.Floor(*pricing.FreeInputImages))
+	}
+	if images <= free {
+		return 0
+	}
+	return float64(images-free) * *pricing.InputCostPerImage
 }
 
 // videoClipRate returns the price of one clip of the given resolution band and length

@@ -254,6 +254,7 @@ type PricingEntry struct {
     OutputCostPerVideoToken        *float64 `json:"output_cost_per_video_token,omitempty"`
     OutputCostPerVideo768p6s       *float64 `json:"output_cost_per_video_768p_6s,omitempty"`
     OutputCostPerVideoPerSecondPro *float64 `json:"output_cost_per_video_per_second_pro,omitempty"`
+    FreeInputImages                *float64 `json:"free_input_images,omitempty"` // input images free before input_cost_per_image
 
     // Costs - Other
     SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`

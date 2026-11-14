@@ -4030,6 +4030,25 @@ func TestUpsertModelPricesBatch_GuardrailUnitRates_SurviveResync(t *testing.T) {
 	}
 }
 
+// TestUpsertModelPricesBatch_FreeInputImages_SurvivesResync (TXE-7409): the second sync of an
+// existing row updates free_input_images (pricingSyncUpdateColumns).
+func TestUpsertModelPricesBatch_FreeInputImages_SurvivesResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+	ctx := context.Background()
+	free := func(f float64) *float64 { return &f }
+	pricing := []tables.TableModelPricing{{Model: "MiniMax-H3", Provider: "minimax", Mode: "video_generation", FreeInputImages: free(5)}}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+	pricing[0].FreeInputImages = free(2)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].FreeInputImages)
+	assert.InDelta(t, 2, *got[0].FreeInputImages, 1e-12)
+}
+
 func TestUpsertModelPricesBatch_WebSearchCostPerRequest_SurvivesResync(t *testing.T) {
 	s := setupRDBTestStore(t)
 	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))

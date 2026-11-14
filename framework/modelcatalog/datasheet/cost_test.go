@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"context"
@@ -17,6 +18,7 @@ import (
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/providers/minimax"
+	"github.com/capsohq/bifrost/core/providers/xai"
 	"github.com/capsohq/bifrost/core/schemas"
 	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
@@ -10454,4 +10456,280 @@ func BenchmarkCalculateCost_PassthroughEmbeddings(b *testing.B) {
 			_ = s.CalculateCost(video, nil)
 		}
 	})
+}
+
+// TestCalculateVideoCostDetails_InputImagesBeyondTheFreeAllowance (TXE-7409): MiniMax-H3 charges
+// $0.04 per input image beyond the first five. The committed upstream row publishes the allowance
+// only under provider_specific_entry, so this also pins that it is read at sync. Without the fix
+// every count prices at the bare clip price, 0.78.
+func TestCalculateVideoCostDetails_InputImagesBeyondTheFreeAllowance(t *testing.T) {
+	store, rows := resolutionBandStore(t)
+	row := rows["minimax/MiniMax-H3"]
+	require.NotNil(t, row.FreeInputImages, "free_input_images is read from provider_specific_entry.minimax_free_input_images")
+	require.InDelta(t, 5, *row.FreeInputImages, 1e-9)
+	require.NotNil(t, row.InputCostPerImage)
+	require.InDelta(t, 0.04, *row.InputCostPerImage, 1e-9)
+	for _, tc := range []struct {
+		name   string
+		images *int
+		want   float64
+	}{
+		{name: "no images", images: nil, want: 0.78},
+		{name: "five images are free", images: bifrost.Ptr(5), want: 0.78},
+		{name: "eight images pay for three", images: bifrost.Ptr(8), want: 0.78 + 3*0.04},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seconds := 6
+			details := store.CalculateVideoCostDetails(VideoPricingDimensions{
+				Model: row.Model, RequestType: schemas.VideoGenerationRequest, Seconds: &seconds,
+				Resolution: "2K", OutputCount: 1, InputImages: tc.images,
+			}, schemas.MiniMax, nil)
+			require.True(t, details.Priced)
+			assert.InDelta(t, tc.want, details.Cost, 1e-9)
+		})
+	}
+}
+
+// TestComputeVideoCost_InputImageCharge (TXE-7409): images beyond free_input_images pay
+// input_cost_per_image; a row with no allowance charges every image (xAI); a row with no image rate
+// charges none; a job priced by prompt tokens has its images in those tokens.
+func TestComputeVideoCost_InputImageCharge(t *testing.T) {
+	seconds := 6
+	for _, tc := range []struct {
+		name   string
+		rate   *float64
+		free   *float64
+		images int
+		usage  *schemas.BifrostLLMUsage
+		want   float64
+	}{
+		{name: "MiniMax-H3-Max: two free, five sent", rate: bifrost.Ptr(0.074), free: bifrost.Ptr(2.0), images: 5, want: 3 * 0.074},
+		{name: "within the allowance", rate: bifrost.Ptr(0.074), free: bifrost.Ptr(2.0), images: 2, want: 0},
+		{name: "xAI: no allowance, every image", rate: bifrost.Ptr(0.01), images: 3, want: 3 * 0.01},
+		{name: "no image rate", free: bifrost.Ptr(2.0), images: 9, want: 0},
+		{name: "priced by prompt tokens", rate: bifrost.Ptr(0.01), images: 3, usage: &schemas.BifrostLLMUsage{PromptTokens: 10}, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := configstoreTables.TableModelPricing{
+				InputCostPerImage: tc.rate, FreeInputImages: tc.free,
+				InputCostPerToken: bifrost.Ptr(0.0), OutputCostPerSecond: bifrost.Ptr(0.10),
+			}
+			cost := computeVideoCost(&p, tc.usage, &seconds, "", 1, false, videoJob{inputImages: tc.images}, serviceTier{})
+			require.NotNil(t, cost)
+			assert.InDelta(t, tc.want, cost.InputCost, 1e-9)
+			assert.InDelta(t, tc.want+0.60, cost.TotalCost, 1e-9)
+		})
+	}
+}
+
+// TestCalculateCost_VideoReportsItsInputImages (TXE-7409): the per-request path prices the input
+// images a completed video response reports in usage.input_images.
+func TestCalculateCost_VideoReportsItsInputImages(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("MiniMax-H3", "minimax", "video_generation"): {
+			Model: "MiniMax-H3", Provider: "minimax", Mode: "video_generation",
+			OutputCostPerSecond: bifrost.Ptr(0.08), InputCostPerImage: bifrost.Ptr(0.04), FreeInputImages: bifrost.Ptr(5.0),
+		},
+	})
+	resp := func(images *int) *schemas.BifrostResponse {
+		r := &schemas.BifrostResponse{VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			Status:  schemas.VideoStatusCompleted,
+			Seconds: bifrost.Ptr("6"),
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.VideoGenerationRequest,
+				RoutingInfo: routingInfoFor(schemas.MiniMax, "MiniMax-H3"),
+			},
+		}}
+		if images != nil {
+			r.VideoGenerationResponse.Usage = &schemas.VideoUsage{InputImages: images}
+		}
+		return r
+	}
+	assert.InDelta(t, 0.48, s.CalculateCost(resp(nil), nil), 1e-9)
+	assert.InDelta(t, 0.48, s.CalculateCost(resp(bifrost.Ptr(5)), nil), 1e-9)
+	assert.InDelta(t, 0.48+3*0.04, s.CalculateCost(resp(bifrost.Ptr(8)), nil), 1e-9)
+}
+
+// TestVideoRequestInputImages (TXE-7409) counts the first frame, the last frame and the reference
+// images, from the typed fields or, where a handler kept them, the extra params.
+func TestVideoRequestInputImages(t *testing.T) {
+	first := &schemas.VideoGenerationInput{Prompt: "p", InputReference: bifrost.Ptr("https://x/first.png")}
+	for _, tc := range []struct {
+		name      string
+		provider  schemas.ModelProvider
+		input     *schemas.VideoGenerationInput
+		lastFrame string
+		refs      []string
+		extra     map[string]any
+		want      int
+	}{
+		{name: "nothing", want: 0},
+		{name: "first frame", input: first, want: 1},
+		{name: "first and last frame, typed", input: first, lastFrame: "https://x/last.png", want: 2},
+		{name: "typed fields also kept in extra are counted once", input: first, lastFrame: "https://x/last.png",
+			refs: []string{"a", "b"}, extra: map[string]any{"last_frame": "https://x/last.png", "reference_images": []any{"a", "b"}}, want: 4},
+		{name: "reference images from extra", extra: map[string]any{"reference_images": []any{"a", "b", "c", "d", "e", "f", "g", "h"}}, want: 8},
+		{name: "reference images as strings", extra: map[string]any{"reference_images": []string{"a", "", "c"}}, want: 2},
+		{name: "a bare string is not a reference image list", extra: map[string]any{"reference_images": "a"}, want: 0},
+		{name: "xAI's own first frame", provider: schemas.XAI, extra: map[string]any{"image": map[string]any{"url": "https://x/f.png"}}, want: 1},
+		{name: "input_reference wins over xAI's own first frame", provider: schemas.XAI, input: first, extra: map[string]any{"image": "https://x/f.png"}, want: 1},
+		{name: "another provider's unknown image field", provider: schemas.MiniMax, extra: map[string]any{"image": map[string]any{"url": "https://x/f.png"}}, want: 0},
+		{name: "xAI's object last frame", extra: map[string]any{"last_frame": map[string]any{"url": "https://x/l.png"}}, want: 1},
+		{name: "xAI's object reference images", extra: map[string]any{"reference_images": []any{map[string]any{"url": "https://x/1.png"}, map[string]any{"url": ""}, map[string]any{"uri": "x"}}}, want: 1},
+		{name: "blank values", input: &schemas.VideoGenerationInput{InputReference: bifrost.Ptr(" ")}, extra: map[string]any{"last_frame": "", "reference_images": []any{""}}, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, VideoRequestInputImages(tc.provider, tc.input, tc.lastFrame, tc.refs, tc.extra))
+		})
+	}
+}
+
+// TestVideoInputImagesSurviveMergeAndResponse (TXE-7409): a vendor's reported count wins over the
+// request's, and a response that reports none keeps the request's.
+func TestVideoInputImagesSurviveMergeAndResponse(t *testing.T) {
+	captured := VideoPricingDimensions{InputImages: bifrost.Ptr(8)}
+	assert.Equal(t, 8, *captured.MergedWith(VideoPricingDimensions{}).InputImages)
+	reported := VideoDimensionsFromResponse(&schemas.BifrostVideoGenerationResponse{Usage: &schemas.VideoUsage{InputImages: bifrost.Ptr(6)}})
+	assert.Equal(t, 6, *captured.MergedWith(reported).InputImages)
+}
+
+// TestEntryUnmarshal_ProviderSpecificFreeInputImages (TXE-7409): MiniMax's allowance under
+// provider_specific_entry fills free_input_images; a flat free_input_images wins.
+func TestEntryUnmarshal_ProviderSpecificFreeInputImages(t *testing.T) {
+	var nested Entry
+	require.NoError(t, json.Unmarshal([]byte(`{"provider":"minimax","mode":"video_generation","provider_specific_entry":{"minimax_free_input_images":2}}`), &nested))
+	require.NotNil(t, nested.FreeInputImages)
+	assert.InDelta(t, 2, *nested.FreeInputImages, 1e-9)
+	var flat Entry
+	require.NoError(t, json.Unmarshal([]byte(`{"provider":"minimax","mode":"video_generation","free_input_images":4,"provider_specific_entry":{"minimax_free_input_images":2}}`), &flat))
+	assert.InDelta(t, 4, *flat.FreeInputImages, 1e-9)
+	back := convertTablePricingToEntry(bifrost.Ptr(convertEntryToTablePricing("minimax/MiniMax-H3", nested)))
+	require.NotNil(t, back.FreeInputImages)
+	assert.InDelta(t, 2, *back.FreeInputImages, 1e-9)
+}
+
+// videoInputImageConverters are the video converters of the providers whose datasheet rows price
+// input images (input_cost_per_image on a video_generation row: MiniMax-H3 and xAI
+// grok-imagine-video, 14 Nov 2026). Each returns how many images the body it builds sends.
+var videoInputImageConverters = map[schemas.ModelProvider]func(*schemas.BifrostVideoGenerationRequest) (int, error){
+	schemas.MiniMax: func(r *schemas.BifrostVideoGenerationRequest) (int, error) {
+		body, err := minimax.ToMiniMaxVideoGenerationRequest(r)
+		if err != nil {
+			return 0, err
+		}
+		n := 0
+		for _, item := range body.Content {
+			if item.Type == "image_url" {
+				n++
+			}
+		}
+		return n, nil
+	},
+	schemas.XAI: func(r *schemas.BifrostVideoGenerationRequest) (int, error) {
+		body, err := xai.ToXAIVideoGenerationRequest(r)
+		if err != nil {
+			return 0, err
+		}
+		// The extra params are merged into the body as they are, so an unconverted copy is sent too.
+		n := len(body.ReferenceImages)
+		if body.Image != nil || presentImage(body.ExtraParams["image"]) {
+			n++
+		}
+		if body.LastFrame != nil || presentImage(body.ExtraParams["last_frame"]) {
+			n++
+		}
+		if refs, ok := body.ExtraParams["reference_images"].([]any); ok {
+			for _, ref := range refs {
+				if presentImage(ref) {
+					n++
+				}
+			}
+		}
+		return n, nil
+	},
+}
+
+// TestVideoRequestInputImagesMatchWhatTheConvertersSend (TXE-7409) is the class check for the input
+// image count: for every provider that prices input images, each request shape is counted as
+// exactly the images its converter sends. A count above it bills images the vendor never received
+// (a Go SDK request's typed reference_images, which MiniMax read only from the extra params); one
+// below it lets a job's images go unbilled.
+func TestVideoRequestInputImagesMatchWhatTheConvertersSend(t *testing.T) {
+	first := func() *schemas.VideoGenerationInput {
+		return &schemas.VideoGenerationInput{Prompt: "p", InputReference: bifrost.Ptr("https://x/first.png")}
+	}
+	text := func() *schemas.VideoGenerationInput { return &schemas.VideoGenerationInput{Prompt: "p"} }
+	refs := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = fmt.Sprintf("https://x/r%d.png", i)
+		}
+		return out
+	}
+	asAny := func(in []string) []any {
+		out := make([]any, len(in))
+		for i, v := range in {
+			out[i] = v
+		}
+		return out
+	}
+	for name, build := range map[string]func() *schemas.BifrostVideoGenerationRequest{
+		"text only": func() *schemas.BifrostVideoGenerationRequest {
+			return &schemas.BifrostVideoGenerationRequest{Input: text()}
+		},
+		"first frame, nil params": func() *schemas.BifrostVideoGenerationRequest {
+			return &schemas.BifrostVideoGenerationRequest{Input: first()}
+		},
+		"first and typed last frame": func() *schemas.BifrostVideoGenerationRequest {
+			return &schemas.BifrostVideoGenerationRequest{Input: first(), Params: &schemas.VideoGenerationParameters{LastFrame: "https://x/last.png"}}
+		},
+		"last frame only in extra": func() *schemas.BifrostVideoGenerationRequest {
+			return &schemas.BifrostVideoGenerationRequest{Input: first(), Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"last_frame": "https://x/last.png"}}}
+		},
+		"typed reference images, no extra copy (Go SDK)": func() *schemas.BifrostVideoGenerationRequest {
+			return &schemas.BifrostVideoGenerationRequest{Input: text(), Params: &schemas.VideoGenerationParameters{ReferenceImages: refs(8)}}
+		},
+		"typed reference images with the handlers' extra copy": func() *schemas.BifrostVideoGenerationRequest {
+			return &schemas.BifrostVideoGenerationRequest{Input: text(), Params: &schemas.VideoGenerationParameters{
+				ReferenceImages: refs(3), ExtraParams: map[string]any{"reference_images": asAny(refs(3))}}}
+		},
+		"reference images only in extra": func() *schemas.BifrostVideoGenerationRequest {
+			return &schemas.BifrostVideoGenerationRequest{Input: text(), Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"reference_images": asAny(refs(6))}}}
+		},
+		// xAI's own first frame, with no input_reference: xAI sends it, MiniMax passes it as an
+		// unknown field.
+		"native image in extra": func() *schemas.BifrostVideoGenerationRequest {
+			return &schemas.BifrostVideoGenerationRequest{Input: text(), Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"image": map[string]any{"url": "https://x/first.png"}}}}
+		},
+		// xAI's own object form, which only the extra params can carry (the typed fields are strings).
+		"object last frame in extra": func() *schemas.BifrostVideoGenerationRequest {
+			return &schemas.BifrostVideoGenerationRequest{Input: first(), Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"last_frame": map[string]any{"url": "https://x/last.png"}}}}
+		},
+		"object reference images in extra": func() *schemas.BifrostVideoGenerationRequest {
+			return &schemas.BifrostVideoGenerationRequest{Input: text(), Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"reference_images": []any{
+				map[string]any{"url": "https://x/r1.png"}, map[string]any{"url": "https://x/r2.png"}}}}}
+		},
+	} {
+		for provider, convert := range videoInputImageConverters {
+			t.Run(name+"/"+string(provider), func(t *testing.T) {
+				req := build()
+				req.Provider, req.Model = provider, "m"
+				sent, err := convert(req)
+				if provider == schemas.MiniMax && strings.HasPrefix(name, "object ") {
+					// MiniMax takes only strings: it refuses the object form rather than drop it, and
+					// a refused request never reaches the vendor or settles.
+					require.Error(t, err, "MiniMax must refuse an image form it cannot send")
+					return
+				}
+				require.NoError(t, err)
+				var lastFrame string
+				var typedRefs []string
+				var extra map[string]any
+				if p := build().Params; p != nil {
+					lastFrame, typedRefs, extra = string(p.LastFrame), p.ReferenceImages, p.ExtraParams
+				}
+				assert.Equal(t, sent, VideoRequestInputImages(provider, build().Input, lastFrame, typedRefs, extra))
+			})
+		}
+	}
 }

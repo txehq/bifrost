@@ -939,6 +939,7 @@ func videoPricingFromRequest(provider string, req *schemas.BifrostRequest) *mode
 	dims.Audio = copyPtr(dims.Audio)
 	dims.UpscaleFactor = copyPtr(dims.UpscaleFactor)
 	dims.TargetMegapixels = copyPtr(dims.TargetMegapixels)
+	// dims.InputImages is a count computed here, never a pointer into the request: no copy needed.
 	return &dims
 }
 
@@ -964,7 +965,7 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 	switch params := entry.ParamsParsed.(type) {
 	case *schemas.VideoGenerationParameters:
 		if params == nil {
-			return dims
+			break
 		}
 		dims.Size = params.Size
 		// The typed tier only. A tier in extra_params stays in Extra (captured below), so pricing
@@ -984,11 +985,6 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 		if len(params.ExtraParams) > 0 {
 			dims.Extra = params.ExtraParams
 		}
-		// A video input prices Seedance at its band's video-input rate (TXE-7357). Kling's
-		// mode is read from Extra at pricing time (VideoPricingDimensions.PricedMode).
-		if modelcatalog.VideoRequestHasVideoInput(schemas.ModelProvider(entry.Provider), entry.VideoGenerationInputParsed, params.ExtraParams) {
-			dims.VideoInput = schemas.Ptr(true)
-		}
 	case *schemas.VideoEditParameters:
 		if params == nil {
 			return dims
@@ -1002,7 +998,42 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 	case map[string]any:
 		applyVideoDimensionsFromMap(&dims, params)
 	}
+	// The input carries what a job sends besides its parameters: a source video and a first frame.
+	// Both are read whether or not the request has parameters (TXE-7409): a Go SDK image-to-video
+	// request may set none, and its first frame is still sent and billed.
+	applyVideoInputDimensions(&dims, entry)
 	return dims
+}
+
+// applyVideoInputDimensions sets the video input and the input image count of a video create from
+// its input and its typed parameters, nil ones included. A video input prices Seedance at its
+// band's video-input rate (TXE-7357); input images beyond a model's free allowance are billed per
+// image (TXE-7409). Kling's mode is read from Extra at pricing time (PricedMode). A rehydrated
+// entry's map params are read by applyVideoDimensionsFromMap, and an edit carries neither.
+func applyVideoInputDimensions(dims *modelcatalog.VideoPricingDimensions, entry *logstore.Log) {
+	var lastFrame string
+	var referenceImages []string
+	var extra map[string]any
+	switch params := entry.ParamsParsed.(type) {
+	case *schemas.VideoGenerationParameters:
+		if params != nil {
+			lastFrame, referenceImages, extra = string(params.LastFrame), params.ReferenceImages, params.ExtraParams
+		}
+	case nil:
+	default:
+		return
+	}
+	if entry.VideoGenerationInputParsed == nil && extra == nil && lastFrame == "" && len(referenceImages) == 0 {
+		return
+	}
+	if modelcatalog.VideoRequestHasVideoInput(schemas.ModelProvider(entry.Provider), entry.VideoGenerationInputParsed, extra) {
+		dims.VideoInput = schemas.Ptr(true)
+	}
+	// The count escapes only when there is one, so a text-only create allocates nothing for it.
+	if n := modelcatalog.VideoRequestInputImages(schemas.ModelProvider(entry.Provider), entry.VideoGenerationInputParsed, lastFrame, referenceImages, extra); n > 0 {
+		images := n
+		dims.InputImages = &images
+	}
 }
 
 // applyVideoDimensionsFromMap decodes the same fields off a rehydrated entry whose
@@ -1026,6 +1057,12 @@ func applyVideoDimensionsFromMap(dims *modelcatalog.VideoPricingDimensions, para
 	}
 	if modelcatalog.VideoRequestHasVideoInput("", nil, params) {
 		dims.VideoInput = schemas.Ptr(true)
+	}
+	// Fork (TXE-7409): the last frame and reference images, which a rehydrated entry keeps under
+	// their own names.
+	if n := modelcatalog.VideoRequestInputImages("", nil, "", nil, params); n > 0 {
+		images := n
+		dims.InputImages = &images
 	}
 	if seconds, ok := params["seconds"].(string); ok {
 		if parsed, err := strconv.Atoi(seconds); err == nil {

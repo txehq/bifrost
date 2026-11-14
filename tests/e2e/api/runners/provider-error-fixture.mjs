@@ -540,6 +540,18 @@ const fixturePricing = {
 	// TXE-7351: the row also carries MiniMax-H3's live input_cost_per_video_per_second, 0.08, which was billed on the
 	// output length (6 s x 0.08 more, $1.26). Folder 521 still expects $0.78, so it fails if that charge comes back.
 	"fixture-minimax-2k": { provider: "minimax", mode: "video_generation", input_cost_per_video_per_second: 0.08, output_cost_per_second: 0.08, output_cost_per_second_768p: 0.08, output_cost_per_second_2k: 0.13 },
+	// TXE-7409: MiniMax-H3's live row with its input-image price, $0.04 per image beyond the first five, whose free
+	// allowance upstream publishes only under provider_specific_entry. Folder 598 settles a job with eight reference images.
+	"fixture-minimax-images": {
+		provider: "minimax",
+		mode: "video_generation",
+		input_cost_per_image: 0.04,
+		input_cost_per_video_per_second: 0.08,
+		output_cost_per_second: 0.08,
+		output_cost_per_second_768p: 0.08,
+		output_cost_per_second_2k: 0.13,
+		provider_specific_entry: { minimax_free_input_images: 5 },
+	},
 	// TXE-7356: dall-e-3's live upstream row, which prices an image only by its joint size and quality rate, so folder
 	// 570 can read the price of an hd and a standard image. The fork dropped these keys at sync and billed $0.
 	"fixture-dalle-3": {
@@ -583,6 +595,8 @@ const fixturePricing = {
 // TXE-7349: the fixture-minimax-2k task (folder 521) finishes as a 6 second 2K clip and names no ratio, so the
 // response carries no size and the job is priced from the resolution tier the request named.
 const MINIMAX_BAND_TASK = "fixture-band-2k";
+// TXE-7409: the fixture-minimax-images task (folder 598) finishes the same way, a 6 second 2K clip.
+const MINIMAX_IMAGES_TASK = "fixture-minimax-images-task";
 
 // Provider wire capture, TXE-5539. The config points each provider these rows use at /pp/<provider>, so one fixture
 // plays them all; the bytes that arrive are kept for the row to compare, and GET /__wire returns them. Nothing here
@@ -1420,6 +1434,7 @@ const wireAnswer = (path, body, bytes) => {
 	// Video create, accepted (folder 434, TXE-7065): each vendor's own task answer, so a row can read what the
 	// converter sent from /__wire without creating a billed task. MiniMax's base-resp models are answered above.
 	if (path === "/pp/minimax/v2/video_generation" && body.model === "fixture-minimax-2k") return { status: 200, body: JSON.stringify({ task_id: MINIMAX_BAND_TASK, base_resp: { status_code: 0, status_msg: "success" } }) };
+	if (path === "/pp/minimax/v2/video_generation" && body.model === "fixture-minimax-images") return { status: 200, body: JSON.stringify({ task_id: MINIMAX_IMAGES_TASK, base_resp: { status_code: 0, status_msg: "success" } }) };
 	if (path === "/pp/minimax/v2/video_generation") return { status: 200, body: JSON.stringify({ task_id: "fixture-video-task", base_resp: { status_code: 0, status_msg: "success" } }) };
 	if (path === "/pp/byteplus/api/v3/contents/generations/tasks") return { status: 200, body: JSON.stringify({ id: "cgt-fixture-video-task" }) };
 	if (path.startsWith("/pp/gemini/models/") && path.endsWith(":predictLongRunning")) return { status: 200, body: JSON.stringify({ name: `${path.slice("/pp/gemini/".length, -":predictLongRunning".length)}/operations/fixture-video-op` }) };
@@ -2461,9 +2476,10 @@ const handleRequest = (req, res) => {
 	if (req.method === "GET" && path.startsWith("/pp/minimax/v2/query/video_generation/")) {
 		wireCalls.push({ path, query: new URL(req.url, "http://localhost").search, body: "" });
 		const taskId = decodeURIComponent(path.slice("/pp/minimax/v2/query/video_generation/".length));
-		if (taskId === MINIMAX_BAND_TASK) {
+		if (taskId === MINIMAX_BAND_TASK || taskId === MINIMAX_IMAGES_TASK) {
 			countHit(`minimax.query ${taskId}`);
-			return send(200, {}, JSON.stringify({ task: { id: taskId, model: "fixture-minimax-2k", status: "succeeded", content: { url: `http://127.0.0.1:${port}/pp/media/internal.mp4` }, resolution: "2K", duration: 6 } }));
+			const model = taskId === MINIMAX_BAND_TASK ? "fixture-minimax-2k" : "fixture-minimax-images";
+			return send(200, {}, JSON.stringify({ task: { id: taskId, model, status: "succeeded", content: { url: `http://127.0.0.1:${port}/pp/media/internal.mp4` }, resolution: "2K", duration: 6 } }));
 		}
 		const answer = miniMaxBaseRespAnswer(taskId);
 		if (answer) return send(answer.status, {}, answer.body);

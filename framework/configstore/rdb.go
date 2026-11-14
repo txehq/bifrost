@@ -3289,6 +3289,7 @@ var pricingSyncUpdateColumns = []string{
 	"output_cost_per_video_per_second_pro_audio",
 	"output_cost_per_video_per_second_standard",
 	"output_cost_per_video_per_second_standard_audio",
+	"free_input_images",
 	// Costs - Other
 	"search_context_cost_per_query",
 	"web_search_cost_per_request",

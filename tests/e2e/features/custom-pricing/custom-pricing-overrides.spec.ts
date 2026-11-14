@@ -528,3 +528,60 @@ test.describe("Custom pricing overrides - unmeasured video seconds", () => {
 		await expect(page.getByTestId(`pricing-override-field-input-${key}`)).toHaveValue("15");
 	});
 });
+
+// TXE-7409: a video job's input images beyond the free allowance are billed at input_cost_per_image.
+// An override for video generation alone offers both fields, the free allowance and the per-image
+// rate, saves them in its patch under their datasheet keys and reopens with both.
+test.describe("Custom pricing overrides - video input images", () => {
+	const name = `e2e-video-input-images-${Date.now()}`;
+	const fields: Array<[string, string, number]> = [
+		["free_input_images", "5", 5],
+		["input_cost_per_image", "0.04", 0.04],
+	];
+
+	test.afterEach(async ({ request }) => {
+		const res = await request.get("/api/governance/pricing-overrides");
+		if (!res.ok()) return;
+		const body = await res.json();
+		for (const override of body.pricing_overrides ?? []) {
+			if (override.name === name) await request.delete(`/api/governance/pricing-overrides/${override.id}`);
+		}
+	});
+
+	test("saves a free input image allowance and a per-image rate on a video-only override, and reopens with both", async ({ page, request }) => {
+		await page.goto("/workspace/custom-pricing/overrides");
+		await page.getByTestId("pricing-override-create-btn").first().click();
+
+		await page.getByTestId("pricing-override-name-input").fill(name);
+		await page.getByTestId("pricing-override-pattern-input").fill("MiniMax-H3");
+		await page.getByTestId("pricing-override-request-types-btn").click();
+		await page.getByTestId("pricing-override-request-type-checkbox-video_generation").click();
+		await page.keyboard.press("Escape");
+
+		for (const [key, value] of fields) {
+			await page.getByTestId("pricing-field-search").fill(key);
+			await page.getByTestId(`pricing-field-activate-${key}`).click();
+			await page.getByTestId(`pricing-override-field-input-${key}`).fill(value);
+		}
+
+		await page.getByTestId("pricing-override-save-btn").click();
+		await expect(page.getByTestId("pricing-override-save-btn")).toBeHidden();
+
+		const res = await request.get("/api/governance/pricing-overrides");
+		expect(res.ok()).toBeTruthy();
+		const saved = ((await res.json()).pricing_overrides ?? []).find((o: { name: string }) => o.name === name);
+		expect(saved, "the override was saved").toBeTruthy();
+		const patch = JSON.parse(saved.pricing_patch);
+		for (const [key, , number] of fields) {
+			expect(patch[key], key).toBe(number);
+		}
+
+		await page.reload();
+		await page.getByTestId(`pricing-override-actions-btn-${saved.id}`).click();
+		await page.getByTestId(`pricing-override-edit-btn-${saved.id}`).click();
+		for (const [key, value] of fields) {
+			await page.getByTestId("pricing-field-search").fill(key);
+			await expect(page.getByTestId(`pricing-override-field-input-${key}`)).toHaveValue(value);
+		}
+	});
+});

@@ -554,6 +554,7 @@ least 1536) is billed at the 1536×1024 rate, which is checked first.
 | `output_cost_per_video_per_second_pro_audio` | Second of output with generated audio in pro mode |
 | `output_cost_per_video_per_second_standard` | Second of output in standard mode (`standard` or `std`) |
 | `output_cost_per_video_per_second_standard_audio` | Second of output with generated audio in standard mode |
+| `free_input_images` | Input images of a video job (first frame, last frame, reference images) included before `input_cost_per_image` applies to the rest. Unset means every input image is charged |
 | `input_cost_per_video_per_second_above_128k_tokens` | Video input cost above 128k context |
 | `input_cost_per_audio_per_second_above_128k_tokens` | Audio input cost above 128k context |
 
