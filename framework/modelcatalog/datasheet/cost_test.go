@@ -8554,6 +8554,44 @@ func BenchmarkCalculateCostRealtimeTurns(b *testing.B) {
 	}
 }
 
+// BenchmarkCalculateCostImageServedTier prices a token-priced image response with no served tier
+// (the common case) and one served on the priority tier (TXE-7372).
+func BenchmarkCalculateCostImageServedTier(b *testing.B) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gemini-2.5-flash-image", "gemini", "image_generation"): {
+			Model: "gemini-2.5-flash-image", Provider: "gemini", Mode: "image_generation",
+			InputCostPerToken:               bifrost.Ptr(3e-07),
+			OutputCostPerImageToken:         bifrost.Ptr(3e-05),
+			OutputCostPerImageTokenPriority: bifrost.Ptr(5.4e-05),
+		},
+	})
+	priority := schemas.BifrostServiceTierPriority
+	for _, tc := range []struct {
+		name string
+		tier *schemas.BifrostServiceTier
+	}{{"no-tier", nil}, {"priority", &priority}} {
+		resp := makeImageResponse(schemas.Gemini, "gemini-2.5-flash-image", &schemas.ImageUsage{
+			InputTokens: 12, OutputTokens: 1290, TotalTokens: 1302,
+			OutputTokensDetails: &schemas.ImageTokenDetails{ImageTokens: 1290},
+		})
+		resp.ImageGenerationResponse.Data = []schemas.ImageData{{B64JSON: "aW1n"}}
+		setImageServedTier(resp, tc.tier)
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if s.CalculateCost(resp, nil) <= 0 {
+					b.Fatal("unpriced")
+				}
+			}
+		})
+	}
+}
+
+// setImageServedTier puts the served tier on an image response.
+func setImageServedTier(resp *schemas.BifrostResponse, tier *schemas.BifrostServiceTier) {
+	resp.ImageGenerationResponse.ServiceTier = tier
+}
+
 // TestOffPeak_RoutingCallDiscountAtWindowEdges: a classification call takes the off-peak
 // discount exactly once, on its usage and never on its flat fee, at both edges of a peak
 // window, and through CalculateCost it is added once beside the request it served.
@@ -9156,6 +9194,59 @@ func TestComputeTextCost_AudioInputTokensByTier(t *testing.T) {
 	assert.InDelta(t, 600*1.5e-07+400*5e-07, computeTextCostTotal(&p, usage, serviceTier{isFlex: true}), 1e-12)
 	assert.InDelta(t, 600*5.4e-07+400*1.8e-06, computeTextCostTotal(&p, usage, serviceTier{isPriority: true}), 1e-12)
 	assert.InDelta(t, 1.8e-06, tieredAudioTokenInputRate(&p, 1000, serviceTier{isPriority: true}), 1e-15)
+}
+
+// gemini/gemini-2.5-flash-image publishes image output tokens at 3e-05 and 5.4e-05 on priority.
+func TestComputeImageCost_PriorityImageOutputTokens(t *testing.T) {
+	p := decodeEntry(t, `{
+		"provider": "gemini", "mode": "image_generation",
+		"input_cost_per_token": 3e-07, "output_cost_per_token": 2.5e-06,
+		"output_cost_per_image_token": 3e-05,
+		"output_cost_per_image_token_priority": 5.4e-05
+	}`)
+	usage := &schemas.ImageUsage{
+		InputTokens: 100, OutputTokens: 1290, TotalTokens: 1390,
+		OutputTokensDetails: &schemas.ImageTokenDetails{ImageTokens: 1290},
+	}
+	assert.InDelta(t, 100*3e-07+1290*3e-05, computeImageCostTotal(&p, usage, "", "", serviceTier{}), 1e-12)
+	assert.InDelta(t, 100*3e-07+1290*5.4e-05, computeImageCostTotal(&p, usage, "", "", serviceTier{isPriority: true}), 1e-12)
+}
+
+// TXE-7372: the served tier rides on the image response, so CalculateCost prices a
+// priority-served image at the priority image token rate. Before, the image response carried
+// no tier and a priority image billed at the standard rate. Vertex gemini-3-pro-image publishes
+// 1.2e-04 and 2.16e-04.
+func TestCalculateCost_PriorityServedImageTakesThePriorityImageTokenRate(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gemini-3-pro-image", "vertex", "image_generation"): {
+			Model: "gemini-3-pro-image", Provider: "vertex", Mode: "image_generation",
+			InputCostPerToken:               bifrost.Ptr(2e-06),
+			OutputCostPerImageToken:         bifrost.Ptr(1.2e-04),
+			OutputCostPerImageTokenPriority: bifrost.Ptr(2.16e-04),
+		},
+	})
+	usage := func() *schemas.ImageUsage {
+		return &schemas.ImageUsage{
+			InputTokens: 100, OutputTokens: 1120, TotalTokens: 1220,
+			OutputTokensDetails: &schemas.ImageTokenDetails{ImageTokens: 1120},
+		}
+	}
+	data := []schemas.ImageData{{B64JSON: "aW1n"}}
+
+	standard := makeImageResponse(schemas.Vertex, "gemini-3-pro-image", usage())
+	standard.ImageGenerationResponse.Data = data
+	assert.InDelta(t, 100*2e-06+1120*1.2e-04, s.CalculateCost(standard, nil), 1e-12)
+
+	priority := makeImageResponse(schemas.Vertex, "gemini-3-pro-image", usage())
+	priority.ImageGenerationResponse.Data = data
+	priority.ImageGenerationResponse.ServiceTier = bifrost.Ptr(schemas.BifrostServiceTierPriority)
+	assert.InDelta(t, 100*2e-06+1120*2.16e-04, s.CalculateCost(priority, nil), 1e-12)
+
+	// A tier with no image rate of its own falls back to the standard image token rate.
+	flex := makeImageResponse(schemas.Vertex, "gemini-3-pro-image", usage())
+	flex.ImageGenerationResponse.Data = data
+	flex.ImageGenerationResponse.ServiceTier = bifrost.Ptr(schemas.BifrostServiceTierFlex)
+	assert.InDelta(t, 100*2e-06+1120*1.2e-04, s.CalculateCost(flex, nil), 1e-12)
 }
 
 // gpt-6-luna publishes decision rates of 1e-07 input and 2e-07 above 272k, decision cache reads

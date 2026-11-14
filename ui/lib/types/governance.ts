@@ -597,6 +597,7 @@ export interface PricingOverridePatch {
 	cache_creation_input_token_cost_above_12hr_above_272k_tokens_priority?: number;
 	cache_creation_input_token_cost_above_12hr_ultrafast?: number;
 	cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast?: number;
+	output_cost_per_image_token_priority?: number;
 	input_cost_per_audio_token_flex?: number;
 	input_cost_per_audio_token_priority?: number;
 	input_cost_per_character?: number;

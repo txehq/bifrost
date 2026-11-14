@@ -1,0 +1,333 @@
+{
+  "name": "566. A priority-served Gemini image is billed at the priority image token rate (priority image token rate) [SERIAL]",
+  "description": "TXE-7372. gemini/gemini-2.5-flash-image publishes output_cost_per_image_token 3e-05 and output_cost_per_image_token_priority 5.4e-05 (Vertex gemini-3-pro-image: 1.2e-04 and 2.16e-04). The image response carried no served tier, so a priority-served image billed at the standard image token rate, and the fork dropped the priority rate at sync. Fixture only: each row's fixture model answers generateContent with the tier in usageMetadata.serviceTier, the fixture datasheet carries the live gemini-2.5-flash-image rates, and the row reads the logged cost and service_tier by its request id. Routes: /v1/images/generations (566.1, 566.2), the Gemini-native /genai generateContent (566.3, which also reads serviceTier back off the native response) and /v1/images/edits (566.4). Vertex reuses the same converter; it has no fixture provider (it needs Google OAuth) and is pinned by TestVertexGeminiImageCarriesTheServedTier in core/providers/vertex.",
+  "item": [
+    {
+      "name": "566.1 /v1/images/generations a priority-served image: its image output tokens take the priority image token rate (fixture) - gemini/fixture-image-priority",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('imageTierPriorityReq', 'e2e-image-tier-1-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the image call through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "pm.test('the image response shape carries no service_tier', function () {",
+              "  pm.expect(pm.response.json(), pm.response.text()).to.not.have.property('service_tier');",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var reqId = pm.collectionVariables.get('imageTierPriorityReq');",
+              "// 12 prompt x 3e-07 + 1290 image out x 5.4e-05; at the standard image rate (the price before TXE-7372) it was 0.0387036.",
+              "var want = 0.0696636, other = 0.0387036, tier = 'priority';",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + reqId + '&limit=1', method: 'GET' }, function (err, res) {",
+              "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+              "    var logRow = rows.filter(function (r) { return r.id === reqId; })[0];",
+              "    if ((!logRow || !(logRow.cost > 0)) && tries > 0) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the image generation was logged under its request id', function () {",
+              "      pm.expect(logRow, err ? String(err) : res.text()).to.not.equal(undefined);",
+              "    });",
+              "    if (!logRow) { return; }",
+              "    pm.test('the log row records the tier the vendor served', function () {",
+              "      pm.expect(logRow.service_tier, JSON.stringify({ service_tier: logRow.service_tier })).to.eql(tier);",
+              "    });",
+              "    pm.test('the image output tokens are priced at the served tier\\'s image token rate', function () {",
+              "      pm.expect(Math.abs(logRow.cost - want), 'cost ' + logRow.cost + ' vs ' + want + ' (the other tier\\'s price is ' + other + '); token_usage: ' + JSON.stringify(logRow.token_usage)).to.be.at.most(Math.max(1e-9, want * 1e-6));",
+              "    });",
+              "  });",
+              "}",
+              "read(20);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{imageTierPriorityReq}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"gemini/fixture-image-priority\", \"prompt\": \"a lighthouse at dusk\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "566.2 /v1/images/generations a standard-served image of the same model: its image output tokens take the standard image token rate (fixture) - gemini/fixture-image-standard-tier",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('imageTierStandardReq', 'e2e-image-tier-2-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the image call through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "pm.test('the image response shape carries no service_tier', function () {",
+              "  pm.expect(pm.response.json(), pm.response.text()).to.not.have.property('service_tier');",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var reqId = pm.collectionVariables.get('imageTierStandardReq');",
+              "// 12 prompt x 3e-07 + 1290 image out x 3e-05; the priority rate (0.0696636) applies only when the vendor reports priority.",
+              "var want = 0.0387036, other = 0.0696636, tier = 'default';",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + reqId + '&limit=1', method: 'GET' }, function (err, res) {",
+              "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+              "    var logRow = rows.filter(function (r) { return r.id === reqId; })[0];",
+              "    if ((!logRow || !(logRow.cost > 0)) && tries > 0) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the image generation was logged under its request id', function () {",
+              "      pm.expect(logRow, err ? String(err) : res.text()).to.not.equal(undefined);",
+              "    });",
+              "    if (!logRow) { return; }",
+              "    pm.test('the log row records the tier the vendor served', function () {",
+              "      pm.expect(logRow.service_tier, JSON.stringify({ service_tier: logRow.service_tier })).to.eql(tier);",
+              "    });",
+              "    pm.test('the image output tokens are priced at the served tier\\'s image token rate', function () {",
+              "      pm.expect(Math.abs(logRow.cost - want), 'cost ' + logRow.cost + ' vs ' + want + ' (the other tier\\'s price is ' + other + '); token_usage: ' + JSON.stringify(logRow.token_usage)).to.be.at.most(Math.max(1e-9, want * 1e-6));",
+              "    });",
+              "  });",
+              "}",
+              "read(20);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{imageTierStandardReq}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"gemini/fixture-image-standard-tier\", \"prompt\": \"a lighthouse at dusk\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      }
+    },
+    {
+      "name": "566.3 /genai/v1beta/models/{model}:generateContent native generateContent: a priority-served image is priced at the priority rate and the tier comes back (fixture) - gemini/fixture-image-priority",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('imageTierNativeReq', 'e2e-image-tier-3-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the image call through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "pm.test('the native response reports the served tier in usageMetadata.serviceTier', function () {",
+              "  var meta = pm.response.json().usageMetadata || {};",
+              "  pm.expect(meta.serviceTier, pm.response.text()).to.eql('priority');",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var reqId = pm.collectionVariables.get('imageTierNativeReq');",
+              "// The Gemini-native route converts the same image response back to generateContent: same price, and serviceTier in usageMetadata.",
+              "var want = 0.0696636, other = 0.0387036, tier = 'priority';",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + reqId + '&limit=1', method: 'GET' }, function (err, res) {",
+              "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+              "    var logRow = rows.filter(function (r) { return r.id === reqId; })[0];",
+              "    if ((!logRow || !(logRow.cost > 0)) && tries > 0) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the image generation was logged under its request id', function () {",
+              "      pm.expect(logRow, err ? String(err) : res.text()).to.not.equal(undefined);",
+              "    });",
+              "    if (!logRow) { return; }",
+              "    pm.test('the log row records the tier the vendor served', function () {",
+              "      pm.expect(logRow.service_tier, JSON.stringify({ service_tier: logRow.service_tier })).to.eql(tier);",
+              "    });",
+              "    pm.test('the image output tokens are priced at the served tier\\'s image token rate', function () {",
+              "      pm.expect(Math.abs(logRow.cost - want), 'cost ' + logRow.cost + ' vs ' + want + ' (the other tier\\'s price is ' + other + '); token_usage: ' + JSON.stringify(logRow.token_usage)).to.be.at.most(Math.max(1e-9, want * 1e-6));",
+              "    });",
+              "  });",
+              "}",
+              "read(20);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{imageTierNativeReq}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"contents\": [{\"role\": \"user\", \"parts\": [{\"text\": \"a lighthouse at dusk\"}]}], \"generationConfig\": {\"responseModalities\": [\"IMAGE\"]}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini/fixture-image-priority:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini",
+            "fixture-image-priority:generateContent"
+          ]
+        }
+      }
+    },
+    {
+      "name": "566.4 /v1/images/edits image edit: a priority-served edit is priced at the priority rate (fixture) - gemini/fixture-image-priority",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('imageTierEditReq', 'e2e-image-tier-4-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the image call through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "pm.test('the image response shape carries no service_tier', function () {",
+              "  pm.expect(pm.response.json(), pm.response.text()).to.not.have.property('service_tier');",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var reqId = pm.collectionVariables.get('imageTierEditReq');",
+              "// An edit reaches the same generateContent answer and converter as a generation: 12 x 3e-07 + 1290 x 5.4e-05.",
+              "var want = 0.0696636, other = 0.0387036, tier = 'priority';",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + reqId + '&limit=1', method: 'GET' }, function (err, res) {",
+              "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+              "    var logRow = rows.filter(function (r) { return r.id === reqId; })[0];",
+              "    if ((!logRow || !(logRow.cost > 0)) && tries > 0) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the image generation was logged under its request id', function () {",
+              "      pm.expect(logRow, err ? String(err) : res.text()).to.not.equal(undefined);",
+              "    });",
+              "    if (!logRow) { return; }",
+              "    pm.test('the log row records the tier the vendor served', function () {",
+              "      pm.expect(logRow.service_tier, JSON.stringify({ service_tier: logRow.service_tier })).to.eql(tier);",
+              "    });",
+              "    pm.test('the image output tokens are priced at the served tier\\'s image token rate', function () {",
+              "      pm.expect(Math.abs(logRow.cost - want), 'cost ' + logRow.cost + ' vs ' + want + ' (the other tier\\'s price is ' + other + '); token_usage: ' + JSON.stringify(logRow.token_usage)).to.be.at.most(Math.max(1e-9, want * 1e-6));",
+              "    });",
+              "  });",
+              "}",
+              "read(20);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{imageTierEditReq}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"gemini/fixture-image-priority\", \"prompt\": \"make the sky purple\", \"images\": [{\"image\": \"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -295,14 +295,7 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 		applyGeminiSearchQueryResponsesUsage(bifrostResp.Usage, response.Candidates[0].GroundingMetadata, response.ModelVersion)
 	}
 
-	if response.UsageMetadata != nil {
-		if t := mapGeminiTrafficTypeToBifrost(response.UsageMetadata.TrafficType); t != nil {
-			bifrostResp.ServiceTier = t
-		} else if response.UsageMetadata.ServiceTier != "" {
-			tier := mapGeminiServiceTierToBifrost(response.UsageMetadata.ServiceTier)
-			bifrostResp.ServiceTier = &tier
-		}
-	}
+	bifrostResp.ServiceTier = geminiServedTier(response.UsageMetadata)
 
 	// A blocked prompt has no candidate; without this it normalizes to an empty "completed".
 	if blockErr := response.promptBlockError(); blockErr != nil {

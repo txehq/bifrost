@@ -158,6 +158,57 @@ test.describe("Custom pricing overrides - realtime text message rate", () => {
 	});
 });
 
+// TXE-7372: the priority image output token rate is a pricing override field. An override that
+// sets it, with the standard image token rate set as an explicit zero, is saved with both in its
+// patch and reopens with both values.
+test.describe("Custom pricing overrides - priority image token rate", () => {
+	const name = `e2e-priority-image-token-${Date.now()}`;
+
+	test.afterEach(async ({ request }) => {
+		const res = await request.get("/api/governance/pricing-overrides");
+		if (!res.ok()) return;
+		const body = await res.json();
+		for (const override of body.pricing_overrides ?? []) {
+			if (override.name === name) await request.delete(`/api/governance/pricing-overrides/${override.id}`);
+		}
+	});
+
+	test("saves a priority image token rate and an explicit zero standard image token rate, and reopens with both", async ({ page, request }) => {
+		await page.goto("/workspace/custom-pricing/overrides");
+		await page.getByTestId("pricing-override-create-btn").first().click();
+
+		await page.getByTestId("pricing-override-name-input").fill(name);
+		await page.getByTestId("pricing-override-pattern-input").fill("gemini-2.5-flash-image");
+		await page.getByTestId("pricing-override-request-types-btn").click();
+		await page.getByTestId("pricing-override-request-type-checkbox-image_generation").click();
+		await page.keyboard.press("Escape");
+
+		await page.getByTestId("pricing-field-search").fill("Output / image token");
+		await page.getByTestId("pricing-field-activate-output_cost_per_image_token_priority").click();
+		await page.getByTestId("pricing-override-field-input-output_cost_per_image_token_priority").fill("0.000054");
+		await page.getByTestId("pricing-field-activate-output_cost_per_image_token").click();
+		await page.getByTestId("pricing-override-field-input-output_cost_per_image_token").fill("0");
+
+		await page.getByTestId("pricing-override-save-btn").click();
+		await expect(page.getByTestId("pricing-override-save-btn")).toBeHidden();
+
+		const res = await request.get("/api/governance/pricing-overrides");
+		expect(res.ok()).toBeTruthy();
+		const saved = ((await res.json()).pricing_overrides ?? []).find((o: { name: string }) => o.name === name);
+		expect(saved, "the override was saved").toBeTruthy();
+		const patch = JSON.parse(saved.pricing_patch);
+		expect(patch.output_cost_per_image_token_priority).toBe(0.000054);
+		expect(patch.output_cost_per_image_token).toBe(0);
+
+		await page.reload();
+		await page.getByTestId(`pricing-override-actions-btn-${saved.id}`).click();
+		await page.getByTestId(`pricing-override-edit-btn-${saved.id}`).click();
+		await page.getByTestId("pricing-field-search").fill("Output / image token");
+		await expect(page.getByTestId("pricing-override-field-input-output_cost_per_image_token_priority")).toHaveValue("0.000054");
+		await expect(page.getByTestId("pricing-override-field-input-output_cost_per_image_token")).toHaveValue("0");
+	});
+});
+
 // TXE-7354: the explicit batch rates are pricing override fields. An override that sets the batch
 // cache-read rate, the batch 12h write above 272k (whose column name is shortened), and the batch
 // image output rate as an explicit zero is saved with all three and reopens with them.

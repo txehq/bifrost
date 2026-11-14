@@ -534,6 +534,10 @@ func applyServedTierToEntry(entry *logstore.Log, result *schemas.BifrostResponse
 		case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil:
 			r := result.ResponsesStreamResponse.Response
 			serviceTier, speed, inferenceGeo = r.ServiceTier, r.Speed, r.InferenceGeo
+		case result.ImageGenerationResponse != nil:
+			// Fork (TXE-7372): a priority-served image prices its output tokens at the
+			// priority rate, so a recalculation needs the tier too.
+			serviceTier = result.ImageGenerationResponse.ServiceTier
 		}
 	}
 	if usage != nil {
@@ -2277,6 +2281,7 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 		return &schemas.BifrostResponse{
 			ImageGenerationResponse: &schemas.BifrostImageGenerationResponse{
 				Usage:       imgUsage,
+				ServiceTier: tier.serviceTier,
 				ExtraFields: extra,
 			},
 		}

@@ -483,6 +483,22 @@ func mapGeminiServiceTierToBifrost(tier ServiceTier) schemas.BifrostServiceTier 
 	}
 }
 
+// geminiServedTier returns the tier a response reports it was served on: Vertex's trafficType
+// when it names one, else the Gemini API's serviceTier. Nil when the response reports neither.
+func geminiServedTier(meta *GenerateContentResponseUsageMetadata) *schemas.BifrostServiceTier {
+	if meta == nil {
+		return nil
+	}
+	if t := mapGeminiTrafficTypeToBifrost(meta.TrafficType); t != nil {
+		return t
+	}
+	if meta.ServiceTier != "" {
+		tier := mapGeminiServiceTierToBifrost(meta.ServiceTier)
+		return &tier
+	}
+	return nil
+}
+
 // mapGeminiTrafficTypeToBifrost converts a Vertex AI usageMetadata.trafficType to a BifrostServiceTier.
 // Returns nil for empty or unrecognised values.
 func mapGeminiTrafficTypeToBifrost(trafficType TrafficType) *schemas.BifrostServiceTier {
@@ -499,7 +515,9 @@ func mapGeminiTrafficTypeToBifrost(trafficType TrafficType) *schemas.BifrostServ
 	default:
 		return nil
 	}
-	return &tier
+	// Copied out only on a match: returning &tier made tier escape, so it was heap-allocated on
+	// every call, including the common no-trafficType response (TXE-7372 benchmark).
+	return schemas.Ptr(tier)
 }
 
 // mapBifrostServiceTierToVertexTrafficType converts a BifrostServiceTier to a Vertex AI trafficType string.

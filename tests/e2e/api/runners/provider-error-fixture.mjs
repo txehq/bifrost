@@ -464,6 +464,9 @@ const fixturePricing = {
 	"fixture-image-thoughts-only": { provider: "gemini", mode: "image_generation", input_cost_per_token: 0.000001, output_cost_per_token: 0.00003 },
 	// A per-image-priced Gemini image model whose answer is a safety block: nothing delivered, nothing charged per image.
 	"fixture-image-safety": { provider: "gemini", mode: "image_generation", input_cost_per_token: 0.000001, output_cost_per_image: 0.04 },
+	// TXE-7372: gemini/gemini-2.5-flash-image's live image token rates, standard and priority, for folder 566.
+	"fixture-image-priority": { provider: "gemini", mode: "image_generation", input_cost_per_token: 3e-7, output_cost_per_image_token: 3e-5, output_cost_per_image_token_priority: 5.4e-5 },
+	"fixture-image-standard-tier": { provider: "gemini", mode: "image_generation", input_cost_per_token: 3e-7, output_cost_per_image_token: 3e-5, output_cost_per_image_token_priority: 5.4e-5 },
 	// A provider the datasheet knows and list-models cannot enumerate, for run-bounds-wire.mjs.
 	"fireworks_ai/accounts/fixture/models/known": { provider: "fireworks_ai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
 	// TXE-7297: a per-second Kling video rate, so folder 519 can read the price a settled job got from the 5.1 second
@@ -818,6 +821,10 @@ const geminiImageAnswers = {
 	// fixturePricing, so the row can read the cost the gateway computed from the aggregate.
 	"fixture-image-thoughts-only": { candidates: [{ content: { role: "model", parts: [{ inlineData: { mimeType: "image/png", data: "iVBORw0KGgo=" } }] }, finishReason: "STOP", index: 0 }], usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 1300, totalTokenCount: 1510, thoughtsTokenCount: 200 }, modelVersion: "fixture-image-thoughts-only", responseId: "fixture-image-thoughts-only" },
 	"fixture-image-empty": { usageMetadata: { promptTokenCount: 7, totalTokenCount: 7 }, modelVersion: "fixture-image-empty", responseId: "fixture-image-empty" },
+	// TXE-7372: one delivered image served on the priority tier, and the same answer on the standard tier. The Gemini
+	// API reports the served tier in usageMetadata.serviceTier.
+	"fixture-image-priority": { candidates: [{ content: { role: "model", parts: [{ inlineData: { mimeType: "image/png", data: "iVBORw0KGgo=" } }] }, finishReason: "STOP", index: 0 }], usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 1290, totalTokenCount: 1302, serviceTier: "priority", promptTokensDetails: [{ modality: "TEXT", tokenCount: 12 }], candidatesTokensDetails: [{ modality: "IMAGE", tokenCount: 1290 }] }, modelVersion: "fixture-image-priority", responseId: "fixture-image-priority" },
+	"fixture-image-standard-tier": { candidates: [{ content: { role: "model", parts: [{ inlineData: { mimeType: "image/png", data: "iVBORw0KGgo=" } }] }, finishReason: "STOP", index: 0 }], usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 1290, totalTokenCount: 1302, serviceTier: "standard", promptTokensDetails: [{ modality: "TEXT", tokenCount: 12 }], candidatesTokensDetails: [{ modality: "IMAGE", tokenCount: 1290 }] }, modelVersion: "fixture-image-standard-tier", responseId: "fixture-image-standard-tier" },
 };
 // geminiImageAnswerFor returns the answer for a generateContent path whose model is one of the above, else undefined.
 const geminiImageAnswerFor = (path) => {
