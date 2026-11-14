@@ -17,6 +17,7 @@ import (
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/providers/minimax"
+	"github.com/capsohq/bifrost/core/providers/xai"
 	"github.com/capsohq/bifrost/core/schemas"
 	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
@@ -10567,8 +10568,8 @@ func TestVideoRequestInputImages(t *testing.T) {
 			refs: []string{"a", "b"}, extra: map[string]any{"last_frame": "https://x/last.png", "reference_images": []any{"a", "b"}}, want: 4},
 		{name: "reference images from extra", extra: map[string]any{"reference_images": []any{"a", "b", "c", "d", "e", "f", "g", "h"}}, want: 8},
 		{name: "reference images as strings", extra: map[string]any{"reference_images": []string{"a", "", "c"}}, want: 2},
-		{name: "a single reference image", extra: map[string]any{"reference_images": "a"}, want: 1},
-		{name: "xAI's object last frame", extra: map[string]any{"last_frame": map[string]any{"url": "https://x/l.png"}}, want: 1},
+		{name: "a bare string is not a reference image list", extra: map[string]any{"reference_images": "a"}, want: 0},
+		{name: "a non-unified object last frame", extra: map[string]any{"last_frame": map[string]any{"url": "https://x/l.png"}}, want: 0},
 		{name: "blank values", input: &schemas.VideoGenerationInput{InputReference: bifrost.Ptr(" ")}, extra: map[string]any{"last_frame": "", "reference_images": []any{""}}, want: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -10599,4 +10600,111 @@ func TestEntryUnmarshal_ProviderSpecificFreeInputImages(t *testing.T) {
 	back := convertTablePricingToEntry(bifrost.Ptr(convertEntryToTablePricing("minimax/MiniMax-H3", nested)))
 	require.NotNil(t, back.FreeInputImages)
 	assert.InDelta(t, 2, *back.FreeInputImages, 1e-9)
+}
+
+// videoInputImageConverters are the video converters of the providers whose datasheet rows price
+// input images (input_cost_per_image on a video_generation row: MiniMax-H3 and xAI
+// grok-imagine-video, 14 Nov 2026). Each returns how many images the body it builds sends.
+var videoInputImageConverters = map[schemas.ModelProvider]func(*schemas.BifrostVideoGenerationRequest) (int, error){
+	schemas.MiniMax: func(r *schemas.BifrostVideoGenerationRequest) (int, error) {
+		body, err := minimax.ToMiniMaxVideoGenerationRequest(r)
+		if err != nil {
+			return 0, err
+		}
+		n := 0
+		for _, item := range body.Content {
+			if item.Type == "image_url" {
+				n++
+			}
+		}
+		return n, nil
+	},
+	schemas.XAI: func(r *schemas.BifrostVideoGenerationRequest) (int, error) {
+		body, err := xai.ToXAIVideoGenerationRequest(r)
+		if err != nil {
+			return 0, err
+		}
+		// The extra params are merged into the body as they are, so an unconverted copy is sent too.
+		n := len(body.ReferenceImages)
+		if body.Image != nil {
+			n++
+		}
+		if body.LastFrame != nil || presentImage(body.ExtraParams["last_frame"]) {
+			n++
+		}
+		if refs, ok := body.ExtraParams["reference_images"].([]any); ok {
+			for _, ref := range refs {
+				if presentImage(ref) {
+					n++
+				}
+			}
+		}
+		return n, nil
+	},
+}
+
+// TestVideoRequestInputImagesMatchWhatTheConvertersSend (TXE-7409) is the class check for the input
+// image count: for every provider that prices input images, each request shape is counted as
+// exactly the images its converter sends. A count above it bills images the vendor never received
+// (a Go SDK request's typed reference_images, which MiniMax read only from the extra params); one
+// below it lets a job's images go unbilled.
+func TestVideoRequestInputImagesMatchWhatTheConvertersSend(t *testing.T) {
+	first := func() *schemas.VideoGenerationInput {
+		return &schemas.VideoGenerationInput{Prompt: "p", InputReference: bifrost.Ptr("https://x/first.png")}
+	}
+	text := func() *schemas.VideoGenerationInput { return &schemas.VideoGenerationInput{Prompt: "p"} }
+	refs := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = fmt.Sprintf("https://x/r%d.png", i)
+		}
+		return out
+	}
+	asAny := func(in []string) []any {
+		out := make([]any, len(in))
+		for i, v := range in {
+			out[i] = v
+		}
+		return out
+	}
+	for name, build := range map[string]func() *schemas.BifrostVideoGenerationRequest{
+		"text only": func() *schemas.BifrostVideoGenerationRequest {
+			return &schemas.BifrostVideoGenerationRequest{Input: text()}
+		},
+		"first frame, nil params": func() *schemas.BifrostVideoGenerationRequest {
+			return &schemas.BifrostVideoGenerationRequest{Input: first()}
+		},
+		"first and typed last frame": func() *schemas.BifrostVideoGenerationRequest {
+			return &schemas.BifrostVideoGenerationRequest{Input: first(), Params: &schemas.VideoGenerationParameters{LastFrame: "https://x/last.png"}}
+		},
+		"last frame only in extra": func() *schemas.BifrostVideoGenerationRequest {
+			return &schemas.BifrostVideoGenerationRequest{Input: first(), Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"last_frame": "https://x/last.png"}}}
+		},
+		"typed reference images, no extra copy (Go SDK)": func() *schemas.BifrostVideoGenerationRequest {
+			return &schemas.BifrostVideoGenerationRequest{Input: text(), Params: &schemas.VideoGenerationParameters{ReferenceImages: refs(8)}}
+		},
+		"typed reference images with the handlers' extra copy": func() *schemas.BifrostVideoGenerationRequest {
+			return &schemas.BifrostVideoGenerationRequest{Input: text(), Params: &schemas.VideoGenerationParameters{
+				ReferenceImages: refs(3), ExtraParams: map[string]any{"reference_images": asAny(refs(3))}}}
+		},
+		"reference images only in extra": func() *schemas.BifrostVideoGenerationRequest {
+			return &schemas.BifrostVideoGenerationRequest{Input: text(), Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"reference_images": asAny(refs(6))}}}
+		},
+	} {
+		for provider, convert := range videoInputImageConverters {
+			t.Run(name+"/"+string(provider), func(t *testing.T) {
+				req := build()
+				req.Provider, req.Model = provider, "m"
+				sent, err := convert(req)
+				require.NoError(t, err)
+				var lastFrame string
+				var typedRefs []string
+				var extra map[string]any
+				if p := build().Params; p != nil {
+					lastFrame, typedRefs, extra = string(p.LastFrame), p.ReferenceImages, p.ExtraParams
+				}
+				assert.Equal(t, sent, VideoRequestInputImages(build().Input, lastFrame, typedRefs, extra))
+			})
+		}
+	}
 }

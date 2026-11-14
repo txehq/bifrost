@@ -5501,9 +5501,51 @@ func TestVideoPricingFromRequest_CountsInputImagesWithoutKeepingThem(t *testing.
 		})
 	}
 
+	// A Go SDK create may carry no parameters: its first frame is still sent, and counted, and a
+	// source video still marks the job as having a video input (TXE-7357).
+	nilParams := videoDimensionsFromEntryParams(&logstore.Log{Provider: string(schemas.XAI),
+		VideoGenerationInputParsed: &schemas.VideoGenerationInput{Prompt: "p", InputReference: schemas.Ptr("https://i/first")},
+		ParamsParsed:               (*schemas.VideoGenerationParameters)(nil)}, schemas.VideoGenerationRequest)
+	if nilParams.InputImages == nil || *nilParams.InputImages != 1 {
+		t.Fatalf("nil params: input images = %v, want 1", nilParams.InputImages)
+	}
+	noParams := videoDimensionsFromEntryParams(&logstore.Log{Provider: string(schemas.BytePlus),
+		VideoGenerationInputParsed: &schemas.VideoGenerationInput{Prompt: "p", VideoURI: schemas.Ptr("https://v/in.mp4")}}, schemas.VideoGenerationRequest)
+	if noParams.VideoInput == nil || !*noParams.VideoInput {
+		t.Fatal("no params: the source video was not recorded as a video input")
+	}
+
 	// A rehydrated entry whose params came back as a map keeps the count too.
 	dims := videoDimensionsFromEntryParams(&logstore.Log{ParamsParsed: map[string]any{"last_frame": "https://i/l", "reference_images": []any{"a", "b"}}}, schemas.VideoGenerationRequest)
 	if dims.InputImages == nil || *dims.InputImages != 3 {
 		t.Fatalf("map params: input images = %v, want 3", dims.InputImages)
+	}
+}
+
+// BenchmarkVideoPricingFromRequest measures the billing capture PreLLMHook runs on a video create
+// (TXE-7409 adds the input image count): a text-only create and one with a first frame and eight
+// reference images.
+func BenchmarkVideoPricingFromRequest(b *testing.B) {
+	six := "6"
+	refs := make([]any, 8)
+	for i := range refs {
+		refs[i] = "https://media.example/ref.png"
+	}
+	for name, req := range map[string]*schemas.BifrostRequest{
+		"text": {RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{
+			Model: "MiniMax-H3", Input: &schemas.VideoGenerationInput{Prompt: "p"},
+			Params: &schemas.VideoGenerationParameters{Seconds: &six, Size: "1920x1080"},
+		}},
+		"images": {RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{
+			Model: "MiniMax-H3", Input: &schemas.VideoGenerationInput{Prompt: "p", InputReference: schemas.Ptr("https://media.example/first.png")},
+			Params: &schemas.VideoGenerationParameters{Seconds: &six, Size: "1920x1080", ExtraParams: map[string]any{"reference_images": refs}},
+		}},
+	} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = videoPricingFromRequest(string(schemas.MiniMax), req)
+			}
+		})
 	}
 }

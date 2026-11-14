@@ -441,6 +441,38 @@ func TestToMiniMaxVideoGenerationRequest(t *testing.T) {
 			params:       &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("20"), Size: "2560x1440"},
 			wantDuration: 15, wantResolution: "2K", wantRatio: "16:9", wantContent: 1,
 		},
+		// TXE-7409: a Go SDK request sets only the typed unified fields, with no extra-param copy.
+		// Its images reached MiniMax as a text-only job while settlement billed them.
+		{
+			name:  "typed reference images without an extra-param copy are sent",
+			model: "MiniMax-H3", input: &schemas.VideoGenerationInput{Prompt: "a dog"},
+			params: &schemas.VideoGenerationParameters{ReferenceImages: schemas.VideoReferenceImages{
+				"https://example.com/1.png", "https://example.com/2.png", "https://example.com/3.png", "https://example.com/4.png",
+				"https://example.com/5.png", "https://example.com/6.png", "https://example.com/7.png", "https://example.com/8.png",
+			}},
+			wantDuration: 6, wantResolution: "768P", wantRatio: "16:9", wantContent: 9,
+		},
+		{
+			name:  "a typed last frame is sent beside the first frame",
+			model: "MiniMax-H3", input: &schemas.VideoGenerationInput{Prompt: "a dog", InputReference: schemas.Ptr("https://example.com/a.png")},
+			params:       &schemas.VideoGenerationParameters{LastFrame: "https://example.com/z.png"},
+			wantDuration: 6, wantResolution: "768P", wantRatio: "adaptive", wantContent: 3,
+		},
+		{
+			name:  "typed fields the handlers also kept in the extra params are sent once",
+			model: "MiniMax-H3", input: &schemas.VideoGenerationInput{Prompt: "a dog"},
+			params: &schemas.VideoGenerationParameters{
+				ReferenceImages: schemas.VideoReferenceImages{"https://example.com/1.png", "https://example.com/2.png"},
+				ExtraParams:     map[string]any{"reference_images": []any{"https://example.com/1.png", "https://example.com/2.png"}},
+			},
+			wantDuration: 6, wantResolution: "768P", wantRatio: "16:9", wantContent: 3,
+		},
+		{
+			name:  "reference images only in the extra params are still sent",
+			model: "MiniMax-H3", input: &schemas.VideoGenerationInput{Prompt: "a dog"},
+			params:       &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"reference_images": []any{"https://example.com/1.png"}}},
+			wantDuration: 6, wantResolution: "768P", wantRatio: "16:9", wantContent: 2,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
