@@ -715,7 +715,15 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 	// flat charge onto the input side as InputCostDetails.RequestCost.
 	var cost *schemas.BifrostCost
 	switch requestType {
-	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.RealtimeRequest, schemas.CompactionRequest:
+	case schemas.RealtimeRequest:
+		// A realtime voice turn reported by duration and no tokens (xAI grok-voice) is billed per
+		// second, as GPT Live sessions are (fork, TXE-7367); a turn with tokens is priced on them.
+		if realtimeDurationOnly(input) && pricing.InputCostPerSecond != nil {
+			cost = computeLiveCost(pricing, input.audioSeconds)
+		} else {
+			cost = computeTextCost(pricing, input.usage, input.tier)
+		}
+	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.CompactionRequest:
 		cost = computeTextCost(pricing, input.usage, input.tier)
 	case schemas.BatchResultsRequest:
 		cost = computeBatchTextCost(pricing, input.usage, input.tier)
@@ -2677,6 +2685,15 @@ func (s *Store) addProviderGuardrailCost(cost *schemas.BifrostCost, pricing *con
 	cost.AdditionalCostDetails.GuardrailCost += charge
 	cost.TotalCost += charge
 	return cost
+}
+
+// realtimeDurationOnly reports a realtime turn whose usage is a duration and no token counts
+// (fork, TXE-7367).
+func realtimeDurationOnly(input costInput) bool {
+	if input.audioSeconds == nil || *input.audioSeconds <= 0 {
+		return false
+	}
+	return input.usage == nil || (input.usage.PromptTokens == 0 && input.usage.CompletionTokens == 0)
 }
 
 // computeLiveCost bills GPT Live voice duration: session seconds × input_cost_per_second.
