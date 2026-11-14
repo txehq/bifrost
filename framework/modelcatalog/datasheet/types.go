@@ -130,6 +130,17 @@ func (a upstreamRateAliases) foldInto(o *Options) {
 	fill(&o.CacheCreationInputTokenCostAbove272kTokensBatches, a.AliasCacheCreationInputTokenCostBatchesAbove272kTokens)
 }
 
+// providerSpecificEntry is the keys of upstream's provider_specific_entry object that the fork
+// prices from (fork, TXE-7409). Entry.UnmarshalJSON reads each into an Options field.
+// TestEveryUpstreamCostKeyIsParsedOrIgnored fails on an upstream key that is neither a json tag
+// here nor in ignoredUpstreamProviderSpecificKeys, so a price published only in this object is
+// never dropped at sync unnoticed.
+type providerSpecificEntry struct {
+	// MiniMaxFreeInputImages is MiniMax's free input images per video job, read into
+	// Options.FreeInputImages.
+	MiniMaxFreeInputImages *float64 `json:"minimax_free_input_images"`
+}
+
 // UnmarshalJSON handles the special case where search_context_cost_per_query
 // may arrive as either a plain float64 or a tiered object
 // {"search_context_size_low":…, "search_context_size_medium":…, "search_context_size_high":…}.
@@ -154,6 +165,7 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 			ContextualGroundingPolicyUnits      *float64 `json:"contextualGroundingPolicyUnits"`
 			AutomatedReasoningPolicyUnits       *float64 `json:"automatedReasoningPolicyUnits"`
 		} `json:"guardrail_cost_per_unit,omitempty"`
+		ProviderSpecificEntry *providerSpecificEntry `json:"provider_specific_entry,omitempty"`
 	}
 	if err := sonic.Unmarshal(data, &raw); err != nil {
 		return err
@@ -195,6 +207,10 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 				*pair.dst = pair.src
 			}
 		}
+	}
+	// MiniMax's free input images fill the provider-agnostic allowance; a flat field already set wins.
+	if pse := raw.ProviderSpecificEntry; pse != nil && p.FreeInputImages == nil {
+		p.FreeInputImages = pse.MiniMaxFreeInputImages
 	}
 	// Older datasheet rows lack web_search_cost_per_request; fall back to the per-query search rate.
 	if p.WebSearchCostPerRequest == nil {
@@ -507,6 +523,11 @@ type Options struct {
 	OutputCostPerVideoPerSecondProAudio        *float64 `json:"output_cost_per_video_per_second_pro_audio,omitempty"`
 	OutputCostPerVideoPerSecondStandard        *float64 `json:"output_cost_per_video_per_second_standard,omitempty"`
 	OutputCostPerVideoPerSecondStandardAudio   *float64 `json:"output_cost_per_video_per_second_standard_audio,omitempty"`
+	// FreeInputImages is how many of a video job's input images (first frame, last frame,
+	// reference images) are included before input_cost_per_image applies (fork, TXE-7409).
+	// Upstream publishes it as provider_specific_entry.minimax_free_input_images (MiniMax-H3 5,
+	// MiniMax-H3-Max 2); Entry.UnmarshalJSON reads it from there. Unset means none are free.
+	FreeInputImages *float64 `json:"free_input_images,omitempty"`
 
 	// Costs - Other.
 	//
@@ -701,6 +722,7 @@ type costInput struct {
 	videoCount          int    // generated clips on the response; 0 until the job returns them
 	videoOutputTokens   *int   // output video tokens the vendor reported (fork, TXE-7357)
 	videoInputSeconds   bool   // the vendor billed input video seconds: the job had a video input (TXE-7357)
+	videoInputImages    int    // input images the vendor received, as the create reported them (fork, TXE-7409)
 	// embeddingVideoSeconds and embeddingVideoInterval are the seconds of video an embedding
 	// response embedded and the longest segment it embedded them in (fork, TXE-7357).
 	embeddingVideoSeconds  int
@@ -1279,6 +1301,7 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		OutputCostPerVideoPerSecondProAudio:        entry.OutputCostPerVideoPerSecondProAudio,
 		OutputCostPerVideoPerSecondStandard:        entry.OutputCostPerVideoPerSecondStandard,
 		OutputCostPerVideoPerSecondStandardAudio:   entry.OutputCostPerVideoPerSecondStandardAudio,
+		FreeInputImages:                            entry.FreeInputImages,
 
 		SearchContextCostPerQuery:     entry.SearchContextCostPerQuery,
 		WebSearchCostPerRequest:       entry.WebSearchCostPerRequest,
@@ -1552,6 +1575,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerVideoPerSecondProAudio:        pricing.OutputCostPerVideoPerSecondProAudio,
 		OutputCostPerVideoPerSecondStandard:        pricing.OutputCostPerVideoPerSecondStandard,
 		OutputCostPerVideoPerSecondStandardAudio:   pricing.OutputCostPerVideoPerSecondStandardAudio,
+		FreeInputImages:                            pricing.FreeInputImages,
 
 		SearchContextCostPerQuery:     pricing.SearchContextCostPerQuery,
 		WebSearchCostPerRequest:       pricing.WebSearchCostPerRequest,

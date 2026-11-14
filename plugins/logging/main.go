@@ -939,6 +939,7 @@ func videoPricingFromRequest(provider string, req *schemas.BifrostRequest) *mode
 	dims.Audio = copyPtr(dims.Audio)
 	dims.UpscaleFactor = copyPtr(dims.UpscaleFactor)
 	dims.TargetMegapixels = copyPtr(dims.TargetMegapixels)
+	dims.InputImages = copyPtr(dims.InputImages)
 	return &dims
 }
 
@@ -989,6 +990,10 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 		if modelcatalog.VideoRequestHasVideoInput(schemas.ModelProvider(entry.Provider), entry.VideoGenerationInputParsed, params.ExtraParams) {
 			dims.VideoInput = schemas.Ptr(true)
 		}
+		// Input images beyond a model's free allowance are billed per image (TXE-7409).
+		if images := modelcatalog.VideoRequestInputImages(entry.VideoGenerationInputParsed, string(params.LastFrame), params.ReferenceImages, params.ExtraParams); images > 0 {
+			dims.InputImages = &images
+		}
 	case *schemas.VideoEditParameters:
 		if params == nil {
 			return dims
@@ -1026,6 +1031,11 @@ func applyVideoDimensionsFromMap(dims *modelcatalog.VideoPricingDimensions, para
 	}
 	if modelcatalog.VideoRequestHasVideoInput("", nil, params) {
 		dims.VideoInput = schemas.Ptr(true)
+	}
+	// Fork (TXE-7409): the last frame and reference images, which a rehydrated entry keeps under
+	// their own names.
+	if images := modelcatalog.VideoRequestInputImages(nil, "", nil, params); images > 0 {
+		dims.InputImages = &images
 	}
 	if seconds, ok := params["seconds"].(string); ok {
 		if parsed, err := strconv.Atoi(seconds); err == nil {

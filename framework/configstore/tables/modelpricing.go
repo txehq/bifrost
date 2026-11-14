@@ -295,6 +295,8 @@ type TableModelPricing struct {
 	OutputCostPerVideoPerSecondProAudio        *float64 `gorm:"default:null;column:output_cost_per_video_per_second_pro_audio" json:"output_cost_per_video_per_second_pro_audio,omitempty"`
 	OutputCostPerVideoPerSecondStandard        *float64 `gorm:"default:null;column:output_cost_per_video_per_second_standard" json:"output_cost_per_video_per_second_standard,omitempty"`
 	OutputCostPerVideoPerSecondStandardAudio   *float64 `gorm:"default:null;column:output_cost_per_video_per_second_standard_audio" json:"output_cost_per_video_per_second_standard_audio,omitempty"`
+	// Input images of a video job included before input_cost_per_image applies (fork, TXE-7409).
+	FreeInputImages *float64 `gorm:"default:null;column:free_input_images" json:"free_input_images,omitempty"`
 
 	// Costs - Other
 	SearchContextCostPerQuery     *float64 `gorm:"default:null;column:search_context_cost_per_query" json:"search_context_cost_per_query,omitempty"`

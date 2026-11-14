@@ -3087,6 +3087,10 @@ PricingPatch:
       type: number
       minimum: 0
       description: Per second of output with generated audio in standard mode.
+    free_input_images:
+      type: number
+      minimum: 0
+      description: Input images of a video job (first frame, last frame, reference images) included before input_cost_per_image applies. Unset means none are free.
     # Costs - Other
     web_search_cost_per_request:
       type: number

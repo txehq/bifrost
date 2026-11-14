@@ -1446,3 +1446,15 @@ func TestPatchPricing_UnmeasuredVideoSeconds(t *testing.T) {
 	require.NotNil(t, back.UnmeasuredVideoSeconds)
 	assert.Equal(t, 15.0, *back.UnmeasuredVideoSeconds)
 }
+
+// TestPatchPricing_FreeInputImages (TXE-7409): an override sets a video model's free input images,
+// and the entry and table conversions keep it.
+func TestPatchPricing_FreeInputImages(t *testing.T) {
+	patched := patchPricing(configstoreTables.TableModelPricing{Model: "MiniMax-H3", Provider: "minimax", Mode: "video_generation"},
+		Options{FreeInputImages: bifrost.Ptr(3.0)})
+	require.NotNil(t, patched.FreeInputImages)
+	assert.Equal(t, 3.0, *patched.FreeInputImages)
+	back := convertEntryToTablePricing("minimax/MiniMax-H3", *convertTablePricingToEntry(&patched))
+	require.NotNil(t, back.FreeInputImages)
+	assert.Equal(t, 3.0, *back.FreeInputImages)
+}

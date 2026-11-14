@@ -10455,3 +10455,148 @@ func BenchmarkCalculateCost_PassthroughEmbeddings(b *testing.B) {
 		}
 	})
 }
+
+// TestCalculateVideoCostDetails_InputImagesBeyondTheFreeAllowance (TXE-7409): MiniMax-H3 charges
+// $0.04 per input image beyond the first five. The committed upstream row publishes the allowance
+// only under provider_specific_entry, so this also pins that it is read at sync. Without the fix
+// every count prices at the bare clip price, 0.78.
+func TestCalculateVideoCostDetails_InputImagesBeyondTheFreeAllowance(t *testing.T) {
+	store, rows := resolutionBandStore(t)
+	row := rows["minimax/MiniMax-H3"]
+	require.NotNil(t, row.FreeInputImages, "free_input_images is read from provider_specific_entry.minimax_free_input_images")
+	require.InDelta(t, 5, *row.FreeInputImages, 1e-9)
+	require.NotNil(t, row.InputCostPerImage)
+	require.InDelta(t, 0.04, *row.InputCostPerImage, 1e-9)
+	for _, tc := range []struct {
+		name   string
+		images *int
+		want   float64
+	}{
+		{name: "no images", images: nil, want: 0.78},
+		{name: "five images are free", images: bifrost.Ptr(5), want: 0.78},
+		{name: "eight images pay for three", images: bifrost.Ptr(8), want: 0.78 + 3*0.04},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seconds := 6
+			details := store.CalculateVideoCostDetails(VideoPricingDimensions{
+				Model: row.Model, RequestType: schemas.VideoGenerationRequest, Seconds: &seconds,
+				Resolution: "2K", OutputCount: 1, InputImages: tc.images,
+			}, schemas.MiniMax, nil)
+			require.True(t, details.Priced)
+			assert.InDelta(t, tc.want, details.Cost, 1e-9)
+		})
+	}
+}
+
+// TestComputeVideoCost_InputImageCharge (TXE-7409): images beyond free_input_images pay
+// input_cost_per_image; a row with no allowance charges every image (xAI); a row with no image rate
+// charges none; a job priced by prompt tokens has its images in those tokens.
+func TestComputeVideoCost_InputImageCharge(t *testing.T) {
+	seconds := 6
+	for _, tc := range []struct {
+		name   string
+		rate   *float64
+		free   *float64
+		images int
+		usage  *schemas.BifrostLLMUsage
+		want   float64
+	}{
+		{name: "MiniMax-H3-Max: two free, five sent", rate: bifrost.Ptr(0.074), free: bifrost.Ptr(2.0), images: 5, want: 3 * 0.074},
+		{name: "within the allowance", rate: bifrost.Ptr(0.074), free: bifrost.Ptr(2.0), images: 2, want: 0},
+		{name: "xAI: no allowance, every image", rate: bifrost.Ptr(0.01), images: 3, want: 3 * 0.01},
+		{name: "no image rate", free: bifrost.Ptr(2.0), images: 9, want: 0},
+		{name: "priced by prompt tokens", rate: bifrost.Ptr(0.01), images: 3, usage: &schemas.BifrostLLMUsage{PromptTokens: 10}, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := configstoreTables.TableModelPricing{
+				InputCostPerImage: tc.rate, FreeInputImages: tc.free,
+				InputCostPerToken: bifrost.Ptr(0.0), OutputCostPerSecond: bifrost.Ptr(0.10),
+			}
+			cost := computeVideoCost(&p, tc.usage, &seconds, "", 1, false, videoJob{inputImages: tc.images}, serviceTier{})
+			require.NotNil(t, cost)
+			assert.InDelta(t, tc.want, cost.InputCost, 1e-9)
+			assert.InDelta(t, tc.want+0.60, cost.TotalCost, 1e-9)
+		})
+	}
+}
+
+// TestCalculateCost_VideoReportsItsInputImages (TXE-7409): the per-request path prices the input
+// images a completed video response reports in usage.input_images.
+func TestCalculateCost_VideoReportsItsInputImages(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("MiniMax-H3", "minimax", "video_generation"): {
+			Model: "MiniMax-H3", Provider: "minimax", Mode: "video_generation",
+			OutputCostPerSecond: bifrost.Ptr(0.08), InputCostPerImage: bifrost.Ptr(0.04), FreeInputImages: bifrost.Ptr(5.0),
+		},
+	})
+	resp := func(images *int) *schemas.BifrostResponse {
+		r := &schemas.BifrostResponse{VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			Status:  schemas.VideoStatusCompleted,
+			Seconds: bifrost.Ptr("6"),
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.VideoGenerationRequest,
+				RoutingInfo: routingInfoFor(schemas.MiniMax, "MiniMax-H3"),
+			},
+		}}
+		if images != nil {
+			r.VideoGenerationResponse.Usage = &schemas.VideoUsage{InputImages: images}
+		}
+		return r
+	}
+	assert.InDelta(t, 0.48, s.CalculateCost(resp(nil), nil), 1e-9)
+	assert.InDelta(t, 0.48, s.CalculateCost(resp(bifrost.Ptr(5)), nil), 1e-9)
+	assert.InDelta(t, 0.48+3*0.04, s.CalculateCost(resp(bifrost.Ptr(8)), nil), 1e-9)
+}
+
+// TestVideoRequestInputImages (TXE-7409) counts the first frame, the last frame and the reference
+// images, from the typed fields or, where a handler kept them, the extra params.
+func TestVideoRequestInputImages(t *testing.T) {
+	first := &schemas.VideoGenerationInput{Prompt: "p", InputReference: bifrost.Ptr("https://x/first.png")}
+	for _, tc := range []struct {
+		name      string
+		input     *schemas.VideoGenerationInput
+		lastFrame string
+		refs      []string
+		extra     map[string]any
+		want      int
+	}{
+		{name: "nothing", want: 0},
+		{name: "first frame", input: first, want: 1},
+		{name: "first and last frame, typed", input: first, lastFrame: "https://x/last.png", want: 2},
+		{name: "typed fields also kept in extra are counted once", input: first, lastFrame: "https://x/last.png",
+			refs: []string{"a", "b"}, extra: map[string]any{"last_frame": "https://x/last.png", "reference_images": []any{"a", "b"}}, want: 4},
+		{name: "reference images from extra", extra: map[string]any{"reference_images": []any{"a", "b", "c", "d", "e", "f", "g", "h"}}, want: 8},
+		{name: "reference images as strings", extra: map[string]any{"reference_images": []string{"a", "", "c"}}, want: 2},
+		{name: "a single reference image", extra: map[string]any{"reference_images": "a"}, want: 1},
+		{name: "xAI's object last frame", extra: map[string]any{"last_frame": map[string]any{"url": "https://x/l.png"}}, want: 1},
+		{name: "blank values", input: &schemas.VideoGenerationInput{InputReference: bifrost.Ptr(" ")}, extra: map[string]any{"last_frame": "", "reference_images": []any{""}}, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, VideoRequestInputImages(tc.input, tc.lastFrame, tc.refs, tc.extra))
+		})
+	}
+}
+
+// TestVideoInputImagesSurviveMergeAndResponse (TXE-7409): a vendor's reported count wins over the
+// request's, and a response that reports none keeps the request's.
+func TestVideoInputImagesSurviveMergeAndResponse(t *testing.T) {
+	captured := VideoPricingDimensions{InputImages: bifrost.Ptr(8)}
+	assert.Equal(t, 8, *captured.MergedWith(VideoPricingDimensions{}).InputImages)
+	reported := VideoDimensionsFromResponse(&schemas.BifrostVideoGenerationResponse{Usage: &schemas.VideoUsage{InputImages: bifrost.Ptr(6)}})
+	assert.Equal(t, 6, *captured.MergedWith(reported).InputImages)
+}
+
+// TestEntryUnmarshal_ProviderSpecificFreeInputImages (TXE-7409): MiniMax's allowance under
+// provider_specific_entry fills free_input_images; a flat free_input_images wins.
+func TestEntryUnmarshal_ProviderSpecificFreeInputImages(t *testing.T) {
+	var nested Entry
+	require.NoError(t, json.Unmarshal([]byte(`{"provider":"minimax","mode":"video_generation","provider_specific_entry":{"minimax_free_input_images":2}}`), &nested))
+	require.NotNil(t, nested.FreeInputImages)
+	assert.InDelta(t, 2, *nested.FreeInputImages, 1e-9)
+	var flat Entry
+	require.NoError(t, json.Unmarshal([]byte(`{"provider":"minimax","mode":"video_generation","free_input_images":4,"provider_specific_entry":{"minimax_free_input_images":2}}`), &flat))
+	assert.InDelta(t, 4, *flat.FreeInputImages, 1e-9)
+	back := convertTablePricingToEntry(bifrost.Ptr(convertEntryToTablePricing("minimax/MiniMax-H3", nested)))
+	require.NotNil(t, back.FreeInputImages)
+	assert.InDelta(t, 2, *back.FreeInputImages, 1e-9)
+}

@@ -590,6 +590,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_priority_image_token_pricing_column"}, run: migrationAddPriorityImageTokenPricingColumn},
 	{IDs: []string{"add_long_context_tier_pricing_columns"}, run: migrationAddLongContextTierPricingColumns},
 	{IDs: []string{"add_unmeasured_video_seconds_column"}, run: migrationAddUnmeasuredVideoSecondsColumn},
+	{IDs: []string{"add_free_input_images_column"}, run: migrationAddFreeInputImagesColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17085,6 +17086,36 @@ func migrationAddInputCostPerTextMessageColumn(ctx context.Context, db *gorm.DB,
 func migrationAddPriorityImageTokenPricingColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_priority_image_token_pricing_column"
 	const column = "output_cost_per_image_token_priority"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, column); err != nil {
+				return fmt.Errorf("failed to add column %s: %w", column, err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, column); err != nil {
+				return fmt.Errorf("failed to drop column %s: %w", column, err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddFreeInputImagesColumn adds free_input_images, the input images of a video job included
+// before input_cost_per_image applies (fork, TXE-7409). Expand-only: one nullable column.
+func migrationAddFreeInputImagesColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_free_input_images_column"
+	const column = "free_input_images"
 	logger.Info("[configstore] starting migration %s", migrationName)
 	defer logger.Info("[configstore] finished migration %s", migrationName)
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{

@@ -793,6 +793,7 @@ export interface PricingOverridePatch {
 	output_cost_per_video_per_second_pro_audio?: number;
 	output_cost_per_video_per_second_standard?: number;
 	output_cost_per_video_per_second_standard_audio?: number;
+	free_input_images?: number;
 	// Other
 	web_search_cost_per_request?: number;
 	input_cost_per_query?: number;
