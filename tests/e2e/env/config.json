@@ -5,7 +5,8 @@
     "enable_logging": true,
     "enforce_auth_on_inference": false,
     "drop_excess_requests": false,
-    "allowed_origins": ["*"]
+    "allowed_origins": ["*"],
+    "a2a_private_allowlist": ["127.0.0.1"]
   },
   "config_store": {
     "enabled": true,
