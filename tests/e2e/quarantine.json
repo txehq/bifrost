@@ -87,11 +87,6 @@
     "file": "features/config/config-security.spec.ts",
     "tests": ["Security Settings › Dashboard Auth Confirmation › should require the current admin password to turn protection back on after disabling it"]
   },
-  "TXE-7399": {
-    "kind": "stale test",
-    "file": "features/placeholders/placeholders.spec.ts",
-    "tests": ["Placeholder and Enterprise Pages › should load cluster page"]
-  },
   "TXE-7400": {
     "kind": "stale test or product defect, not offline",
     "file": "features/providers/providers-crud.spec.ts",

@@ -39,7 +39,8 @@ test.describe('Placeholder and Enterprise Pages', () => {
   test('should load cluster page', async ({ page }) => {
     await page.goto('/workspace/cluster')
     await page.waitForLoadState('networkidle')
-    await expect(page).toHaveURL(/\/workspace\/cluster(?:\?.*)?$/)
+    // The cluster route redirects to its overview tab (ui/app/workspace/cluster/layout.tsx, TXE-7399).
+    await expect(page).toHaveURL(/\/workspace\/cluster\/overview(?:\?.*)?$/)
   })
 
   test('should load custom-pricing page', async ({ page }) => {
