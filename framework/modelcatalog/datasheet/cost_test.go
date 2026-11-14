@@ -9748,13 +9748,19 @@ func TestInputVideoTokens_TXE7357(t *testing.T) {
 	require.NotNil(t, text)
 	// 300 text tokens at the text rate, 200 audio at the audio rate, 500 video at the video rate.
 	assert.InDelta(t, 300*7.5e-7+200*0.000003+500*0.000001, text.InputCost, 1e-12)
-	assert.InDelta(t, text.InputCost, text.InputCostDetails.TextCost+text.InputCostDetails.AudioCost, 1e-12, "the breakdown still sums to the input side")
+	// The video tokens are reported under the video category (TXE-7373), and the breakdown sums to the side.
+	assert.InDelta(t, 300*7.5e-7, text.InputCostDetails.TextCost, 1e-12)
+	assert.InDelta(t, 200*0.000003, text.InputCostDetails.AudioCost, 1e-12)
+	assert.InDelta(t, 500*0.000001, text.InputCostDetails.VideoCost, 1e-12)
+	assert.InDelta(t, text.InputCost, text.InputCostDetails.TextCost+text.InputCostDetails.AudioCost+text.InputCostDetails.VideoCost, 1e-12, "the breakdown sums to the input side")
 
 	emb := pricingRowFromDatasheetJSON(t, "gemini/gemini-embedding-2", geminiEmbedding2Row)
 	embUsage := &schemas.BifrostLLMUsage{PromptTokens: 1000, TotalTokens: 1000, PromptTokensDetails: &schemas.ChatPromptTokensDetails{VideoTokens: 600}}
 	cost := computeEmbeddingCost(&emb, embUsage, serviceTier{})
 	require.NotNil(t, cost)
 	assert.InDelta(t, 400*2e-7+600*0.000012, cost.TotalCost, 1e-12)
+	assert.InDelta(t, 400*2e-7, cost.InputCostDetails.TextCost, 1e-12)
+	assert.InDelta(t, 600*0.000012, cost.InputCostDetails.VideoCost, 1e-12)
 
 	batch := computeBatchTextCost(&emb, embUsage, serviceTier{})
 	require.NotNil(t, batch)
@@ -9820,6 +9826,12 @@ func TestCalculateCost_EmbeddingVideoIntervals_TXE7357(t *testing.T) {
 	}
 	// Vertex's default interval is 16 seconds: above 15, so $0.002/s for 40 seconds of video.
 	assert.InDelta(t, 40*0.002, s.CalculateCost(embedding([2]int{0, 16}, [2]int{16, 32}, [2]int{32, 40}), nil), 1e-12)
+	// The seconds are reported under the video category, which is the whole input side (TXE-7373).
+	details := s.CalculateCostBreakdown(embedding([2]int{0, 10}, [2]int{10, 20}), nil)
+	require.NotNil(t, details)
+	require.NotNil(t, details.InputCostDetails, "the input breakdown was dropped")
+	assert.InDelta(t, 20*0.001, details.InputCostDetails.VideoCost, 1e-12)
+	assert.InDelta(t, details.InputCost, details.InputCostDetails.VideoCost+details.InputCostDetails.TextCost, 1e-12)
 	assert.InDelta(t, 30*0.001, s.CalculateCost(embedding([2]int{0, 10}, [2]int{10, 20}, [2]int{20, 30}), nil), 1e-12)
 	assert.InDelta(t, 12*0.0005, s.CalculateCost(embedding([2]int{0, 4}, [2]int{4, 8}, [2]int{8, 12}), nil), 1e-12)
 	// A video shorter than the interval returns one segment as long as the video: the interval
@@ -9902,4 +9914,44 @@ func TestVideoBillingExtraKeysCoverEveryExtraRead(t *testing.T) {
 	assert.Equal(t, map[string]any{"mode": "pro", "resolution": "4k"},
 		VideoBillingSelectors(map[string]any{"mode": "pro", "resolution": "4k", "reference_videos": []any{"https://x/v.mp4"}, "prompt_extend": true}))
 	assert.Nil(t, VideoBillingSelectors(map[string]any{"seed": 3}))
+}
+
+// scaleUsageCostFlatFees are the categories scaleUsageCost leaves unscaled on purpose: a flat
+// per-request fee and a per-query fee are not usage (see scaleUsageCost).
+var scaleUsageCostFlatFees = map[string]bool{
+	"InputCostDetails.RequestCost":        true,
+	"OutputCostDetails.SearchQueriesCost": true,
+}
+
+// TestScaleUsageCostScalesEveryUsageCategory fails when a cost category is added to the
+// breakdown without scaleUsageCost scaling it (TXE-7373), which would leave a discount or
+// regional multiplier unapplied to that category while the side total moved.
+func TestScaleUsageCostScalesEveryUsageCategory(t *testing.T) {
+	const v, m = 0.4, 0.5
+	for _, details := range []any{&schemas.InputCostDetails{}, &schemas.OutputCostDetails{}} {
+		typ := reflect.TypeOf(details).Elem()
+		for i := 0; i < typ.NumField(); i++ {
+			name := typ.Name() + "." + typ.Field(i).Name
+			d := reflect.New(typ)
+			d.Elem().Field(i).SetFloat(v)
+			cost := &schemas.BifrostCost{TotalCost: v}
+			switch dd := d.Interface().(type) {
+			case *schemas.InputCostDetails:
+				cost.InputCost, cost.InputCostDetails = v, dd
+			case *schemas.OutputCostDetails:
+				cost.OutputCost, cost.OutputCostDetails = v, dd
+			}
+			scaleUsageCost(cost, m)
+			want := v * m
+			if scaleUsageCostFlatFees[name] {
+				want = v
+			}
+			if got := d.Elem().Field(i).Float(); got != want {
+				t.Errorf("scaleUsageCost left %s at %v, want %v", name, got, want)
+			}
+			if cost.TotalCost != want {
+				t.Errorf("%s: TotalCost %v, want %v", name, cost.TotalCost, want)
+			}
+		}
+	}
 }

@@ -2719,9 +2719,12 @@ func sumOptionalInts(base, add *int) *int {
 
 // InputCostDetails breaks InputCost down by category; sub-fields sum to InputCost.
 type InputCostDetails struct {
-	TextCost        float64 `json:"text_cost,omitempty"`
-	AudioCost       float64 `json:"audio_cost,omitempty"`
-	ImageCost       float64 `json:"image_cost,omitempty"`
+	TextCost  float64 `json:"text_cost,omitempty"`
+	AudioCost float64 `json:"audio_cost,omitempty"`
+	ImageCost float64 `json:"image_cost,omitempty"`
+	// VideoCost is video sent as input: video tokens (input_cost_per_video_token) and
+	// seconds of video an embedding model embeds (TXE-7373).
+	VideoCost       float64 `json:"video_cost,omitempty"`
 	CachedReadCost  float64 `json:"cached_read_cost,omitempty"`
 	CachedWriteCost float64 `json:"cached_write_cost,omitempty"`
 	// RequestCost is a flat per-request surcharge (also OCR per-page and
@@ -2864,6 +2867,7 @@ func (a *InputCostDetails) deepCopy() *InputCostDetails {
 		TextCost:        a.TextCost,
 		AudioCost:       a.AudioCost,
 		ImageCost:       a.ImageCost,
+		VideoCost:       a.VideoCost,
 		CachedReadCost:  a.CachedReadCost,
 		CachedWriteCost: a.CachedWriteCost,
 		RequestCost:     a.RequestCost,
@@ -2927,6 +2931,7 @@ func (a *InputCostDetails) add(b *InputCostDetails) *InputCostDetails {
 		TextCost:        a.TextCost + b.TextCost,
 		AudioCost:       a.AudioCost + b.AudioCost,
 		ImageCost:       a.ImageCost + b.ImageCost,
+		VideoCost:       a.VideoCost + b.VideoCost,
 		CachedReadCost:  a.CachedReadCost + b.CachedReadCost,
 		CachedWriteCost: a.CachedWriteCost + b.CachedWriteCost,
 		RequestCost:     a.RequestCost + b.RequestCost,
