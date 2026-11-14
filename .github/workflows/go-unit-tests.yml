@@ -476,15 +476,27 @@ jobs:
           sudo apt-get install -y sqlite3
           sqlite3 --version
 
+      # The baselines are the fork's private GHCR images, read with this job's packages: read
+      # token, and the script that receives the token is the PR's own. A PR from another
+      # repository could replace it and send the token or the private images to its own log,
+      # so only a PR whose branch is in this repository runs the migrations here; the token
+      # never reaches a fork's code. A fork's PR is migrated by the release pipeline's
+      # test-migrations after the merge, as before TXE-7451.
+      - name: A pull request from a fork does not get the private baselines
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::notice::Migration tests not run: the previous releases are private GHCR images, and this PR's code would receive the token that reads them. The release pipeline's test-migrations runs them after the merge."
+
       # The script builds the PR's gateway itself (no SKIP_GATEWAY_BUILD), then migrates.
       - name: Run migration tests (PostgreSQL)
+        if: github.event.pull_request.head.repo.full_name == github.repository
         env:
           MIGRATION_FORK_IMAGES: ${{ github.repository_owner }}/bifrost
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./.github/workflows/scripts/run-migration-tests.sh postgres
 
       - name: Run migration tests (SQLite)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository }}
         env:
           MIGRATION_FORK_IMAGES: ${{ github.repository_owner }}/bifrost
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
