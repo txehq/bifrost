@@ -32,6 +32,7 @@ WORKFLOW = "api-collections-offline.yml"
 RELEASE_CALLER = "test-api-integrations.sh"
 SCHEMA_SYNC = "validate-schema-sync.sh"
 API_ARTIFACTS = "check-api-artifacts.sh"
+PYYAML_PIN = ".github/workflows/requirements/pyyaml.txt"
 SUITES = ("collections/collection-scripts.test.mjs", "runners/newman-exit-when-done.test.mjs")
 REPO = os.path.abspath(os.path.join(WORKFLOWS, "..", ".."))
 # The loop that finds every *.test.mjs, *.test.js and *.test.cjs under tests/e2e/api (TXE-7371:
@@ -101,6 +102,16 @@ def main():
         failures.append(f"the job in {WORKFLOW} that runs {SCRIPT} no longer runs {SCHEMA_SYNC}")
     if suite_jobs and not any(runs(job, API_ARTIFACTS) for job in suite_jobs):
         failures.append(f"the job in {WORKFLOW} that runs {SCRIPT} no longer runs {API_ARTIFACTS}")
+
+    # The suites' Python checks import yaml, which a runner's python3 need not have: every job
+    # that runs the suites, directly or through the release caller, installs the pinned PyYAML
+    # in an earlier step (TXE-7424 review).
+    for path in sorted(glob.glob(os.path.join(WORKFLOWS, "*.yml"))):
+        for job_id, job in ((yaml.safe_load(read(path)) or {}).get("jobs") or {}).items():
+            steps = [s for s in ((job or {}).get("steps") or []) if isinstance(s, dict)] if isinstance(job, dict) else []
+            first = next((i for i, s in enumerate(steps) if SCRIPT in (s.get("run") or "") or RELEASE_CALLER in (s.get("run") or "")), None)
+            if first is not None and not any(PYYAML_PIN in (s.get("run") or "") for s in steps[:first]):
+                failures.append(f"{os.path.basename(path)} job {job_id} runs the offline suites without installing {PYYAML_PIN} first")
 
     for f in failures:
         print(f"FAIL {f}")
