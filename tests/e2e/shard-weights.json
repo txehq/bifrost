@@ -28,7 +28,7 @@
   "features/mcp-tool-groups/mcp-tool-groups.spec.ts": 1,
   "features/mobile/mobile-smoke.spec.ts": 3,
   "features/model-catalog/model-catalog.spec.ts": 1,
-  "features/model-limits/model-limits.spec.ts": 50,
+  "features/model-limits/model-limits.spec.ts": 14,
   "features/notifications/rss-feeds.spec.ts": 7,
   "features/notifications/sidekiq-jobs.spec.ts": 6,
   "features/observability/observability.spec.ts": 24,
