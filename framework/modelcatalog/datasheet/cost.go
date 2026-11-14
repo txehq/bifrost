@@ -722,7 +722,7 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 	case schemas.EmbeddingRequest:
 		cost = computeEmbeddingCost(pricing, input.usage, input.tier)
 		if c := embeddingVideoCost(pricing, input.embeddingVideoSeconds, input.embeddingVideoInterval); c > 0 {
-			cost = withUndetailedInputCost(cost, c)
+			cost = withInputVideoCost(cost, c)
 		}
 	case schemas.RerankRequest:
 		cost = computeRerankCost(pricing, input.usage, input.tier)
@@ -1167,9 +1167,9 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 
 	// Video token cost (fork, TXE-7357): input video tokens a vendor reports apart (Gemini's
 	// VIDEO modality, Gemini Live) are priced at input_cost_per_video_token instead of the text
-	// rate. The breakdown has no video category, so they stay in TextCost, which already holds
-	// every non-audio token; the side total moves by the rate difference only.
-	textInputCost += videoTokenInputAdjustment(pricing, usage, nonCachedPrompt-pricedInputAudioTokens(pricing, inputAudioTokens), inputRate)
+	// rate, and reported as VideoCost (TXE-7373).
+	inputVideoCost, videoTextShare := videoTokenInputSplit(pricing, usage, nonCachedPrompt-pricedInputAudioTokens(pricing, inputAudioTokens), inputRate)
+	textInputCost -= videoTextShare
 
 	// Search query cost (billed on the output side)
 	searchCost := 0.0
@@ -1186,11 +1186,12 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 		cacheReadCost *= m
 		cacheWriteCost *= m
 		inputAudioCost *= m
+		inputVideoCost *= m
 		textOutputCost *= m
 		outputAudioCost *= m
 	}
 
-	inputCost := textInputCost + cacheReadCost + cacheWriteCost + inputAudioCost
+	inputCost := textInputCost + cacheReadCost + cacheWriteCost + inputAudioCost + inputVideoCost
 	outputCost := textOutputCost + outputAudioCost + searchCost
 
 	cost := &schemas.BifrostCost{
@@ -1198,10 +1199,11 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 		OutputCost: outputCost,
 		TotalCost:  inputCost + outputCost,
 	}
-	if textInputCost != 0 || inputAudioCost != 0 || cacheReadCost != 0 || cacheWriteCost != 0 {
+	if textInputCost != 0 || inputAudioCost != 0 || inputVideoCost != 0 || cacheReadCost != 0 || cacheWriteCost != 0 {
 		cost.InputCostDetails = &schemas.InputCostDetails{
 			TextCost:        textInputCost,
 			AudioCost:       inputAudioCost,
+			VideoCost:       inputVideoCost,
 			CachedReadCost:  cacheReadCost,
 			CachedWriteCost: cacheWriteCost,
 		}
@@ -1449,15 +1451,17 @@ func computeEmbeddingCost(pricing *configstoreTables.TableModelPricing, usage *s
 		}
 	}
 	rate := tieredInputRate(pricing, usage.PromptTokens, tier)
-	c := float64(usage.PromptTokens) * rate
-	// Gemini Embedding 2 prices input video tokens apart (TXE-7357).
-	c += videoTokenInputAdjustment(pricing, usage, usage.PromptTokens, rate)
+	text := float64(usage.PromptTokens) * rate
+	// Gemini Embedding 2 prices input video tokens apart (TXE-7357), reported as VideoCost (TXE-7373).
+	video, videoTextShare := videoTokenInputSplit(pricing, usage, usage.PromptTokens, rate)
+	text -= videoTextShare
+	c := text + video
 	if c == 0 {
 		return nil
 	}
 	return &schemas.BifrostCost{
 		InputCost:        c,
-		InputCostDetails: &schemas.InputCostDetails{TextCost: c},
+		InputCostDetails: &schemas.InputCostDetails{TextCost: text, VideoCost: video},
 		TotalCost:        c,
 	}
 }
@@ -1471,27 +1475,23 @@ func pricedInputAudioTokens(pricing *configstoreTables.TableModelPricing, inputA
 	return inputAudioTokens
 }
 
-// videoTokenInputAdjustment is what pricing the usage's input video tokens at the model's video
-// token rate instead of textRate adds to the input cost (fork, TXE-7357): 0 for a model with no
-// video token rate or usage that reports none. At most available tokens move, the prompt tokens
-// still at the text rate, so a vendor over-reporting video tokens cannot price more of the
-// prompt than it sent.
-func videoTokenInputAdjustment(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, available int, textRate float64) float64 {
-	return videoTokenAdjustment(pricing.InputCostPerVideoToken, usage, available, textRate)
-}
-
-// videoTokenAdjustment is videoTokenInputAdjustment for a given video token rate.
-func videoTokenAdjustment(videoRate *float64, usage *schemas.BifrostLLMUsage, available int, textRate float64) float64 {
-	if videoRate == nil || usage == nil || usage.PromptTokensDetails == nil {
-		return 0
+// videoTokenInputSplit prices the usage's input video tokens at the model's video token rate
+// (fork, TXE-7357): videoCost is what they cost there, reported as VideoCost (TXE-7373), and
+// textShare is what they had cost at textRate, which the caller takes out of its text cost. Both
+// are 0 for a model with no video token rate or usage that reports none. At most available
+// tokens move, the prompt tokens still at the text rate, so a vendor over-reporting video tokens
+// cannot price more of the prompt than it sent.
+func videoTokenInputSplit(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, available int, textRate float64) (videoCost, textShare float64) {
+	if pricing.InputCostPerVideoToken == nil || usage == nil || usage.PromptTokensDetails == nil {
+		return 0, 0
 	}
 	// Cached video tokens are in the video count but billed at the cache-read rate, which
 	// available already excludes; only the fresh video takes the video rate.
 	tokens := min(usage.PromptTokensDetails.VideoTokens-usage.PromptTokensDetails.CachedVideoTokens, available)
 	if tokens <= 0 {
-		return 0
+		return 0, 0
 	}
-	return float64(tokens) * (*videoRate - textRate)
+	return float64(tokens) * *pricing.InputCostPerVideoToken, float64(tokens) * textRate
 }
 
 // embeddingHasVideoSegments reports whether an embedding response embedded a video.
@@ -1561,17 +1561,25 @@ func embeddingVideoCost(pricing *configstoreTables.TableModelPricing, seconds, i
 	return float64(seconds) * *rate
 }
 
-// withUndetailedInputCost adds an input charge that maps to no breakdown category (seconds of
-// embedded video) to cost. The breakdown is dropped, since its categories would no longer sum
-// to the input side; the totals stay exact.
-func withUndetailedInputCost(cost *schemas.BifrostCost, c float64) *schemas.BifrostCost {
+// withInputVideoCost adds the cost of the seconds of video an embedding embedded to cost's input
+// side as VideoCost (TXE-7373). A cost whose input side had no breakdown keeps none, since one
+// holding only the video would not sum to the side.
+func withInputVideoCost(cost *schemas.BifrostCost, c float64) *schemas.BifrostCost {
 	out := &schemas.BifrostCost{}
 	if cost != nil {
 		*out = *cost
 	}
+	hadInput := out.InputCost != 0
 	out.InputCost += c
 	out.TotalCost += c
-	out.InputCostDetails = nil
+	switch {
+	case out.InputCostDetails != nil:
+		details := *out.InputCostDetails
+		details.VideoCost += c
+		out.InputCostDetails = &details
+	case !hadInput:
+		out.InputCostDetails = &schemas.InputCostDetails{VideoCost: c}
+	}
 	return out
 }
 

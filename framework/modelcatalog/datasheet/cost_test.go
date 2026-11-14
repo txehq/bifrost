@@ -9748,13 +9748,19 @@ func TestInputVideoTokens_TXE7357(t *testing.T) {
 	require.NotNil(t, text)
 	// 300 text tokens at the text rate, 200 audio at the audio rate, 500 video at the video rate.
 	assert.InDelta(t, 300*7.5e-7+200*0.000003+500*0.000001, text.InputCost, 1e-12)
-	assert.InDelta(t, text.InputCost, text.InputCostDetails.TextCost+text.InputCostDetails.AudioCost, 1e-12, "the breakdown still sums to the input side")
+	// The video tokens are reported under the video category (TXE-7373), and the breakdown sums to the side.
+	assert.InDelta(t, 300*7.5e-7, text.InputCostDetails.TextCost, 1e-12)
+	assert.InDelta(t, 200*0.000003, text.InputCostDetails.AudioCost, 1e-12)
+	assert.InDelta(t, 500*0.000001, text.InputCostDetails.VideoCost, 1e-12)
+	assert.InDelta(t, text.InputCost, text.InputCostDetails.TextCost+text.InputCostDetails.AudioCost+text.InputCostDetails.VideoCost, 1e-12, "the breakdown sums to the input side")
 
 	emb := pricingRowFromDatasheetJSON(t, "gemini/gemini-embedding-2", geminiEmbedding2Row)
 	embUsage := &schemas.BifrostLLMUsage{PromptTokens: 1000, TotalTokens: 1000, PromptTokensDetails: &schemas.ChatPromptTokensDetails{VideoTokens: 600}}
 	cost := computeEmbeddingCost(&emb, embUsage, serviceTier{})
 	require.NotNil(t, cost)
 	assert.InDelta(t, 400*2e-7+600*0.000012, cost.TotalCost, 1e-12)
+	assert.InDelta(t, 400*2e-7, cost.InputCostDetails.TextCost, 1e-12)
+	assert.InDelta(t, 600*0.000012, cost.InputCostDetails.VideoCost, 1e-12)
 
 	batch := computeBatchTextCost(&emb, embUsage, serviceTier{})
 	require.NotNil(t, batch)
@@ -9820,6 +9826,12 @@ func TestCalculateCost_EmbeddingVideoIntervals_TXE7357(t *testing.T) {
 	}
 	// Vertex's default interval is 16 seconds: above 15, so $0.002/s for 40 seconds of video.
 	assert.InDelta(t, 40*0.002, s.CalculateCost(embedding([2]int{0, 16}, [2]int{16, 32}, [2]int{32, 40}), nil), 1e-12)
+	// The seconds are reported under the video category, which is the whole input side (TXE-7373).
+	details := s.CalculateCostBreakdown(embedding([2]int{0, 10}, [2]int{10, 20}), nil)
+	require.NotNil(t, details)
+	require.NotNil(t, details.InputCostDetails, "the input breakdown was dropped")
+	assert.InDelta(t, 20*0.001, details.InputCostDetails.VideoCost, 1e-12)
+	assert.InDelta(t, details.InputCost, details.InputCostDetails.VideoCost+details.InputCostDetails.TextCost, 1e-12)
 	assert.InDelta(t, 30*0.001, s.CalculateCost(embedding([2]int{0, 10}, [2]int{10, 20}, [2]int{20, 30}), nil), 1e-12)
 	assert.InDelta(t, 12*0.0005, s.CalculateCost(embedding([2]int{0, 4}, [2]int{4, 8}, [2]int{8, 12}), nil), 1e-12)
 	// A video shorter than the interval returns one segment as long as the video: the interval
