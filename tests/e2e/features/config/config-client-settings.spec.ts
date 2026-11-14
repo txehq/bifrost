@@ -55,7 +55,9 @@ test.describe('Skills marketplace URL settings', () => {
         await expect(register).toBeDisabled()
         if (state.git) {
           await page.getByTestId('skill-marketplace-disabled-trigger').hover()
-          await page.getByTestId('skill-marketplace-settings-link').filter({ visible: true }).click()
+          // Radix renders the tooltip twice, the second copy for screen readers, so the link
+          // matches twice; the first is the one on screen (TXE-7397).
+          await page.getByTestId('skill-marketplace-settings-link').filter({ visible: true }).first().click()
           await expect(page).toHaveURL(/\/workspace\/config\/skills$/)
           await expect(page.getByTestId('skills-external-client-url-input')).toBeVisible()
           await page.goto('/workspace/skills-repo')

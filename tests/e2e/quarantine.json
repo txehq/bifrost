@@ -77,11 +77,6 @@
       "Agent Gateway › grants and revokes virtual key access"
     ]
   },
-  "TXE-7397": {
-    "kind": "stale test",
-    "file": "features/config/config-client-settings.spec.ts",
-    "tests": ["Skills marketplace URL settings › marketplace registration follows missing URL"]
-  },
   "TXE-7398": {
     "kind": "stale test or product defect, not offline",
     "file": "features/config/config-security.spec.ts",
