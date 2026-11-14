@@ -54,6 +54,11 @@ type VideoPricingDimensions struct {
 	// videoProvidersRenderingRequestedTier); the custom name still selects the rates. It is
 	// never persisted.
 	BaseProvider schemas.ModelProvider `json:"-"`
+	// InputVideoRateExempt is true when a settlement recorded the job as exempt from
+	// input_cost_per_video_per_second (see InputVideoRateExemptFor). A reprice has no base provider
+	// for a custom one, so it takes the recorded answer. Only RepriceFromLog sets it; it is never
+	// persisted here.
+	InputVideoRateExempt bool `json:"-"`
 
 	// Type is the operation selector ("upscale", "3d"). These do not bill per
 	// second of output at all, so a rate keyed only on duration is wrong for them.
@@ -215,7 +220,9 @@ func (s *Store) CalculateVideoCostDetails(dims VideoPricingDimensions, provider 
 	// one (TXE-7306); an unstated flag takes the provider's audio default.
 	audio := VideoPricedWithAudio(provider, dims.Audio)
 	band := dims.bandSize(provider, pricing, audio)
-	breakdown := computeVideoCost(pricing, nil, dims.Seconds, band, dims.OutputCount, audio, dims.job(), serviceTier{})
+	job := dims.job()
+	job.inputVideoRateExempt = dims.InputVideoRateExemptFor(provider)
+	breakdown := computeVideoCost(pricing, nil, dims.Seconds, band, dims.OutputCount, audio, job, serviceTier{})
 	if breakdown == nil || breakdown.TotalCost <= 0 {
 		return VideoCostDetails{}
 	}
@@ -337,6 +344,17 @@ func videoBandCharge(pricing *configstoreTables.TableModelPricing, size string, 
 		length = *seconds
 	}
 	return videoJobOutputPerSecondRate(pricing, band, audio, job) * float64(length)
+}
+
+// InputVideoRateExemptFor reports whether the job is priced without input_cost_per_video_per_second:
+// a generation rendered by a provider whose vendor takes no video input, judged by the base
+// provider of a custom one (TXE-7351). Settlement records it so a reprice prices the same way.
+func (d VideoPricingDimensions) InputVideoRateExemptFor(provider schemas.ModelProvider) bool {
+	requestType := d.RequestType
+	if requestType == "" {
+		requestType = schemas.VideoGenerationRequest
+	}
+	return d.InputVideoRateExempt || !videoInputRateApplies(requestType, d.renderer(provider))
 }
 
 // TierOnlyResolution is the tier a settlement that could not be priced records: a tier the

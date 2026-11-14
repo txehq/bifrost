@@ -848,7 +848,7 @@ func TestVideoReprice_KeepsTheSettlementsAudioFlag(t *testing.T) {
 			settled := &logstore.Log{ID: "log-1", Provider: string(schemas.DashScope), Model: "wan2.5-t2v-preview"}
 			videoDebugFor("ds-audio-off", schemas.VideoStatusCompleted, modelcatalog.VideoPricingDimensions{
 				RequestType: schemas.VideoGenerationRequest, Seconds: &seconds, Size: "1280x720", Audio: audio, OutputCount: 1,
-			}, "", false)(settled)
+			}, schemas.DashScope, "", false)(settled)
 			// The row as the store keeps it: video_debug serialized, read back by the reprice.
 			stored, err := json.Marshal(settled.VideoDebugParsed)
 			require.NoError(t, err)
@@ -874,7 +874,7 @@ func TestVideoReprice_KeepsTheSettlementsModeVideoInputAndTokens(t *testing.T) {
 	videoDebugFor("rep-1", schemas.VideoStatusCompleted, modelcatalog.VideoPricingDimensions{
 		RequestType: schemas.VideoGenerationRequest, Seconds: &seconds, OutputCount: 1,
 		Extra: map[string]any{"mode": "pro"}, VideoInput: &on, OutputTokens: &tokens,
-	}, "", false)(settled)
+	}, schemas.Replicate, "", false)(settled)
 	stored, err := json.Marshal(settled.VideoDebugParsed)
 	require.NoError(t, err)
 	row := &logstore.Log{ID: settled.ID, Provider: settled.Provider, Model: settled.Model, VideoDebug: string(stored)}
@@ -1927,4 +1927,48 @@ func BenchmarkUntrustedRenderedVideoHost(b *testing.B) {
 	for b.Loop() {
 		_ = settler.untrustedRenderedVideoHost(job, resp)
 	}
+}
+
+// A custom provider on a MiniMax base is exempt from the input-video rate at settlement, where its
+// base is resolved. A reprice runs with no resolver, so it must take the exemption the settlement
+// recorded, or it adds the input charge back to a settled job (TXE-7351).
+func TestVideoSettle_InputVideoRateExemptionSurvivesReprice(t *testing.T) {
+	retriever := &resolvingVideoRetriever{bases: map[schemas.ModelProvider]schemas.ModelProvider{"my-minimax": schemas.MiniMax}}
+	job := videoJob(t, "vid_custom_minimax", generationDims("sora-2-pro", "", 6))
+	pricing := &dimsRecordingPricing{}
+	settlement, err := NewVideoSettler(retriever).Settle(context.Background(), pricing, JobRequest{
+		Provider: "my-minimax", ProviderJobID: job.JobID, FallbackModel: job.Model, Job: job,
+		Payload: VideoPayload{Response: &schemas.BifrostVideoGenerationResponse{
+			Status: schemas.VideoStatusCompleted, Seconds: bifrost.Ptr("6"),
+			Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+		}},
+	})
+	require.NoError(t, err)
+	require.Len(t, pricing.seen, 1)
+	assert.True(t, pricing.seen[0].InputVideoRateExemptFor("my-minimax"), "settlement resolves the MiniMax base")
+
+	entry := &logstore.Log{Model: "sora-2-pro", Provider: "my-minimax"}
+	settlement.ApplyDebug(entry)
+	assert.True(t, entry.VideoDebugParsed.Accounting.InputVideoRateExempt)
+
+	repricing := &dimsRecordingPricing{}
+	_, err = NewVideoSettler(nil).RepriceFromLog(entry, repricing)
+	require.NoError(t, err)
+	require.Len(t, repricing.seen, 1)
+	assert.True(t, repricing.seen[0].InputVideoRateExempt)
+	assert.Empty(t, repricing.seen[0].BaseProvider, "the reprice has no base provider; the recorded exemption stands in for it")
+
+	// A provider that is not exempt records nothing, and its reprice keeps the charge.
+	plain := videoJob(t, "vid_runway", generationDims("sora-2-pro", "", 6))
+	settlement, err = NewVideoSettler(nil).Settle(context.Background(), &dimsRecordingPricing{}, JobRequest{
+		Provider: schemas.Runway, ProviderJobID: plain.JobID, FallbackModel: plain.Model, Job: plain,
+		Payload: VideoPayload{Response: &schemas.BifrostVideoGenerationResponse{
+			Status: schemas.VideoStatusCompleted, Seconds: bifrost.Ptr("6"),
+			Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+		}},
+	})
+	require.NoError(t, err)
+	entry = &logstore.Log{Model: "sora-2-pro", Provider: string(schemas.Runway)}
+	settlement.ApplyDebug(entry)
+	assert.False(t, entry.VideoDebugParsed.Accounting.InputVideoRateExempt)
 }

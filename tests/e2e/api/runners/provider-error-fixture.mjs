@@ -492,8 +492,9 @@ const fixturePricing = {
 	},
 	// TXE-7349: MiniMax-H3's live band rates (getbifrost.ai/datasheet, 14 Nov 2026), $0.08/s unbanded and at 768P,
 	// $0.13/s at 2K, under upstream's output_cost_per_second_<band> keys. Folder 521 settles a 2K job at the 2K rate.
-	// MiniMax-H3's input_cost_per_video_per_second is left out: it is billed on the output length (TXE-7351).
-	"fixture-minimax-2k": { provider: "minimax", mode: "video_generation", output_cost_per_second: 0.08, output_cost_per_second_768p: 0.08, output_cost_per_second_2k: 0.13 },
+	// TXE-7351: the row also carries MiniMax-H3's live input_cost_per_video_per_second, 0.08, which was billed on the
+	// output length (6 s x 0.08 more, $1.26). Folder 521 still expects $0.78, so it fails if that charge comes back.
+	"fixture-minimax-2k": { provider: "minimax", mode: "video_generation", input_cost_per_video_per_second: 0.08, output_cost_per_second: 0.08, output_cost_per_second_768p: 0.08, output_cost_per_second_2k: 0.13 },
 	// TXE-7356: dall-e-3's live upstream row, which prices an image only by its joint size and quality rate, so folder
 	// 570 can read the price of an hd and a standard image. The fork dropped these keys at sync and billed $0.
 	"fixture-dalle-3": {

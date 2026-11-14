@@ -16,6 +16,7 @@ import (
 	"time"
 
 	bifrost "github.com/capsohq/bifrost/core"
+	"github.com/capsohq/bifrost/core/providers/minimax"
 	"github.com/capsohq/bifrost/core/schemas"
 	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
@@ -9367,14 +9368,166 @@ func TestCalculateVideoCostDetails_UpstreamResolutionBands(t *testing.T) {
 			require.NotNil(t, details.Breakdown)
 			want := float64(tc.seconds) * tc.wantRate
 			assert.InDelta(t, want, details.Breakdown.OutputCost, 1e-9)
-			if row.InputCostPerVideoPerSecond == nil {
-				assert.InDelta(t, want, details.Cost, 1e-9)
-			}
-			// MiniMax-H3 also carries input_cost_per_video_per_second, which computeVideoCost
-			// bills on the output duration; that input-side defect is TXE-7351, so only the
-			// output component is pinned for those rows.
+			// The total too: MiniMax-H3's input_cost_per_video_per_second is no longer billed on
+			// the output duration (TXE-7351).
+			assert.InDelta(t, want, details.Cost, 1e-9)
 		})
 	}
+}
+
+// MiniMax-H3, -Max and -Regeneration publish input_cost_per_video_per_second = 0.08 for
+// reference-video input, which MiniMax rejects. A video job's seconds are the output clip's, so
+// that rate must not be charged on them: the two rows TXE-7351 names bill at the upstream price
+// (on main before the fix, 1.26 and 0.96).
+func TestCalculateVideoCostDetails_InputVideoRateIsNotBilledOnOutputSeconds(t *testing.T) {
+	store, rows := resolutionBandStore(t)
+	row := rows["minimax/MiniMax-H3"]
+	require.NotNil(t, row.InputCostPerVideoPerSecond, "the testdata row must carry the input-video rate")
+	require.InDelta(t, 0.08, *row.InputCostPerVideoPerSecond, 1e-9)
+	for _, tc := range []struct {
+		resolution string
+		want       float64
+	}{
+		{resolution: "2K", want: 0.78},
+		{resolution: "768P", want: 0.48},
+	} {
+		t.Run(tc.resolution, func(t *testing.T) {
+			seconds := 6
+			details := store.CalculateVideoCostDetails(VideoPricingDimensions{
+				Model: row.Model, RequestType: schemas.VideoGenerationRequest, Seconds: &seconds,
+				Resolution: tc.resolution, OutputCount: 1,
+			}, schemas.MiniMax, nil)
+			require.True(t, details.Priced)
+			assert.InDelta(t, tc.want, details.Cost, 1e-9)
+			assert.Zero(t, details.Breakdown.InputCost)
+		})
+	}
+}
+
+// The per-request path prices from the same computeVideoCost. With no prompt tokens the input-video
+// rate is charged on the seconds unless the job is exempt; prompt tokens still price input
+// (TXE-7351).
+func TestComputeVideoCost_InputVideoRateIgnoresOutputSeconds(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		InputCostPerVideoPerSecond:                bifrost.Ptr(0.08),
+		InputCostPerVideoPerSecondAbove128kTokens: bifrost.Ptr(0.16),
+		OutputCostPerSecond:                       bifrost.Ptr(0.10),
+	}
+	seconds := 6
+	cost := computeVideoCost(&p, nil, &seconds, "", 1, false, videoJob{inputVideoRateExempt: true}, serviceTier{})
+	require.NotNil(t, cost)
+	assert.Zero(t, cost.InputCost, "an exempt job owes no input-video rate")
+	assert.InDelta(t, 0.60, cost.TotalCost, 1e-9)
+	cost = computeVideoCost(&p, nil, &seconds, "", 1, false, videoJob{}, serviceTier{})
+	require.NotNil(t, cost)
+	assert.InDelta(t, 0.48, cost.InputCost, 1e-9)
+	assert.InDelta(t, 1.08, cost.TotalCost, 1e-9)
+	p.InputCostPerToken = bifrost.Ptr(0.001)
+	cost = computeVideoCost(&p, &schemas.BifrostLLMUsage{PromptTokens: 10}, &seconds, "", 1, false, videoJob{inputVideoRateExempt: true}, serviceTier{})
+	assert.InDelta(t, 0.01, cost.InputCost, 1e-9)
+}
+
+// Only a generation on a provider whose vendor takes no video input is exempt. Every other video job
+// keeps the input-video charge on its seconds, so a governed key's budget still sees the input
+// spend of a source video sent through any field, modelled or not (TXE-7351).
+func TestVideoInputRateApplies(t *testing.T) {
+	assert.False(t, videoInputRateApplies(schemas.VideoGenerationRequest, schemas.MiniMax))
+	assert.False(t, videoInputRateApplies("", schemas.MiniMax), "an unset request type prices as a generation")
+	assert.True(t, videoInputRateApplies(schemas.VideoEditRequest, schemas.MiniMax))
+	assert.True(t, videoInputRateApplies(schemas.VideoRemixRequest, schemas.MiniMax))
+	for _, provider := range []schemas.ModelProvider{schemas.Runway, schemas.BytePlus, schemas.DashScope, schemas.BFL, schemas.Runware, schemas.Gemini, "my-minimax"} {
+		assert.True(t, videoInputRateApplies(schemas.VideoGenerationRequest, provider), provider)
+	}
+}
+
+// Every provider exempted from the input-video rate must refuse video input in its converter, so the
+// exemption can never cover a job that sent a source video upstream. A provider added to
+// videoGenerationTakesNoVideoInput needs its converter here, or this fails (TXE-7351).
+func TestVideoGenerationTakesNoVideoInput_ConvertersRefuseVideoInput(t *testing.T) {
+	converters := map[schemas.ModelProvider]func(*schemas.BifrostVideoGenerationRequest) error{
+		schemas.MiniMax: func(req *schemas.BifrostVideoGenerationRequest) error {
+			_, err := minimax.ToMiniMaxVideoGenerationRequest(req)
+			return err
+		},
+	}
+	for provider := range videoGenerationTakesNoVideoInput {
+		convert, ok := converters[provider]
+		if !ok {
+			t.Errorf("%s is exempt from the input-video rate, but this test does not check that its converter refuses video input", provider)
+			continue
+		}
+		err := convert(&schemas.BifrostVideoGenerationRequest{
+			Provider: provider, Model: "MiniMax-H3",
+			Input: &schemas.VideoGenerationInput{Prompt: "p", VideoURI: bifrost.Ptr("https://example.invalid/src.mp4")},
+		})
+		assert.Error(t, err, "%s accepted video_uri, so its generations can carry a source video", provider)
+	}
+}
+
+// On the per-request path and at settlement alike, a MiniMax generation owes no input-video rate
+// and a generation on another provider still does; at settlement a custom provider takes its base
+// provider's rule (TXE-7351).
+func TestVideoCost_InputVideoRateByProvider(t *testing.T) {
+	row := func(provider string) configstoreTables.TableModelPricing {
+		return configstoreTables.TableModelPricing{
+			Model: "m", Provider: provider, Mode: "video_generation",
+			InputCostPerVideoPerSecond: bifrost.Ptr(0.05),
+			OutputCostPerSecond:        bifrost.Ptr(0.10),
+		}
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("m", "minimax", "video_generation"):    row("minimax"),
+		makeKey("m", "runway", "video_generation"):     row("runway"),
+		makeKey("m", "my-minimax", "video_generation"): row("my-minimax"),
+	})
+	response := func(provider schemas.ModelProvider) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			Status: schemas.VideoStatusCompleted, Seconds: bifrost.Ptr("10"),
+			Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL, URL: bifrost.Ptr("https://example.test/v.mp4")}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.VideoGenerationRequest,
+				RoutingInfo: routingInfoFor(provider, "m"),
+			},
+		}}
+	}
+	assert.InDelta(t, 1.00, s.CalculateCost(response(schemas.MiniMax), nil), 1e-9)
+	assert.InDelta(t, 1.50, s.CalculateCost(response(schemas.Runway), nil), 1e-9)
+
+	seconds := 10
+	dims := func(base schemas.ModelProvider) VideoPricingDimensions {
+		return VideoPricingDimensions{Model: "m", RequestType: schemas.VideoGenerationRequest, Seconds: &seconds, OutputCount: 1, BaseProvider: base}
+	}
+	assert.InDelta(t, 1.00, s.CalculateVideoCostDetails(dims(""), schemas.MiniMax, nil).Cost, 1e-9)
+	assert.InDelta(t, 1.50, s.CalculateVideoCostDetails(dims(""), schemas.Runway, nil).Cost, 1e-9)
+	assert.InDelta(t, 1.00, s.CalculateVideoCostDetails(dims(schemas.MiniMax), "my-minimax", nil).Cost, 1e-9)
+	assert.InDelta(t, 1.50, s.CalculateVideoCostDetails(dims(""), "my-minimax", nil).Cost, 1e-9,
+		"a custom provider whose base is unknown keeps the charge")
+	// A reprice has no base provider; the exemption its settlement recorded keeps the price at 1.00.
+	reprice := dims("")
+	reprice.InputVideoRateExempt = true
+	assert.InDelta(t, 1.00, s.CalculateVideoCostDetails(reprice, "my-minimax", nil).Cost, 1e-9)
+	assert.True(t, dims(schemas.MiniMax).InputVideoRateExemptFor("my-minimax"))
+	assert.False(t, dims("").InputVideoRateExemptFor("my-minimax"))
+	edit := dims(schemas.MiniMax)
+	edit.RequestType = schemas.VideoEditRequest
+	assert.False(t, edit.InputVideoRateExemptFor("my-minimax"), "an edit carries a source video on any provider")
+}
+
+// Settlement passes the job's request type through: an edit job on a model with an input-video
+// rate settles with the input charge, so a governed key's budget advances by it (TXE-7351).
+func TestCalculateVideoCostDetails_EditKeepsTheInputVideoRate(t *testing.T) {
+	store, rows := resolutionBandStore(t)
+	row := rows["minimax/MiniMax-H3"]
+	seconds := 6
+	dims := func(requestType schemas.RequestType) VideoPricingDimensions {
+		return VideoPricingDimensions{Model: row.Model, RequestType: requestType, Seconds: &seconds, Resolution: "2K", OutputCount: 1}
+	}
+	edit := store.CalculateVideoCostDetails(dims(schemas.VideoEditRequest), schemas.MiniMax, nil)
+	generation := store.CalculateVideoCostDetails(dims(schemas.VideoGenerationRequest), schemas.MiniMax, nil)
+	require.True(t, edit.Priced)
+	require.True(t, generation.Priced)
+	assert.InDelta(t, 0.78, generation.Cost, 1e-9)
+	assert.InDelta(t, generation.Cost+6*0.08, edit.Cost, 1e-9)
 }
 
 // The band is read from a reported size first. When the request named both a size and a tier,
@@ -10044,6 +10197,7 @@ func TestVideoBillingExtraKeysCoverEveryExtraRead(t *testing.T) {
 		VideoBillingSelectors(map[string]any{"mode": "pro", "resolution": "4k", "reference_videos": []any{"https://x/v.mp4"}, "prompt_extend": true}))
 	assert.Nil(t, VideoBillingSelectors(map[string]any{"seed": 3}))
 }
+
 // realtimeRowStore holds one decoded datasheet row under the given provider, model and mode.
 func realtimeRowStore(tb testing.TB, provider, model, mode, row string) *Store {
 	tb.Helper()
@@ -10075,4 +10229,3 @@ func TestCalculateCost_RealtimeDurationTurnIsBilledPerSecond(t *testing.T) {
 	}}
 	assert.InDelta(t, 100*4e-06+10*1.6e-05, tokens.CalculateCost(tokenTurn, nil), 1e-12, "a turn with tokens is priced on them, not its duration")
 }
-
