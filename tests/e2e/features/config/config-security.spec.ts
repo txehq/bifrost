@@ -347,10 +347,11 @@ test.describe("Security Settings", () => {
   test.describe("Dashboard Auth Confirmation", () => {
     // Once an admin account exists, switching dashboard protection off lets
     // anyone reach the settings API without signing in, so switching it back
-    // on from that state must prove control of the instance with the stored
-    // admin password (or the operator's setup token). The fixture signs the
-    // browser back in with BIFROST_ADMIN_USERNAME/PASSWORD when the server
-    // flushes sessions, so that password is also what this test confirms with.
+    // on from that state must prove control of the instance: the stored admin
+    // password, or the operator's setup token. This environment configures a
+    // setup token, so the browser's setup session is that proof here (see the
+    // test). The fixture signs the browser back in with
+    // BIFROST_ADMIN_USERNAME/PASSWORD when the server flushes sessions.
     const adminPassword = process.env.BIFROST_ADMIN_PASSWORD;
 
     test.beforeEach(async ({ configSettingsPage, request }) => {
@@ -396,7 +397,14 @@ test.describe("Security Settings", () => {
       }
     });
 
-    test("should require the current admin password to turn protection back on after disabling it", async ({
+    // Upstream 49b720ca30 (2026-10-26) shows the current-password confirmation only while the
+    // setup lock is not active (securityView.tsx: requiresProofOfControl needs
+    // !authState.setup_required). This environment configures a setup_token, and switching
+    // dashboard auth off re-engages the setup lock (setup_required = !IsDashboardAuthActive), so
+    // the browser's setup session is the proof and no password is asked for (TXE-7398). The
+    // refusal of a re-enable that carries neither proof is pinned at the API in
+    // handlers/config_test.go (TestUpdateConfig_StoredCredentialsRequireProofWhenAuthBypassed).
+    test("should turn protection back on through the setup session after disabling it", async ({
       configSettingsPage,
       request,
     }) => {
@@ -419,23 +427,14 @@ test.describe("Security Settings", () => {
         false,
       );
 
-      // Protection off, stored account: turning it on reveals the confirmation
-      // field, and saving without filling it is refused in the form itself.
+      // Protection off: the setup lock is active again, so turning protection on asks for no
+      // current password; the setup session stands in for it.
       await configSettingsPage.toggleDashboardAuth();
-      await expect(configSettingsPage.currentPasswordInput).toBeVisible();
-      await configSettingsPage.saveBtn.click();
-      await expect(configSettingsPage.currentPasswordError).toBeVisible();
-      await expect(configSettingsPage.currentPasswordError).toContainText(
-        /current admin password/i,
-      );
-      expect((await coreConfigApi.get(request)).auth_config?.is_enabled).toBe(
-        false,
-      );
+      await expect(configSettingsPage.currentPasswordInput).not.toBeVisible();
 
-      // The stored password turns protection back on. The server flushes every
-      // session on that change; sign the browser back in before reloading
-      // rather than racing the fixture's login redirect.
-      await configSettingsPage.setCurrentPassword(adminPassword!);
+      // Saving turns protection back on. The server flushes every session on that change;
+      // sign the browser back in before reloading rather than racing the fixture's login
+      // redirect.
       const page = configSettingsPage.page;
       const saved = page.waitForResponse(
         (res) => res.url().includes("/api/config") && res.request().method() === "PUT",
