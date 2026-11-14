@@ -13,12 +13,16 @@ WORK_DIR="$(mktemp -d)"
 SERVER_LOG="${WORK_DIR}/server.log"
 APP_DIR="${WORK_DIR}/app"
 SERVER_PID=""
+DATASHEET_PID=""
 ADMIN_PASSWORD="e2e-$(head -c 12 /dev/urandom | base64 | tr -dc A-Za-z0-9)"
 
 cleanup() {
   if [ -n "${SERVER_PID}" ]; then
     kill "${SERVER_PID}" 2>/dev/null || true
     wait "${SERVER_PID}" 2>/dev/null || true
+  fi
+  if [ -n "${DATASHEET_PID}" ]; then
+    kill "${DATASHEET_PID}" 2>/dev/null || true
   fi
   if [ "${KEEP_LOG:-}" = "1" ] || [ "${TEST_FAILED:-0}" = "1" ]; then
     echo "--- server log ---"
@@ -41,12 +45,23 @@ else
 fi
 
 mkdir -p "${APP_DIR}"
+# Under scripts/test-offline.sh (BIFROST_TEST_OFFLINE=1), as the required PR check runs it
+# (TXE-7424), the gateway cannot download its pricing datasheets; it reads empty ones from
+# loopback instead. The suite checks no cost.
+FRAMEWORK_CONFIG=""
+if [ "${BIFROST_TEST_OFFLINE:-}" = "1" ]; then
+  source "$(dirname "$0")/offline-datasheets.sh"
+  serve_offline_datasheets "${WORK_DIR}"
+  FRAMEWORK_CONFIG="\"framework\": { \"pricing\": { \"pricing_url\": \"${DATASHEET_ORIGIN}/pricing.json\", \"model_parameters_url\": \"${DATASHEET_ORIGIN}/model-parameters.json\" } },"
+fi
+
 # The fixture agent and its push receiver listen on 127.0.0.1. The Agent Gateway refuses
 # private destinations unless client.a2a_private_allowlist names them, so the config
 # allows exactly that loopback address and nothing else.
 cat > "${APP_DIR}/config.json" <<JSON
 {
   "\$schema": "https://www.getbifrost.ai/schema",
+  ${FRAMEWORK_CONFIG}
   "server": { "a2a_allow_private_push_callbacks": true },
   "client": {
     "a2a_external_client_url": "http://127.0.0.1:${PORT}",
