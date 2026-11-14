@@ -1,50 +1,4 @@
 {
-  "TXE-7392": {
-    "kind": "offline gap: no seeded LLM logs without a provider key",
-    "file": "features/logs/logs.spec.ts",
-    "tests": [
-      "LLM Logs › Logs Display › should display synthetic Antigravity stored desktop attribution",
-      "LLM Logs › Logs Display › should display synthetic Antigravity stored cli attribution",
-      "LLM Logs › Logs Display › should display synthetic Antigravity raw-only desktop attribution",
-      "LLM Logs › Logs Display › should display synthetic Antigravity edge app key attribution",
-      "LLM Logs › Logs Display › should display logs table",
-      "LLM Logs › Logs Display › should display stats cards",
-      "LLM Logs › Logs Display › should fit stat card trend figures at 1440px",
-      "LLM Logs › Logs Display › should keep the table status row inside the visible table at 1440px",
-      "LLM Logs › Logs Display › should display filters section",
-      "LLM Logs › Log Filtering › should filter logs by provider",
-      "LLM Logs › Log Filtering › should filter logs by model",
-      "LLM Logs › Log Filtering › should filter logs by status",
-      "LLM Logs › Log Filtering › should filter logs by tool call name",
-      "LLM Logs › Log Filtering › should search logs by content",
-      "LLM Logs › Log Filtering › should clear search",
-      "LLM Logs › Log Filtering › should filter by time period",
-      "LLM Logs › Log Details › should open log details sheet",
-      "LLM Logs › Log Details › should close log details sheet",
-      "LLM Logs › Pagination › should navigate to next page",
-      "LLM Logs › Pagination › should navigate to previous page",
-      "LLM Logs › Table Sorting › should sort by timestamp",
-      "LLM Logs › Table Sorting › should sort by latency",
-      "LLM Logs › Table Sorting › should sort by cost",
-      "LLM Logs › Live Updates › should toggle live updates",
-      "LLM Logs › Empty State › should show empty state when no logs",
-      "LLM Logs › Advanced Filtering › should combine multiple filters",
-      "LLM Logs › Advanced Filtering › should clear all filters",
-      "LLM Logs › Advanced Filtering › should search within filtered results",
-      "LLM Logs › Grouped View › should tell session rows apart from fallback chain rows",
-      "LLM Logs › Decision Logs › should show the questions of an older decision log keyed by name",
-      "LLM Logs › Decision Logs › should show the questions of a decision in request order",
-      "LLM Logs › Decision Logs › should copy the questions as JSON",
-      "LLM Logs › Decision Logs › should not show a questions box on a chat log",
-      "LLM Logs › Passthrough Logs › should render a parsed passthrough row as a conversation",
-      "LLM Logs › Passthrough Logs › should keep the raw body view for a passthrough row that did not parse",
-      "LLM Logs › Attempt Trail › should show each attempt with its class or reason and its status",
-      "LLM Logs › Video Outputs › should show a video job's clip as a video and its last frame as an image",
-      "LLM Logs › URL State Persistence › should persist filters in URL",
-      "LLM Logs › URL State Persistence › should look up a pasted request ID by id instead of content",
-      "LLM Logs › URL State Persistence › should restore state from URL"
-    ]
-  },
   "TXE-7393": {
     "kind": "stale test or product defect, not offline",
     "file": "features/mcp-registry/mcp-registry-openapi.spec.ts",
@@ -57,15 +11,6 @@
       "MCP Registry - OpenAPI servers › Replacing the document › keeps the selection of operations that survive and adds the new ones",
       "MCP Registry - OpenAPI servers › Replacing the document: base URL › shows an invalid custom base URL at the input and does not save",
       "MCP Registry - OpenAPI servers › Filtering › filters the table by the OpenAPI connection type"
-    ]
-  },
-  "TXE-7394": {
-    "kind": "offline gap: the empty datasheet offers no gpt-4o-mini",
-    "file": "features/model-limits/model-limits.spec.ts",
-    "tests": [
-      "Model Limits › should create a model limit with budget and rate limit",
-      "Model Limits › should edit a model limit budget and rate limit",
-      "Model Limits › should delete a model limit"
     ]
   },
   "TXE-7396": {

@@ -182,14 +182,48 @@ const workerDir = (name) => join(WORK_DIR, 'workers', name)
 // and exits when it cannot. An offline run serves both datasheets empty from a loopback server and
 // turns the library sync off, as the offline harness fixtures do (fixtureGatewayConfig in
 // tests/e2e/api/runners/lib/tls-intercept-proxy.mjs).
+//
+// The same server answers OpenAI chat completions (TXE-7392), and the openai provider points at it
+// with a placeholder key, so seedLogs gives the logs and dashboard specs real traffic offline.
 async function serveEmptyDatasheets() {
+  let n = 0
   const server = createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' })
+    if (req.method === 'POST' && req.url?.endsWith('/chat/completions')) {
+      let raw = ''
+      req.on('data', (chunk) => (raw += chunk))
+      req.on('end', () => {
+        let model = 'gpt-4o-mini'
+        try { model = JSON.parse(raw).model || model } catch {}
+        n++
+        res.end(JSON.stringify({
+          id: `chatcmpl-e2e-offline-${n}`,
+          object: 'chat.completion',
+          created: Math.floor(Date.now() / 1000),
+          model,
+          choices: [{ index: 0, message: { role: 'assistant', content: `Hello from the offline fixture (${n}).` }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 12 + (n % 5), completion_tokens: 5 + (n % 3), total_tokens: 17 + (n % 5) + (n % 3) },
+        }))
+      })
+      return
+    }
+    // The openai provider's model listing (TXE-7394): the datasheets are empty offline, so these are
+    // the models the catalog and every model picker offer.
+    if (req.method === 'GET' && req.url?.split('?')[0].endsWith('/models')) {
+      res.end(JSON.stringify({ object: 'list', data: OFFLINE_OPENAI_MODELS.map((id) => ({ id, object: 'model', created: 1, owned_by: 'openai' })) }))
+      return
+    }
     res.end('{}')
   })
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
   return { server, origin: `http://127.0.0.1:${server.address().port}` }
 }
+
+// The models the offline openai provider lists: the seed model, and the ones the specs pick.
+const OFFLINE_OPENAI_MODELS = ['gpt-4o-mini', 'gpt-4o', 'gpt-4']
+
+// The key the offline openai provider sends to the loopback fixture, which ignores it.
+const OFFLINE_OPENAI_KEY = 'sk-e2e-offline-fixture'
 
 function writeWorkerConfig(dir, datasheetOrigin) {
   const config = JSON.parse(readFileSync(SEED_CONFIG, 'utf8'))
@@ -197,6 +231,11 @@ function writeWorkerConfig(dir, datasheetOrigin) {
     config.framework = {
       ...config.framework,
       pricing: { ...config.framework?.pricing, pricing_url: `${datasheetOrigin}/pricing.json`, model_parameters_url: `${datasheetOrigin}/model-parameters.json`, mcp_library_sync_interval: 0 },
+    }
+    const openai = config.providers?.openai
+    if (openai) {
+      openai.keys = openai.keys.map((key) => ({ ...key, value: OFFLINE_OPENAI_KEY }))
+      openai.network_config = { ...openai.network_config, base_url: datasheetOrigin }
     }
   }
   writeFileSync(join(dir, 'config.json'), JSON.stringify(config, null, 2))
@@ -245,10 +284,11 @@ async function startWorker(w, datasheetOrigin) {
   throw new Error(`worker ${w.name} ${exited !== null ? `exited with ${exited}` : 'did not become healthy'}; last log lines:\n${tail}`)
 }
 
-async function seedLogs(w) {
+// offline: the openai provider answers from the loopback fixture (writeWorkerConfig), so no key is needed.
+async function seedLogs(w, offline) {
   if (!w.files.some((f) => SEED_LOG_FEATURES.some((feat) => f.startsWith(`features/${feat}/`)))) return
   const count = SEED_LOG_COUNT
-  if (!process.env.OPENAI_API_KEY) {
+  if (!offline && !process.env.OPENAI_API_KEY) {
     log(`OPENAI_API_KEY not set; worker ${w.name} gets no seeded logs (logs/dashboard tests will see empty state)`)
     return
   }
@@ -327,7 +367,7 @@ async function main() {
   if (datasheets) log(`offline: empty pricing datasheets on ${datasheets.origin}, MCP library sync off`)
   try {
     await Promise.all(workers.map((w) => startWorker(w, datasheets?.origin)))
-    await Promise.all(workers.map(seedLogs))
+    await Promise.all(workers.map((w) => seedLogs(w, !!datasheets)))
   } catch (err) {
     stopWorkers()
     fail(err.message)
