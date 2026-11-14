@@ -5,19 +5,26 @@
 # A fresh gateway downloads its pricing and model-parameter datasheets from getbifrost.ai at
 # start, and exits when it cannot. Under scripts/test-offline.sh (BIFROST_TEST_OFFLINE=1) every
 # dial off loopback is refused, so a script that starts a gateway there points
-# framework.pricing at these instead. Both are empty: a suite that checks costs installs its own
-# pricing overrides.
+# framework.pricing at these instead. Both are empty unless the caller passes the two files to
+# serve: a suite that checks costs installs its own pricing overrides, and a suite that needs
+# catalog prices passes a checked-in snapshot (test-api-integrations.sh, TXE-7464).
 #
 #   source .github/workflows/scripts/offline-datasheets.sh
-#   serve_offline_datasheets "$LOG_DIR"   # sets DATASHEET_ORIGIN and DATASHEET_PID
+#   serve_offline_datasheets "$LOG_DIR" [pricing.json model-parameters.json]
+#   ...                                    # sets DATASHEET_ORIGIN and DATASHEET_PID
 #   ...                                    # pricing_url: $DATASHEET_ORIGIN/pricing.json
 #   kill "$DATASHEET_PID"                  #   model_parameters_url: $DATASHEET_ORIGIN/model-parameters.json
 
 serve_offline_datasheets() {
-  local log_dir="$1" sheets
+  local log_dir="$1" pricing="${2:-}" params="${3:-}" sheets
   sheets="$(mktemp -d)"
-  echo '{}' > "$sheets/pricing.json"
-  echo '{}' > "$sheets/model-parameters.json"
+  if [ -n "$pricing" ] || [ -n "$params" ]; then
+    cp "${pricing:?serve_offline_datasheets: pass both datasheets}" "$sheets/pricing.json" || return 1
+    cp "${params:?serve_offline_datasheets: pass both datasheets}" "$sheets/model-parameters.json" || return 1
+  else
+    echo '{}' > "$sheets/pricing.json"
+    echo '{}' > "$sheets/model-parameters.json"
+  fi
   # Port 0: the kernel picks a free port, so parallel runs never collide.
   python3 -c '
 import functools, http.server, os, sys

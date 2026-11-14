@@ -188,11 +188,13 @@ if [ -z "${MCP_SSE_URL:-}" ]; then
 fi
 
 # Under scripts/test-offline.sh (the pull-request job, TXE-7464) the gateway cannot download its
-# pricing datasheets, so it reads empty ones from loopback.
+# pricing datasheets, so it reads the checked-in snapshot from loopback. The rate-limit suite's
+# "Model config spelling" folder needs a priced gpt-4o (and gpt-4o-mini) to accrue cost.
 if [ "${BIFROST_TEST_OFFLINE:-}" = "1" ]; then
   # shellcheck source=offline-datasheets.sh
   source "$SCRIPT_DIR/offline-datasheets.sh"
-  serve_offline_datasheets "$TEMP_DIR"
+  SNAPSHOT_DIR="$REPO_ROOT/examples/configs/withlocalpricingfiles"
+  serve_offline_datasheets "$TEMP_DIR" "$SNAPSHOT_DIR/pricing.json" "$SNAPSHOT_DIR/model-parameters.json"
   jq --arg origin "$DATASHEET_ORIGIN" \
     '.framework.pricing.pricing_url = ($origin + "/pricing.json")
      | .framework.pricing.model_parameters_url = ($origin + "/model-parameters.json")' \

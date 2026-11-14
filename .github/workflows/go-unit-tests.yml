@@ -610,7 +610,9 @@ jobs:
           # The compose stack's published ports DNAT to its pinned bridge addresses
           # (.github/workflows/configs/docker-compose.yml): Postgres 172.38.0.11, Weaviate
           # 172.38.0.12 (its gossip to its own advertise address too), Redis 172.38.0.13.
-          # The registries serve its images, npm the lockfile installs, the Go hosts the build.
+          # The registries serve its images, npm the lockfile installs, the Go hosts the build,
+          # and api.github.com, github.com, release-assets.githubusercontent.com and nodejs.org
+          # the setup-go and setup-node downloads on a runner without the toolchain cached.
           # The gateway, the stubs and the datasheets are on loopback.
           allowed-endpoints: >
             127.0.0.1:5432
@@ -619,6 +621,10 @@ jobs:
             172.38.0.12:8080
             172.38.0.12:8301
             172.38.0.13:6379
+            api.github.com:443
+            github.com:443
+            nodejs.org:443
+            release-assets.githubusercontent.com:443
             auth.docker.io:443
             cr.weaviate.io:443
             ghcr.io:443
