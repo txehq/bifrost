@@ -558,22 +558,22 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 		// once the rate lands, rather than dropping the job's cost entirely.
 		settlement.RecordUnpriced = true
 		settlement.UnpricedModel = dims.Model
-		settlement.ApplyDebug = withUnmeasuredBound(videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, jobReq.Provider, dims.TierOnlyResolution(jobReq.Provider), true), dims.Seconds, dims.UnmeasuredDefaultSeconds, dims.UnmeasuredDefaultSeconds)
+		settlement.ApplyDebug = withUnmeasuredBound(videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, jobReq.Provider, dims.TierOnlyResolution(jobReq.Provider), true), dims.Seconds, dims.UnmeasuredDefaultSeconds, nil, dims.UnmeasuredDefaultSeconds)
 		return settlement, nil
 	}
 
 	settlement.Priced = true
 	settlement.Complete = true
 	settlement.Cost = details.Cost
-	settlement.ApplyDebug = withUnmeasuredBound(videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, jobReq.Provider, details.PricedResolution, unmeasured), dims.Seconds, details.UnmeasuredBoundSeconds, dims.UnmeasuredDefaultSeconds)
+	settlement.ApplyDebug = withUnmeasuredBound(videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, jobReq.Provider, details.PricedResolution, unmeasured), dims.Seconds, details.UnmeasuredBoundSeconds, details.UnmeasuredChargedSeconds, dims.UnmeasuredDefaultSeconds)
 	return settlement, nil
 }
 
 // withUnmeasuredBound records on the settlement row the bound an unmeasurable video was charged up
-// to, the seconds that charge was for, the seconds the create named and the provider's default
-// (fork, TXE-7401), so the row says why it costs more than was asked for and a reprice can price it
-// again from the request.
-func withUnmeasuredBound(apply func(*logstore.Log), requested *int, bound, providerDefault int) func(*logstore.Log) {
+// to, the seconds that charge was for (charged, as pricing reports it; nil for an unpriced job),
+// the seconds the create named and the provider's default (fork, TXE-7401), so the row says why it
+// costs more than was asked for and a reprice can price it again from the request.
+func withUnmeasuredBound(apply func(*logstore.Log), requested *int, bound int, charged *int, providerDefault int) func(*logstore.Log) {
 	if bound <= 0 {
 		return apply
 	}
@@ -583,20 +583,26 @@ func withUnmeasuredBound(apply func(*logstore.Log), requested *int, bound, provi
 		accounting.RequestedSeconds = requested
 		d := providerDefault
 		accounting.UnmeasuredDefaultSeconds = &d
-		setUnmeasuredCharge(accounting, requested, bound)
+		setUnmeasuredCharge(accounting, requested, bound, charged)
 	}
 }
 
-// setUnmeasuredCharge records the bound applied and the seconds charged: the larger of the
-// requested seconds and the bound.
-func setUnmeasuredCharge(accounting *schemas.VideoAccountingDebug, requested *int, bound int) {
+// setUnmeasuredCharge records the bound applied and the seconds charged: the seconds pricing
+// charged, which keeps the requested length where that costs more (a per-clip price), else the
+// larger of the requested seconds and the bound.
+func setUnmeasuredCharge(accounting *schemas.VideoAccountingDebug, requested *int, bound int, charged *int) {
 	b := bound
 	accounting.UnmeasuredBoundSeconds = &b
-	charged := bound
-	if requested != nil && *requested > bound {
-		charged = *requested
+	if charged != nil {
+		c := *charged
+		accounting.Seconds = &c
+		return
 	}
-	accounting.Seconds = &charged
+	c := bound
+	if requested != nil && *requested > bound {
+		c = *requested
+	}
+	accounting.Seconds = &c
 }
 
 // videoDebugFor builds the closure that attaches video detail to the aggregate row.
@@ -726,7 +732,7 @@ func (s *VideoSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManage
 	// The row says what this price is for: the bound the reprice applied and the seconds it
 	// charged (TXE-7401), not the ones settlement wrote.
 	if unmeasuredDefault > 0 && details.UnmeasuredBoundSeconds > 0 {
-		setUnmeasuredCharge(accounting, seconds, details.UnmeasuredBoundSeconds)
+		setUnmeasuredCharge(accounting, seconds, details.UnmeasuredBoundSeconds, details.UnmeasuredChargedSeconds)
 	}
 
 	// Incomplete is left as settlement wrote it: it can stand for dimensions the

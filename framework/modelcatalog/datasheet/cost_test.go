@@ -7441,6 +7441,42 @@ func TestCalculateVideoCostDetails_UnmeasuredVideoIsPricedUpToItsBound(t *testin
 	details = store.CalculateVideoCostDetails(dims(&five, 30), schemas.OpenAI, nil)
 	assert.InDelta(t, 12*0.70, details.Cost, 1e-12, "the model's 11.5-second bound, as 12 whole seconds")
 	assert.Equal(t, 12, details.UnmeasuredBoundSeconds)
+	require.NotNil(t, details.UnmeasuredChargedSeconds)
+	assert.Equal(t, 12, *details.UnmeasuredChargedSeconds)
+}
+
+// TestCalculateVideoCostDetails_UnmeasuredBoundNeverLowersAClipPrice (TXE-7401 review): the bound
+// only raises a charge. A model priced per clip prices the requested length's clip, which the
+// bound's 30 seconds misses: Replicate's Hailuo would fall to its $0.28 flat price, and MiniMax's,
+// with no flat price, to nothing. The requested clip is charged, and reported as the seconds charged.
+func TestCalculateVideoCostDetails_UnmeasuredBoundNeverLowersAClipPrice(t *testing.T) {
+	s := txe7357Store(t)
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		seconds  int
+		want     float64
+		charged  int
+	}{
+		{"replicate hailuo 768p 10s", schemas.Replicate, "minimax/hailuo-2.3", 10, 0.56, 10},
+		{"minimax hailuo 768p 10s", schemas.MiniMax, "MiniMax-Hailuo-2.3", 10, 0.56, 10},
+		{"minimax hailuo 768p 6s", schemas.MiniMax, "MiniMax-Hailuo-2.3", 6, 0.28, 6},
+		// A per-second model is still charged up to the bound.
+		{"replicate kling v3 per second", schemas.Replicate, "kwaivgi/kling-v3-video", 5, 30 * 0.168, 30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			details := s.CalculateVideoCostDetails(VideoPricingDimensions{
+				Model: tc.model, RequestType: schemas.VideoGenerationRequest, Seconds: bifrost.Ptr(tc.seconds),
+				Size: "1366x768", OutputCount: 1, UnmeasuredDefaultSeconds: 30,
+			}, tc.provider, nil)
+			require.True(t, details.Priced, "an unmeasurable clip the model prices is never left unpriced")
+			assert.InDelta(t, tc.want, details.Cost, 1e-9)
+			assert.Equal(t, 30, details.UnmeasuredBoundSeconds)
+			require.NotNil(t, details.UnmeasuredChargedSeconds)
+			assert.Equal(t, tc.charged, *details.UnmeasuredChargedSeconds)
+		})
+	}
 }
 
 func TestCalculateVideoCostDetails_UsesResolutionBandedRate(t *testing.T) {

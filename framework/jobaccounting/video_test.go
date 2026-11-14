@@ -2017,6 +2017,26 @@ func TestVideoSweeper_UnmeasurableVideoKeepsALongerRequestAndACustomProvidersBas
 	assert.Zero(t, NewVideoSettler(&retrieveOnly{}).unmeasuredBound("unknown"))
 }
 
+// An unmeasurable clip-priced job keeps the requested clip's price, which the bound's length would
+// miss (TXE-7401 review), and the row records the seconds pricing charged: the clip's 10, not the
+// bound's 30.
+func TestVideoSweeper_UnmeasurableClipPricedVideoRecordsTheSecondsCharged(t *testing.T) {
+	store := newFakeAccountingStore()
+	job := videoJob(t, "pred_clip", generationDims("hailuo-clip", "1366x768", 10))
+	job.Provider = string(schemas.Replicate)
+	job.ID = cstables.ProviderJobID(cstables.ProviderJobKindVideo, job.Provider, "pred_clip")
+	sweepVideoJob(t, store, job, &retrieveOnly{resp: silentReplicateResponse("pred_clip")})
+	entry := store.logs[AccountingLogID(ProviderJobKindVideo, schemas.Replicate, "pred_clip")]
+	require.NotNil(t, entry)
+	require.NotNil(t, entry.Cost)
+	assert.InDelta(t, 0.56, *entry.Cost, 1e-12)
+	accounting := entry.VideoDebugParsed.Accounting
+	assert.Equal(t, 10, *accounting.Seconds, "the seconds charged are the clip's")
+	assert.Equal(t, 30, *accounting.UnmeasuredBoundSeconds)
+	assert.Equal(t, 10, *accounting.RequestedSeconds)
+	assert.True(t, accounting.Incomplete)
+}
+
 // originVideoRetrieverForBound is a retriever that resolves every custom provider to base.
 type originVideoRetrieverForBound struct {
 	retrieveOnly

@@ -181,8 +181,9 @@ type VideoCostDetails struct {
 	// did (or nothing banded the job). The settlement records it, so a reprice prices from
 	// the tier alone, or the size alone, exactly as settlement chose (TXE-7349): a reprice
 	// cannot resolve a custom provider's base, so it must not rerun that choice.
-	PricedResolution       string
-	UnmeasuredBoundSeconds int // bound an unmeasurable video was charged up to, 0 when measured (TXE-7401)
+	PricedResolution         string
+	UnmeasuredBoundSeconds   int  // bound an unmeasurable video was charged up to, 0 when measured (TXE-7401)
+	UnmeasuredChargedSeconds *int // seconds an unmeasurable video's charge priced, nil when measured (TXE-7401)
 }
 
 // unmeasuredVideoSeconds returns the seconds a job is priced on, and the bound applied (fork,
@@ -248,10 +249,23 @@ func (s *Store) CalculateVideoCostDetails(dims VideoPricingDimensions, provider 
 	job.inputVideoRateExempt = dims.InputVideoRateExemptFor(provider)
 	seconds, bound := unmeasuredVideoSeconds(dims, pricing)
 	breakdown := computeVideoCost(pricing, nil, seconds, band, dims.OutputCount, audio, job, serviceTier{})
+	if seconds != dims.Seconds {
+		// The bound raised the seconds, and it may only raise the charge. A model priced per clip
+		// prices the requested length's clip, which a longer length misses: MiniMax Hailuo's 768p
+		// 10s clip falls to the flat price at 30 s, or to nothing where there is none. The
+		// requested length is charged when it costs more.
+		requested := computeVideoCost(pricing, nil, dims.Seconds, band, dims.OutputCount, audio, job, serviceTier{})
+		if requested != nil && (breakdown == nil || requested.TotalCost > breakdown.TotalCost) {
+			breakdown, seconds = requested, dims.Seconds
+		}
+	}
 	if breakdown == nil || breakdown.TotalCost <= 0 {
 		return VideoCostDetails{}
 	}
 	details := VideoCostDetails{Cost: breakdown.TotalCost, Priced: true, Breakdown: breakdown, UnmeasuredBoundSeconds: bound}
+	if bound > 0 {
+		details.UnmeasuredChargedSeconds = seconds
+	}
 	if band != dims.Size {
 		details.PricedResolution = band
 	}

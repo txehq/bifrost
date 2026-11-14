@@ -262,9 +262,18 @@ func (fakePricing) CalculateVideoCostDetails(dims modelcatalog.VideoPricingDimen
 	seconds, bound := dims.Seconds, 0
 	if dims.UnmeasuredDefaultSeconds > 0 {
 		bound = dims.UnmeasuredDefaultSeconds
-		if seconds == nil || *seconds < bound {
+		// A clip-priced model keeps the requested clip, as the catalog does: the bound only
+		// raises a charge, and a longer length has no clip price.
+		if dims.Model != "hailuo-clip" && (seconds == nil || *seconds < bound) {
 			seconds = &bound
 		}
+	}
+	var charged *int
+	if bound > 0 {
+		charged = seconds
+	}
+	if dims.Model == "hailuo-clip" && seconds != nil && *seconds == 10 {
+		return modelcatalog.VideoCostDetails{Cost: 0.56, Priced: true, UnmeasuredBoundSeconds: bound, UnmeasuredChargedSeconds: charged}
 	}
 	if dims.Model != "sora-2-pro" || seconds == nil || *seconds <= 0 {
 		return modelcatalog.VideoCostDetails{}
@@ -277,8 +286,9 @@ func (fakePricing) CalculateVideoCostDetails(dims modelcatalog.VideoPricingDimen
 		Cost:   float64(*seconds) * rate * float64(max(1, dims.OutputCount)),
 		Priced: true,
 		// A tier with no banded size beside it sets the band whatever the provider (TXE-7349).
-		PricedResolution:       dims.TierOnlyResolution(provider),
-		UnmeasuredBoundSeconds: bound,
+		PricedResolution:         dims.TierOnlyResolution(provider),
+		UnmeasuredBoundSeconds:   bound,
+		UnmeasuredChargedSeconds: charged,
 	}
 }
 
