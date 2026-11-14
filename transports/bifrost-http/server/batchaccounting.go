@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 	"time"
 
@@ -206,6 +207,25 @@ func (f *bifrostVideoRetriever) BaseProvider(provider schemas.ModelProvider) sch
 		return ""
 	}
 	return cfg.CustomProviderConfig.BaseProviderType
+}
+
+// ProviderOrigin implements jobaccounting.ProviderOriginResolver: the scheme://host[:port] of the
+// provider's configured base URL, "" when none is configured or it does not parse. A rendered video
+// on that origin is fetched to measure it whatever the provider's host list says: the operator set
+// it (fork, TXE-7386).
+func (f *bifrostVideoRetriever) ProviderOrigin(provider schemas.ModelProvider) string {
+	if f == nil || f.config == nil {
+		return ""
+	}
+	cfg, err := f.config.GetProviderConfigRaw(provider)
+	if err != nil || cfg == nil || cfg.NetworkConfig == nil || cfg.NetworkConfig.BaseURL == "" {
+		return ""
+	}
+	u, err := url.Parse(cfg.NetworkConfig.BaseURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 func (f *bifrostVideoRetriever) RetrieveVideo(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostVideoGenerationResponse, error) {

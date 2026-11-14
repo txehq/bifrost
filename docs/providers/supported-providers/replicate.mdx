@@ -833,7 +833,9 @@ Video Delete, List, and Remix are not supported by Replicate.
 
 A Replicate prediction reports neither the length of the video it rendered nor a cost, and a hosted model can take its own length input through extra params (`num_frames`, `length`) that overrides `duration`. So a finished video job is priced on the length of the video it rendered: when provider job accounting settles the job, Bifrost streams the prediction's video and reads its duration from the MP4 header, holding the header only, so a file up to 2 GiB that streams within two minutes is measured, whatever `client.max_response_body_size_mb` is. A 12-second video from a create that asked for 5 seconds is charged for 12 seconds. A shorter file never lowers the charge below the `seconds` the create named, since the file is read after the job finished and may sit where the caller can replace it.
 
-When the length cannot be read (the output is not an MP4, the file is past 2 GiB or does not arrive within two minutes, or the output has expired), the job is charged the `seconds` its create named, and its log row's `video_debug.accounting.incomplete` is `true`. The same applies to every video provider whose task reports neither a duration nor a cost.
+Bifrost fetches the video only from `replicate.delivery` (or a subdomain of it), where Replicate stores prediction files, or from the origin of the provider's configured `base_url`. A model can answer with any URL, so a video anywhere else is never fetched.
+
+When the length cannot be read, the job is charged the `seconds` its create named, and its log row's `video_debug.accounting.incomplete` is `true`. That happens when the output is not an MP4, the file is past 2 GiB or does not arrive within two minutes, the output has expired, or it is on another host. The same applies to every video provider whose task reports neither a duration nor a cost.
 
 ---
 

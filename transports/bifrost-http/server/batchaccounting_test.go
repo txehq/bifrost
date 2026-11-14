@@ -120,6 +120,33 @@ func TestBifrostVideoRetrieverResolvesCustomBaseProvider(t *testing.T) {
 	var _ jobaccounting.BaseProviderResolver = retriever
 }
 
+// The video settler fetches a rendered video on the provider's configured base URL origin whatever
+// its host list says (fork, TXE-7386): the origin is scheme://host[:port] of network_config.base_url,
+// and "" when none is configured or it does not parse.
+func TestBifrostVideoRetrieverReportsTheProviderOrigin(t *testing.T) {
+	retriever := &bifrostVideoRetriever{config: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Replicate: {NetworkConfig: &schemas.NetworkConfig{BaseURL: "http://127.0.0.1:8791/pp/replicate"}},
+		"my-replicate":    {NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://proxy.internal.example/replicate/"}},
+		schemas.MiniMax:   {},
+		"broken":          {NetworkConfig: &schemas.NetworkConfig{BaseURL: "not a url"}},
+	}}}
+	for provider, want := range map[schemas.ModelProvider]string{
+		schemas.Replicate: "http://127.0.0.1:8791",
+		"my-replicate":    "https://proxy.internal.example",
+		schemas.MiniMax:   "",
+		"broken":          "",
+		"unknown":         "",
+	} {
+		if got := retriever.ProviderOrigin(provider); got != want {
+			t.Errorf("ProviderOrigin(%s) = %q, want %q", provider, got, want)
+		}
+	}
+	if got := (&bifrostVideoRetriever{}).ProviderOrigin(schemas.Replicate); got != "" {
+		t.Errorf("a retriever without config resolved %q", got)
+	}
+	var _ jobaccounting.ProviderOriginResolver = retriever
+}
+
 // client.disable_provider_job_accounting (fork, TXE-6519) reaches the logging plugin through this
 // wiring, with or without a client: a disabled deployment records no provider job and starts no
 // sweeper, and the default leaves accounting on, as before the switch existed.
@@ -308,7 +335,11 @@ func TestBifrostVideoRetrieverMeasuresTheRenderedReplicateVideo(t *testing.T) {
 	}
 	t.Cleanup(client.Shutdown)
 
-	retriever := &bifrostVideoRetriever{client: client}
+	// The server's config names the same base URL the account does; the output on that origin is
+	// one the settler may fetch (TXE-7386).
+	retriever := &bifrostVideoRetriever{client: client, config: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Replicate: {NetworkConfig: &schemas.NetworkConfig{BaseURL: upstream.URL}},
+	}}}
 	var _ jobaccounting.VideoDownloader = retriever
 	seconds := 5
 	params, err := jobaccounting.MarshalVideoDimensions(modelcatalog.VideoPricingDimensions{Model: "wan-video/wan-2.5-t2v", Seconds: &seconds})
