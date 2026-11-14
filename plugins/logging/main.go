@@ -1030,7 +1030,7 @@ func applyVideoInputDimensions(dims *modelcatalog.VideoPricingDimensions, entry 
 		dims.VideoInput = schemas.Ptr(true)
 	}
 	// The count escapes only when there is one, so a text-only create allocates nothing for it.
-	if n := modelcatalog.VideoRequestInputImages(entry.VideoGenerationInputParsed, lastFrame, referenceImages, extra); n > 0 {
+	if n := modelcatalog.VideoRequestInputImages(schemas.ModelProvider(entry.Provider), entry.VideoGenerationInputParsed, lastFrame, referenceImages, extra); n > 0 {
 		images := n
 		dims.InputImages = &images
 	}
@@ -1060,7 +1060,7 @@ func applyVideoDimensionsFromMap(dims *modelcatalog.VideoPricingDimensions, para
 	}
 	// Fork (TXE-7409): the last frame and reference images, which a rehydrated entry keeps under
 	// their own names.
-	if n := modelcatalog.VideoRequestInputImages(nil, "", nil, params); n > 0 {
+	if n := modelcatalog.VideoRequestInputImages("", nil, "", nil, params); n > 0 {
 		images := n
 		dims.InputImages = &images
 	}

@@ -194,8 +194,8 @@ func VideoRequestHasVideoInput(provider schemas.ModelProvider, input *schemas.Vi
 
 // VideoRequestInputImages counts the images a video create sends as input; see
 // datasheet.VideoRequestInputImages.
-func VideoRequestInputImages(input *schemas.VideoGenerationInput, lastFrame string, referenceImages []string, extra map[string]any) int {
-	return datasheet.VideoRequestInputImages(input, lastFrame, referenceImages, extra)
+func VideoRequestInputImages(provider schemas.ModelProvider, input *schemas.VideoGenerationInput, lastFrame string, referenceImages []string, extra map[string]any) int {
+	return datasheet.VideoRequestInputImages(provider, input, lastFrame, referenceImages, extra)
 }
 
 // VideoSeconds reads a video duration as whole seconds; see datasheet.VideoSeconds.
