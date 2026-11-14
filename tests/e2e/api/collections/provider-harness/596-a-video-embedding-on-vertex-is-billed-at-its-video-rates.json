@@ -68,6 +68,7 @@
               "    if (tries > 0 && (!row || row.status === 'processing')) { setTimeout(function () { readCost(tries - 1); }, 300); return; }",
               "    pm.test('the log row of this request is readable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(row, 'no log row for ' + requestId).to.be.an('object'); });",
               "    pm.test('the logged cost is 42 text tokens at $0.0000002 and 1258 video tokens at $0.000012', function () { pm.expect(row && (row.cost || 0), JSON.stringify(row && { cost: row.cost })).to.be.closeTo(0.0151044, 1e-9); });",
+              "    pm.test('the logged breakdown reports the video under its own category', function () { var d = row && row.token_usage && row.token_usage.cost && row.token_usage.cost.input_cost_details; pm.expect(d && d.video_cost, JSON.stringify(row && row.token_usage)).to.be.closeTo(1258 * 0.000012, 1e-9); });",
               "  });",
               "}",
               "readCost(40);"
